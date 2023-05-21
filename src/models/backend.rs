@@ -1,33 +1,31 @@
-use tokio::{
-    select,
-    sync::mpsc::{Receiver, Sender},
-};
+use actix::prelude::*;
 
-use crate::frontend::FrontendMessage;
-
-#[derive(Debug)]
+#[derive(Message)]
+#[rtype(result = "()")]
 pub enum BackendMessage {
     Quit,
 }
 
-pub struct Backend {
-    pub tx: Sender<BackendMessage>,
-    pub rx: Receiver<BackendMessage>,
+pub struct Backend;
+
+impl Actor for Backend {
+    type Context = SyncContext<Self>;
 }
 
 impl Backend {
-    pub fn new(tx: Sender<BackendMessage>, rx: Receiver<BackendMessage>) -> Self {
-        Self { tx, rx }
+    pub fn new() -> Self {
+        Self {}
     }
+}
 
-    pub async fn daemon<'a>(&mut self, tx_app: Sender<FrontendMessage<'a>>) {
-        loop {
-            select! {
-                e = self.rx.recv() => {
-                    match e.unwrap() {
-                        BackendMessage::Quit => return,
-                    }
-                }
+impl Handler<BackendMessage> for Backend {
+    type Result = ();
+
+    fn handle(&mut self, msg: BackendMessage, ctx: &mut Self::Context) -> Self::Result {
+        match msg {
+            BackendMessage::Quit => {
+                ctx.stop();
+                System::current().stop();
             }
         }
     }

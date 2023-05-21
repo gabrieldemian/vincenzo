@@ -1,6 +1,6 @@
+use actix::prelude::*;
 use std::{
-    io::{self, Stdout},
-    marker::PhantomData,
+    io,
     time::{Duration, Instant},
 };
 
@@ -9,7 +9,6 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use tokio::sync::mpsc::{Receiver, Sender};
 use tui::{
     backend::CrosstermBackend,
     style::{Color, Style},
@@ -18,6 +17,7 @@ use tui::{
 
 use crate::{models::backend::BackendMessage, torrent_list::TorrentList};
 
+#[derive(Clone)]
 pub struct AppStyle {
     pub base_style: Style,
     pub selected_style: Style,
@@ -34,131 +34,87 @@ impl AppStyle {
     }
 }
 
-#[derive(Debug, Clone)]
-pub enum FrontendMessage<'a> {
+#[derive(Message)]
+#[rtype(result = "()")]
+pub enum FrontendMessage {
     Quit,
-    P(PhantomData<&'a &'a str>),
 }
 
 // actor
-pub struct Frontend<'a> {
+#[derive(Clone)]
+pub struct Frontend {
     pub style: AppStyle,
-    pub page: TorrentList<'a>,
-    pub should_close: bool,
-    pub tick_rate: Duration,
-    pub timeout: Duration,
-    pub terminal: Terminal<CrosstermBackend<Stdout>>,
-    pub rx: Receiver<FrontendMessage<'a>>,
-    pub tx: Sender<FrontendMessage<'a>>,
-    pub tx_backend: Sender<BackendMessage>,
+    pub recipient: Recipient<BackendMessage>,
 }
 
-// handle
-pub struct FrontendHandle<'a> {
-    pub tx: Sender<FrontendMessage<'a>>,
+impl Actor for Frontend {
+    type Context = Context<Self>;
+
+    fn started(&mut self, ctx: &mut Self::Context) {
+        self.run(ctx).unwrap();
+    }
+
+    fn stopping(&mut self, _ctx: &mut Self::Context) -> Running {
+        let stdout = io::stdout();
+        let backend = CrosstermBackend::new(stdout);
+        let mut terminal = Terminal::new(backend).unwrap();
+        disable_raw_mode().unwrap();
+        execute!(
+            terminal.backend_mut(),
+            LeaveAlternateScreen,
+            DisableMouseCapture
+        )
+        .unwrap();
+        terminal.show_cursor().unwrap();
+        self.recipient.do_send(BackendMessage::Quit);
+        Running::Stop
+    }
 }
 
-impl<'a> Frontend<'a> {
-    pub fn new(
-        rx: Receiver<FrontendMessage<'a>>,
-        tx: Sender<FrontendMessage<'a>>,
-        tx_backend: Sender<BackendMessage>,
-    ) -> Result<Frontend<'a>, std::io::Error> {
-        let style = AppStyle::new();
-        let page = TorrentList::new();
-
+impl Frontend {
+    pub fn new(recipient: Recipient<BackendMessage>) -> Result<Frontend, std::io::Error> {
         // setup terminal
         enable_raw_mode()?;
         let mut stdout = io::stdout();
         execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+        let style = AppStyle::new();
 
-        let backend = CrosstermBackend::new(stdout);
-        let terminal = Terminal::new(backend)?;
-
-        Ok(Frontend {
-            style,
-            page,
-            should_close: false,
-            terminal,
-            tick_rate: Duration::from_millis(250),
-            timeout: Duration::from_millis(0),
-            rx,
-            tx,
-            tx_backend,
-        })
+        Ok(Frontend { recipient, style })
     }
 
-    pub async fn run(
-        &mut self,
-        // tx: Sender<AppMessage<'a>>,
-        // tx_network: Sender<GlobalEvent>,
-    ) -> Result<(), std::io::Error> {
+    pub fn run(&mut self, ctx: &mut Context<Frontend>) -> Result<(), std::io::Error> {
+        let stdout = io::stdout();
         let mut last_tick = Instant::now();
+        let tick_rate = Duration::from_millis(250);
+        let timeout = Duration::from_secs(3);
+        let backend = CrosstermBackend::new(stdout);
+        let mut terminal = Terminal::new(backend)?;
+        let mut page = TorrentList::new();
 
-        loop {
-            self.terminal.draw(|f| self.page.draw(f)).unwrap();
-
-            self.timeout = self
-                .tick_rate
-                .checked_sub(last_tick.elapsed())
-                .unwrap_or_else(|| Duration::from_secs(0));
-
-            if event::poll(self.timeout).unwrap() {
-                if let Event::Key(k) = event::read().unwrap() {
-                    self.page
-                        .keybindings(k.code, &self.tx, &self.tx_backend)
-                        .await;
-                }
+        ctx.run_interval(tick_rate, move |_act, ctx| {
+            if Instant::now().duration_since(last_tick) > timeout {
+                ctx.stop();
             }
 
-            // try_recv is non-blocking
-            if let Ok(msg) = self.rx.try_recv() {
-                self.handle_message(msg).await;
+            terminal.draw(|f| page.draw(f)).unwrap();
+
+            if let Event::Key(k) = event::read().unwrap() {
+                page.keybindings(k.code, ctx);
             }
 
-            if last_tick.elapsed() >= self.tick_rate {
-                last_tick = Instant::now();
-            }
+            last_tick = Instant::now();
+        });
 
-            if self.should_close {
-                return Ok(());
-            }
-        }
-    }
-
-    async fn handle_message(&mut self, msg: FrontendMessage<'a>) {
-        match msg {
-            FrontendMessage::Quit => {
-                disable_raw_mode().unwrap();
-                execute!(
-                    self.terminal.backend_mut(),
-                    LeaveAlternateScreen,
-                    DisableMouseCapture
-                )
-                .unwrap();
-                self.terminal.show_cursor().unwrap();
-                self.should_close = true;
-                // send message to `Backend`
-                let _ = self.tx_backend.send(BackendMessage::Quit).await;
-            }
-            _ => {}
-        }
+        Ok(())
     }
 }
 
-impl<'a> FrontendHandle<'a>
-where
-    'a: 'static,
-{
-    pub fn new(
-        tx: Sender<FrontendMessage<'a>>,
-        rx: Receiver<FrontendMessage<'a>>,
-        tx_backend: Sender<BackendMessage>,
-    ) -> Self {
-        let actor = Frontend::new(rx, tx.clone(), tx_backend);
+impl Handler<FrontendMessage> for Frontend {
+    type Result = ();
 
-        tokio::spawn(async move { actor.unwrap().run().await });
-
-        Self { tx }
+    fn handle(&mut self, msg: FrontendMessage, _ctx: &mut Self::Context) -> Self::Result {
+        match msg {
+            FrontendMessage::Quit => {}
+        }
     }
 }

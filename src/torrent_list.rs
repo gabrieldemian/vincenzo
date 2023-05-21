@@ -1,5 +1,5 @@
+use actix::{ActorContext, Context};
 use crossterm::event::KeyCode;
-use tokio::sync::mpsc::Sender;
 use tui::{
     backend::Backend,
     layout::Constraint,
@@ -7,10 +7,7 @@ use tui::{
     Frame,
 };
 
-use crate::{
-    frontend::{AppStyle, FrontendMessage},
-    BackendMessage,
-};
+use crate::frontend::{AppStyle, Frontend};
 
 #[derive(Clone, Debug)]
 pub struct TorrentList<'a> {
@@ -36,14 +33,9 @@ impl<'a> TorrentList<'a> {
         Self::default()
     }
 
-    pub async fn keybindings(
-        &mut self,
-        k: KeyCode,
-        tx: &Sender<FrontendMessage<'a>>,
-        _tx_backend: &Sender<BackendMessage>,
-    ) {
+    pub fn keybindings(&mut self, k: KeyCode, ctx: &mut Context<Frontend>) {
         match k {
-            KeyCode::Char('q') | KeyCode::Esc => tx.send(FrontendMessage::Quit).await.unwrap(),
+            KeyCode::Char('q') | KeyCode::Esc => ctx.stop(),
             KeyCode::Down | KeyCode::Char('j') => self.next(),
             KeyCode::Up | KeyCode::Char('k') => self.previous(),
             KeyCode::Enter => {}
