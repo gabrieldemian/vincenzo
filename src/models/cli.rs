@@ -1,8 +1,12 @@
 use clap::Parser;
 
 #[derive(Parser, Debug)]
-#[clap(name = "p2p chat")]
-pub struct Opt {
-    #[clap(long)]
+#[clap(name = "Bittorrent CLI in Rust")]
+#[command(author, version, about, long_about = None)]
+pub struct Args {
+    #[clap(short, long, default_value = "~/Downloads")]
     pub download_folder: String,
+
+    #[clap(short, long)]
+    pub magnet: Option<String>,
 }
