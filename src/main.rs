@@ -6,22 +6,21 @@ pub mod frontend;
 pub mod models;
 pub mod torrent_list;
 
-fn main() -> Result<(), String> {
-    let system = System::new();
+fn main() -> Result<(), std::io::Error> {
     pretty_env_logger::init();
+    let system = System::new();
 
     let fr_execution = async {
-        let bk_addr = SyncArbiter::start(2, || Backend);
-        let _fr_addr = Frontend::new(bk_addr.recipient())
-            .expect("to call frontend::new")
-            .start();
+        Frontend::create(|ctx| {
+            let bk_addr = Backend::new(ctx.address().recipient()).start();
+            Frontend::new(bk_addr.recipient()).unwrap()
+        });
     };
 
     // spawn OS thread
     let arbiter = Arbiter::new();
     arbiter.spawn(fr_execution);
 
-    // run event loops
-    system.run().unwrap();
+    system.run()?;
     Ok(())
 }
