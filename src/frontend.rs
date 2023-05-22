@@ -15,7 +15,7 @@ use tui::{
     Terminal,
 };
 
-use crate::{models::backend::BackendMessage, torrent_list::TorrentList};
+use crate::{backend::BackendMessage, torrent_list::TorrentList};
 
 #[derive(Clone)]
 pub struct AppStyle {

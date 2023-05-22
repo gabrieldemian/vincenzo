@@ -1,10 +1,13 @@
+pub mod frontend;
+pub mod error;
+pub mod backend;
+pub mod cli;
+pub mod tracker;
+pub mod torrent_list;
+
 use actix::prelude::*;
 use frontend::Frontend;
-use models::backend::Backend;
-
-pub mod frontend;
-pub mod models;
-pub mod torrent_list;
+use backend::Backend;
 
 fn main() -> Result<(), std::io::Error> {
     pretty_env_logger::init();
