@@ -3,6 +3,8 @@ use std::{
     time::Duration,
 };
 
+use serde::Deserialize;
+
 use crate::error::Error;
 
 use super::{
@@ -21,6 +23,7 @@ pub struct Client {
 }
 
 impl Client {
+    const ANNOUNCE_RES_BUF_LEN: usize = 8192;
     /// Bind UDP socket and send a connect handshake,
     /// to one of the trackers.
     pub fn connect<A: ToSocketAddrs>(trackers: Vec<A>) -> Result<Self, Error> {
@@ -43,6 +46,7 @@ impl Client {
                     connection_id: 0,
                 };
                 if client.connect_exchange().is_ok() {
+                    println!("connected with tracker {tracker_addr}");
                     return Ok(client);
                 }
             }
@@ -68,20 +72,22 @@ impl Client {
     fn connect_exchange(&mut self) -> Result<(), Error> {
         let req = connect::Request::new().serialize()?;
         let mut res = Response::new().serialize()?;
+        let mut len = 0 as usize;
 
-        // will try to connect up to 2 times
-        // breaking if the first one happens
+        // will try to connect up to 3 times
+        // breaking if succesfull
         for _ in 0..=2 {
-            println!("sending...");
+            println!("sending connect...");
             self.sock.send(&req)?;
 
-            if let Ok(len) = self.sock.recv(&mut res) {
-                if len == 0 {
-                    println!("--- len 0");
-                    return Err(Error::TrackerResponse);
-                }
+            if let Ok(lenn) = self.sock.recv(&mut res) {
+                len = lenn;
                 break;
             }
+        }
+
+        if len == 0 {
+            return Err(Error::TrackerResponse);
         }
 
         let req = Request::deserialize(&req.as_slice()).unwrap();
@@ -107,9 +113,34 @@ impl Client {
             infohash,
             self.peer_id,
             local_addr.port(),
-        );
+        )
+        .serialize()?;
 
-        // println!("announce req {:#?}", req);
+        let mut len = 0 as usize;
+        let mut res = [0u8; Self::ANNOUNCE_RES_BUF_LEN];
+
+        // will try to connect up to 4 times
+        // breaking if succesfull
+        for _ in 0..=3 {
+            println!("sending announce...");
+            self.sock.send(&req)?;
+
+            if let Ok(lenn) = self.sock.recv(&mut res) {
+                len = lenn;
+                break;
+            } else {
+                println!("failed to announce");
+            }
+        }
+
+        if len == 0 {
+            return Err(Error::TrackerResponse);
+        }
+
+        let res = &res[..len];
+        println!("got res {:#?}", res);
+        let res = announce::Response::deserialize(res)?;
+        println!("got res {:#?}", res);
 
         Ok(())
     }

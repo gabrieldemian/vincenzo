@@ -1,6 +1,8 @@
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 
+use crate::error::Error;
+
 use super::action::Action;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -39,6 +41,14 @@ impl Request {
             port,
         }
     }
+
+    pub fn serialize(&self) -> Result<Vec<u8>, Error> {
+        bincode::serialize(&self).map_err(Error::Bincode)
+    }
+
+    pub fn deserialize(buf: &[u8]) -> Result<Self, Error> {
+        bincode::deserialize(buf).map_err(Error::Bincode)
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -52,4 +62,12 @@ pub struct Response {
 
 impl Response {
     pub(crate) const LENGTH: usize = 20;
+
+    pub fn serialize(&self) -> Result<Vec<u8>, Error> {
+        bincode::serialize(&self).map_err(Error::Bincode)
+    }
+
+    pub fn deserialize(buf: &[u8]) -> Result<Self, Error> {
+        bincode::deserialize(buf).map_err(Error::Bincode)
+    }
 }
