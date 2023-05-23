@@ -3,11 +3,12 @@ use std::{
     time::Duration,
 };
 
-use log::debug;
-
 use crate::error::Error;
 
-use super::connect::{self, Request, Response};
+use super::{
+    announce,
+    connect::{self, Request, Response},
+};
 
 #[derive(Debug)]
 pub struct Client {
@@ -29,7 +30,7 @@ impl Client {
                 .map_err(Error::TrackerSocketAddrs)?;
 
             for tracker_addr in addrs {
-                println!("what? {:#?}", tracker_addr);
+                println!("addr {:#?}", tracker_addr);
                 let sock = match Self::new_udp_socket(tracker_addr) {
                     Ok(sock) => sock,
                     Err(_) => continue,
@@ -41,9 +42,7 @@ impl Client {
                     transaction_id: 0,
                     connection_id: 0,
                 };
-                println!("do lado de fora");
-                if let Ok(()) = client.connect_exchange() {
-                    println!("calling return now");
+                if client.connect_exchange().is_ok() {
                     return Ok(client);
                 }
             }
@@ -65,18 +64,15 @@ impl Client {
         Ok(sock)
     }
 
+    /// Connect is the first step in getting the file
     fn connect_exchange(&mut self) -> Result<(), Error> {
-        let req = connect::Request::new();
-        let res = Response::new();
+        let req = connect::Request::new().serialize()?;
+        let mut res = Response::new().serialize()?;
 
-        let req = bincode::serialize(&req).unwrap();
-        let mut res = bincode::serialize(&res).unwrap();
-
-        // will try to connect up to 3 times
+        // will try to connect up to 2 times
         // breaking if the first one happens
         for _ in 0..=2 {
             println!("sending...");
-
             self.sock.send(&req)?;
 
             if let Ok(len) = self.sock.recv(&mut res) {
@@ -101,7 +97,19 @@ impl Client {
         self.connection_id = res.connection_id;
         self.transaction_id = res.transaction_id;
 
-        println!("new conn {:?}", self.connection_id);
+        Ok(())
+    }
+
+    pub fn announce_exchange(&self, infohash: [u8; 20]) -> Result<(), Error> {
+        let local_addr = self.sock.local_addr()?;
+        let req = announce::Request::new(
+            self.connection_id,
+            infohash,
+            self.peer_id,
+            local_addr.port(),
+        );
+
+        // println!("announce req {:#?}", req);
 
         Ok(())
     }

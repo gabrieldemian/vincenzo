@@ -1,3 +1,4 @@
+use hex;
 use rand::random;
 use serde::{Deserialize, Serialize};
 use std::net::{SocketAddr, ToSocketAddrs};
@@ -59,25 +60,10 @@ impl Handler<BackendMessage> for Backend {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct ConnectReq {
-    connection_id: u64,
-    action: u32,
-    transaction_id: u32,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct ConnectRes {
-    action: u32,
-    transaction_id: u32,
-    connection_id: u64,
-}
-
 #[cfg(test)]
 pub mod tests {
-    use crate::tracker::client::Client;
-
     use super::*;
+    use crate::tracker::client::Client;
 
     #[test]
     fn udp() {
@@ -104,89 +90,21 @@ pub mod tests {
 
             println!("trackers {:#?}", trackers);
 
-            // let client = Client::connect(trackers);
             let client = Client::connect(trackers).unwrap();
-            println!("client {:#?}", client)
+            println!("client {:#?}", client);
 
-            // // literal magic number used for handshake
-            // const MAGIC: u64 = 0x0417_2710_1980;
-            //
-            // // the socket the client will listen on
-            // let my_socket = UdpSocket::bind("0.0.0.0:0").unwrap();
-            //
-            // let mut req = ConnectReq {
-            //     connection_id: u64::to_be(MAGIC),
-            //     action: 0,
-            //     transaction_id: random::<u32>(),
-            // };
-            //
-            // let mut res = ConnectRes {
-            //     action: 0,
-            //     transaction_id: 0,
-            //     connection_id: 0,
-            // };
-            // let mut buf_req = bincode::serialize(&req).unwrap();
-            // let mut buf_res = bincode::serialize(&res).unwrap();
-            //
-            // // todo: loop over each tracker and try to connect
-            // let tracker = decode(&m.tr[1]).unwrap();
-            //
-            // println!("tracker {tracker}");
-            //
-            // // "clean" the string
-            // let tracker = tracker.replace("udp://", "");
-            // let tracker = tracker.replace("/announce", "");
-            //
-            // println!("replaced tracker {tracker}");
-            //
-            // // get vec of ips from tracker DNS
-            // // todo: loop over all ips and try to connect
-            // let ips: Vec<_> = tracker.to_socket_addrs().unwrap().collect();
-            //
-            // println!("tracker ips {:#?}", ips);
-            //
-            // let addr = SocketAddr::from(ips[0]);
-            //
-            // // 1. send and receive connection request
-            // my_socket
-            //     // .send_to(&buf_req, "184.105.151.166:6969")
-            //     // .send_to(&buf_req, "103.224.182.246:6969")
-            //     .send_to(&buf_req, addr)
-            //     .expect("to send_to");
-            //
-            // my_socket.recv_from(&mut buf_res).expect("to receive_from");
-            //
-            // res = bincode::deserialize(&buf_res).unwrap();
-            //
-            // println!("got something? {:#?}", res);
-            //
-            // // validate transaction_id
-            // if res.transaction_id != req.transaction_id {
-            //     return;
-            // };
-            //
-            // // the action must be connect. 0 = connect.
-            // if res.action != 0 {
-            //     return;
-            // }
+            let mut buf = [0u8; 20];
+            let infohash = hex::decode(m.xt.clone().unwrap()).unwrap();
 
-            // 2. send and receive announce request
+            println!("bytes count {:?}", infohash.len());
 
-            // let announce_req = AnnounceReq {
-            //     connection_id: res.connection_id,
-            //     action: u32::to_be(1),
-            //     transaction_id: random::<u32>(),
-            //     info_hash,
-            //     peer_id: [1; 20],
-            //     downloaded: 0,
-            //     left: 0,
-            //     uploaded: 0,
-            //     event: 0,
-            //     ip_address: 0,
-            //     key: 0,
-            //     num_want: u32::to_be(200),
-            //     port: u16::to_be(6969),
-            // };
+            for i in 0..20 {
+                buf[i] = infohash[i];
+            }
+
+            println!("buf of xt {:?}", buf);
+
+            client.announce_exchange(buf).unwrap();
         }
     }
 }
