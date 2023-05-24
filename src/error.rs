@@ -14,6 +14,8 @@ pub enum Error {
     TrackerResponse,
     #[error("Tried to call announce without calling connect first")]
     TrackerNoConnectionId,
+    #[error("The peer list returned by the announce request is not valid")]
+    TrackerCompactPeerList,
     #[error(transparent)]
     Bincode(#[from] bincode::Error),
 }

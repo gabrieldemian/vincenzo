@@ -1,6 +1,6 @@
 use std::{
     fmt::Debug,
-    net::{Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs, UdpSocket},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs, UdpSocket},
     time::Duration,
 };
 
@@ -102,8 +102,6 @@ impl Client {
         }
 
         self.connection_id.replace(res.connection_id);
-        // self.transaction_id = res.transaction_id;
-
         Ok(())
     }
 
@@ -145,15 +143,52 @@ impl Client {
             return Err(Error::TrackerResponse);
         }
 
-        println!("len: {len}");
+        println!("len of res: {len}");
         let res = &res[..len];
-        // let res = &res[..20];
-        println!("got res len {:#?}", res.len());
 
+        // res is the deserialized struct,
+        // payload is a byte array of peers,
+        // which are in the form of ips and ports
         let (res, payload) = announce::Response::deserialize(res)?;
         println!("got res {:#?}", res);
         println!("got payload {:#?}", payload);
 
+        let peers = Self::parse_compact_peer_list(payload, self.sock.local_addr()?.is_ipv6())?;
+        println!("got peers: {:#?}", peers);
+
         Ok(())
+    }
+
+    fn parse_compact_peer_list(buf: &[u8], is_ipv6: bool) -> Result<Vec<SocketAddr>, Error> {
+        let mut peer_list = Vec::<SocketAddr>::new();
+
+        // in ipv4 the addresses come in packets of 6 bytes,
+        // first 4 for ip and 2 for port
+        // in ipv6 its 16 bytes for port and 2 for port
+        let stride = if is_ipv6 { 18 } else { 6 };
+
+        let chunks = buf.chunks_exact(stride);
+        if !chunks.remainder().is_empty() {
+            return Err(Error::TrackerCompactPeerList);
+        }
+
+        for hostpost in chunks {
+            let (ip, port) = hostpost.split_at(stride - 2);
+            let ip = if is_ipv6 {
+                let octets: [u8; 16] = ip[0..16]
+                    .try_into()
+                    .expect("iterator guarantees bounds are OK");
+                IpAddr::from(std::net::Ipv6Addr::from(octets))
+            } else {
+                IpAddr::from(std::net::Ipv4Addr::new(ip[0], ip[1], ip[2], ip[3]))
+            };
+
+            let port =
+                u16::from_be_bytes(port.try_into().expect("iterator guarantees bounds are OK"));
+
+            peer_list.push((ip, port).into());
+        }
+
+        Ok(peer_list)
     }
 }

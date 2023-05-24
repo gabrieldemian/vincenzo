@@ -56,12 +56,7 @@ impl Request {
         msg.extend_from_slice(&self.num_want.to_be_bytes());
         msg.extend_from_slice(&self.port.to_be_bytes());
         msg
-        // bincode::serialize(&self).unwrap()
     }
-
-    // pub fn deserialize(buf: &[u8]) -> Result<Self, Error> {
-    //     bincode::deserialize(buf).map_err(Error::Bincode)
-    // }
 }
 
 #[derive(Debug, PartialEq)]
@@ -85,10 +80,6 @@ impl Response {
             seeders: 0,
         }
     }
-
-    // pub fn serialize(&self) -> Result<Vec<u8>, Error> {
-    //     bincode::serialize(&self).map_err(Error::Bincode)
-    // }
 
     pub fn deserialize(buf: &[u8]) -> Result<(Self, &[u8]), Error> {
         Ok((
