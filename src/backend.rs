@@ -1,17 +1,5 @@
-use hex;
-use rand::random;
-use serde::{Deserialize, Serialize};
-use std::net::{SocketAddr, ToSocketAddrs};
-use std::{net::UdpSocket, time::Duration};
-use urlencoding::decode;
-
-use actix::prelude::*;
-use clap::Parser;
-use magnet_url::Magnet;
-
 use crate::frontend::FrontendMessage;
-
-use super::cli::Args;
+use actix::prelude::*;
 
 #[derive(Message)]
 #[rtype(result = "()")]
@@ -62,28 +50,31 @@ impl Handler<BackendMessage> for Backend {
 
 #[cfg(test)]
 pub mod tests {
+    use magnet_url::Magnet;
+    use urlencoding::decode;
+
     use super::*;
     use crate::tracker::client::Client;
+    // http://bt1.archive.org:6969/announce?info_hash=%ac%c3%b2%e43%d7%c7GZ%bbYA%b5h%1c%b7%a1%ea%26%e2&peer_id=ABCDEFGHIJKLMNOPQRST&ip=80.11.255.166&port=6881&downloaded=0&left=970
 
     #[test]
     fn udp() {
-        let magnet = Magnet::new("magnet:?xt=urn:btih:56BC861F42972DEA863AE853362A20E15C7BA07E&dn=Rust%20for%20Rustaceans%3A%20Idiomatic%20Programming&tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.openbittorrent.com%3A6969%2Fannounce&tr=udp%3A%2F%2F9.rarbg.to%3A2710%2Fannounce&tr=udp%3A%2F%2F9.rarbg.me%3A2780%2Fannounce&tr=udp%3A%2F%2F9.rarbg.to%3A2730%2Fannounce&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&tr=http%3A%2F%2Fp4p.arenabg.com%3A1337%2Fannounce&tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451%2Fannounce&tr=udp%3A%2F%2Ftracker.tiny-vps.com%3A6969%2Fannounce&tr=udp%3A%2F%2Fopen.stealth.si%3A80%2Fannounce");
+        let magnet = "magnet:?xt=urn:btih:56BC861F42972DEA863AE853362A20E15C7BA07E&dn=Rust%20for%20Rustaceans%3A%20Idiomatic%20Programming&tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.openbittorrent.com%3A6969%2Fannounce&tr=udp%3A%2F%2F9.rarbg.to%3A2710%2Fannounce&tr=udp%3A%2F%2F9.rarbg.me%3A2780%2Fannounce&tr=udp%3A%2F%2F9.rarbg.to%3A2730%2Fannounce&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&tr=http%3A%2F%2Fp4p.arenabg.com%3A1337%2Fannounce&tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451%2Fannounce&tr=udp%3A%2F%2Ftracker.tiny-vps.com%3A6969%2Fannounce&tr=udp%3A%2F%2Fopen.stealth.si%3A80%2Fannounce";
+        let magnet = Magnet::new(magnet);
         if let Ok(m) = magnet {
-            // println!("{:#?}", m);
+            println!("{:#?}", m);
             // println!("");
 
             let trackers: Vec<_> =
                 m.tr.into_iter()
                     .map(|x| {
-                        let tracker = decode(x.as_str()).unwrap();
-                        // todo: refactor this later
-                        if tracker.starts_with("udp://") {
-                            let tracker = tracker.replace("udp://", "");
-                            let tracker = tracker.replace("/announce", "");
-                            return tracker;
-                        }
-                        let tracker = tracker.replace("http://", "");
+                        // working with http but not udp
+                        let tracker = decode("http%3A%2F%2Fp4p.arenabg.com%3A1337%2Fannounce")
+                            .unwrap()
+                            .to_string();
+                        // let tracker = decode(x.as_str()).unwrap();
                         let tracker = tracker.replace("/announce", "");
+                        let tracker = tracker[7..].to_string();
                         tracker
                     })
                     .collect();

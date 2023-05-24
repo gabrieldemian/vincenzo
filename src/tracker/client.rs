@@ -3,8 +3,6 @@ use std::{
     time::Duration,
 };
 
-use serde::Deserialize;
-
 use crate::error::Error;
 
 use super::{
@@ -116,13 +114,13 @@ impl Client {
         )
         .serialize()?;
 
+        println!("sending this connection_id {}", self.connection_id);
         let mut len = 0 as usize;
-        // let mut res = [0u8; Self::ANNOUNCE_RES_BUF_LEN];
-        let mut res = announce::Response::new().serialize()?;
+        let mut res = [0u8; Self::ANNOUNCE_RES_BUF_LEN];
 
-        // will try to connect up to 4 times
+        // will try to connect up to 3 times
         // breaking if succesfull
-        for _ in 0..=3 {
+        for _ in 0..=2 {
             println!("sending announce...");
             self.sock.send(&req)?;
 
