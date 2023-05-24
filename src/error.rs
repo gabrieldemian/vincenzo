@@ -12,6 +12,8 @@ pub enum Error {
     TrackerNoHosts,
     #[error("The response received from the connect handshake was wrong")]
     TrackerResponse,
+    #[error("Tried to call announce without calling connect first")]
+    TrackerNoConnectionId,
     #[error(transparent)]
     Bincode(#[from] bincode::Error),
 }

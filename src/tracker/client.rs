@@ -6,10 +6,7 @@ use std::{
 
 use crate::error::Error;
 
-use super::{
-    announce,
-    connect::{self, Request, Response},
-};
+use super::{announce, connect};
 
 #[derive(Debug)]
 pub struct Client {
@@ -17,8 +14,7 @@ pub struct Client {
     pub tracker_addr: SocketAddr,
     /// UDP Socket of the `tracker_addr`
     pub sock: UdpSocket,
-    pub connection_id: u64,
-    pub transaction_id: u32,
+    pub connection_id: Option<u64>,
 }
 
 impl Client {
@@ -35,14 +31,16 @@ impl Client {
                 println!("addr {:#?}", tracker_addr);
                 let sock = match Self::new_udp_socket(tracker_addr) {
                     Ok(sock) => sock,
-                    Err(_) => continue,
+                    Err(e) => {
+                        println!("{:#?}", e);
+                        continue;
+                    }
                 };
                 let mut client = Client {
                     peer_id: rand::random(),
                     tracker_addr,
                     sock,
-                    transaction_id: 0,
-                    connection_id: 0,
+                    connection_id: None,
                 };
                 if client.connect_exchange().is_ok() {
                     println!("connected with tracker ip {tracker_addr}");
@@ -62,7 +60,7 @@ impl Client {
         }
         .expect("Failed to bind udp socket");
         sock.connect(addr).expect("Failed to connect to udp socket");
-        sock.set_read_timeout(Some(Duration::new(3, 0)))
+        sock.set_read_timeout(Some(Duration::new(1, 0)))
             .expect("Failed to set a read timeout to udp socket");
 
         Ok(sock)
@@ -70,19 +68,23 @@ impl Client {
 
     /// Connect is the first step in getting the file
     fn connect_exchange(&mut self) -> Result<(), Error> {
-        let req = connect::Request::new().serialize()?;
-        let mut res = Response::new().serialize()?;
-        let mut len = 0 as usize;
+        let req = connect::Request::new();
+        let mut buf = [0u8; connect::Response::LENGTH];
+        let mut len: usize = 0;
 
         // will try to connect up to 3 times
         // breaking if succesfull
         for _ in 0..=2 {
             println!("sending connect...");
-            self.sock.send(&req)?;
+            println!("req {:#?}", req);
+            self.sock.send(&req.serialize())?;
 
-            if let Ok(lenn) = self.sock.recv(&mut res) {
-                len = lenn;
-                break;
+            match self.sock.recv(&mut buf) {
+                Ok(lenn) => {
+                    len = lenn;
+                    break;
+                }
+                Err(e) => println!("error receiving {:#?}", e),
             }
         }
 
@@ -90,8 +92,7 @@ impl Client {
             return Err(Error::TrackerResponse);
         }
 
-        let req = Request::deserialize(&req.as_slice()).unwrap();
-        let res = Response::deserialize(&res).unwrap();
+        let (res, _) = connect::Response::deserialize(&buf)?;
 
         println!("req {:#?}", req);
         println!("received res {:#?}", res);
@@ -100,22 +101,27 @@ impl Client {
             return Err(Error::TrackerResponse);
         }
 
-        self.connection_id = res.connection_id;
-        self.transaction_id = res.transaction_id;
+        self.connection_id.replace(res.connection_id);
+        // self.transaction_id = res.transaction_id;
 
         Ok(())
     }
 
     pub fn announce_exchange(&self, infohash: [u8; 20]) -> Result<(), Error> {
+        let connection_id = match self.connection_id {
+            Some(x) => x,
+            None => return Err(Error::TrackerNoConnectionId),
+        };
+
         let req = announce::Request::new(
-            self.connection_id,
+            connection_id,
             infohash,
             self.peer_id,
             self.sock.local_addr()?.port(),
         )
         .serialize();
 
-        println!("sending this connection_id {}", self.connection_id);
+        println!("sending this connection_id {}", connection_id);
         let mut len = 0 as usize;
         let mut res = [0u8; Self::ANNOUNCE_RES_BUF_LEN];
 
@@ -124,7 +130,6 @@ impl Client {
         for _ in 0..=2 {
             println!("sending announce...");
             self.sock.send(&req)?;
-
             match self.sock.recv(&mut res) {
                 Ok(lenn) => {
                     len = lenn;

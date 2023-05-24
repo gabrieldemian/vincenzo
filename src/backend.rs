@@ -68,46 +68,48 @@ pub mod tests {
             let trackers: Vec<_> =
                 m.tr.into_iter()
                     .map(|x| {
-                        println!("{:#?}", urlencoding::decode(&x));
+                        // println!("{:#?}", urlencoding::decode(&x));
                         // http that works
                         // let tr = "p4p.arenabg.com:1337";
 
                         // explodie is the only UDP address
                         // that the announce works. why?
-                        let tr = "explodie.org:6969";
-                        tr
-                        // let tr = urlencoding::decode(&x).unwrap();
+                        // let tr = "explodie.org:6969";
+                        // tr
+                        let tr = urlencoding::decode(&x).unwrap();
                         // println!("raw {:#?}", tr);
-                        // let tr = tr.replace("/announce", "");
-                        // if tr.starts_with("udp://") {
-                        //     let tr = tr.replace("udp://", "");
-                        //     return tr;
-                        // } else {
-                        //     let tr = tr.replace("http://", "");
-                        //     return tr;
-                        // }
+                        let tr = tr.replace("/announce", "");
+                        if tr.starts_with("udp://") {
+                            let tr = tr.replace("udp://", "");
+                            return tr;
+                        } else {
+                            let tr = tr.replace("http://", "");
+                            return tr;
+                        }
                     })
                     .collect();
 
             println!("trackers {:#?}", trackers);
-            let client = Client::connect(trackers).unwrap();
-            println!("client {:#?}", client);
 
             let mut hasher = Sha1::new();
+            let client = Client::connect(trackers).unwrap();
 
+            println!("client {:#?}", client);
             println!("hash_url is {:#?}", m.xt);
 
+            // let mut buf = [0u8; 20];
             let infohash = hex::decode(m.xt.clone().unwrap()).unwrap();
+            // for i in buf {
+            //     infohash[i as usize] = buf[i as usize];
+            // }
 
             println!("hash is {:#?}", infohash);
-
             hasher.update(infohash);
-
             let infohash: [u8; 20] = hasher.finalize().into();
-
             println!("infohash is {:#?}", infohash);
 
             client.announce_exchange(infohash).unwrap();
+            // client.announce_exchange(buf).unwrap();
         }
     }
 }

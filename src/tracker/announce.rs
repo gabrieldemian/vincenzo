@@ -1,11 +1,10 @@
 use rand::Rng;
-use serde::{Deserialize, Serialize};
 
 use crate::error::Error;
 
 use super::action::Action;
 
-#[derive(Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, PartialEq)]
 pub struct Request {
     pub connection_id: u64,
     pub action: u32,
@@ -43,29 +42,29 @@ impl Request {
     }
 
     pub fn serialize(&self) -> Vec<u8> {
-        // let mut msg = Vec::new();
-        // msg.extend_from_slice(&self.connection_id.to_be_bytes());
-        // msg.extend_from_slice(&self.action.to_be_bytes());
-        // msg.extend_from_slice(&self.transaction_id.to_be_bytes());
-        // msg.extend_from_slice(&self.infohash);
-        // msg.extend_from_slice(&self.peer_id);
-        // msg.extend_from_slice(&self.downloaded.to_be_bytes());
-        // msg.extend_from_slice(&self.left.to_be_bytes());
-        // msg.extend_from_slice(&self.uploaded.to_be_bytes());
-        // msg.extend_from_slice(&self.event.to_be_bytes());
-        // msg.extend_from_slice(&self.ip_address.to_be_bytes());
-        // msg.extend_from_slice(&self.num_want.to_be_bytes());
-        // msg.extend_from_slice(&self.port.to_be_bytes());
-        // msg
-        bincode::serialize(&self).unwrap()
+        let mut msg = Vec::new();
+        msg.extend_from_slice(&self.connection_id.to_be_bytes());
+        msg.extend_from_slice(&self.action.to_be_bytes());
+        msg.extend_from_slice(&self.transaction_id.to_be_bytes());
+        msg.extend_from_slice(&self.infohash);
+        msg.extend_from_slice(&self.peer_id);
+        msg.extend_from_slice(&self.downloaded.to_be_bytes());
+        msg.extend_from_slice(&self.left.to_be_bytes());
+        msg.extend_from_slice(&self.uploaded.to_be_bytes());
+        msg.extend_from_slice(&self.event.to_be_bytes());
+        msg.extend_from_slice(&self.ip_address.to_be_bytes());
+        msg.extend_from_slice(&self.num_want.to_be_bytes());
+        msg.extend_from_slice(&self.port.to_be_bytes());
+        msg
+        // bincode::serialize(&self).unwrap()
     }
 
-    pub fn deserialize(buf: &[u8]) -> Result<Self, Error> {
-        bincode::deserialize(buf).map_err(Error::Bincode)
-    }
+    // pub fn deserialize(buf: &[u8]) -> Result<Self, Error> {
+    //     bincode::deserialize(buf).map_err(Error::Bincode)
+    // }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, PartialEq)]
 pub struct Response {
     pub action: u32,
     pub transaction_id: u32,
@@ -87,9 +86,9 @@ impl Response {
         }
     }
 
-    pub fn serialize(&self) -> Result<Vec<u8>, Error> {
-        bincode::serialize(&self).map_err(Error::Bincode)
-    }
+    // pub fn serialize(&self) -> Result<Vec<u8>, Error> {
+    //     bincode::serialize(&self).map_err(Error::Bincode)
+    // }
 
     pub fn deserialize(buf: &[u8]) -> Result<(Self, &[u8]), Error> {
         Ok((
