@@ -51,7 +51,8 @@ impl Handler<BackendMessage> for Backend {
 #[cfg(test)]
 pub mod tests {
     use magnet_url::Magnet;
-    use urlencoding::decode;
+    use sha1::{Digest, Sha1};
+    use url::Url;
 
     use super::*;
     use crate::tracker::client::Client;
@@ -63,35 +64,50 @@ pub mod tests {
         let magnet = Magnet::new(magnet);
         if let Ok(m) = magnet {
             println!("{:#?}", m);
-            // println!("");
 
             let trackers: Vec<_> =
                 m.tr.into_iter()
                     .map(|x| {
-                        // working with http but not udp
-                        let tracker = decode("http%3A%2F%2Fp4p.arenabg.com%3A1337%2Fannounce")
-                            .unwrap()
-                            .to_string();
-                        // let tracker = decode(x.as_str()).unwrap();
-                        let tracker = tracker.replace("/announce", "");
-                        let tracker = tracker[7..].to_string();
-                        tracker
+                        println!("{:#?}", urlencoding::decode(&x));
+                        // http that works
+                        // let tr = "p4p.arenabg.com:1337";
+
+                        // explodie is the only UDP address
+                        // that the announce works. why?
+                        let tr = "explodie.org:6969";
+                        tr
+                        // let tr = urlencoding::decode(&x).unwrap();
+                        // println!("raw {:#?}", tr);
+                        // let tr = tr.replace("/announce", "");
+                        // if tr.starts_with("udp://") {
+                        //     let tr = tr.replace("udp://", "");
+                        //     return tr;
+                        // } else {
+                        //     let tr = tr.replace("http://", "");
+                        //     return tr;
+                        // }
                     })
                     .collect();
 
             println!("trackers {:#?}", trackers);
-
             let client = Client::connect(trackers).unwrap();
             println!("client {:#?}", client);
 
-            let mut buf = [0u8; 20];
+            let mut hasher = Sha1::new();
+
+            println!("hash_url is {:#?}", m.xt);
+
             let infohash = hex::decode(m.xt.clone().unwrap()).unwrap();
 
-            for i in 0..20 {
-                buf[i] = infohash[i];
-            }
+            println!("hash is {:#?}", infohash);
 
-            client.announce_exchange(buf).unwrap();
+            hasher.update(infohash);
+
+            let infohash: [u8; 20] = hasher.finalize().into();
+
+            println!("infohash is {:#?}", infohash);
+
+            client.announce_exchange(infohash).unwrap();
         }
     }
 }

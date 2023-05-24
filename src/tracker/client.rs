@@ -1,4 +1,5 @@
 use std::{
+    fmt::Debug,
     net::{Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs, UdpSocket},
     time::Duration,
 };
@@ -24,7 +25,7 @@ impl Client {
     const ANNOUNCE_RES_BUF_LEN: usize = 8192;
     /// Bind UDP socket and send a connect handshake,
     /// to one of the trackers.
-    pub fn connect<A: ToSocketAddrs>(trackers: Vec<A>) -> Result<Self, Error> {
+    pub fn connect<A: ToSocketAddrs + Debug>(trackers: Vec<A>) -> Result<Self, Error> {
         for tracker in trackers {
             let addrs = tracker
                 .to_socket_addrs()
@@ -44,7 +45,8 @@ impl Client {
                     connection_id: 0,
                 };
                 if client.connect_exchange().is_ok() {
-                    println!("connected with tracker {tracker_addr}");
+                    println!("connected with tracker ip {tracker_addr}");
+                    println!("it has this DNS {:#?}", tracker);
                     return Ok(client);
                 }
             }
@@ -60,7 +62,7 @@ impl Client {
         }
         .expect("Failed to bind udp socket");
         sock.connect(addr).expect("Failed to connect to udp socket");
-        sock.set_read_timeout(Some(Duration::new(1, 0)))
+        sock.set_read_timeout(Some(Duration::new(3, 0)))
             .expect("Failed to set a read timeout to udp socket");
 
         Ok(sock)
@@ -105,14 +107,13 @@ impl Client {
     }
 
     pub fn announce_exchange(&self, infohash: [u8; 20]) -> Result<(), Error> {
-        let local_addr = self.sock.local_addr()?;
         let req = announce::Request::new(
             self.connection_id,
             infohash,
             self.peer_id,
-            local_addr.port(),
+            self.sock.local_addr()?.port(),
         )
-        .serialize()?;
+        .serialize();
 
         println!("sending this connection_id {}", self.connection_id);
         let mut len = 0 as usize;
@@ -139,10 +140,14 @@ impl Client {
             return Err(Error::TrackerResponse);
         }
 
+        println!("len: {len}");
         let res = &res[..len];
+        // let res = &res[..20];
+        println!("got res len {:#?}", res.len());
+
+        let (res, payload) = announce::Response::deserialize(res)?;
         println!("got res {:#?}", res);
-        let res = announce::Response::deserialize(res)?;
-        println!("got res {:#?}", res);
+        println!("got payload {:#?}", payload);
 
         Ok(())
     }
