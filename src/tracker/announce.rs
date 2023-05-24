@@ -63,6 +63,16 @@ pub struct Response {
 impl Response {
     pub(crate) const LENGTH: usize = 20;
 
+    pub fn new() -> Self {
+        Self {
+            action: 0,
+            transaction_id: 0,
+            interval: 0,
+            leechers: 0,
+            seeders: 0,
+        }
+    }
+
     pub fn serialize(&self) -> Result<Vec<u8>, Error> {
         bincode::serialize(&self).map_err(Error::Bincode)
     }

@@ -62,7 +62,7 @@ impl Client {
         }
         .expect("Failed to bind udp socket");
         sock.connect(addr).expect("Failed to connect to udp socket");
-        sock.set_read_timeout(Some(Duration::new(3, 0)))
+        sock.set_read_timeout(Some(Duration::new(1, 0)))
             .expect("Failed to set a read timeout to udp socket");
 
         Ok(sock)
@@ -117,7 +117,8 @@ impl Client {
         .serialize()?;
 
         let mut len = 0 as usize;
-        let mut res = [0u8; Self::ANNOUNCE_RES_BUF_LEN];
+        // let mut res = [0u8; Self::ANNOUNCE_RES_BUF_LEN];
+        let mut res = announce::Response::new().serialize()?;
 
         // will try to connect up to 4 times
         // breaking if succesfull
@@ -125,11 +126,14 @@ impl Client {
             println!("sending announce...");
             self.sock.send(&req)?;
 
-            if let Ok(lenn) = self.sock.recv(&mut res) {
-                len = lenn;
-                break;
-            } else {
-                println!("failed to announce");
+            match self.sock.recv(&mut res) {
+                Ok(lenn) => {
+                    len = lenn;
+                    break;
+                }
+                Err(e) => {
+                    println!("failed to announce {:#?}", e);
+                }
             }
         }
 
