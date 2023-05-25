@@ -116,8 +116,7 @@ impl Client {
             infohash,
             self.peer_id,
             self.sock.local_addr()?.port(),
-        )
-        .serialize();
+        );
 
         println!("sending this connection_id {}", connection_id);
         let mut len = 0 as usize;
@@ -127,7 +126,7 @@ impl Client {
         // breaking if succesfull
         for _ in 0..=2 {
             println!("sending announce...");
-            self.sock.send(&req)?;
+            self.sock.send(&req.serialize())?;
             match self.sock.recv(&mut res) {
                 Ok(lenn) => {
                     len = lenn;
@@ -150,6 +149,11 @@ impl Client {
         // payload is a byte array of peers,
         // which are in the form of ips and ports
         let (res, payload) = announce::Response::deserialize(res)?;
+
+        if res.transaction_id != req.transaction_id || res.action != req.action {
+            return Err(Error::TrackerResponse);
+        }
+
         println!("got res {:#?}", res);
         println!("got payload {:#?}", payload);
 

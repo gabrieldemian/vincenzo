@@ -41,6 +41,74 @@ impl Request {
         }
     }
 
+    fn deserialize(buf: &[u8]) -> Result<(Self, &[u8]), Error> {
+        if buf.len() != Self::LENGTH {
+            return Err(Error::TrackerResponseLength);
+        }
+
+        Ok((
+            Request {
+                connection_id: u64::from_be_bytes(
+                    buf[0..8]
+                        .try_into()
+                        .expect("buf size is at least Request::LENGTH"),
+                ),
+                action: u32::from_be_bytes(
+                    buf[8..12]
+                        .try_into()
+                        .expect("buf size is at least Request::LENGTH"),
+                ),
+                transaction_id: u32::from_be_bytes(
+                    buf[12..16]
+                        .try_into()
+                        .expect("buf size is at least Request::LENGTH"),
+                ),
+                infohash: buf[16..36]
+                    .try_into()
+                    .expect("buf size is at least Request::LENGTH"),
+                peer_id: buf[36..56]
+                    .try_into()
+                    .expect("buf size is at least Request::LENGTH"),
+                downloaded: u64::from_be_bytes(
+                    buf[56..64]
+                        .try_into()
+                        .expect("buf size is at least Request::LENGTH"),
+                ),
+                left: u64::from_be_bytes(
+                    buf[64..72]
+                        .try_into()
+                        .expect("buf size is at least Request::LENGTH"),
+                ),
+                uploaded: u64::from_be_bytes(
+                    buf[72..80]
+                        .try_into()
+                        .expect("buf size is at least Request::LENGTH"),
+                ),
+                event: u64::from_be_bytes(
+                    buf[80..88]
+                        .try_into()
+                        .expect("buf size is at least Request::LENGTH"),
+                ),
+                ip_address: u32::from_be_bytes(
+                    buf[88..92]
+                        .try_into()
+                        .expect("buf size is at least Request::LENGTH"),
+                ),
+                num_want: u32::from_be_bytes(
+                    buf[92..96]
+                        .try_into()
+                        .expect("buf size is at least Request::LENGTH"),
+                ),
+                port: u16::from_be_bytes(
+                    buf[96..98]
+                        .try_into()
+                        .expect("buf size is at least Request::LENGTH"),
+                ),
+            },
+            &buf[Self::LENGTH..],
+        ))
+    }
+
     pub fn serialize(&self) -> Vec<u8> {
         let mut msg = Vec::new();
         msg.extend_from_slice(&self.connection_id.to_be_bytes());
@@ -71,17 +139,11 @@ pub struct Response {
 impl Response {
     pub(crate) const LENGTH: usize = 20;
 
-    pub fn new() -> Self {
-        Self {
-            action: 0,
-            transaction_id: 0,
-            interval: 0,
-            leechers: 0,
-            seeders: 0,
-        }
-    }
-
     pub fn deserialize(buf: &[u8]) -> Result<(Self, &[u8]), Error> {
+        if buf.len() < Response::LENGTH {
+            return Err(Error::TrackerResponseLength);
+        }
+
         Ok((
             Self {
                 action: u32::from_be_bytes(

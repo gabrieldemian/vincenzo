@@ -52,7 +52,6 @@ impl Handler<BackendMessage> for Backend {
 pub mod tests {
     use magnet_url::Magnet;
     use sha1::{Digest, Sha1};
-    use url::Url;
 
     use super::*;
     use crate::tracker::client::Client;
