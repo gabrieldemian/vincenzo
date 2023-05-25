@@ -4,6 +4,7 @@ pub mod backend;
 pub mod cli;
 pub mod tracker;
 pub mod torrent_list;
+pub mod magnet_parser;
 
 use actix::prelude::*;
 use frontend::Frontend;

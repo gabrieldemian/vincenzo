@@ -1,4 +1,7 @@
 use crate::frontend::FrontendMessage;
+use crate::magnet_parser::get_info_hash;
+use crate::magnet_parser::get_magnet;
+use crate::tracker::client::Client;
 use actix::prelude::*;
 
 #[derive(Message)]
@@ -50,57 +53,22 @@ impl Handler<BackendMessage> for Backend {
 
 #[cfg(test)]
 pub mod tests {
-    use magnet_url::Magnet;
-    use sha1::{Digest, Sha1};
 
     use super::*;
-    use crate::tracker::client::Client;
-    // http://bt1.archive.org:6969/announce?info_hash=%ac%c3%b2%e43%d7%c7GZ%bbYA%b5h%1c%b7%a1%ea%26%e2&peer_id=ABCDEFGHIJKLMNOPQRST&ip=80.11.255.166&port=6881&downloaded=0&left=970
 
     #[test]
     fn udp() {
         let magnet = "magnet:?xt=urn:btih:56BC861F42972DEA863AE853362A20E15C7BA07E&dn=Rust%20for%20Rustaceans%3A%20Idiomatic%20Programming&tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.openbittorrent.com%3A6969%2Fannounce&tr=udp%3A%2F%2F9.rarbg.to%3A2710%2Fannounce&tr=udp%3A%2F%2F9.rarbg.me%3A2780%2Fannounce&tr=udp%3A%2F%2F9.rarbg.to%3A2730%2Fannounce&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&tr=http%3A%2F%2Fp4p.arenabg.com%3A1337%2Fannounce&tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451%2Fannounce&tr=udp%3A%2F%2Ftracker.tiny-vps.com%3A6969%2Fannounce&tr=udp%3A%2F%2Fopen.stealth.si%3A80%2Fannounce";
-        let magnet = Magnet::new(magnet);
-        if let Ok(m) = magnet {
-            println!("{:#?}", m);
+        let magnet = get_magnet(magnet).unwrap();
 
-            let trackers: Vec<_> =
-                m.tr.into_iter()
-                    .map(|x| {
-                        let tr = urlencoding::decode(&x).unwrap();
-                        let tr = tr.replace("/announce", "");
-                        if tr.starts_with("udp://") {
-                            let tr = tr.replace("udp://", "");
-                            return tr;
-                        } else {
-                            let tr = tr.replace("http://", "");
-                            return tr;
-                        }
-                    })
-                    .collect();
+        println!("magnet {:#?}", magnet);
 
-            println!("trackers {:#?}", trackers);
+        let client = Client::connect(magnet.tr).unwrap();
 
-            let client = Client::connect(trackers).unwrap();
-            println!("client {:#?}", client);
+        println!("client {:#?}", client);
 
-            // infohash comes in a hex string, identifying
-            // the .metainfo file.
-            // when sending the infohash to the protocol,
-            // it needs to be send as SHA1 encoded
-            // from hex -> SHA1(binary)
-            let infohash = hex::decode(m.xt.clone().unwrap()).unwrap();
+        let info_hash = get_info_hash(&magnet.xt.unwrap());
 
-            println!("hash is {:?}", infohash);
-
-            let mut hasher = Sha1::new();
-            hasher.update(infohash);
-
-            let infohash: [u8; 20] = hasher.finalize().into();
-
-            println!("infohash is {:?}", infohash);
-
-            client.announce_exchange(infohash).unwrap();
-        }
+        client.announce_exchange(info_hash).unwrap();
     }
 }
