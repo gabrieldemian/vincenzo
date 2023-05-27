@@ -118,6 +118,8 @@ impl Client {
             self.sock.local_addr()?.port(),
         );
 
+        println!("my local ip is {}", self.sock.local_addr()?);
+
         println!("sending this connection_id {}", connection_id);
         let mut len = 0 as usize;
         let mut res = [0u8; Self::ANNOUNCE_RES_BUF_LEN];

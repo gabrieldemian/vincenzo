@@ -1,6 +1,6 @@
 use magnet_url::{Magnet, MagnetError};
-use sha1::Digest;
-use sha1::Sha1;
+// use sha1::Digest;
+// use sha1::Sha1;
 
 pub fn get_magnet(str: &str) -> Result<Magnet, MagnetError> {
     let mut m = Magnet::new(str)?;
@@ -27,10 +27,22 @@ pub fn get_magnet(str: &str) -> Result<Magnet, MagnetError> {
 /// feeded into a SHA1 function, before converting
 /// the hex string to a byte vec
 pub fn get_info_hash(info: &str) -> [u8; 20] {
-    let infohash = hex::decode(info).unwrap();
-    let mut hasher = Sha1::new();
-    hasher.update(infohash);
+    // let mut hasher = Sha1::new();
 
-    let infohash: [u8; 20] = hasher.finalize().into();
-    infohash
+    // I dont need to parse to SHA1 because the magnet
+    // info_hash is already parsed to SHA1.
+    // I would need to do that if I were getting the hash
+    // on a .torrent file
+    let infohash = hex::decode(info).unwrap();
+    let mut x = [0u8; 20];
+
+    for i in 0..20 {
+        x[i] = infohash[i];
+    }
+
+    // hasher.update(infohash);
+    // let infohash: [u8; 20] = hasher.finalize().into();
+
+    // infohash
+    x
 }
