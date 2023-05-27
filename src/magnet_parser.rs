@@ -23,6 +23,9 @@ pub fn get_magnet(str: &str) -> Result<Magnet, MagnetError> {
     Ok(m)
 }
 
+/// The infohash from the magnet link needs to be
+/// feeded into a SHA1 function, before converting
+/// the hex string to a byte vec
 pub fn get_info_hash(info: &str) -> [u8; 20] {
     let infohash = hex::decode(info).unwrap();
     let mut hasher = Sha1::new();

@@ -105,7 +105,7 @@ impl Client {
         Ok(())
     }
 
-    pub fn announce_exchange(&self, infohash: [u8; 20]) -> Result<(), Error> {
+    pub fn announce_exchange(&self, infohash: [u8; 20]) -> Result<Vec<SocketAddr>, Error> {
         let connection_id = match self.connection_id {
             Some(x) => x,
             None => return Err(Error::TrackerNoConnectionId),
@@ -160,7 +160,7 @@ impl Client {
         let peers = Self::parse_compact_peer_list(payload, self.sock.local_addr()?.is_ipv6())?;
         println!("got peers: {:#?}", peers);
 
-        Ok(())
+        Ok(peers)
     }
 
     fn parse_compact_peer_list(buf: &[u8], is_ipv6: bool) -> Result<Vec<SocketAddr>, Error> {
