@@ -76,7 +76,6 @@ impl Client {
         // breaking if succesfull
         for _ in 0..=2 {
             println!("sending connect...");
-            println!("req {:#?}", req);
             self.sock.send(&req.serialize())?;
 
             match self.sock.recv(&mut buf) {
@@ -84,7 +83,7 @@ impl Client {
                     len = lenn;
                     break;
                 }
-                Err(e) => println!("error receiving {:#?}", e),
+                Err(e) => println!("error receiving {e}"),
             }
         }
 
@@ -94,7 +93,6 @@ impl Client {
 
         let (res, _) = connect::Response::deserialize(&buf)?;
 
-        println!("req {:#?}", req);
         println!("received res {:#?}", res);
 
         if res.transaction_id != req.transaction_id || res.action != req.action {
@@ -156,11 +154,11 @@ impl Client {
             return Err(Error::TrackerResponse);
         }
 
-        println!("got res {:#?}", res);
-        // println!("got payload {:#?}", payload);
+        // println!("got res {:?}", res);
 
         let peers = Self::parse_compact_peer_list(payload, self.sock.local_addr()?.is_ipv6())?;
-        println!("got peers: {:#?}", peers);
+        println!("announce successful");
+        println!("got peers: {:?}", peers);
 
         Ok(peers)
     }

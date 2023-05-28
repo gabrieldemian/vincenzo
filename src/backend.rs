@@ -56,12 +56,15 @@ pub mod tests {
 
     use std::{io::Read, time::Duration};
 
-    use actix::clock::timeout;
+    use actix::{clock::timeout, spawn};
     use actix_rt::net::{TcpListener, TcpStream, UdpSocket};
     use speedy::{BigEndian, Readable, Writable};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    use crate::error::Error;
+    use crate::{
+        error::Error,
+        tcp_wire::messages::{Handshake, Interested, Unchoke},
+    };
 
     use super::*;
 
@@ -76,127 +79,124 @@ pub mod tests {
         //
         let client = Client::connect(magnet.tr).unwrap();
         //
-        println!("client {:#?}", client);
+        // println!("client {:#?}", client);
         //
         let info_hash = get_info_hash(&magnet.xt.unwrap());
 
         let peers = client.announce_exchange(info_hash).unwrap();
 
-        #[derive(Clone, Debug, Writable, Readable)]
-        struct Handshake {
-            pub pstr_len: u8,
-            pub pstr: [u8; 19],
-            pub reserved: [u8; 8],
-            pub info_hash: [u8; 20],
-            pub peer_id: [u8; 20],
+        // let ignore_me = [
+        //     19, 66, 105, 116, 84, 111, 114, 114, 101, 110, 116, 32, 112, 114, 111, 116, 111, 99,
+        //     111, 108, 0, 0, 0, 0, 0, 16, 0, 5, 86, 188, 134, 31, 66, 151, 45, 234, 134, 58, 232,
+        //     83, 54, 42, 32, 225, 92, 123, 160, 126, 45, 84, 82, 50, 57, 52, 48, 45, 102, 103, 109,
+        //     57, 104, 57, 116, 122, 119, 110, 116, 103, 0, 0, 0, 36, 5, 255, 255, 255, 255, 255,
+        //     255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+        //     255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 192, 0, 0, 0, 1, 1,
+        // ];
+
+        // let what = Handshake::deserialize(&ignore_me);
+        // println!("what did i receive {:?}", what);
+
+        let a = "192.168.1.5:43506";
+
+        for peer in peers {
+            let handshake = Handshake::new(info_hash, client.peer_id);
+
+            // connect with peer
+            println!("trying handshake with {:?}", peer);
+            let mut socket = match timeout(Duration::from_secs(2), TcpStream::connect(peer)).await {
+                Ok(x) => match x {
+                    Ok(x) => x,
+                    Err(_) => {
+                        println!("peer connection refused");
+                        continue;
+                    }
+                },
+                Err(_) => {
+                    println!("peer does not support peer wire protocol");
+                    continue;
+                }
+            };
+
+            println!("connected to socket {:#?}", socket);
+
+            // if the TcpStream is Some, that means the peer
+            // is on the peer_wire protocol,
+            // if not, and UdpSocket is Some, that means the peer
+            // is on uTP protocol. I need to do an if-else
+            // to call each protocol for that peer
+            //
+            // client -> handshake -> peer
+            // client <- handshake <- peer
+            // client -> interested -> peer
+            // client <- unchoke <- peer
+            // client <- have|bitfield <- peer
+            // client -> request -> peer
+            //
+            // <length prefix><message ID><payload>
+            //
+            // send handshake
+            println!("sending handshake...");
+
+            let mut buf: Vec<u8> = vec![];
+
+            // send our handshake to the peer
+            socket
+                .write_all(&mut handshake.serialize().unwrap())
+                .await?;
+
+            println!("done");
+
+            // receive handshake from the peer
+            println!("receiving handshake...");
+            match timeout(Duration::from_secs(30), socket.read_to_end(&mut buf)).await {
+                Ok(a) => a,
+                Err(_) => {
+                    println!("peer took to long to send handshake");
+                    continue;
+                }
+            }?;
+
+            let handshake_remote = Handshake::deserialize(&buf);
+            println!("received {:?}", handshake_remote);
+
+            println!("sending interested msg");
+            socket
+                .write_all(&Interested::new().serialize().unwrap())
+                .await?;
+
+
+            // send interested message
+            // let mut buf: Vec<u8> = vec![];
+            // let interested = Interested::new();
+
+            // println!("sending interested message...");
+            // socket
+            //     .write_all(&mut interested.serialize().unwrap())
+            //     .await?;
+            // println!("done");
+
+            println!("reading more messages...");
+            let mut buf: Vec<u8> = vec![];
+            let b = socket.read_to_end(&mut buf).await?;
+
+            println!("reading more messages...");
+            let mut buf: Vec<u8> = vec![];
+            let b = socket.read_to_end(&mut buf).await?;
+
+            if b > 0 {
+                println!("more msg {:?}", buf);
+                break;
+            } else {
+                println!("could not read anything");
+                continue;
+            }
         }
 
-        impl Handshake {
-            fn new(info_hash: [u8; 20], peer_id: [u8; 20]) -> Self {
-                Self {
-                    pstr_len: u8::to_be(19),
-                    pstr: b"BitTorrent protocol".to_owned(),
-                    reserved: [0u8; 8],
-                    info_hash,
-                    peer_id,
-                }
-            }
-            fn serialize(&self) -> Result<Vec<u8>, Error> {
-                self.write_to_vec_with_ctx(BigEndian {})
-                    .map_err(Error::SpeedyError)
-            }
-            fn deserialize(buf: &[u8]) -> Self {
-                Self::read_from_buffer_with_ctx(BigEndian {}, buf).unwrap()
-            }
-            fn validate(&self, target: Self) -> bool {
-                if target.peer_id.len() != 20 {
-                    eprintln!("-- warning -- invalid peer_id from receiving handshake");
-                    return false;
-                }
-                if self.info_hash != self.info_hash {
-                    eprintln!(
-                        "-- warning -- info_hash from receiving handshake does not match ours"
-                    );
-                    return false;
-                }
-                if target.pstr_len != 19 {
-                    eprintln!("-- warning -- handshake with wrong pstr_len, dropping connection");
-                    return false;
-                }
-                if target.pstr != b"BitTorrent protocol".to_owned() {
-                    eprintln!("-- warning -- handshake with wrong pstr, dropping connection");
-                    return false;
-                }
-                true
-            }
-        }
-
-        // let info_hash = [2u8; 20];
-        // let peer_id = [1u8; 20];
-
-        let handshake = Handshake::new(info_hash, client.peer_id);
-
-        let a = "213.227.151.222:28421";
-        // let a = "197.184.177.151:6881";
-        // let a = "187.198.250.155:6881";
-        // let a = "186.22.54.178:27730";
-        // let a = "174.130.112.93:64153";
-        // let a = "146.70.198.56:51413";
-        // let a = "108.172.55.95:37874";
-        // let a = "85.8.130.72:37874";
-        // let a = "46.126.71.42:51413";
-
-        // send handshake to peer
-        let mut socket = timeout(
-            Duration::from_secs(5),
-            // UdpSocket::bind(a)
-            TcpStream::connect(a),
-        )
-        .await??;
-
-        // if the TcpStream is Some, that means the peer
-        // is on the peer_wire protocol,
-        // if not, and UdpSocket is Some, that means the peer
-        // is on uTP protocol. I need to do an if-else
-        // to call each protocol for that peer
-
-        println!("tcp socket? {:#?}", socket);
-
-        // client -> handshake -> peer
-        // client <- handshake <- peer
-        // client -> interested -> peer
-        // client <- unchoke <- peer
-        // client <- have|bitfield <- peer
-        // client -> request -> peer
-        //
-        // <length prefix><message ID><payload>
-
-        let (mut rd, mut wr) = socket.split();
-
-        // send handshake
-        println!("sending handshake...");
-        wr.write_all(&mut handshake.serialize().unwrap()).await?;
-        println!("done");
-
-        let mut buf: Vec<u8> = vec![];
-
-        // receive handshake
-        println!("receiving handshake...");
-        let rd_len = rd.read_to_end(&mut buf).await?;
-
-        println!("my peer_id {:?}", client.peer_id);
-        println!("my info hash {:?}", info_hash);
-        println!("with len {rd_len}");
-
-        let handshake_remote = Handshake::deserialize(&buf);
-        println!("deserialized {:?}", handshake_remote);
-
-        handshake_remote.validate(handshake);
+        Ok(())
 
         // after the double handshake, this is the only time
         // where a peer is allowed to send his pieces to the client
         // after that, the main even loop will start
-
-        Ok(())
     }
 }
