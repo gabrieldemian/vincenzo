@@ -1,10 +1,11 @@
 use rand::Rng;
+use speedy::{BigEndian, Readable, Writable};
 
 use crate::error::Error;
 
 use super::action::Action;
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Readable, Writable)]
 pub struct Request {
     pub connection_id: u64,
     pub action: u32,
@@ -46,88 +47,17 @@ impl Request {
             return Err(Error::TrackerResponseLength);
         }
 
-        Ok((
-            Request {
-                connection_id: u64::from_be_bytes(
-                    buf[0..8]
-                        .try_into()
-                        .expect("buf size is at least Request::LENGTH"),
-                ),
-                action: u32::from_be_bytes(
-                    buf[8..12]
-                        .try_into()
-                        .expect("buf size is at least Request::LENGTH"),
-                ),
-                transaction_id: u32::from_be_bytes(
-                    buf[12..16]
-                        .try_into()
-                        .expect("buf size is at least Request::LENGTH"),
-                ),
-                infohash: buf[16..36]
-                    .try_into()
-                    .expect("buf size is at least Request::LENGTH"),
-                peer_id: buf[36..56]
-                    .try_into()
-                    .expect("buf size is at least Request::LENGTH"),
-                downloaded: u64::from_be_bytes(
-                    buf[56..64]
-                        .try_into()
-                        .expect("buf size is at least Request::LENGTH"),
-                ),
-                left: u64::from_be_bytes(
-                    buf[64..72]
-                        .try_into()
-                        .expect("buf size is at least Request::LENGTH"),
-                ),
-                uploaded: u64::from_be_bytes(
-                    buf[72..80]
-                        .try_into()
-                        .expect("buf size is at least Request::LENGTH"),
-                ),
-                event: u64::from_be_bytes(
-                    buf[80..88]
-                        .try_into()
-                        .expect("buf size is at least Request::LENGTH"),
-                ),
-                ip_address: u32::from_be_bytes(
-                    buf[88..92]
-                        .try_into()
-                        .expect("buf size is at least Request::LENGTH"),
-                ),
-                num_want: u32::from_be_bytes(
-                    buf[92..96]
-                        .try_into()
-                        .expect("buf size is at least Request::LENGTH"),
-                ),
-                port: u16::from_be_bytes(
-                    buf[96..98]
-                        .try_into()
-                        .expect("buf size is at least Request::LENGTH"),
-                ),
-            },
-            &buf[Self::LENGTH..],
-        ))
+        let res = Self::read_from_buffer_with_ctx(BigEndian {}, buf)?;
+
+        Ok((res, &buf[Self::LENGTH..]))
     }
 
     pub fn serialize(&self) -> Vec<u8> {
-        let mut msg = Vec::new();
-        msg.extend_from_slice(&self.connection_id.to_be_bytes());
-        msg.extend_from_slice(&self.action.to_be_bytes());
-        msg.extend_from_slice(&self.transaction_id.to_be_bytes());
-        msg.extend_from_slice(&self.infohash);
-        msg.extend_from_slice(&self.peer_id);
-        msg.extend_from_slice(&self.downloaded.to_be_bytes());
-        msg.extend_from_slice(&self.left.to_be_bytes());
-        msg.extend_from_slice(&self.uploaded.to_be_bytes());
-        msg.extend_from_slice(&self.event.to_be_bytes());
-        msg.extend_from_slice(&self.ip_address.to_be_bytes());
-        msg.extend_from_slice(&self.num_want.to_be_bytes());
-        msg.extend_from_slice(&self.port.to_be_bytes());
-        msg
+        self.write_to_vec_with_ctx(BigEndian {}).unwrap()
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Writable, Readable)]
 pub struct Response {
     pub action: u32,
     pub transaction_id: u32,
@@ -144,35 +74,8 @@ impl Response {
             return Err(Error::TrackerResponseLength);
         }
 
-        Ok((
-            Self {
-                action: u32::from_be_bytes(
-                    buf[0..4]
-                        .try_into()
-                        .expect("buf size is at least Response::LENGTH"),
-                ),
-                transaction_id: u32::from_be_bytes(
-                    buf[4..8]
-                        .try_into()
-                        .expect("buf size is at least Response::LENGTH"),
-                ),
-                interval: u32::from_be_bytes(
-                    buf[8..12]
-                        .try_into()
-                        .expect("buf size is at least Response::LENGTH"),
-                ),
-                leechers: u32::from_be_bytes(
-                    buf[12..16]
-                        .try_into()
-                        .expect("buf size is at least Response::LENGTH"),
-                ),
-                seeders: u32::from_be_bytes(
-                    buf[16..20]
-                        .try_into()
-                        .expect("buf size is at least Response::LENGTH"),
-                ),
-            },
-            &buf[Self::LENGTH..],
-        ))
+        let res = Self::read_from_buffer_with_ctx(BigEndian {}, buf)?;
+
+        Ok((res, &buf[Self::LENGTH..]))
     }
 }

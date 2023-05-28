@@ -157,7 +157,7 @@ impl Client {
         }
 
         println!("got res {:#?}", res);
-        println!("got payload {:#?}", payload);
+        // println!("got payload {:#?}", payload);
 
         let peers = Self::parse_compact_peer_list(payload, self.sock.local_addr()?.is_ipv6())?;
         println!("got peers: {:#?}", peers);

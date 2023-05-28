@@ -18,4 +18,6 @@ pub enum Error {
     TrackerNoConnectionId,
     #[error("The peer list returned by the announce request is not valid")]
     TrackerCompactPeerList,
+    #[error("Error when serializing/deserializing")]
+    SpeedyError(#[from] speedy::Error),
 }

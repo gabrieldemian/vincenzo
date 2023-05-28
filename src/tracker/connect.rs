@@ -1,10 +1,11 @@
 use rand::Rng;
+use speedy::{BigEndian, Readable, Writable};
 
 use crate::error::Error;
 
 use super::action::Action;
 
-#[derive(Debug, PartialEq, Clone, Copy)]
+#[derive(Debug, PartialEq, Clone, Readable, Writable)]
 pub struct Request {
     pub protocol_id: u64,
     pub action: u32,
@@ -24,45 +25,21 @@ impl Request {
     }
 
     pub fn serialize(&self) -> Vec<u8> {
-        let mut msg = Vec::new();
-
-        msg.extend_from_slice(&self.protocol_id.to_be_bytes());
-        msg.extend_from_slice(&self.action.to_be_bytes());
-        msg.extend_from_slice(&self.transaction_id.to_be_bytes());
-
-        msg
+        self.write_to_vec_with_ctx(BigEndian {}).unwrap()
     }
 
     pub fn deserialize(buf: &[u8]) -> Result<(Self, &[u8]), Error> {
-        // bincode::deserialize(buf).map_err(Error::Bincode)
         if buf.len() != Self::LENGTH {
             return Err(Error::TrackerResponse);
         }
 
-        Ok((
-            Request {
-                protocol_id: u64::from_be_bytes(
-                    buf[0..8]
-                        .try_into()
-                        .expect("incoming type guarantees bounds are OK"),
-                ),
-                action: u32::from_be_bytes(
-                    buf[8..12]
-                        .try_into()
-                        .expect("incoming type guarantees bounds are OK"),
-                ),
-                transaction_id: u32::from_be_bytes(
-                    buf[12..16]
-                        .try_into()
-                        .expect("incoming type guarantees bounds are OK"),
-                ),
-            },
-            &buf[Self::LENGTH..],
-        ))
+        let req = Self::read_from_buffer_with_ctx(BigEndian {}, buf).map_err(Error::SpeedyError)?;
+
+        Ok((req, &buf[Self::LENGTH..]))
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Readable, Writable)]
 pub struct Response {
     pub action: u32,
     pub transaction_id: u32,
@@ -84,36 +61,13 @@ impl Response {
         if buf.len() != Self::LENGTH {
             return Err(Error::TrackerResponse);
         }
-        Ok((
-            Self {
-                action: u32::from_be_bytes(
-                    buf[0..4]
-                        .try_into()
-                        .expect("bounds are checked manually above"),
-                ),
-                transaction_id: u32::from_be_bytes(
-                    buf[4..8]
-                        .try_into()
-                        .expect("bounds are checked manually above"),
-                ),
-                connection_id: u64::from_be_bytes(
-                    buf[8..16]
-                        .try_into()
-                        .expect("bounds are checked manually above"),
-                ),
-            },
-            &buf[Self::LENGTH..],
-        ))
+
+        let res = Self::read_from_buffer_with_ctx(BigEndian {}, buf).map_err(Error::SpeedyError)?;
+
+        Ok((res, &buf[Self::LENGTH..]))
     }
 
     pub fn serialize(&self) -> Vec<u8> {
-        // bincode::serialize(&self).map_err(Error::Bincode)
-        let mut msg = Vec::new();
-
-        msg.extend_from_slice(&self.action.to_be_bytes());
-        msg.extend_from_slice(&self.transaction_id.to_be_bytes());
-        msg.extend_from_slice(&self.connection_id.to_be_bytes());
-
-        msg
+        self.write_to_vec_with_ctx(BigEndian {}).unwrap()
     }
 }
