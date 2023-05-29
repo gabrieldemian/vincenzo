@@ -20,4 +20,6 @@ pub enum Error {
     TrackerCompactPeerList,
     #[error("Error when serializing/deserializing")]
     SpeedyError(#[from] speedy::Error),
+    #[error("Error when reading magnet link")]
+    MagnetLinkInvalid,
 }

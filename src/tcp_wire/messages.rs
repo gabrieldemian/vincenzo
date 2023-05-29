@@ -1,3 +1,4 @@
+use log::warn;
 use speedy::{BigEndian, Readable, Writable};
 
 use crate::error::Error;
@@ -27,24 +28,24 @@ impl Handshake {
         self.write_to_vec_with_ctx(BigEndian {})
             .map_err(Error::SpeedyError)
     }
-    pub fn deserialize(buf: &[u8]) -> Self {
-        Self::read_from_buffer_with_ctx(BigEndian {}, buf).unwrap()
+    pub fn deserialize(buf: &[u8]) -> Result<Self, Error> {
+        Self::read_from_buffer_with_ctx(BigEndian {}, buf).map_err(Error::SpeedyError)
     }
     pub fn validate(&self, target: Self) -> bool {
         if target.peer_id.len() != 20 {
-            eprintln!("-- warning -- invalid peer_id from receiving handshake");
+            warn!("! invalid peer_id from receiving handshake");
             return false;
         }
         if self.info_hash != self.info_hash {
-            eprintln!("-- warning -- info_hash from receiving handshake does not match ours");
+            warn!("! info_hash from receiving handshake does not match ours");
             return false;
         }
         if target.pstr_len != 19 {
-            eprintln!("-- warning -- handshake with wrong pstr_len, dropping connection");
+            warn!("! handshake with wrong pstr_len, dropping connection");
             return false;
         }
         if target.pstr != b"BitTorrent protocol".to_owned() {
-            eprintln!("-- warning -- handshake with wrong pstr, dropping connection");
+            warn!("! handshake with wrong pstr, dropping connection");
             return false;
         }
         true
@@ -117,10 +118,7 @@ impl Unchoke {
         Self::read_from_buffer_with_ctx(BigEndian {}, buf).map_err(Error::SpeedyError)
     }
     pub fn new() -> Self {
-        Self {
-            len: u32::to_be(0001),
-            id: u8::to_be(1),
-        }
+        Self { len: 0001, id: 1 }
     }
 }
 
@@ -139,10 +137,7 @@ impl Interested {
         Self::read_from_buffer_with_ctx(BigEndian {}, buf).map_err(Error::SpeedyError)
     }
     pub fn new() -> Self {
-        Self {
-            len: u32::to_be(0001),
-            id: u8::to_be(2),
-        }
+        Self { len: 0001, id: 2 }
     }
 }
 

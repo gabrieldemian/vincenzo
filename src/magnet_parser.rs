@@ -1,6 +1,4 @@
 use magnet_url::{Magnet, MagnetError};
-// use sha1::Digest;
-// use sha1::Sha1;
 
 pub fn get_magnet(str: &str) -> Result<Magnet, MagnetError> {
     let mut m = Magnet::new(str)?;
@@ -27,8 +25,6 @@ pub fn get_magnet(str: &str) -> Result<Magnet, MagnetError> {
 /// feeded into a SHA1 function, before converting
 /// the hex string to a byte vec
 pub fn get_info_hash(info: &str) -> [u8; 20] {
-    // let mut hasher = Sha1::new();
-
     // I dont need to parse to SHA1 because the magnet
     // info_hash is already parsed to SHA1.
     // I would need to do that if I were getting the hash
@@ -40,9 +36,5 @@ pub fn get_info_hash(info: &str) -> [u8; 20] {
         x[i] = infohash[i];
     }
 
-    // hasher.update(infohash);
-    // let infohash: [u8; 20] = hasher.finalize().into();
-
-    // infohash
     x
 }

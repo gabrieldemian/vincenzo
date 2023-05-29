@@ -4,6 +4,8 @@ use std::{
     time::Duration,
 };
 
+use log::{debug, info, warn};
+
 use crate::error::Error;
 
 use super::{announce, connect};
@@ -22,17 +24,18 @@ impl Client {
     /// Bind UDP socket and send a connect handshake,
     /// to one of the trackers.
     pub fn connect<A: ToSocketAddrs + Debug>(trackers: Vec<A>) -> Result<Self, Error> {
+        info!("...trying to connect to one of {:?}", trackers.len());
+
         for tracker in trackers {
             let addrs = tracker
                 .to_socket_addrs()
                 .map_err(Error::TrackerSocketAddrs)?;
 
             for tracker_addr in addrs {
-                println!("addr {:#?}", tracker_addr);
                 let sock = match Self::new_udp_socket(tracker_addr) {
                     Ok(sock) => sock,
-                    Err(e) => {
-                        println!("{:#?}", e);
+                    Err(_) => {
+                        debug!("could not connect to {tracker_addr}");
                         continue;
                     }
                 };
@@ -43,8 +46,8 @@ impl Client {
                     connection_id: None,
                 };
                 if client.connect_exchange().is_ok() {
-                    println!("connected with tracker ip {tracker_addr}");
-                    println!("it has this DNS {:#?}", tracker);
+                    info!("connected with tracker addr {tracker_addr}");
+                    info!("DNS of the tracker {:#?}", tracker);
                     return Ok(client);
                 }
             }
@@ -74,8 +77,8 @@ impl Client {
 
         // will try to connect up to 3 times
         // breaking if succesfull
-        for _ in 0..=2 {
-            println!("sending connect...");
+        for i in 0..=2 {
+            debug!("sending connect number {i}...");
             self.sock.send(&req.serialize())?;
 
             match self.sock.recv(&mut buf) {
@@ -83,7 +86,7 @@ impl Client {
                     len = lenn;
                     break;
                 }
-                Err(e) => println!("error receiving {e}"),
+                Err(e) => info!("error receiving {e}"),
             }
         }
 
@@ -93,9 +96,10 @@ impl Client {
 
         let (res, _) = connect::Response::deserialize(&buf)?;
 
-        println!("received res {:#?}", res);
+        info!("received res from tracker {:#?}", res);
 
         if res.transaction_id != req.transaction_id || res.action != req.action {
+            warn!("response not valid!");
             return Err(Error::TrackerResponse);
         }
 
@@ -116,16 +120,15 @@ impl Client {
             self.sock.local_addr()?.port(),
         );
 
-        println!("my local ip is {}", self.sock.local_addr()?);
+        debug!("local ip is {}", self.sock.local_addr()?);
 
-        println!("sending this connection_id {}", connection_id);
         let mut len = 0 as usize;
         let mut res = [0u8; Self::ANNOUNCE_RES_BUF_LEN];
 
         // will try to connect up to 3 times
         // breaking if succesfull
-        for _ in 0..=2 {
-            println!("sending announce...");
+        for i in 0..=2 {
+            info!("trying to send announce number {i}...");
             self.sock.send(&req.serialize())?;
             match self.sock.recv(&mut res) {
                 Ok(lenn) => {
@@ -133,7 +136,7 @@ impl Client {
                     break;
                 }
                 Err(e) => {
-                    println!("failed to announce {:#?}", e);
+                    warn!("failed to announce {:#?}", e);
                 }
             }
         }
@@ -142,7 +145,6 @@ impl Client {
             return Err(Error::TrackerResponse);
         }
 
-        println!("len of res: {len}");
         let res = &res[..len];
 
         // res is the deserialized struct,
@@ -154,11 +156,11 @@ impl Client {
             return Err(Error::TrackerResponse);
         }
 
-        // println!("got res {:?}", res);
+        info!("* announce successful");
+        info!("res from announce {:?}", res);
 
         let peers = Self::parse_compact_peer_list(payload, self.sock.local_addr()?.is_ipv6())?;
-        println!("announce successful");
-        println!("got peers: {:?}", peers);
+        debug!("got peers: {:#?}", peers);
 
         Ok(peers)
     }

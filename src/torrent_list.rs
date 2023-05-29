@@ -33,7 +33,7 @@ impl<'a> TorrentList<'a> {
         Self::default()
     }
 
-    pub fn keybindings(&mut self, k: KeyCode, ctx: &mut Context<Frontend>) {
+    pub fn keybindings(&mut self, k: KeyCode, ctx: &mut Context<Frontend>, _act: &mut Frontend) {
         match k {
             KeyCode::Char('q') | KeyCode::Esc => ctx.stop(),
             KeyCode::Down | KeyCode::Char('j') => self.next(),
