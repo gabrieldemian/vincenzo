@@ -1,71 +1,114 @@
-use std::sync::Arc;
-use std::sync::Mutex;
-use std::time::Duration;
-
 use crate::error::Error;
-use crate::frontend::FrontendMessage;
 use crate::magnet_parser::get_info_hash;
-use crate::magnet_parser::get_magnet;
 use crate::tcp_wire::messages::Handshake;
+use crate::tcp_wire::messages::Interested;
+use crate::tcp_wire::messages::Unchoke;
 use crate::tracker::client::Client;
-use actix::clock::timeout;
-use actix::prelude::*;
-use actix::spawn;
 use log::debug;
 use log::info;
 use log::warn;
 use magnet_url::Magnet;
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpListener;
 use tokio::net::TcpStream;
+use tokio::select;
+use tokio::spawn;
+use tokio::sync::mpsc::Receiver;
+use tokio::sync::mpsc::Sender;
+use tokio::time::timeout;
 
-#[derive(Message)]
-#[rtype(result = "()")]
+#[derive(Debug)]
 pub enum BackendMessage {
     Quit,
-    AddMagnet(String),
-    Handshaked(TcpStream),
+    AddMagnet(Magnet),
+    AddPeer(TcpStream),
 }
 
+#[derive(Debug)]
 pub struct Backend {
-    peers: Arc<Mutex<Vec<TcpStream>>>,
-    recipient: Recipient<FrontendMessage>,
-}
-
-impl Actor for Backend {
-    type Context = Context<Self>;
-
-    fn started(&mut self, ctx: &mut Self::Context) {
-        self.run(ctx).unwrap();
-    }
-
-    fn stopping(&mut self, _ctx: &mut Self::Context) -> Running {
-        Running::Stop
-    }
+    peers: Vec<TcpStream>,
+    socket: TcpListener,
+    tx: Sender<BackendMessage>,
+    rx: Receiver<BackendMessage>,
 }
 
 impl Backend {
-    pub fn new(recipient: Recipient<FrontendMessage>) -> Self {
-        let peers = Arc::new(Mutex::new(vec![]));
-        Self { recipient, peers }
+    pub async fn new(tx: Sender<BackendMessage>, rx: Receiver<BackendMessage>) -> Self {
+        let peers = vec![];
+        let socket = TcpListener::bind("0.0.0.0:6801").await.unwrap();
+
+        Self {
+            peers,
+            tx,
+            rx,
+            socket,
+        }
     }
 
-    fn run(&mut self, ctx: &mut Context<Backend>) -> Result<(), std::io::Error> {
-        let tick_rate = Duration::from_millis(100);
+    // pub fn handle(&self, )
 
-        ctx.run_interval(tick_rate, move |act, ctx| {
-            // act.recipient.do_send(FrontendMessage::Quit);
-        });
+    pub async fn run(&mut self) -> Result<(), Error> {
+        let tick_rate = Duration::from_millis(200);
 
-        Ok(())
+        // spawn(async move {
+        loop {
+            select! {
+                Ok((mut socket, addr)) = self.socket.accept() => {
+                    spawn(async move {
+                        info!("!!! received connection on loop {:?}", addr);
+                        let mut buf: Vec<u8> = Vec::with_capacity(1024);
+                        loop {
+                            match socket.read(&mut buf).await {
+                                // Return value of `Ok(0)` signifies that the remote has
+                                // closed
+                                Ok(0) => return,
+                                Ok(n) => {
+                                    // Copy the data back to socket
+                                    match socket.write_all(&buf[..n]).await {
+                                        Ok(_) => {
+                                            info!("Wrote {n} bytes to buf");
+                                            info!("Buf is {:?}", buf);
+                                        },
+                                        Err(e) => {
+                                            warn!("Failed to write to buf {e}");
+                                            warn!("Stop processing...");
+                                            return
+                                        }
+                                    }
+                                }
+                                Err(_) => {
+                                    // Unexpected socket error. There isn't much we can do
+                                    // here so just stop processing.
+                                    return;
+                                }
+                            }
+                        }
+                    });
+                },
+                Some(msg) = self.rx.recv() => {
+                    match msg {
+                        BackendMessage::Quit => {
+                            // todo
+                        },
+                        BackendMessage::AddMagnet(link) => {
+                            let tx = self.tx.clone();
+                            Backend::add_magnet(link, tx).await?;
+                        },
+                        BackendMessage::AddPeer(socket) => {
+                            // this peer has been announced,
+                            // it will send and ask pieces to this client
+                            info!("pushing peer socket to vec {:?}", socket);
+                            self.peers.push(socket);
+                        }
+                    }
+                }
+            }
+        }
     }
 
-    fn add_magnet(&mut self, ctx: &mut Context<Backend>, m: Magnet) -> Result<(), Error> {
+    async fn add_magnet(m: Magnet, tx: Sender<BackendMessage>) -> Result<(), Error> {
         info!("received add_magnet call");
-        info!(
-            "magnet with name of {:?}",
-            urlencoding::decode(&m.dn.unwrap())
-        );
-
         let info_hash = get_info_hash(&m.xt.unwrap());
         debug!("info_hash {:?}", info_hash);
 
@@ -76,99 +119,77 @@ impl Backend {
         // and get the list of peers for this torrent
         let peers = client.announce_exchange(info_hash).unwrap();
 
-        // let mut gg = Arc::new(Mutex::new(vec![]));
+        // for peer in vec!["181.171.140.208:51413"] {
+        // spawn(async move {
+        for peer in peers {
+            info!("trying to connect to {:?}", peer);
+            let handshake = Handshake::new(info_hash, client.peer_id);
 
-        spawn(async move {
-            for peer in peers {
-                info!("trying to connect to {:?}", peer);
-                let handshake = Handshake::new(info_hash, client.peer_id);
-
-                let mut socket = match timeout(Duration::from_secs(2), TcpStream::connect(peer))
-                    .await
-                {
-                    Ok(x) => match x {
-                        Ok(x) => x,
-                        Err(_) => {
-                            info!("peer connection refused, skipping");
-                            continue;
-                        }
-                    },
+            let mut socket = match timeout(Duration::from_secs(2), TcpStream::connect(peer)).await {
+                Ok(x) => match x {
+                    Ok(x) => x,
                     Err(_) => {
-                        debug!("peer does download_dirnot support peer wire protocol, skipping");
+                        info!("peer connection refused, skipping");
                         continue;
                     }
-                };
+                },
+                Err(_) => {
+                    debug!("peer does download_dirnot support peer wire protocol, skipping");
+                    continue;
+                }
+            };
 
-                info!("connected to socket {:#?}", socket);
-                info!("* sending handshake...");
+            info!("? socket {:#?}", socket);
+            info!("* sending handshake...");
 
-                // send our handshake to the peer
-                socket
-                    .write_all(&mut handshake.serialize().unwrap())
-                    .await?;
+            // send our handshake to the peer
+            socket
+                .write_all(&mut handshake.serialize().unwrap())
+                .await?;
 
-                // receive a handshake back
-                let mut buf = Vec::with_capacity(100);
+            // receive a handshake back
+            let mut buf = Vec::with_capacity(100);
 
-                match timeout(Duration::from_secs(25), socket.read_to_end(&mut buf)).await {
-                    Ok(x) => {
-                        let x = x.unwrap();
+            match timeout(Duration::from_secs(25), socket.read_to_end(&mut buf)).await {
+                Ok(x) => {
+                    let x = x.unwrap();
 
-                        info!("* received handshake back");
+                    info!("* received handshake back");
 
-                        if x == 0 {
-                            continue;
-                        };
+                    if x == 0 {
+                        continue;
+                    };
 
-                        info!("len {}", x);
-                        info!("trying to deserialize it now");
+                    info!("len {}", x);
+                    info!("trying to deserialize it now");
 
-                        let remote_handshake = Handshake::deserialize(&mut buf)?;
+                    let remote_handshake = Handshake::deserialize(&mut buf)?;
 
-                        info!("{:?}", remote_handshake);
+                    info!("{:?}", remote_handshake);
 
-                        if remote_handshake.validate(handshake.clone()) {
-                            info!("handshake is valid, listening to more messages");
-                            // let mut gg = gg.lock().unwrap();
-                            // gg.push(socket);
-                        }
-                    }
-                    Err(_) => {
-                        warn!("connection timeout");
+                    if remote_handshake.validate(handshake.clone()) {
+                        info!("handshake is valid, sending Interested and Unchoke");
+
+                        socket
+                            .write_all(&mut Interested::new().serialize().unwrap())
+                            .await?;
+
+                        socket
+                            .write_all(&mut Unchoke::new().serialize().unwrap())
+                            .await?;
+
+                        // connection with this peer is valid,
+                        // add the socket to our peer vec.
+                        // the event loop will have this
+                        // new tcp socket and listen for messages
+                        tx.send(BackendMessage::AddPeer(socket)).await.unwrap();
                     }
                 }
+                Err(_) => {
+                    warn!("connection timeout");
+                }
             }
-            Ok::<(), Error>(())
-        });
-
-        Ok(())
-    }
-}
-
-impl Handler<BackendMessage> for Backend {
-    type Result = ();
-
-    fn handle(&mut self, msg: BackendMessage, ctx: &mut Self::Context) -> Self::Result {
-        match msg {
-            BackendMessage::Quit => {
-                ctx.stop();
-                System::current().stop();
-            }
-            BackendMessage::AddMagnet(link) => {
-                let m = get_magnet(&link).unwrap();
-                self.add_magnet(ctx, m).unwrap();
-            }
-            _ => {}
         }
+        Ok::<(), Error>(())
     }
 }
-
-// #[cfg(test)]
-// pub mod tests {
-//
-//     use super::*;
-//
-//     #[tokio::test]
-//     async fn udp() -> Result<(), Box<dyn std::error::Error>> {
-//     }
-// }

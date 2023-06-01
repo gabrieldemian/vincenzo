@@ -1,4 +1,3 @@
-use actix::{ActorContext, Context};
 use crossterm::event::KeyCode;
 use tui::{
     backend::Backend,
@@ -33,9 +32,11 @@ impl<'a> TorrentList<'a> {
         Self::default()
     }
 
-    pub fn keybindings(&mut self, k: KeyCode, ctx: &mut Context<Frontend>, _act: &mut Frontend) {
+    pub fn keybindings(&mut self, k: KeyCode) {
         match k {
-            KeyCode::Char('q') | KeyCode::Esc => ctx.stop(),
+            KeyCode::Char('q') | KeyCode::Esc => {
+                // todo
+            }
             KeyCode::Down | KeyCode::Char('j') => self.next(),
             KeyCode::Up | KeyCode::Char('k') => self.previous(),
             KeyCode::Enter => {}
