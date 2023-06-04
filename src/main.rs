@@ -26,20 +26,5 @@ async fn main() -> Result<(), Error> {
 
     torrent.run().await?;
 
-    // let system = System::new();
-    //
-    // let fr_execution = async {
-    //     Frontend::create(move |ctx| {
-    //         let bk_addr = Backend::new(ctx.address().recipient());
-    //
-    //         Frontend::new().unwrap()
-    //     });
-    // };
-    //
-    // // spawn OS thread
-    // let arbiter = Arbiter::new();
-    // arbiter.spawn(fr_execution);
-    //
-    // system.run()?;
     Ok(())
 }

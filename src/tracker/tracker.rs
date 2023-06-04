@@ -5,7 +5,6 @@ use std::{
 };
 
 use log::{debug, info, warn};
-use tokio::time::sleep;
 use tokio::{
     net::UdpSocket,
     select,
@@ -55,8 +54,8 @@ impl Tracker {
                 };
                 if tracker.connect_exchange().await.is_ok() {
                     info!("connected with tracker addr {tracker_addr}");
-                    info!("DNS of the tracker {:#?}", tracker);
-                    return Ok(client);
+                    info!("DNS of the tracker {:?}", tracker);
+                    return Ok(tracker);
                 }
             }
         }
@@ -213,16 +212,17 @@ impl Tracker {
     // as a peer to the list of peers. This means I need to
     // listen to handshake events with this addr here.
     // and this function needs a Sender to the `Torrent`
-    pub async fn run(&self, tx: Sender<TorrentMsg>) {
+    pub async fn run(&self, _tx: Sender<TorrentMsg>) {
         info!("# listening to tracker events...");
         let mut tick_timer = interval(Duration::from_secs(1));
 
         let mut buf = vec![0; 1024];
         loop {
-            // self.sock.readable().await.unwrap();
             select! {
-                _ = tick_timer.tick() => {},
-                Ok(n) = self.sock.recv(&mut buf) => {
+                _ = tick_timer.tick() => {
+                    // println!("tick tracker");
+                },
+                Ok(_) = self.sock.recv(&mut buf) => {
                     info!("datagram {:?}", buf);
                 }
             }
