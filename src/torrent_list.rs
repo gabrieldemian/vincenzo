@@ -6,7 +6,7 @@ use tui::{
     Frame,
 };
 
-use crate::frontend::{AppStyle, Frontend};
+use crate::frontend::AppStyle;
 
 #[derive(Clone, Debug)]
 pub struct TorrentList<'a> {
