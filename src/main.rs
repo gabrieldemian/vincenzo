@@ -9,7 +9,7 @@ pub mod tracker;
 
 use error::Error;
 use magnet_parser::get_magnet;
-use tokio::{spawn, sync::mpsc};
+use tokio::sync::mpsc;
 use torrent::{Torrent, TorrentMsg};
 
 #[tokio::main]
@@ -25,6 +25,7 @@ async fn main() -> Result<(), Error> {
     tx.send(TorrentMsg::AddMagnet(m)).await.unwrap();
 
     torrent.run().await.unwrap();
+    torrent.listen_to_peers().await;
 
     Ok(())
 }

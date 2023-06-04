@@ -2,6 +2,7 @@ use crate::error::Error;
 use crate::magnet_parser::get_info_hash;
 use crate::tcp_wire::messages::Handshake;
 use crate::tcp_wire::messages::Interested;
+use crate::tcp_wire::messages::Unchoke;
 use crate::tracker::tracker::Tracker;
 use log::debug;
 use log::info;
@@ -26,9 +27,9 @@ pub enum TorrentMsg {
 
 #[derive(Debug)]
 pub struct Torrent {
-    peers: Vec<SocketAddr>,
-    tx: Sender<TorrentMsg>,
-    rx: Receiver<TorrentMsg>,
+    pub peers: Vec<SocketAddr>,
+    pub tx: Sender<TorrentMsg>,
+    pub rx: Receiver<TorrentMsg>,
 }
 
 impl Torrent {
@@ -40,6 +41,13 @@ impl Torrent {
 
     pub async fn run(&mut self) -> Result<(), Error> {
         let mut tick_timer = interval(Duration::from_secs(1));
+
+        // self.listen_to_peers().await;
+        // spawn(async move {
+        //     loop {
+        //         self.listen_to_peers().await;
+        //     }
+        // });
 
         loop {
             tick_timer.tick().await;
@@ -57,6 +65,8 @@ impl Torrent {
                         // this peer has been handshake'd
                         // and is ready to send/receive msgs
                         info!("listening to msgs from {:?}", addr);
+                        self.peers.push(addr);
+                        self.listen_to_peers().await;
                     }
                 }
             }
@@ -64,18 +74,35 @@ impl Torrent {
     }
 
     // each connected peer has its own event loop
-    pub async fn listen_to_peer(mut socket: TcpStream) {
-        spawn(async move {
-            let mut buf: Vec<u8> = vec![0; 1024];
+    // cant call this inside any other async loop, it must be called
+    // as close as possible to the first tokio task to prevent memory leaks
+    pub async fn listen_to_peers(&mut self) {
+        info!("-- CALLED LISTEN TO PEERS --");
 
-            loop {
-                if let Ok(n) = socket.read(&mut buf).await {
-                    if n > 0 {
-                        info!("received buf from {:?}", socket.peer_addr());
-                        info!("buf is {:?}", buf);
-                    }
+        self.peers.drain(0..).into_iter().for_each(|peer| {
+            debug!("listening to peer...");
+
+            let mut buf: Vec<u8> = vec![0; 1024];
+            let mut tick_timer = interval(Duration::from_secs(1));
+
+            spawn(async move {
+                let mut socket = TcpStream::connect(peer).await.unwrap();
+                socket.readable().await.unwrap();
+
+                loop {
+                    tick_timer.tick().await;
+
+                    debug!("tick peer {:?}", peer);
+
+                    match socket.read(&mut buf).await {
+                        Ok(n) if n > 0 => {
+                            info!("received something from peer {:?}", buf);
+                        }
+                        Err(e) => warn!("error reading peer loop {:?}", e),
+                        _ => {}
+                    };
                 }
-            }
+            });
         });
     }
 
@@ -96,7 +123,6 @@ impl Torrent {
         // that we used to announce to trackers.
         // peers will use this socket to send
         // handshakes
-
         let tx_client = tx.clone();
         spawn(async move {
             client.run(tx_client.clone()).await;
@@ -114,11 +140,11 @@ impl Torrent {
                 match timeout(Duration::from_secs(3), TcpStream::connect(peer)).await {
                     Ok(x) => match x {
                         Ok(mut socket) => {
-                            let handshake = Handshake::new(info_hash, peer_id);
+                            let my_handshake = Handshake::new(info_hash, peer_id);
                             // try to send our handshake to the peer
                             if let Err(e) = timeout(
                                 Duration::from_secs(3),
-                                socket.write_all(&mut handshake.serialize().unwrap()),
+                                socket.write_all(&mut my_handshake.serialize().unwrap()),
                             )
                             .await
                             {
@@ -137,23 +163,38 @@ impl Torrent {
                                     let des = Handshake::deserialize(&buf);
 
                                     if let Ok(des) = des {
+                                        // validate that the handshake from the peer
+                                        // is valid
+                                        if !des.validate(my_handshake) {
+                                            return;
+                                        };
+
                                         info!("received handshake from peer {:?} {:?}", peer, des);
-                                        tx.send(TorrentMsg::ConnectedPeer(socket.peer_addr().unwrap()))
-                                            .await
-                                            .unwrap();
+                                        tx.send(TorrentMsg::ConnectedPeer(
+                                            socket.peer_addr().unwrap(),
+                                        ))
+                                        .await
+                                        .unwrap();
+
+                                        let mut interested = Interested::new().serialize().unwrap();
+                                        let mut unchoke = Unchoke::new().serialize().unwrap();
+                                        socket.write_all(&mut interested).await.unwrap();
+                                        socket.write_all(&mut unchoke).await.unwrap();
 
                                         // spawn event loop for peer events
-                                        Self::listen_to_peer(socket).await;
+                                        // spawn(async move {
+                                        //     Self::listen_to_peer(socket).await;
+                                        // });
                                     }
                                 }
                             };
                         }
                         Err(_) => {
-                            debug!("peer connection refused, skipping");
+                            // debug!("peer connection refused, skipping");
                         }
                     },
                     Err(_) => {
-                        debug!("peer does download_dirnot support peer wire protocol, skipping");
+                        // debug!("peer does download_dirnot support peer wire protocol, skipping");
                     }
                 };
             });
