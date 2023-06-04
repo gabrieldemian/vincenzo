@@ -28,6 +28,41 @@ pub struct Tracker {
 
 impl Tracker {
     const ANNOUNCE_RES_BUF_LEN: usize = 8192;
+
+    /// Bind UDP socket and send a connect handshake,
+    /// to one of the trackers.
+    pub async fn connect<A: ToSocketAddrs + Debug>(trackers: Vec<A>) -> Result<Self, Error> {
+        info!("...trying to connect to 1 of {:?} trackers", trackers.len());
+
+        for tracker in trackers {
+            let addrs = tracker
+                .to_socket_addrs()
+                .map_err(Error::TrackerSocketAddrs)?;
+
+            for tracker_addr in addrs {
+                let sock = match Self::new_udp_socket(tracker_addr).await {
+                    Ok(sock) => sock,
+                    Err(_) => {
+                        warn!("could not connect to tracker {tracker_addr}");
+                        continue;
+                    }
+                };
+                let mut tracker = Tracker {
+                    peer_id: rand::random(),
+                    tracker_addr,
+                    sock,
+                    connection_id: None,
+                };
+                if tracker.connect_exchange().await.is_ok() {
+                    info!("connected with tracker addr {tracker_addr}");
+                    info!("DNS of the tracker {:#?}", tracker);
+                    return Ok(client);
+                }
+            }
+        }
+        Err(Error::TrackerNoHosts)
+    }
+
     pub async fn announce_exchange(&self, infohash: [u8; 20]) -> Result<Vec<SocketAddr>, Error> {
         let connection_id = match self.connection_id {
             Some(x) => x,
@@ -85,43 +120,6 @@ impl Tracker {
         debug!("got peers: {:#?}", peers);
 
         Ok(peers)
-    }
-
-    /// Bind UDP socket and send a connect handshake,
-    /// to one of the trackers.
-    pub async fn connect<A: ToSocketAddrs + Debug>(trackers: Vec<A>) -> Result<Self, Error> {
-        info!(
-            "...trying to connect to 1 of {:?} trackers",
-            trackers.len()
-        );
-
-        for tracker in trackers {
-            let addrs = tracker
-                .to_socket_addrs()
-                .map_err(Error::TrackerSocketAddrs)?;
-
-            for tracker_addr in addrs {
-                let sock = match Self::new_udp_socket(tracker_addr).await {
-                    Ok(sock) => sock,
-                    Err(_) => {
-                        warn!("could not connect to tracker {tracker_addr}");
-                        continue;
-                    }
-                };
-                let mut client = Tracker {
-                    peer_id: rand::random(),
-                    tracker_addr,
-                    sock,
-                    connection_id: None,
-                };
-                if client.connect_exchange().await.is_ok() {
-                    info!("connected with tracker addr {tracker_addr}");
-                    info!("DNS of the tracker {:#?}", tracker);
-                    return Ok(client);
-                }
-            }
-        }
-        Err(Error::TrackerNoHosts)
     }
 
     /// Connect is the first step in getting the file
@@ -228,15 +226,6 @@ impl Tracker {
                     info!("datagram {:?}", buf);
                 }
             }
-            // match self.sock.try_recv(&mut buf) {
-            //     Ok(n) if n > 0 => {
-            //         info!("received data from tracker loop {:?}", buf);
-            //     }
-            //     Err(e) => {
-            //         warn!("error receiving datagram {e}");
-            //     }
-            //     _ => {}
-            // };
         }
     }
 }
