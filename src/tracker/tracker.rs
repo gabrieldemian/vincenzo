@@ -5,8 +5,13 @@ use std::{
 };
 
 use log::{debug, info, warn};
-use tokio::{net::UdpSocket, sync::mpsc::Sender, time::{timeout, interval}};
 use tokio::time::sleep;
+use tokio::{
+    net::UdpSocket,
+    select,
+    sync::mpsc::Sender,
+    time::{interval, timeout},
+};
 
 use crate::{error::Error, torrent::TorrentMsg};
 
@@ -85,7 +90,10 @@ impl Tracker {
     /// Bind UDP socket and send a connect handshake,
     /// to one of the trackers.
     pub async fn connect<A: ToSocketAddrs + Debug>(trackers: Vec<A>) -> Result<Self, Error> {
-        info!("...trying to connect to one of {:?}", trackers.len());
+        info!(
+            "...trying to connect to 1 of {:?} trackers",
+            trackers.len()
+        );
 
         for tracker in trackers {
             let addrs = tracker
@@ -211,20 +219,24 @@ impl Tracker {
         info!("# listening to tracker events...");
         let mut tick_timer = interval(Duration::from_secs(1));
 
+        let mut buf = vec![0; 1024];
         loop {
-            tick_timer.tick().await;
-            println!("tick tracker");
-            self.sock.readable().await.unwrap();
-            let mut buf = vec![0;1024];
-            match self.sock.try_recv(&mut buf) {
-                Ok(n) if n > 0 => {
-                    info!("received data from tracker loop {:?}", buf);
-                },
-                Err(e) => {
-                    warn!("error receiving datagram {e}");
+            // self.sock.readable().await.unwrap();
+            select! {
+                _ = tick_timer.tick() => {},
+                Ok(n) = self.sock.recv(&mut buf) => {
+                    info!("datagram {:?}", buf);
                 }
-                _ => {}
-            };
+            }
+            // match self.sock.try_recv(&mut buf) {
+            //     Ok(n) if n > 0 => {
+            //         info!("received data from tracker loop {:?}", buf);
+            //     }
+            //     Err(e) => {
+            //         warn!("error receiving datagram {e}");
+            //     }
+            //     _ => {}
+            // };
         }
     }
 }

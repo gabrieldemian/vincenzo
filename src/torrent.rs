@@ -1,7 +1,6 @@
 use crate::error::Error;
 use crate::magnet_parser::get_info_hash;
 use crate::tcp_wire::messages::Handshake;
-use crate::tcp_wire::messages::Interested;
 use crate::tracker::tracker::Tracker;
 use log::debug;
 use log::info;
@@ -27,7 +26,6 @@ pub enum TorrentMsg {
 #[derive(Debug)]
 pub struct Torrent {
     peers: Vec<TcpStream>,
-    // socket: TcpListener,
     tx: Sender<TorrentMsg>,
     rx: Receiver<TorrentMsg>,
 }
@@ -35,14 +33,8 @@ pub struct Torrent {
 impl Torrent {
     pub async fn new(tx: Sender<TorrentMsg>, rx: Receiver<TorrentMsg>) -> Self {
         let peers = vec![];
-        // let socket = TcpListener::bind("0.0.0.0:0").await.unwrap();
 
-        Self {
-            peers,
-            tx,
-            rx,
-            // socket,
-        }
+        Self { peers, tx, rx }
     }
 
     pub async fn run(&mut self) -> Result<(), Error> {
@@ -50,8 +42,8 @@ impl Torrent {
 
         loop {
             select! {
-                _tick = tick_timer.tick() => {
-                    println!("tick torrent");
+                _ = tick_timer.tick() => {
+                    // println!("--- tick");
                 }
                 Some(msg) = self.rx.recv() => {
                     match msg {
@@ -62,24 +54,21 @@ impl Torrent {
                             let tx = self.tx.clone();
                             Torrent::add_magnet(link, tx).await?;
                         },
-                        TorrentMsg::AddPeer(socket) => {
+                        TorrentMsg::AddPeer(mut socket) => {
                             // this peer has been handshake'd
                             // and is ready to send/receive msgs
                             info!("listening to msgs from {:?}", socket.peer_addr());
-                            spawn(async move {
-                                // let mut interested = Interested::new().serialize().unwrap();
-                                // socket.write_all(&mut interested).await.unwrap();
-                                loop {
-                                    socket.readable().await.unwrap();
-                                    let mut buf: Vec<u8> = vec![];
-                                    if let Ok(n) = socket.try_read(&mut buf) {
-                                        if n > 0 {
-                                            info!("received buf from {:?}", socket.peer_addr());
-                                            info!("buf is {:?}", buf);
-                                        }
+                            // let mut interested = Interested::new().serialize().unwrap();
+                            // socket.write_all(&mut interested).await.unwrap();
+                            let mut buf: Vec<u8> = vec![0;1024];
+                            loop {
+                                if let Ok(n) = socket.read(&mut buf).await {
+                                    if n > 0 {
+                                        info!("received buf from {:?}", socket.peer_addr());
+                                        info!("buf is {:?}", buf);
                                     }
                                 }
-                            });
+                            }
                         }
                     }
                 }
@@ -105,10 +94,10 @@ impl Torrent {
         // peers will use this socket to send
         // handshakes
 
-        // let tx_client = tx.clone();
-        // spawn(async move {
-        //     client.run(tx_client.clone()).await;
-        // });
+        let tx_client = tx.clone();
+        spawn(async move {
+            client.run(tx_client.clone()).await;
+        });
 
         // Each peer will have its own event loop,
         // to listen to and send messages to `tracker`
@@ -124,8 +113,11 @@ impl Torrent {
                             info!("* connected, sending handshake...");
                             let handshake = Handshake::new(info_hash, peer_id);
                             // try to send our handshake to the peer
-                            if let Err(e) =
-                                socket.write_all(&mut handshake.serialize().unwrap()).await
+                            if let Err(e) = timeout(
+                                Duration::from_secs(3),
+                                socket.write_all(&mut handshake.serialize().unwrap()),
+                            )
+                            .await
                             {
                                 warn!("Failed to send handshake {e}");
                             } else {
@@ -135,7 +127,10 @@ impl Torrent {
 
                                 // our handshake succeeded,
                                 // now we try to receive one from the peer
-                                if let Ok(_) = socket.read_to_end(&mut buf).await {
+                                info!("waiting for response...");
+                                if let Ok(Ok(_)) =
+                                    timeout(Duration::new(5, 0), socket.read_to_end(&mut buf)).await
+                                {
                                     let des = Handshake::deserialize(&buf);
 
                                     if let Ok(des) = des {
