@@ -9,7 +9,7 @@ pub mod tracker;
 
 use error::Error;
 use magnet_parser::get_magnet;
-use tokio::{sync::mpsc, spawn};
+use tokio::{spawn, sync::mpsc};
 use torrent::{Torrent, TorrentMsg};
 
 #[tokio::main]
@@ -24,7 +24,7 @@ async fn main() -> Result<(), Error> {
     let m = get_magnet(&"magnet:?xt=urn:btih:4E64AAAF48D922DBD93F8B9E4ACAA78C99BC1F40&amp;dn=MICROSOFT%20Office%20PRO%20Plus%202016%20v16.0.4266.1003%20RTM%20%2B%20Activator&amp;tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.openbittorrent.com%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.bittor.pw%3A1337%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&amp;tr=udp%3A%2F%2Fbt.xxx-tracker.com%3A2710%2Fannounce&amp;tr=udp%3A%2F%2Fpublic.popcorn-tracker.org%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Feddie4.nl%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451%2Fannounce&amp;tr=udp%3A%2F%2Fp4p.arenabg.com%3A1337%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.tiny-vps.com%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Fopen.stealth.si%3A80%2Fannounce").unwrap();
     tx.send(TorrentMsg::AddMagnet(m)).await.unwrap();
 
-    torrent.run().await?;
+    torrent.run().await.unwrap();
 
     Ok(())
 }

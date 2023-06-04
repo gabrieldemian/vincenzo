@@ -220,7 +220,7 @@ impl Tracker {
         loop {
             select! {
                 _ = tick_timer.tick() => {
-                    // println!("tick tracker");
+                    debug!("tick tracker");
                 },
                 Ok(_) = self.sock.recv(&mut buf) => {
                     info!("datagram {:?}", buf);

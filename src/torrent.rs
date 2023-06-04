@@ -7,10 +7,10 @@ use log::debug;
 use log::info;
 use log::warn;
 use magnet_url::Magnet;
+use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio::select;
 use tokio::spawn;
 use tokio::sync::mpsc::Receiver;
 use tokio::sync::mpsc::Sender;
@@ -21,12 +21,12 @@ use tokio::time::timeout;
 pub enum TorrentMsg {
     Quit,
     AddMagnet(Magnet),
-    AddPeer(TcpStream),
+    ConnectedPeer(SocketAddr),
 }
 
 #[derive(Debug)]
 pub struct Torrent {
-    peers: Vec<TcpStream>,
+    peers: Vec<SocketAddr>,
     tx: Sender<TorrentMsg>,
     rx: Receiver<TorrentMsg>,
 }
@@ -43,7 +43,7 @@ impl Torrent {
 
         loop {
             tick_timer.tick().await;
-            // println!("--- tick");
+            debug!("tick torrent");
             if let Ok(msg) = self.rx.try_recv() {
                 match msg {
                     TorrentMsg::Quit => {
@@ -51,32 +51,32 @@ impl Torrent {
                     }
                     TorrentMsg::AddMagnet(link) => {
                         let tx = self.tx.clone();
-                        spawn(async move {
-                            Torrent::add_magnet(link, tx).await.unwrap();
-                        });
+                        Torrent::add_magnet(link, tx).await.unwrap();
                     }
-                    TorrentMsg::AddPeer(mut socket) => {
+                    TorrentMsg::ConnectedPeer(addr) => {
                         // this peer has been handshake'd
                         // and is ready to send/receive msgs
-                        info!("listening to msgs from {:?}", socket.peer_addr());
-
-                        let mut interested = Interested::new().serialize().unwrap();
-                        socket.write_all(&mut interested).await.unwrap();
-
-                        let mut buf: Vec<u8> = vec![0; 1024];
-
-                        loop {
-                            if let Ok(n) = socket.read(&mut buf).await {
-                                if n > 0 {
-                                    info!("received buf from {:?}", socket.peer_addr());
-                                    info!("buf is {:?}", buf);
-                                }
-                            }
-                        }
+                        info!("listening to msgs from {:?}", addr);
                     }
                 }
             }
         }
+    }
+
+    // each connected peer has its own event loop
+    pub async fn listen_to_peer(mut socket: TcpStream) {
+        spawn(async move {
+            let mut buf: Vec<u8> = vec![0; 1024];
+
+            loop {
+                if let Ok(n) = socket.read(&mut buf).await {
+                    if n > 0 {
+                        info!("received buf from {:?}", socket.peer_addr());
+                        info!("buf is {:?}", buf);
+                    }
+                }
+            }
+        });
     }
 
     async fn add_magnet(m: Magnet, tx: Sender<TorrentMsg>) -> Result<(), Error> {
@@ -102,6 +102,7 @@ impl Torrent {
             client.run(tx_client.clone()).await;
         });
 
+        info!("sending handshake req to {:?} peers...", peers.len());
         // Each peer will have its own event loop,
         // to listen to and send messages to `tracker`
         for peer in peers {
@@ -109,49 +110,53 @@ impl Torrent {
 
             let tx = tx.clone();
 
-            // spawn(async move {
-            match timeout(Duration::from_secs(3), TcpStream::connect(peer)).await {
-                Ok(x) => match x {
-                    Ok(mut socket) => {
-                        debug!("* connected, sending handshake...");
-                        let handshake = Handshake::new(info_hash, peer_id);
-                        // try to send our handshake to the peer
-                        if let Err(e) = timeout(
-                            Duration::from_secs(3),
-                            socket.write_all(&mut handshake.serialize().unwrap()),
-                        )
-                        .await
-                        {
-                            warn!("Failed to send handshake {e}");
-                        } else {
-                            info!("sent handshake to {:?}", socket.peer_addr());
-
-                            let mut buf: Vec<u8> = vec![];
-
-                            // our handshake succeeded,
-                            // now we try to receive one from the peer
-                            debug!("waiting for response...");
-                            if let Ok(Ok(_)) =
-                                timeout(Duration::new(5, 0), socket.read_to_end(&mut buf)).await
+            spawn(async move {
+                match timeout(Duration::from_secs(3), TcpStream::connect(peer)).await {
+                    Ok(x) => match x {
+                        Ok(mut socket) => {
+                            let handshake = Handshake::new(info_hash, peer_id);
+                            // try to send our handshake to the peer
+                            if let Err(e) = timeout(
+                                Duration::from_secs(3),
+                                socket.write_all(&mut handshake.serialize().unwrap()),
+                            )
+                            .await
                             {
-                                let des = Handshake::deserialize(&buf);
+                                warn!("Failed to send handshake {e}");
+                            } else {
+                                debug!("sent handshake to {:?}", socket.peer_addr());
 
-                                if let Ok(des) = des {
-                                    info!("deserialized handshake from peer {:?}", des);
-                                    tx.send(TorrentMsg::AddPeer(socket)).await.unwrap();
+                                let mut buf: Vec<u8> = vec![];
+
+                                // our handshake succeeded,
+                                // now we try to receive one from the peer
+                                debug!("waiting for response...");
+                                if let Ok(Ok(_)) =
+                                    timeout(Duration::new(5, 0), socket.read_to_end(&mut buf)).await
+                                {
+                                    let des = Handshake::deserialize(&buf);
+
+                                    if let Ok(des) = des {
+                                        info!("received handshake from peer {:?} {:?}", peer, des);
+                                        tx.send(TorrentMsg::ConnectedPeer(socket.peer_addr().unwrap()))
+                                            .await
+                                            .unwrap();
+
+                                        // spawn event loop for peer events
+                                        Self::listen_to_peer(socket).await;
+                                    }
                                 }
-                            }
-                        };
-                    }
+                            };
+                        }
+                        Err(_) => {
+                            debug!("peer connection refused, skipping");
+                        }
+                    },
                     Err(_) => {
-                        debug!("peer connection refused, skipping");
+                        debug!("peer does download_dirnot support peer wire protocol, skipping");
                     }
-                },
-                Err(_) => {
-                    debug!("peer does download_dirnot support peer wire protocol, skipping");
-                }
-            };
-            // });
+                };
+            });
         }
         Ok::<(), Error>(())
     }
