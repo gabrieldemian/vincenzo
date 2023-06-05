@@ -22,4 +22,8 @@ pub enum Error {
     SpeedyError(#[from] speedy::Error),
     #[error("Error when reading magnet link")]
     MagnetLinkInvalid,
+    #[error("The response received from the peer is wrong")]
+    MessageResponse,
+    #[error("The request took to long to arrive")]
+    RequestTimeout,
 }

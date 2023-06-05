@@ -111,14 +111,21 @@ pub struct Unchoke {
 
 impl Unchoke {
     pub fn serialize(&self) -> Result<Vec<u8>, Error> {
-        self.write_to_vec_with_ctx(BigEndian {})
-            .map_err(Error::SpeedyError)
+        // self.write_to_vec_with_ctx(BigEndian {})
+        //     .map_err(Error::SpeedyError)
+        let mut buf = vec![];
+        buf.extend_from_slice(&self.len.to_be_bytes());
+        buf.extend_from_slice(&self.id.to_le_bytes());
+        Ok(buf)
     }
     pub fn deserialize(buf: &[u8]) -> Result<Self, Error> {
         Self::read_from_buffer_with_ctx(BigEndian {}, buf).map_err(Error::SpeedyError)
     }
     pub fn new() -> Self {
-        Self { len: 0001, id: 1 }
+        Self {
+            len: u32::to_be(1),
+            id: 1,
+        }
     }
 }
 
@@ -130,14 +137,30 @@ pub struct Interested {
 
 impl Interested {
     pub fn serialize(&self) -> Result<Vec<u8>, Error> {
-        self.write_to_vec_with_ctx(BigEndian {})
-            .map_err(Error::SpeedyError)
+        let mut buf = vec![];
+        buf.extend_from_slice(&self.len.to_be_bytes());
+        buf.extend_from_slice(&self.id.to_le_bytes());
+        Ok(buf)
     }
-    pub fn deserialize(buf: &[u8]) -> Result<Self, Error> {
-        Self::read_from_buffer_with_ctx(BigEndian {}, buf).map_err(Error::SpeedyError)
+    pub fn deserialize(buf: Vec<u8>) -> Result<Self, Error> {
+        if buf.len() != 5 {
+            return Err(Error::MessageResponse);
+        };
+        if buf[4] != 2 {
+            return Err(Error::MessageResponse);
+        };
+
+        let s = Self {
+            len: u32::from_be_bytes(buf[0..4].try_into().unwrap()),
+            id: 2,
+        };
+        Ok(s)
     }
     pub fn new() -> Self {
-        Self { len: 0001, id: 2 }
+        Self {
+            len: u32::to_be(1),
+            id: 2,
+        }
     }
 }
 

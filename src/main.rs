@@ -14,9 +14,10 @@ use torrent::{Torrent, TorrentMsg};
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
+    console_subscriber::init();
     pretty_env_logger::init();
 
-    let (tx, rx) = mpsc::channel::<TorrentMsg>(32);
+    let (tx, rx) = mpsc::channel::<TorrentMsg>(50);
 
     let mut torrent = Torrent::new(tx.clone(), rx).await;
 

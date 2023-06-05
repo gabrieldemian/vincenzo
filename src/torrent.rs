@@ -2,7 +2,6 @@ use crate::error::Error;
 use crate::magnet_parser::get_info_hash;
 use crate::tcp_wire::messages::Handshake;
 use crate::tcp_wire::messages::Interested;
-use crate::tcp_wire::messages::Unchoke;
 use crate::tracker::tracker::Tracker;
 use log::debug;
 use log::info;
@@ -42,13 +41,6 @@ impl Torrent {
     pub async fn run(&mut self) -> Result<(), Error> {
         let mut tick_timer = interval(Duration::from_secs(1));
 
-        // self.listen_to_peers().await;
-        // spawn(async move {
-        //     loop {
-        //         self.listen_to_peers().await;
-        //     }
-        // });
-
         loop {
             tick_timer.tick().await;
             debug!("tick torrent");
@@ -82,23 +74,25 @@ impl Torrent {
         self.peers.drain(0..).into_iter().for_each(|peer| {
             debug!("listening to peer...");
 
-            let mut buf: Vec<u8> = vec![0; 1024];
             let mut tick_timer = interval(Duration::from_secs(1));
 
             spawn(async move {
                 let mut socket = TcpStream::connect(peer).await.unwrap();
-                socket.readable().await.unwrap();
 
                 loop {
                     tick_timer.tick().await;
-
+                    let mut buf: Vec<u8> = vec![0; 1024];
                     debug!("tick peer {:?}", peer);
-
                     match socket.read(&mut buf).await {
                         Ok(n) if n > 0 => {
-                            info!("received something from peer {:?}", buf);
+                            info!("!!!!!!!!!!!! received something from peer {:?}", buf);
                         }
                         Err(e) => warn!("error reading peer loop {:?}", e),
+                        // Ok(0) means that the stream has closed,
+                        // the peer is not listening to us
+                        Ok(0) => {
+                            // warn!("peer closed connection");
+                        }
                         _ => {}
                     };
                 }
@@ -125,6 +119,7 @@ impl Torrent {
         // handshakes
         let tx_client = tx.clone();
         spawn(async move {
+            // 127
             client.run(tx_client.clone()).await;
         });
 
@@ -157,36 +152,20 @@ impl Torrent {
                                 // our handshake succeeded,
                                 // now we try to receive one from the peer
                                 debug!("waiting for response...");
-                                if let Ok(Ok(_)) =
-                                    timeout(Duration::new(5, 0), socket.read_to_end(&mut buf)).await
-                                {
-                                    let des = Handshake::deserialize(&buf);
+                                let _ = timeout(Duration::new(5, 0), socket.read_to_end(&mut buf))
+                                    .await
+                                    .map_err(|_| Error::RequestTimeout)??;
+                                // validate that the handshake from the peer
+                                // is valid
+                                let des = Handshake::deserialize(&buf)?;
 
-                                    if let Ok(des) = des {
-                                        // validate that the handshake from the peer
-                                        // is valid
-                                        if !des.validate(my_handshake) {
-                                            return;
-                                        };
+                                info!("received handshake from peer {:?} {:?}", peer, des);
+                                tx.send(TorrentMsg::ConnectedPeer(socket.peer_addr().unwrap()))
+                                    .await
+                                    .unwrap();
 
-                                        info!("received handshake from peer {:?} {:?}", peer, des);
-                                        tx.send(TorrentMsg::ConnectedPeer(
-                                            socket.peer_addr().unwrap(),
-                                        ))
-                                        .await
-                                        .unwrap();
-
-                                        let mut interested = Interested::new().serialize().unwrap();
-                                        let mut unchoke = Unchoke::new().serialize().unwrap();
-                                        socket.write_all(&mut interested).await.unwrap();
-                                        socket.write_all(&mut unchoke).await.unwrap();
-
-                                        // spawn event loop for peer events
-                                        // spawn(async move {
-                                        //     Self::listen_to_peer(socket).await;
-                                        // });
-                                    }
-                                }
+                                let mut interested = Interested::new().serialize()?;
+                                socket.write_all(&mut interested).await?;
                             };
                         }
                         Err(_) => {
@@ -197,6 +176,7 @@ impl Torrent {
                         // debug!("peer does download_dirnot support peer wire protocol, skipping");
                     }
                 };
+                Ok::<(), Error>(())
             });
         }
         Ok::<(), Error>(())
