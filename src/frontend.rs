@@ -2,9 +2,9 @@ use log::info;
 use std::{io, time::Duration};
 
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event},
+    event::DisableMouseCapture,
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{disable_raw_mode, LeaveAlternateScreen},
 };
 use tui::{
     backend::CrosstermBackend,
@@ -19,6 +19,12 @@ pub struct AppStyle {
     pub base_style: Style,
     pub selected_style: Style,
     pub normal_style: Style,
+}
+
+impl Default for AppStyle {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl AppStyle {
@@ -57,7 +63,7 @@ impl Frontend {
         })
     }
 
-    fn stop(&mut self) -> Result<(), std::io::Error> {
+    fn _stop(&mut self) -> Result<(), std::io::Error> {
         let stdout = io::stdout();
         let backend = CrosstermBackend::new(stdout);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -73,7 +79,7 @@ impl Frontend {
         Ok(())
     }
 
-    fn handle(&mut self, msg: FrontendMessage) {
+    fn _handle(&mut self, msg: FrontendMessage) {
         match msg {
             FrontendMessage::Quit => {
                 info!("backend called quit on frontend!");
@@ -81,12 +87,12 @@ impl Frontend {
         }
     }
 
-    fn run(&mut self) -> Result<(), std::io::Error> {
+    fn _run(&mut self) -> Result<(), std::io::Error> {
         let stdout = io::stdout();
-        let tick_rate = Duration::from_millis(100);
+        let _tick_rate = Duration::from_millis(100);
         let backend = CrosstermBackend::new(stdout);
-        let mut terminal = Terminal::new(backend)?;
-        let mut page = TorrentList::new();
+        let _terminal = Terminal::new(backend)?;
+        let _page = TorrentList::new();
 
         // self.recipient_async.do_send(AddMagnetMessage{link:
         //     "magnet:?xt=urn:btih:48AAC768A865798307DDD4284BE77644368DD2C7&amp;dn=Kerkour%20S.%20Black%20Hat%20Rust...Rust%20programming%20language%202022&amp;tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.openbittorrent.com%3A6969%2Fannounce&amp;tr=udp%3A%2F%2F9.rarbg.to%3A2710%2Fannounce&amp;tr=udp%3A%2F%2F9.rarbg.me%3A2780%2Fannounce&amp;tr=udp%3A%2F%2F9.rarbg.to%3A2730%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&amp;tr=http%3A%2F%2Fp4p.arenabg.com%3A1337%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.tiny-vps.com%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Fopen.stealth.si%3A80%2Fannounce".to_owned()

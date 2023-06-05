@@ -71,7 +71,7 @@ impl Torrent {
     pub async fn listen_to_peers(&mut self) {
         info!("-- CALLED LISTEN TO PEERS --");
 
-        self.peers.drain(0..).into_iter().for_each(|peer| {
+        self.peers.drain(0..).for_each(|peer| {
             debug!("listening to peer...");
 
             let mut tick_timer = interval(Duration::from_secs(1));
@@ -132,49 +132,41 @@ impl Torrent {
             let tx = tx.clone();
 
             spawn(async move {
-                match timeout(Duration::from_secs(3), TcpStream::connect(peer)).await {
-                    Ok(x) => match x {
-                        Ok(mut socket) => {
-                            let my_handshake = Handshake::new(info_hash, peer_id);
-                            // try to send our handshake to the peer
-                            if let Err(e) = timeout(
-                                Duration::from_secs(3),
-                                socket.write_all(&mut my_handshake.serialize().unwrap()),
-                            )
+                if let Ok(Ok(mut socket)) =
+                    timeout(Duration::from_secs(3), TcpStream::connect(peer)).await
+                {
+                    let my_handshake = Handshake::new(info_hash, peer_id);
+                    // try to send our handshake to the peer
+                    if let Err(e) = timeout(
+                        Duration::from_secs(3),
+                        socket.write_all(&my_handshake.serialize().unwrap()),
+                    )
+                    .await
+                    {
+                        warn!("Failed to send handshake {e}");
+                    } else {
+                        debug!("sent handshake to {:?}", socket.peer_addr());
+
+                        let mut buf: Vec<u8> = vec![];
+
+                        // our handshake succeeded,
+                        // now we try to receive one from the peer
+                        debug!("waiting for response...");
+                        let _ = timeout(Duration::new(5, 0), socket.read_to_end(&mut buf))
                             .await
-                            {
-                                warn!("Failed to send handshake {e}");
-                            } else {
-                                debug!("sent handshake to {:?}", socket.peer_addr());
+                            .map_err(|_| Error::RequestTimeout)??;
+                        // validate that the handshake from the peer
+                        // is valid
+                        let des = Handshake::deserialize(&buf)?;
 
-                                let mut buf: Vec<u8> = vec![];
+                        info!("received handshake from peer {:?} {:?}", peer, des);
+                        tx.send(TorrentMsg::ConnectedPeer(socket.peer_addr().unwrap()))
+                            .await
+                            .unwrap();
 
-                                // our handshake succeeded,
-                                // now we try to receive one from the peer
-                                debug!("waiting for response...");
-                                let _ = timeout(Duration::new(5, 0), socket.read_to_end(&mut buf))
-                                    .await
-                                    .map_err(|_| Error::RequestTimeout)??;
-                                // validate that the handshake from the peer
-                                // is valid
-                                let des = Handshake::deserialize(&buf)?;
-
-                                info!("received handshake from peer {:?} {:?}", peer, des);
-                                tx.send(TorrentMsg::ConnectedPeer(socket.peer_addr().unwrap()))
-                                    .await
-                                    .unwrap();
-
-                                let mut interested = Interested::new().serialize()?;
-                                socket.write_all(&mut interested).await?;
-                            };
-                        }
-                        Err(_) => {
-                            // debug!("peer connection refused, skipping");
-                        }
-                    },
-                    Err(_) => {
-                        // debug!("peer does download_dirnot support peer wire protocol, skipping");
-                    }
+                        let interested = Interested::new().serialize()?;
+                        socket.write_all(&interested).await?;
+                    };
                 };
                 Ok::<(), Error>(())
             });

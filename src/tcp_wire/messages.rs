@@ -3,8 +3,6 @@ use speedy::{BigEndian, Readable, Writable};
 
 use crate::error::Error;
 
-pub(crate) const PROTOCOL_STRING: &str = "BitTorrent protocol";
-
 #[derive(Clone, Debug, Writable, Readable)]
 pub struct Handshake {
     pub pstr_len: u8,
@@ -44,7 +42,7 @@ impl Handshake {
             warn!("! handshake with wrong pstr_len, dropping connection");
             return false;
         }
-        if target.pstr != b"BitTorrent protocol".to_owned() {
+        if target.pstr != *b"BitTorrent protocol" {
             warn!("! handshake with wrong pstr, dropping connection");
             return false;
         }
@@ -75,9 +73,7 @@ impl KeepAlive {
         Self::read_from_buffer_with_ctx(BigEndian {}, buf).map_err(Error::SpeedyError)
     }
     pub fn new() -> Self {
-        Self {
-            len: u32::to_be(0000),
-        }
+        Self { len: u32::to_be(0) }
     }
 }
 
@@ -97,8 +93,8 @@ impl Choke {
     }
     pub fn new() -> Self {
         Self {
-            len: u32::to_be(0001),
-            id: u8::to_be(0),
+            len: u32::to_be(1),
+            id: 0,
         }
     }
 }
@@ -180,8 +176,8 @@ impl NotInterested {
     }
     pub fn new() -> Self {
         Self {
-            len: u32::to_be(0001),
-            id: u8::to_be(3),
+            len: u32::to_be(1),
+            id: 3,
         }
     }
 }
@@ -203,8 +199,8 @@ impl Have {
     }
     pub fn new() -> Self {
         Self {
-            len: u32::to_be(0005),
-            id: u8::to_be(4),
+            len: u32::to_be(5),
+            id: 4,
             piece_index: u32::to_be(4),
         }
     }
@@ -232,8 +228,8 @@ impl Bitfield {
         let bitfield = vec![0u8; msg_len as usize];
 
         Self {
-            len: u32::to_be(0001 + bitfield.len() as u32),
-            id: u8::to_be(5),
+            len: u32::to_be(1 + bitfield.len() as u32),
+            id: 5,
             bitfield,
         }
     }
@@ -258,7 +254,7 @@ impl Request {
     }
     pub fn new(index: u32, begin: u32, length: u32) -> Self {
         Self {
-            len: u32::to_be(0013),
+            len: u32::to_be(13),
             id: u8::to_be(6),
             index,
             begin,
@@ -286,8 +282,8 @@ impl Piece {
     }
     pub fn new(index: u32, begin: u32, block: Vec<u8>) -> Self {
         Self {
-            len: u32::to_be(0009 + block.len() as u32),
-            id: u8::to_be(7),
+            len: u32::to_be(9 + block.len() as u32),
+            id: 7,
             index,
             begin,
             block,
@@ -314,7 +310,7 @@ impl Cancel {
     }
     pub fn new(index: u32, begin: u32, length: u32) -> Self {
         Self {
-            len: u32::to_be(0013),
+            len: u32::to_be(13),
             id: u8::to_be(8),
             index,
             begin,
@@ -340,7 +336,7 @@ impl Port {
     }
     pub fn new(listen_port: u16) -> Self {
         Self {
-            len: u32::to_be(0003),
+            len: u32::to_be(3),
             id: u8::to_be(9),
             listen_port,
         }

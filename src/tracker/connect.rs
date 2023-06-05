@@ -12,6 +12,12 @@ pub struct Request {
     pub transaction_id: u32,
 }
 
+impl Default for Request {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Request {
     pub(crate) const LENGTH: usize = 16;
     const MAGIC: u64 = 0x0000_0417_2710_1980;

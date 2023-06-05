@@ -21,7 +21,7 @@ pub struct Tracker {
     pub peer_id: [u8; 20],
     pub tracker_addr: SocketAddr,
     /// UDP Socket of the `tracker_addr`
-    pub sock: UdpSocket,
+    pub socket: UdpSocket,
     pub connection_id: Option<u64>,
 }
 
@@ -49,7 +49,7 @@ impl Tracker {
                 let mut tracker = Tracker {
                     peer_id: rand::random(),
                     tracker_addr,
-                    sock,
+                    socket: sock,
                     connection_id: None,
                 };
                 if tracker.connect_exchange().await.is_ok() {
@@ -72,20 +72,20 @@ impl Tracker {
             connection_id,
             infohash,
             self.peer_id,
-            self.sock.local_addr()?.port(),
+            self.socket.local_addr()?.port(),
         );
 
-        debug!("local ip is {}", self.sock.local_addr()?);
+        debug!("local ip is {}", self.socket.local_addr()?);
 
-        let mut len = 0 as usize;
+        let mut len = 0_usize;
         let mut res = [0u8; Self::ANNOUNCE_RES_BUF_LEN];
 
         // will try to connect up to 3 times
         // breaking if succesfull
         for i in 0..=2 {
             info!("trying to send announce number {i}...");
-            self.sock.send(&req.serialize()).await?;
-            match timeout(Duration::new(3, 0), self.sock.recv(&mut res)).await {
+            self.socket.send(&req.serialize()).await?;
+            match timeout(Duration::new(3, 0), self.socket.recv(&mut res)).await {
                 Ok(Ok(lenn)) => {
                     len = lenn;
                     break;
@@ -115,7 +115,7 @@ impl Tracker {
         info!("* announce successful");
         info!("res from announce {:?}", res);
 
-        let peers = Self::parse_compact_peer_list(payload, self.sock.local_addr()?.is_ipv6())?;
+        let peers = Self::parse_compact_peer_list(payload, self.socket.local_addr()?.is_ipv6())?;
         debug!("got peers: {:#?}", peers);
 
         Ok(peers)
@@ -131,9 +131,9 @@ impl Tracker {
         // breaking if succesfull
         for i in 0..=2 {
             debug!("sending connect number {i}...");
-            self.sock.send(&req.serialize()).await?;
+            self.socket.send(&req.serialize()).await?;
 
-            match timeout(Duration::new(3, 0), self.sock.recv(&mut buf)).await {
+            match timeout(Duration::new(3, 0), self.socket.recv(&mut buf)).await {
                 Ok(Ok(lenn)) => {
                     len = lenn;
                     break;
@@ -222,7 +222,7 @@ impl Tracker {
                 _ = tick_timer.tick() => {
                     debug!("tick tracker");
                 },
-                Ok(_) = self.sock.recv(&mut buf) => {
+                Ok(_) = self.socket.recv(&mut buf) => {
                     info!("datagram {:?}", buf);
                 }
             }

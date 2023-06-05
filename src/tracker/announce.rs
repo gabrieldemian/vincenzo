@@ -22,7 +22,7 @@ pub struct Request {
 }
 
 impl Request {
-    pub(crate) const LENGTH: usize = 98;
+    pub const LENGTH: usize = 98;
 
     pub fn new(connection_id: u64, infohash: [u8; 20], peer_id: [u8; 20], port: u16) -> Self {
         let mut rng = rand::thread_rng();
@@ -42,7 +42,7 @@ impl Request {
         }
     }
 
-    fn deserialize(buf: &[u8]) -> Result<(Self, &[u8]), Error> {
+    fn _deserialize(buf: &[u8]) -> Result<(Self, &[u8]), Error> {
         if buf.len() != Self::LENGTH {
             return Err(Error::TrackerResponseLength);
         }

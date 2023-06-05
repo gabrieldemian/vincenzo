@@ -6,7 +6,7 @@ pub fn get_magnet(str: &str) -> Result<Magnet, MagnetError> {
     let tr: Vec<String> =
         m.tr.iter_mut()
             .map(|x| {
-                *x = urlencoding::decode(&x).unwrap().to_string();
+                *x = urlencoding::decode(x).unwrap().to_string();
                 *x = x.replace("http://", "");
                 *x = x.replace("udp://", "");
                 // remove any /announce
@@ -32,9 +32,7 @@ pub fn get_info_hash(info: &str) -> [u8; 20] {
     let infohash = hex::decode(info).unwrap();
     let mut x = [0u8; 20];
 
-    for i in 0..20 {
-        x[i] = infohash[i];
-    }
+    x[..20].copy_from_slice(&infohash[..20]);
 
     x
 }
