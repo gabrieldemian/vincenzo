@@ -46,16 +46,16 @@ impl Tracker {
                         continue;
                     }
                 };
-                let mut tracker = Tracker {
+                let mut client = Tracker {
                     peer_id: rand::random(),
                     tracker_addr,
                     socket: sock,
                     connection_id: None,
                 };
-                if tracker.connect_exchange().await.is_ok() {
+                if client.connect_exchange().await.is_ok() {
                     info!("connected with tracker addr {tracker_addr}");
-                    info!("DNS of the tracker {:?}", tracker);
-                    return Ok(tracker);
+                    debug!("DNS of the tracker {:?}", tracker);
+                    return Ok(client);
                 }
             }
         }

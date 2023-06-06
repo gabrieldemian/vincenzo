@@ -115,7 +115,20 @@ impl Unchoke {
         Ok(buf)
     }
     pub fn deserialize(buf: &[u8]) -> Result<Self, Error> {
-        Self::read_from_buffer_with_ctx(BigEndian {}, buf).map_err(Error::SpeedyError)
+        // Self::read_from_buffer_with_ctx(BigEndian {}, buf).map_err(Error::SpeedyError)
+        if buf.len() != 5 {
+            return Err(Error::MessageResponse);
+        };
+
+        if buf[4] != 1 {
+            return Err(Error::MessageResponse);
+        };
+
+        let s = Self {
+            len: u32::from_be_bytes(buf[0..4].try_into().unwrap()),
+            id: 1,
+        };
+        Ok(s)
     }
     pub fn new() -> Self {
         Self {
@@ -138,7 +151,7 @@ impl Interested {
         buf.extend_from_slice(&self.id.to_le_bytes());
         Ok(buf)
     }
-    pub fn deserialize(buf: Vec<u8>) -> Result<Self, Error> {
+    pub fn deserialize(buf: &[u8]) -> Result<Self, Error> {
         if buf.len() != 5 {
             return Err(Error::MessageResponse);
         };
@@ -156,6 +169,41 @@ impl Interested {
         Self {
             len: u32::to_be(1),
             id: 2,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Writable, Readable)]
+pub struct HaveNone {
+    pub len: u32,
+    pub id: u8,
+}
+
+impl HaveNone {
+    pub fn serialize(&self) -> Result<Vec<u8>, Error> {
+        let mut buf = vec![];
+        buf.extend_from_slice(&self.len.to_be_bytes());
+        buf.extend_from_slice(&self.id.to_le_bytes());
+        Ok(buf)
+    }
+    pub fn deserialize(buf: &[u8]) -> Result<Self, Error> {
+        if buf.len() != 5 {
+            return Err(Error::MessageResponse);
+        };
+        if buf[4] != 15 {
+            return Err(Error::MessageResponse);
+        };
+
+        let s = Self {
+            len: u32::from_be_bytes(buf[0..4].try_into().unwrap()),
+            id: 15,
+        };
+        Ok(s)
+    }
+    pub fn new() -> Self {
+        Self {
+            len: u32::to_be(1),
+            id: 15,
         }
     }
 }
@@ -218,11 +266,25 @@ pub struct Bitfield {
 
 impl Bitfield {
     pub fn serialize(&self) -> Result<Vec<u8>, Error> {
-        self.write_to_vec_with_ctx(BigEndian {})
-            .map_err(Error::SpeedyError)
+        let mut buf = vec![];
+        buf.extend_from_slice(&self.len.to_be_bytes());
+        buf.extend_from_slice(&self.id.to_le_bytes());
+        buf.extend_from_slice(&self.bitfield);
+        Ok(buf)
+        // self.write_to_vec_with_ctx(BigEndian {})
+        //     .map_err(Error::SpeedyError)
     }
     pub fn deserialize(buf: &[u8]) -> Result<Self, Error> {
-        Self::read_from_buffer_with_ctx(BigEndian {}, buf).map_err(Error::SpeedyError)
+        // Self::read_from_buffer_with_ctx(BigEndian {}, buf).map_err(Error::SpeedyError)
+        if buf.len() < 2 {
+            return Err(Error::MessageResponse);
+        };
+        let bitfield = Self {
+            len: u32::from_be_bytes(buf[0..4].try_into().unwrap()),
+            id: buf[4],
+            bitfield: buf[5..].to_vec(),
+        };
+        Ok(bitfield)
     }
     pub fn new(msg_len: u32) -> Self {
         let bitfield = vec![0u8; msg_len as usize];
