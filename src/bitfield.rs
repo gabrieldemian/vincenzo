@@ -1,3 +1,5 @@
+use std::ops::{Deref, DerefMut};
+
 use bitlab::*;
 
 #[derive(Debug, Clone)]
@@ -25,9 +27,22 @@ impl Iterator for Bitfield {
     }
 }
 
+impl Deref for Bitfield {
+    type Target = Vec<u8>;
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl DerefMut for Bitfield {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.inner
+    }
+}
+
 impl Bitfield {
     /// Get byte and bit_index that correspond to the provided bit
-    fn get_byte<I: Into<usize>>(&self, index: I) -> Option<(u8, usize)> {
+    fn get_byte<I: Into<usize>>(&self, index: I) -> Option<(u8, usize, usize)> {
         // index of the bit
         let index: usize = index.into();
         // index of the slice, where the bit lives in
@@ -42,19 +57,19 @@ impl Bitfield {
         // byte where `index` lives in
         let byte = self.inner[slice_index];
 
-        Some((byte, bit_index))
+        Some((byte, slice_index, bit_index))
     }
 
     /// Return true if the provided index is 1. False otherwise.
     pub fn has<I: Into<usize>>(&self, index: I) -> Option<bool> {
-        let (byte, bit_index) = self.get_byte(index)?;
+        let (byte, _, bit_index) = self.get_byte(index)?;
         let r = byte.get_bit(bit_index as u32);
         Some(r.unwrap())
     }
 
     /// Get a bit, 0 or 1
-    pub fn get<I: Into<usize> + Copy>(&self, index: I) -> Option<u8> {
-        let (byte, bit_index) = self.get_byte(index)?;
+    pub fn get<I: Into<usize>>(&self, index: I) -> Option<u8> {
+        let (byte, _, bit_index) = self.get_byte(index)?;
         let r = byte.get_bit(bit_index as u32).unwrap();
 
         if r {
@@ -65,17 +80,31 @@ impl Bitfield {
     }
 
     /// Set a bit, turn a 0 into a 1
-    pub fn set<I: Into<usize>>(&self, index: I) -> Option<u8> {
-        let (byte, bit_index) = self.get_byte(index)?;
+    pub fn set<I: Into<usize>>(&mut self, index: I) -> Option<u8> {
+        let (byte, slice_index, bit_index) = self.get_byte(index)?;
         let r = byte.set_bit(bit_index as u32);
-        Some(r.unwrap())
+
+        match r {
+            Ok(r) => {
+                self.inner[slice_index] = r;
+                Some(r)
+            }
+            Err(_) => None,
+        }
     }
 
     /// Clear a bit, turn a 1 into a 0
-    pub fn clear<I: Into<usize>>(&self, index: I) -> Option<u8> {
-        let (byte, bit_index) = self.get_byte(index)?;
+    pub fn clear<I: Into<usize>>(&mut self, index: I) -> Option<u8> {
+        let (byte, slice_index, bit_index) = self.get_byte(index)?;
         let r = byte.clear_bit(bit_index as u32);
-        Some(r.unwrap())
+
+        match r {
+            Ok(r) => {
+                self.inner[slice_index] = r;
+                Some(r)
+            }
+            Err(_) => None,
+        }
     }
     /// Returns the lenght of bits
     pub fn len(&self) -> usize {
@@ -158,20 +187,26 @@ mod tests {
 
     #[test]
     fn can_set_a_bit() {
-        let bits: Vec<u8> = vec![0b0000_0101];
-        let bitfield = Bitfield::from(bits);
+        let bits: Vec<u8> = vec![0b0000_0000];
+        let mut bitfield = Bitfield::from(bits);
 
-        let index = bitfield.set(0 as usize);
-        assert_eq!(index, Some(0b1000_0101));
+        bitfield.set(0 as usize);
+        assert_eq!(bitfield.inner[0], 0b1000_0000);
+
+        bitfield.set(7 as usize);
+        assert_eq!(bitfield.inner[0], 0b1000_0001);
     }
 
     #[test]
     fn can_clear_a_bit() {
-        let bits: Vec<u8> = vec![0b1000_0101];
-        let bitfield = Bitfield::from(bits);
+        let bits: Vec<u8> = vec![0b1000_0001];
+        let mut bitfield = Bitfield::from(bits);
 
-        let index = bitfield.clear(7 as usize);
-        assert_eq!(index, Some(0b1000_0100));
+        bitfield.clear(0 as usize);
+        assert_eq!(bitfield.inner[0], 0b0000_0001);
+
+        bitfield.clear(7 as usize);
+        assert_eq!(bitfield.inner[0], 0b0000_0000);
     }
 
     #[test]
