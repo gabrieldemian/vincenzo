@@ -290,13 +290,13 @@ impl Request {
     pub fn deserialize(buf: &[u8]) -> Result<Self, Error> {
         Self::read_from_buffer_with_ctx(BigEndian {}, buf).map_err(Error::SpeedyError)
     }
-    pub fn new(index: u32, begin: u32, length: u32) -> Self {
+    pub fn new(index: u32) -> Self {
         Self {
             len: u32::to_be(13),
-            id: u8::to_be(6),
+            id: 6,
             index,
-            begin,
-            length,
+            begin: u32::to_be(0),
+            length: u32::pow(2, 14).to_be(),
         }
     }
 }

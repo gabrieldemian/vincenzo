@@ -7,7 +7,6 @@ use std::{
 use log::{debug, info, warn};
 use tokio::{
     net::UdpSocket,
-    select,
     sync::mpsc::Sender,
     time::{interval, timeout},
 };

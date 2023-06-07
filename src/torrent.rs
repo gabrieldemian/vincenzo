@@ -1,7 +1,9 @@
+use crate::bitfield::Bitfield;
 use crate::error::Error;
 use crate::magnet_parser::get_info_hash;
 use crate::tcp_wire::messages::Handshake;
 use crate::tcp_wire::messages::Interested;
+use crate::tcp_wire::messages::Request;
 use crate::tcp_wire::messages::Unchoke;
 use crate::tracker::tracker::Tracker;
 use log::debug;
@@ -171,7 +173,22 @@ impl Torrent {
                                     info!("\tthe peer {peer} sent Bitfield");
                                     info!("\tbuf is {:?}", buf);
 
-                                    let bitfield = &buf[1..];
+                                    let bitfield = buf[1..].to_owned();
+                                    let bitfield = Bitfield::from(bitfield);
+
+                                    // Find the first available piece
+                                    let next_piece = bitfield.into_iter().find(|e| *e == 1);
+
+                                    info!("found a next piece? {:?}", next_piece);
+
+                                    // find the first available piece and send it
+                                    if next_piece.is_some() {
+                                        let request =
+                                            Request::new(next_piece.unwrap().into()).serialize()?;
+
+                                        // Request a piece
+                                        wt.write_all(&request).await?;
+                                    }
                                 }
                                 84 => {
                                     info!("\tthe peer {peer} sent Handshake");
