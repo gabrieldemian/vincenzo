@@ -216,15 +216,18 @@ impl Tracker {
         info!("# listening to tracker events...");
         let mut tick_timer = interval(Duration::from_secs(1));
 
-        let mut buf = vec![0; 1024];
+        let mut buf = [0; 1024];
         loop {
-            select! {
-                _ = tick_timer.tick() => {
-                    debug!("tick tracker");
-                },
-                Ok(_) = self.socket.recv(&mut buf) => {
-                    info!("datagram {:?}", buf);
+            tick_timer.tick().await;
+            debug!("tick tracker");
+            match self.socket.recv(&mut buf).await {
+                Ok(0) => {
+                    warn!("peer closed");
                 }
+                Ok(n) => {
+                    info!("datagram {:?}", &buf[..n]);
+                }
+                _ => {}
             }
         }
     }

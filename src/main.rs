@@ -6,6 +6,7 @@ pub mod tcp_wire;
 pub mod torrent;
 pub mod torrent_list;
 pub mod tracker;
+pub mod bitfield;
 
 use error::Error;
 use magnet_parser::get_magnet;

@@ -1,7 +1,6 @@
 use crate::error::Error;
 use crate::magnet_parser::get_info_hash;
 use crate::tcp_wire::messages::Handshake;
-use crate::tcp_wire::messages::HaveNone;
 use crate::tcp_wire::messages::Interested;
 use crate::tcp_wire::messages::Unchoke;
 use crate::tracker::tracker::Tracker;
@@ -65,9 +64,9 @@ impl Torrent {
         }
     }
 
-    // each connected peer has its own event loop
-    // cant call this inside any other async loop, it must be called
-    // as close as possible to the first tokio task to prevent memory leaks
+    /// each connected peer has its own event loop
+    /// cant call this inside any other async loop, it must be called
+    /// as close as possible to the first tokio task to prevent memory leaks
     pub async fn listen_to_peers(peers: Vec<SocketAddr>, our_handshake: Handshake) {
         for peer in peers {
             let our_handshake = our_handshake.clone();
@@ -75,42 +74,64 @@ impl Torrent {
 
             let mut tick_timer = interval(Duration::from_secs(1));
 
+            //
+            // Client connections start out as "choked" and "not interested".
+            // In other words:
+            //
+            // am_choking = 1
+            // am_interested = 0
+            // peer_choking = 1
+            // peer_interested = 0
+            //
+            // A block is downloaded by the client,
+            // when the client is interested in a peer,
+            // and that peer is not choking the client.
+            //
+            // A block is uploaded by a client,
+            // when the client is not choking a peer,
+            // and that peer is interested in the client.
+            //
+            // c <-handshake-> p
+            // c <-(optional) bitfield- p
+            // c -(optional) bitfield-> p
+            // c -interested-> p
+            // c <-unchoke- p
+            // c <-have- p
+            // c -request-> p
+            // ~ download starts here ~
+            // ~ piece contains a block of data ~
+            // c <-piece- p
+            //
             spawn(async move {
                 let socket = TcpStream::connect(peer).await;
 
                 if let Err(_) = socket {
-                    return;
+                    return Ok(());
                 }
 
                 let mut socket = socket.unwrap();
                 let (mut rd, mut wt) = socket.split();
 
+                //
+                //  Send Handshake to peer
+                //
                 if let Err(_) = timeout(
                     Duration::new(3, 0),
                     wt.write_all(&our_handshake.serialize().unwrap()),
                 )
                 .await
                 {
-                    return;
+                    return Ok(());
                 }
 
-                // let mut buf = vec![];
-                // if let Err(_) = timeout(Duration::new(3, 0), socket.read_to_end(&mut buf)).await {
-                //     return;
-                // }
-                // let their_handshake = Handshake::deserialize(&buf);
-                // if let Err(_) = their_handshake {
-                //     return;
-                // }
-                // let their_handshake = their_handshake.unwrap();
-                // info!("received handshake {:?}", their_handshake);
-
-                // a Vec will never read anything, the buffer
-                // must always be a fixed length slice
-                let mut buf = [0; 1024];
+                // Bitfield must happen exactly after the handshake,
+                // if the next message is not Bitfield, it will never
+                // be received/sent in this session
 
                 loop {
                     tick_timer.tick().await;
+                    let mut buf = [0; 2048];
+
                     match rd.read(&mut buf).await {
                         // Ok(0) means that the stream has closed,
                         // the peer is not listening to us anymore
@@ -120,11 +141,64 @@ impl Torrent {
                             break;
                         }
                         Ok(n) => {
-                            info!("!!!!!! received something from peer {:?}", &buf[..n]);
+                            let buf = &buf[..n];
+
+                            let id = buf[4];
+                            info!("the ID of the message is {id}");
+
+                            match id {
+                                0 => {
+                                    info!("\tthe peer {peer} Choked us");
+                                    // cant send any messages anymore
+                                    // wait until unchoke happens
+                                }
+                                1 => {
+                                    info!("\tthe peer {peer} Unchoked us");
+                                    // wait for a Have,
+                                    // we already sent an Interested
+                                }
+                                2 => {
+                                    info!("\tthe peer {peer} is Interested in us");
+                                    // send many Have
+                                }
+                                4 => {
+                                    info!("\tthe peer {peer} have a Piece");
+                                    info!("buf is {:?}", buf)
+                                    // send Request
+                                }
+                                5 => {
+                                    // send many Request
+                                    info!("\tthe peer {peer} sent Bitfield");
+                                    info!("\tbuf is {:?}", buf);
+
+                                    let bitfield = &buf[1..];
+                                }
+                                84 => {
+                                    info!("\tthe peer {peer} sent Handshake");
+                                    // check who initiated the handshake,
+                                    // us or them
+                                    // validate, send interested and unchoke
+                                    let their_handshake = Handshake::deserialize(&buf)?;
+                                    let valid = their_handshake.validate(&our_handshake);
+
+                                    if !valid {
+                                        return Err(Error::MessageResponse);
+                                    }
+
+                                    let interested = Interested::new().serialize()?;
+                                    let unchoke = Unchoke::new().serialize().unwrap();
+                                    let _ = timeout(Duration::new(3, 0), wt.write_all(&interested))
+                                        .await;
+                                    let _ =
+                                        timeout(Duration::new(3, 0), wt.write_all(&unchoke)).await;
+                                }
+                                _ => {}
+                            }
                         }
                         Err(e) => warn!("error reading peer loop {:?}", e),
                     };
                 }
+                Ok::<_, Error>(())
             });
         }
     }
@@ -164,15 +238,28 @@ impl Torrent {
 }
 
 //
-// this is probably a bitfield message
+// choke
+// [0, 0, 0, 1, 0]
+// [0, 0, 0, 1, 0]
+// [0, 0, 0, 1, 0]
 //
-// [0, 0, 0, 1, 0]
+// unchoke
 // [0, 0, 0, 1, 1]
-// [0, 0, 0, 1, 0]
-// [0, 0, 0, 1, 0]
+//
+// bitfield
+// len = 72
+// pieces = 71 * 4 (minus the id that is 1)
+// 1 bit = 1 piece
+// 1 byte = 4 bits or 4 pieces
+// 255 means that 4 pieces(bits) in sequence are true(1).
+// If they are true, this means the peer has
+// that peer available
+// [0, 0, 0, 72, 5, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 252]
 //
 //[255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 252]
 //
+//
+// are these bitfields too?
 //
 // [255, 175, 123, 255, 254, 255, 191, 127, 255, 255, 255, 255, 255, 251, 251, 255, 247, 255, 255, 239, 254, 255, 255, 255, 255, 191, 255, 255, 255, 255, 255, 223, 255, 255, 255, 255, 255, 255, 255, 255, 252, 0, 0, 0, 5, 4, 0, 0, 0, 236, 0, 0, 0, 5, 4, 0, 0, 0, 30, 0, 0, 0, 5, 4, 0, 0, 0, 167, 0, 0, 0, 5, 4, 0, 0, 0, 249, 0, 0, 0, 5, 4, 0, 0, 1, 93, 0, 0, 0, 5, 4, 0, 0, 1, 5, 0, 0, 0, 5, 4, 0, 0, 0, 77, 0, 0, 0, 5, 4, 0, 0, 1, 151, 0, 0, 0, 5, 4, 0, 0, 1, 116, 0, 0, 0, 5, 4, 0, 0, 1, 23, 0, 0, 0, 5, 4, 0, 0, 1, 40, 0, 0, 0, 5, 4, 0, 0, 0, 228, 0, 0, 0, 5, 4, 0, 0, 1, 101, 0, 0, 0, 5, 4, 0, 0, 1, 234, 0, 0, 0, 5, 4, 0, 0, 1, 33, 0, 0, 0, 5, 4, 0, 0, 1, 139, 0, 0, 0, 5, 4, 0, 0, 0, 172, 0, 0, 0, 5, 4, 0, 0, 0, 50, 0, 0, 0, 5, 4, 0, 0, 0, 91, 0, 0, 0, 5, 4, 0, 0, 0, 238, 0, 0, 0, 5, 4, 0, 0, 1, 0, 0, 0, 0, 5, 4, 0, 0, 0, 100, 0, 0, 0, 5, 4, 0, 0, 0, 251, 0, 0, 0, 5, 4, 0, 0, 1, 185]
 //

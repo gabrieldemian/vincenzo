@@ -3,6 +3,12 @@ use speedy::{BigEndian, Readable, Writable};
 
 use crate::error::Error;
 
+/// <pstrlen><pstr><reserved><info_hash><peer_id>
+/// pstrlen = 19
+/// pstr = b"BitTorrent protocol"
+/// reserved = [u8; 8]
+/// info_hash = to be determined
+/// peer_id = to be determined
 #[derive(Clone, Debug, Writable, Readable)]
 pub struct Handshake {
     pub pstr_len: u8,
@@ -29,7 +35,7 @@ impl Handshake {
     pub fn deserialize(buf: &[u8]) -> Result<Self, Error> {
         Self::read_from_buffer_with_ctx(BigEndian {}, buf).map_err(Error::SpeedyError)
     }
-    pub fn validate(&self, target: Self) -> bool {
+    pub fn validate(&self, target: &Self) -> bool {
         if target.peer_id.len() != 20 {
             warn!("! invalid peer_id from receiving handshake");
             return false;
@@ -59,6 +65,7 @@ impl Handshake {
 //  The payload is message dependent.
 //
 
+/// <len=0000>
 #[derive(Clone, Debug, Writable, Readable)]
 pub struct KeepAlive {
     pub len: u32,
@@ -77,6 +84,7 @@ impl KeepAlive {
     }
 }
 
+/// <len=0001><id=0>
 #[derive(Clone, Debug, Writable, Readable)]
 pub struct Choke {
     pub len: u32,
@@ -99,6 +107,7 @@ impl Choke {
     }
 }
 
+/// <len=0001><id=1>
 #[derive(Clone, Debug, Writable, Readable)]
 pub struct Unchoke {
     pub len: u32,
@@ -138,6 +147,7 @@ impl Unchoke {
     }
 }
 
+/// <len=0001><id=2>
 #[derive(Clone, Debug, Writable, Readable)]
 pub struct Interested {
     pub len: u32,
@@ -173,41 +183,7 @@ impl Interested {
     }
 }
 
-#[derive(Clone, Debug, Writable, Readable)]
-pub struct HaveNone {
-    pub len: u32,
-    pub id: u8,
-}
-
-impl HaveNone {
-    pub fn serialize(&self) -> Result<Vec<u8>, Error> {
-        let mut buf = vec![];
-        buf.extend_from_slice(&self.len.to_be_bytes());
-        buf.extend_from_slice(&self.id.to_le_bytes());
-        Ok(buf)
-    }
-    pub fn deserialize(buf: &[u8]) -> Result<Self, Error> {
-        if buf.len() != 5 {
-            return Err(Error::MessageResponse);
-        };
-        if buf[4] != 15 {
-            return Err(Error::MessageResponse);
-        };
-
-        let s = Self {
-            len: u32::from_be_bytes(buf[0..4].try_into().unwrap()),
-            id: 15,
-        };
-        Ok(s)
-    }
-    pub fn new() -> Self {
-        Self {
-            len: u32::to_be(1),
-            id: 15,
-        }
-    }
-}
-
+/// <len=0001><id=3>
 #[derive(Clone, Debug, Writable, Readable)]
 pub struct NotInterested {
     pub len: u32,
@@ -230,6 +206,7 @@ impl NotInterested {
     }
 }
 
+/// <len=0005><id=4><piece index>
 #[derive(Clone, Debug, Writable, Readable)]
 pub struct Have {
     pub len: u32,
@@ -254,9 +231,7 @@ impl Have {
     }
 }
 
-///
-/// bitfield: <len=0001+X><id=5><bitfield>
-///
+/// <len=0001+X><id=5><bitfield>
 #[derive(Clone, Debug, Writable, Readable)]
 pub struct Bitfield {
     pub len: u32,
@@ -297,6 +272,7 @@ impl Bitfield {
     }
 }
 
+/// <len=0013><id=6><index><begin><length>
 #[derive(Clone, Debug, Writable, Readable)]
 pub struct Request {
     pub len: u32,
@@ -325,6 +301,7 @@ impl Request {
     }
 }
 
+/// <len=0009+X><id=7><index><begin><block>
 #[derive(Clone, Debug, Writable, Readable)]
 pub struct Piece {
     pub len: u32,
@@ -353,6 +330,7 @@ impl Piece {
     }
 }
 
+/// <len=0013><id=8><index><begin><length>
 #[derive(Clone, Debug, Writable, Readable)]
 pub struct Cancel {
     pub len: u32,
@@ -381,6 +359,8 @@ impl Cancel {
     }
 }
 
+/// only used in DHT extension
+/// <len=0003><id=9><listen-port>
 #[derive(Clone, Debug, Writable, Readable)]
 pub struct Port {
     pub len: u32,
@@ -401,6 +381,43 @@ impl Port {
             len: u32::to_be(3),
             id: u8::to_be(9),
             listen_port,
+        }
+    }
+}
+
+/// Only used in fast connection extension
+/// <len=0001><id=15>
+#[derive(Clone, Debug, Writable, Readable)]
+pub struct HaveNone {
+    pub len: u32,
+    pub id: u8,
+}
+
+impl HaveNone {
+    pub fn serialize(&self) -> Result<Vec<u8>, Error> {
+        let mut buf = vec![];
+        buf.extend_from_slice(&self.len.to_be_bytes());
+        buf.extend_from_slice(&self.id.to_le_bytes());
+        Ok(buf)
+    }
+    pub fn deserialize(buf: &[u8]) -> Result<Self, Error> {
+        if buf.len() != 5 {
+            return Err(Error::MessageResponse);
+        };
+        if buf[4] != 15 {
+            return Err(Error::MessageResponse);
+        };
+
+        let s = Self {
+            len: u32::from_be_bytes(buf[0..4].try_into().unwrap()),
+            id: 15,
+        };
+        Ok(s)
+    }
+    pub fn new() -> Self {
+        Self {
+            len: u32::to_be(1),
+            id: 15,
         }
     }
 }
