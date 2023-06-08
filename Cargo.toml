@@ -11,6 +11,7 @@ bytes = "1.4.0"
 clap = {version = "4.3.0", features = ["derive"]}
 console-subscriber = "0.1.9"
 crossterm = "0.26.1"
+futures = "0.3.28"
 hex = "0.4.3"
 log = "0.4.17"
 magnet-url = "2.0.0"

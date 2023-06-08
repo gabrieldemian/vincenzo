@@ -28,4 +28,6 @@ pub enum Error {
     RequestTimeout,
     #[error("The message took to long to arrive")]
     MessageTimeout,
+    #[error("The handshake received is not valid")]
+    HandshakeInvalid,
 }

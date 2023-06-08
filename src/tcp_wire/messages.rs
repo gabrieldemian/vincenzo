@@ -10,13 +10,22 @@ use crate::{bitfield::Bitfield, error::Error, tcp_wire::lib::Block};
 use super::lib::BlockInfo;
 
 pub enum Message {
+    Handshake {
+        pstr_len: u8,
+        pstr: [u8; 19],
+        reserved: [u8; 8],
+        info_hash: [u8; 20],
+        peer_id: [u8; 20],
+    },
     KeepAlive,
     Bitfield(Bitfield),
     Choke,
     Unchoke,
     Interested,
     NotInterested,
-    Have { piece_index: usize },
+    Have {
+        piece_index: usize,
+    },
     Request(BlockInfo),
     Piece(Block),
     Cancel(BlockInfo),
@@ -34,6 +43,7 @@ pub enum MessageId {
     Request = 6,
     Piece = 7,
     Cancel = 8,
+    Handshake = 84,
 }
 
 impl TryFrom<u8> for MessageId {
@@ -51,6 +61,7 @@ impl TryFrom<u8> for MessageId {
             k if k == Request as u8 => Ok(Request),
             k if k == Piece as u8 => Ok(Piece),
             k if k == Cancel as u8 => Ok(Cancel),
+            k if k == Handshake as u8 => Ok(Handshake),
             _ => Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "Unknown message id",
@@ -67,6 +78,15 @@ impl Encoder<Message> for PeerCodec {
 
     fn encode(&mut self, item: Message, buf: &mut BytesMut) -> Result<(), Self::Error> {
         match item {
+            Message::Handshake {
+                info_hash, peer_id, ..
+            } => {
+                buf.put_u8(19);
+                buf.extend_from_slice(b"BitTorrent protocol");
+                buf.extend_from_slice(&[0u8; 8]);
+                buf.extend_from_slice(&info_hash);
+                buf.extend_from_slice(&peer_id);
+            }
             Message::KeepAlive => {
                 buf.put_u32(0);
             }
@@ -182,6 +202,25 @@ impl Decoder for PeerCodec {
         let msg_id = MessageId::try_from(buf.get_u8())?;
 
         let msg = match msg_id {
+            MessageId::Handshake => {
+                let pstr_len = buf.get_u8();
+                let mut pstr = [0; 19];
+                buf.copy_to_slice(&mut pstr);
+                let mut reserved = [0; 8];
+                buf.copy_to_slice(&mut reserved);
+                let mut info_hash = [0; 20];
+                buf.copy_to_slice(&mut info_hash);
+                let mut peer_id = [0; 20];
+                buf.copy_to_slice(&mut peer_id);
+
+                Message::Handshake {
+                    pstr_len,
+                    pstr,
+                    reserved,
+                    info_hash,
+                    peer_id,
+                }
+            }
             MessageId::Choke => Message::Choke,
             MessageId::Unchoke => Message::Unchoke,
             MessageId::Interested => Message::Interested,
@@ -252,7 +291,7 @@ impl Decoder for PeerCodec {
 /// reserved field is 8 zero bytes, but will later be used to set which extensions
 /// the peer supports. The peer id is usually the client name and version.
 #[derive(Clone, Debug, Writable, Readable)]
-pub struct Handshake {
+pub struct HandshakeOld {
     pub pstr_len: u8,
     pub pstr: [u8; 19],
     pub reserved: [u8; 8],
@@ -260,7 +299,7 @@ pub struct Handshake {
     pub peer_id: [u8; 20],
 }
 
-impl Handshake {
+impl HandshakeOld {
     pub fn new(info_hash: [u8; 20], peer_id: [u8; 20]) -> Self {
         Self {
             pstr_len: u8::to_be(19),
@@ -270,9 +309,15 @@ impl Handshake {
             peer_id,
         }
     }
-    pub fn serialize(&self) -> Result<Vec<u8>, Error> {
-        self.write_to_vec_with_ctx(BigEndian {})
-            .map_err(Error::SpeedyError)
+    pub fn serialize(&self) -> Result<[u8; 68], Error> {
+        let mut buf: [u8; 68] = [0u8; 68];
+        let temp = self
+            .write_to_vec_with_ctx(BigEndian {})
+            .map_err(Error::SpeedyError)?;
+
+        buf.copy_from_slice(&temp[..]);
+
+        Ok(buf)
     }
     pub fn deserialize(buf: &[u8]) -> Result<Self, Error> {
         Self::read_from_buffer_with_ctx(BigEndian {}, buf).map_err(Error::SpeedyError)
@@ -297,6 +342,33 @@ impl Handshake {
         true
     }
 }
+
+// Client connections start out as "choked" and "not interested".
+// In other words:
+//
+// am_choking = 1
+// am_interested = 0
+// peer_choking = 1
+// peer_interested = 0
+//
+// A block is downloaded by the client,
+// when the client is interested in a peer,
+// and that peer is not choking the client.
+//
+// A block is uploaded by a client,
+// when the client is not choking a peer,
+// and that peer is interested in the client.
+//
+// c <-handshake-> p
+// c <-(optional) bitfield- p
+// c -(optional) bitfield-> p
+// c -interested-> p
+// c <-unchoke- p
+// c <-have- p
+// c -request-> p
+// ~ download starts here ~
+// ~ piece contains a block of data ~
+// c <-piece- p
 
 //  KeepAlive
 //

@@ -19,7 +19,7 @@ pub(crate) const PEER_BUF_LEN: usize = 32 + 8 + 32 + 32 + 16384;
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct BlockInfo {
     /// The index of the piece of which this is a block.
-    pub index: usize,
+    pub index: u32,
     /// The zero-based byte offset into the piece.
     pub begin: u32,
     /// The block's length in bytes. Always 16 KiB (0x4000 bytes) or less, for
@@ -27,7 +27,32 @@ pub struct BlockInfo {
     pub len: u32,
 }
 
+impl Default for BlockInfo {
+    fn default() -> Self {
+        Self {
+            index: 0,
+            begin: 0,
+            len: BLOCK_LEN,
+        }
+    }
+}
+
 impl BlockInfo {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn index(mut self, index: u32) -> Self {
+        self.index = u32::to_be(index);
+        self
+    }
+    pub fn begin(mut self, begin: u32) -> Self {
+        self.begin = u32::to_be(begin);
+        self
+    }
+    pub fn len(mut self, len: u32) -> Self {
+        self.len = u32::to_be(len);
+        self
+    }
     /// Encodes the block info in the network binary protocol's format into the
     /// given buffer.
     pub fn encode(&self, buf: &mut BytesMut) -> io::Result<()> {
