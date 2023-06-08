@@ -1,10 +1,8 @@
 use crate::bitfield::Bitfield;
 use crate::error::Error;
 use crate::magnet_parser::get_info_hash;
+use crate::tcp_wire::lib::PEER_BUF_LEN;
 use crate::tcp_wire::messages::Handshake;
-use crate::tcp_wire::messages::Interested;
-use crate::tcp_wire::messages::Request;
-use crate::tcp_wire::messages::Unchoke;
 use crate::tracker::tracker::Tracker;
 use log::debug;
 use log::info;
@@ -69,14 +67,13 @@ impl Torrent {
     /// each connected peer has its own event loop
     /// cant call this inside any other async loop, it must be called
     /// as close as possible to the first tokio task to prevent memory leaks
+    #[tracing::instrument]
     pub async fn listen_to_peers(peers: Vec<SocketAddr>, our_handshake: Handshake) {
         for peer in peers {
             let our_handshake = our_handshake.clone();
             debug!("listening to peer...");
 
             let mut tick_timer = interval(Duration::from_secs(1));
-
-            //
             // Client connections start out as "choked" and "not interested".
             // In other words:
             //
@@ -103,36 +100,31 @@ impl Torrent {
             // ~ download starts here ~
             // ~ piece contains a block of data ~
             // c <-piece- p
-            //
             spawn(async move {
                 let socket = TcpStream::connect(peer).await;
-
                 if let Err(_) = socket {
                     return Ok(());
                 }
-
                 let mut socket = socket.unwrap();
-                let (mut rd, mut wt) = socket.split();
 
                 //
                 //  Send Handshake to peer
                 //
-                if let Err(_) = timeout(
-                    Duration::new(3, 0),
-                    wt.write_all(&our_handshake.serialize().unwrap()),
-                )
-                .await
-                {
-                    return Ok(());
-                }
-
-                // Bitfield must happen exactly after the handshake,
-                // if the next message is not Bitfield, it will never
-                // be received/sent in this session
+                // if let Err(_) = timeout(
+                //     Duration::new(3, 0),
+                //     socket.write_all(&our_handshake.serialize().unwrap()),
+                // )
+                // .await
+                // {
+                //     return Ok(());
+                // }
 
                 loop {
+                    let (mut rd, mut wt) = socket.split();
+
                     tick_timer.tick().await;
-                    let mut buf = [0; 2048];
+                    debug!("peer tick {:?}", peer);
+                    let mut buf = [0; PEER_BUF_LEN];
 
                     match rd.read(&mut buf).await {
                         // Ok(0) means that the stream has closed,
@@ -145,71 +137,83 @@ impl Torrent {
                         Ok(n) => {
                             let buf = &buf[..n];
 
-                            let id = buf[4];
-                            info!("the ID of the message is {id}");
+                            let id = buf.get(4);
 
-                            match id {
-                                0 => {
-                                    info!("\tthe peer {peer} Choked us");
-                                    // cant send any messages anymore
-                                    // wait until unchoke happens
-                                }
-                                1 => {
-                                    info!("\tthe peer {peer} Unchoked us");
-                                    // wait for a Have,
-                                    // we already sent an Interested
-                                }
-                                2 => {
-                                    info!("\tthe peer {peer} is Interested in us");
-                                    // send many Have
-                                }
-                                4 => {
-                                    info!("\tthe peer {peer} have a Piece");
-                                    info!("buf is {:?}", buf)
-                                    // send Request
-                                }
-                                5 => {
-                                    // send many Request
-                                    info!("\tthe peer {peer} sent Bitfield");
-                                    info!("\tbuf is {:?}", buf);
-
-                                    let bitfield = buf[1..].to_owned();
-                                    let bitfield = Bitfield::from(bitfield);
-
-                                    // Find the first available piece
-                                    let next_piece = bitfield.into_iter().find(|e| *e == 1);
-
-                                    info!("found a next piece? {:?}", next_piece);
-
-                                    // find the first available piece and send it
-                                    if next_piece.is_some() {
-                                        let request =
-                                            Request::new(next_piece.unwrap().into()).serialize()?;
-
-                                        // Request a piece
-                                        wt.write_all(&request).await?;
+                            if let Some(id) = id {
+                                debug!("the ID of the message is {:?}", id);
+                                match id {
+                                    0 => {
+                                        info!("\tthe peer {peer} Choked us");
+                                        // cant send any messages anymore
+                                        // wait until unchoke happens
                                     }
-                                }
-                                84 => {
-                                    info!("\tthe peer {peer} sent Handshake");
-                                    // check who initiated the handshake,
-                                    // us or them
-                                    // validate, send interested and unchoke
-                                    let their_handshake = Handshake::deserialize(&buf)?;
-                                    let valid = their_handshake.validate(&our_handshake);
-
-                                    if !valid {
-                                        return Err(Error::MessageResponse);
+                                    1 => {
+                                        info!("\tthe peer {peer} Unchoked us");
+                                        // let interested = Interested::new().serialize()?;
+                                        // let unchoke = Unchoke::new().serialize().unwrap();
+                                        //
+                                        // timeout(Duration::new(3, 0), wt.write_all(&unchoke))
+                                        //     .await
+                                        //     .map_err(|_| Error::MessageTimeout)??;
+                                        // timeout(Duration::new(3, 0), wt.write_all(&interested))
+                                        //     .await
+                                        //     .map_err(|_| Error::MessageTimeout)??;
                                     }
+                                    2 => {
+                                        info!("\tthe peer {peer} is Interested in us");
+                                        // send many Have
+                                    }
+                                    4 => {
+                                        info!("\tthe peer {peer} have a Piece");
+                                        info!("buf is {:?}", buf)
+                                        // send Request
+                                    }
+                                    5 => {
+                                        // send many Request
+                                        info!("\tthe peer {peer} sent Bitfield");
+                                        info!("\tbuf is {:?}", buf);
 
-                                    let interested = Interested::new().serialize()?;
-                                    let unchoke = Unchoke::new().serialize().unwrap();
-                                    let _ = timeout(Duration::new(3, 0), wt.write_all(&interested))
-                                        .await;
-                                    let _ =
-                                        timeout(Duration::new(3, 0), wt.write_all(&unchoke)).await;
+                                        let bitfield = buf[1..].to_owned();
+                                        let bitfield = Bitfield::from(bitfield);
+
+                                        // Find the first available piece
+                                        let next_piece = bitfield.into_iter().find(|e| *e == 1);
+
+                                        info!("found a next piece? {:?}", next_piece);
+
+                                        // find the first available piece and send it
+                                        // if next_piece.is_some() {
+                                            // let request = Request::new(next_piece.unwrap().into())
+                                            //     .serialize()?;
+
+                                            // Request a piece
+                                            // wt.write(&request).await?;
+                                            // info!("sent request to first piece");
+                                        // }
+                                    }
+                                    84 => {
+                                        info!("\tthe peer {peer} sent Handshake");
+                                        // let their_handshake = Handshake::deserialize(&buf)?;
+                                        // let valid = their_handshake.validate(&our_handshake);
+                                        //
+                                        // if !valid {
+                                        //     return Err(Error::MessageResponse);
+                                        // }
+                                        //
+                                        // let interested = Interested::new().serialize()?;
+                                        // let unchoke = Unchoke::new().serialize().unwrap();
+                                        //
+                                        // timeout(Duration::new(3, 0), wt.write_all(&interested))
+                                        //     .await
+                                        //     .map_err(|_| Error::MessageTimeout)??;
+                                        // timeout(Duration::new(3, 0), wt.write_all(&unchoke))
+                                        //     .await
+                                        //     .map_err(|_| Error::MessageTimeout)??;
+                                    }
+                                    _ => {}
                                 }
-                                _ => {}
+                            } else {
+                                info!("???? received buf {:?}", buf);
                             }
                         }
                         Err(e) => warn!("error reading peer loop {:?}", e),
@@ -220,7 +224,7 @@ impl Torrent {
         }
     }
 
-    async fn add_magnet(&self, m: Magnet) -> Result<(), Error> {
+    pub async fn add_magnet(&self, m: Magnet) -> Result<(), Error> {
         debug!("{:#?}", m);
         info!("received add_magnet call");
         let info_hash = get_info_hash(&m.xt.unwrap());
@@ -236,18 +240,16 @@ impl Torrent {
 
         // listen to events on our peer socket,
         // that we used to announce to trackers.
-        let tx = self.tx.clone();
-
         // spawn tracker event loop
+        let tx = self.tx.clone();
         spawn(async move {
-            tracker.run(tx.clone()).await;
+            tracker.run(tx).await;
         });
 
         info!("sending handshake req to {:?} peers...", peers.len());
 
         let our_handshake = Handshake::new(info_hash, peer_id);
 
-        // reserved: [0, 0, 0, 0, 0, 16, 0, 5]
         // each peer will have its own event loop
         Torrent::listen_to_peers(peers, our_handshake).await;
         Ok(())

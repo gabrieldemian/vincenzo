@@ -166,6 +166,7 @@ name = "bittorrent-rust"
 version = "0.0.1"
 dependencies = [
  "bitlab",
+ "bytes",
  "clap",
  "console-subscriber",
  "crossterm 0.26.1",
@@ -178,6 +179,8 @@ dependencies = [
  "speedy",
  "thiserror",
  "tokio",
+ "tokio-util",
+ "tracing",
  "tui",
  "urlencoding",
 ]

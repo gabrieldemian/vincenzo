@@ -26,4 +26,6 @@ pub enum Error {
     MessageResponse,
     #[error("The request took to long to arrive")]
     RequestTimeout,
+    #[error("The message took to long to arrive")]
+    MessageTimeout,
 }

@@ -40,7 +40,20 @@ impl DerefMut for Bitfield {
     }
 }
 
+impl Default for Bitfield {
+    fn default() -> Self {
+        Self {
+            curr: 0,
+            inner: vec![],
+        }
+    }
+}
+
 impl Bitfield {
+    fn new() -> Self {
+        Self::default()
+    }
+
     /// Get byte and bit_index that correspond to the provided bit
     fn get_byte<I: Into<usize>>(&self, index: I) -> Option<(u8, usize, usize)> {
         // index of the bit
@@ -106,9 +119,13 @@ impl Bitfield {
             Err(_) => None,
         }
     }
-    /// Returns the lenght of bits
+    /// Returns the lenght of inner as bits
     pub fn len(&self) -> usize {
         self.inner.len() * 8 as usize
+    }
+    /// Returns the lenght of inner as bytes
+    pub fn len_bytes(&self) -> usize {
+        self.inner.len()
     }
 }
 
@@ -211,9 +228,10 @@ mod tests {
 
     #[test]
     fn can_iter_a_bit() {
-        let bits: Vec<u8> = vec![0b1000_0101];
+        let bits: Vec<u8> = vec![0b1000_0101, 0b0111_0001];
         let mut bitfield = Bitfield::from(bits).into_iter();
 
+        assert_eq!(Some(1), bitfield.get(0 as usize));
         assert_eq!(Some(0), bitfield.next());
         assert_eq!(Some(0), bitfield.next());
         assert_eq!(Some(0), bitfield.next());
@@ -221,6 +239,16 @@ mod tests {
         assert_eq!(Some(1), bitfield.next());
         assert_eq!(Some(0), bitfield.next());
         assert_eq!(Some(1), bitfield.next());
+
+        assert_eq!(Some(0), bitfield.next());
+        assert_eq!(Some(1), bitfield.next());
+        assert_eq!(Some(1), bitfield.next());
+        assert_eq!(Some(1), bitfield.next());
+        assert_eq!(Some(0), bitfield.next());
+        assert_eq!(Some(0), bitfield.next());
+        assert_eq!(Some(0), bitfield.next());
+        assert_eq!(Some(1), bitfield.next());
+
         assert_eq!(None, bitfield.next());
     }
 }

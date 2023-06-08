@@ -1,6 +1,6 @@
 use std::{
     fmt::Debug,
-    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs},
+    net::{IpAddr, Ipv6Addr, SocketAddr, ToSocketAddrs},
     time::Duration,
 };
 
@@ -163,7 +163,7 @@ impl Tracker {
     // todo: make this non-blocking
     pub async fn new_udp_socket(addr: SocketAddr) -> Result<UdpSocket, Error> {
         let sock = match addr {
-            SocketAddr::V4(_) => UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).await,
+            SocketAddr::V4(_) => UdpSocket::bind("0.0.0.0:6881").await,
             SocketAddr::V6(_) => UdpSocket::bind((Ipv6Addr::UNSPECIFIED, 0)).await,
         }
         .expect("Failed to bind udp socket");
@@ -211,6 +211,7 @@ impl Tracker {
     // as a peer to the list of peers. This means I need to
     // listen to handshake events with this addr here.
     // and this function needs a Sender to the `Torrent`
+    #[tracing::instrument]
     pub async fn run(&self, _tx: Sender<TorrentMsg>) {
         info!("# listening to tracker events...");
         let mut tick_timer = interval(Duration::from_secs(1));
