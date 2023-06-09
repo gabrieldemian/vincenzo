@@ -7,6 +7,7 @@ use std::{
 use log::{debug, info, warn};
 use tokio::{
     net::UdpSocket,
+    select,
     sync::mpsc::Sender,
     time::{interval, timeout},
 };
@@ -218,16 +219,20 @@ impl Tracker {
 
         let mut buf = [0; 1024];
         loop {
-            tick_timer.tick().await;
-            debug!("tick tracker");
-            match self.socket.recv(&mut buf).await {
-                Ok(0) => {
-                    warn!("peer closed");
+            select! {
+                _ = tick_timer.tick() => {
+                    debug!("tick tracker");
                 }
-                Ok(n) => {
-                    info!("datagram {:?}", &buf[..n]);
+                Ok(n) = self.socket.recv(&mut buf) => {
+                    match n {
+                        0 => {
+                            warn!("peer closed");
+                        }
+                        n => {
+                            info!("datagram {:?}", &buf[..n]);
+                        }
+                    }
                 }
-                _ => {}
             }
         }
     }

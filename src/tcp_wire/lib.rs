@@ -12,12 +12,6 @@ pub(crate) const PSTR: [u8; 19] = [
     66, 105, 116, 84, 111, 114, 114, 101, 110, 116, 32, 112, 114, 111, 116, 111, 99, 111, 108,
 ];
 
-/// The buffer length we're receiving/sending to peers. This needs to
-/// be the length of our most expensive message, which is `Piece`.
-/// Most clients will reject Requests and Pieces that is not 16KB
-/// And we should do the same. Except for the last block.
-pub(crate) const PEER_BUF_LEN: usize = 32 + 8 + 32 + 32 + 16384;
-
 /// Request message will send this BlockInfo
 /// A block is a fixed size chunk of a piece, which in turn is a fixed size
 /// chunk of a torrent. Downloading torrents happen at this block level

@@ -68,10 +68,7 @@ impl Torrent {
     }
 
     #[tracing::instrument]
-    pub async fn listen_to_peer(
-        peer: SocketAddr,
-        our_handshake: Handshake,
-    ) -> Result<(), Error> {
+    pub async fn listen_to_peer(peer: SocketAddr, our_handshake: Handshake) -> Result<(), Error> {
         let mut tick_timer = interval(Duration::from_secs(1));
         let mut socket = TcpStream::connect(peer).await?;
 
@@ -87,6 +84,23 @@ impl Torrent {
 
         let (mut sink, mut stream) = Framed::new(socket, PeerCodec).split();
 
+        // If there is a Bitfield message to be received,
+        // it will be the very first message after the handshake,
+        // receive it here, add this information to peer
+        // and create a new Bitfield for `Torrent` with the same length,
+        // but completely empty
+        let msg = stream.next().await;
+        if let Some(Ok(Message::Bitfield(bitfield))) = msg {
+            info!("Received Bitfield message from peer {:?}", peer);
+            info!("{:?}", bitfield);
+        }
+
+        // Send Interested & Unchoke to peer
+        // We want to send and receive blocks
+        // from everyone
+        sink.send(Message::Interested).await?;
+        sink.send(Message::Unchoke).await?;
+
         loop {
             select! {
                 _ = tick_timer.tick() => {
@@ -100,16 +114,26 @@ impl Torrent {
                         }
                         Message::Bitfield(bitfield) => {
                             info!("\t received bitfield");
-                            let first = bitfield.into_iter().find(|x| *x == 1);
+                            info!("{:?}", bitfield);
+
+                            let first = bitfield.into_iter().find(|x| x.bit == 1);
+
                             if let Some(first) = first {
-                                let block = BlockInfo::new().index(first as u32);
+                                info!("requesting first bit with index {:?}", first.index);
+                                let block = BlockInfo::new().index(first.index as u32);
                                 sink.send(Message::Request(block)).await?;
+                                // todo: I have to wait until Unchoke to send
+                                // most of the times, Bitfield and Have are immediately
+                                // followed by an Unchoke,
                             }
                         }
                         Message::Unchoke => {
+                            // todo: I have to wait until Unchoke to send
                             // if we're interested, start sending requests
                             // peer is letting us Request blocks
-                            let block = BlockInfo::new().index(2);
+                            info!("Peer {:?} unchoked us", peer);
+
+                            let block = BlockInfo::new().index(0);
                             sink.send(Message::Request(block)).await?;
                         }
                         Message::Choke => {
@@ -124,7 +148,12 @@ impl Torrent {
                             // peer won't request blocks from us anymore
                         }
                         Message::Have(piece_index) => {
-                            info!("Peer {:?} has a new piece_index", piece_index);
+                            debug!("Peer {:?} has a piece_index of {:?}", peer, piece_index);
+                            let block = BlockInfo::new().index(piece_index as u32);
+
+                            // todo: I have to wait until Unchoke to send
+                            // request this Piece to the peer
+                            sink.send(Message::Request(block)).await?;
                         }
                         Message::Piece(block) => {
                             info!("Peer {:?} sent a Piece to us", block);
@@ -150,7 +179,10 @@ impl Torrent {
         for peer in peers {
             let our_handshake = our_handshake.clone();
             debug!("listening to peer...");
-            spawn(async move { Self::listen_to_peer(peer, our_handshake) });
+            spawn(async move {
+                Self::listen_to_peer(peer, our_handshake).await?;
+                Ok::<_, Error>(())
+            });
         }
         Ok(())
     }

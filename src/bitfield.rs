@@ -8,6 +8,12 @@ pub struct Bitfield {
     curr: usize,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct BitItem {
+    pub bit: u8,
+    pub index: usize,
+}
+
 impl From<Vec<u8>> for Bitfield {
     fn from(value: Vec<u8>) -> Self {
         Self {
@@ -19,7 +25,7 @@ impl From<Vec<u8>> for Bitfield {
 
 // This iterator will return 0s and 1s
 impl Iterator for Bitfield {
-    type Item = u8;
+    type Item = BitItem;
     fn next(&mut self) -> Option<Self::Item> {
         self.curr += 1;
         let bit = self.get(self.curr);
@@ -80,15 +86,21 @@ impl Bitfield {
         Some(r.unwrap())
     }
 
-    /// Get a bit, 0 or 1
-    pub fn get<I: Into<usize>>(&self, index: I) -> Option<u8> {
+    /// Get a bit and its index
+    pub fn get<I: Copy + Into<usize>>(&self, index: I) -> Option<BitItem> {
         let (byte, _, bit_index) = self.get_byte(index)?;
         let r = byte.get_bit(bit_index as u32).unwrap();
 
         if r {
-            return Some(1 as u8);
+            return Some(BitItem {
+                bit: 1 as u8,
+                index: index.into(),
+            });
         } else {
-            return Some(0 as u8);
+            return Some(BitItem {
+                bit: 0 as u8,
+                index: index.into(),
+            });
         }
     }
 
@@ -168,29 +180,35 @@ mod tests {
 
     #[test]
     fn can_get_from_bitfield() {
-        let bits: Vec<u8> = vec![0b10101010, 0b00011011, 0b00111110];
+        let bits: Vec<u8> = vec![0b1010_1010, 0b0001_1011, 0b0011_1110];
         let bitfield = Bitfield::from(bits.clone());
 
         let index_a = bitfield.get(0 as usize);
         let index_b = bitfield.get(3 as usize);
         let index_c = bitfield.get(6 as usize);
         let index_d = bitfield.get(7 as usize);
-        assert_eq!(index_a, Some(1));
-        assert_eq!(index_b, Some(0));
-        assert_eq!(index_c, Some(1));
-        assert_eq!(index_d, Some(0));
+
+        assert_eq!(index_a, Some(BitItem { bit: 1, index: 0 }));
+        assert_eq!(index_b, Some(BitItem { bit: 0, index: 3 }));
+        assert_eq!(index_c, Some(BitItem { bit: 1, index: 6 }));
+        assert_eq!(index_d, Some(BitItem { bit: 0, index: 7 }));
 
         let index_a = bitfield.get(8 as usize);
         let index_b = bitfield.get(9 as usize);
         let index_c = bitfield.get(10 as usize);
         let index_d = bitfield.get(11 as usize);
         let index_e = bitfield.get(12 as usize);
-        assert_eq!(index_a, Some(0));
-        assert_eq!(index_b, Some(0));
-        assert_eq!(index_c, Some(0));
-        assert_eq!(index_d, Some(1));
-        assert_eq!(index_e, Some(1));
-        assert_eq!(index_c, Some(0));
+
+        assert_eq!(index_a, Some(BitItem { bit: 0, index: 8 }));
+        assert_eq!(index_b, Some(BitItem { bit: 0, index: 9 }));
+        assert_eq!(index_c, Some(BitItem { bit: 0, index: 10 }));
+        assert_eq!(index_d, Some(BitItem { bit: 1, index: 11 }));
+        assert_eq!(index_e, Some(BitItem { bit: 1, index: 12 }));
+
+        let index_a = bitfield.get(23 as usize);
+        let index_b = bitfield.get(24 as usize);
+        assert_eq!(index_a, Some(BitItem { bit: 0, index: 23 }));
+        assert_eq!(index_b, None);
     }
 
     #[test]
@@ -231,23 +249,23 @@ mod tests {
         let bits: Vec<u8> = vec![0b1000_0101, 0b0111_0001];
         let mut bitfield = Bitfield::from(bits).into_iter();
 
-        assert_eq!(Some(1), bitfield.get(0 as usize));
-        assert_eq!(Some(0), bitfield.next());
-        assert_eq!(Some(0), bitfield.next());
-        assert_eq!(Some(0), bitfield.next());
-        assert_eq!(Some(0), bitfield.next());
-        assert_eq!(Some(1), bitfield.next());
-        assert_eq!(Some(0), bitfield.next());
-        assert_eq!(Some(1), bitfield.next());
+        assert_eq!(Some(BitItem { bit: 1, index: 0 }), bitfield.get(0 as usize));
+        assert_eq!(Some(BitItem { bit: 0, index: 1 }), bitfield.next());
+        assert_eq!(Some(BitItem { bit: 0, index: 2 }), bitfield.next());
+        assert_eq!(Some(BitItem { bit: 0, index: 3 }), bitfield.next());
+        assert_eq!(Some(BitItem { bit: 0, index: 4 }), bitfield.next());
+        assert_eq!(Some(BitItem { bit: 1, index: 5 }), bitfield.next());
+        assert_eq!(Some(BitItem { bit: 0, index: 6 }), bitfield.next());
+        assert_eq!(Some(BitItem { bit: 1, index: 7 }), bitfield.next());
 
-        assert_eq!(Some(0), bitfield.next());
-        assert_eq!(Some(1), bitfield.next());
-        assert_eq!(Some(1), bitfield.next());
-        assert_eq!(Some(1), bitfield.next());
-        assert_eq!(Some(0), bitfield.next());
-        assert_eq!(Some(0), bitfield.next());
-        assert_eq!(Some(0), bitfield.next());
-        assert_eq!(Some(1), bitfield.next());
+        assert_eq!(Some(BitItem { bit: 0, index: 8 }), bitfield.next());
+        assert_eq!(Some(BitItem { bit: 1, index: 9 }), bitfield.next());
+        assert_eq!(Some(BitItem { bit: 1, index: 10 }), bitfield.next());
+        assert_eq!(Some(BitItem { bit: 1, index: 11 }), bitfield.next());
+        assert_eq!(Some(BitItem { bit: 0, index: 12 }), bitfield.next());
+        assert_eq!(Some(BitItem { bit: 0, index: 13 }), bitfield.next());
+        assert_eq!(Some(BitItem { bit: 0, index: 14 }), bitfield.next());
+        assert_eq!(Some(BitItem { bit: 1, index: 15 }), bitfield.next());
 
         assert_eq!(None, bitfield.next());
     }
