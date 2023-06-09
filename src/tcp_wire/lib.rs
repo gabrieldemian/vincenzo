@@ -6,6 +6,12 @@ use tokio::io;
 /// last block).  It is the widely used and accepted 16 KiB.
 pub(crate) const BLOCK_LEN: u32 = 16384;
 
+/// Protocol String
+/// String identifier of the BitTorrent protocol, in bytes.
+pub(crate) const PSTR: [u8; 19] = [
+    66, 105, 116, 84, 111, 114, 114, 101, 110, 116, 32, 112, 114, 111, 116, 111, 99, 111, 108,
+];
+
 /// The buffer length we're receiving/sending to peers. This needs to
 /// be the length of our most expensive message, which is `Piece`.
 /// Most clients will reject Requests and Pieces that is not 16KB

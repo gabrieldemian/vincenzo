@@ -1,7 +1,7 @@
 use crate::error::Error;
 use crate::magnet_parser::get_info_hash;
 use crate::tcp_wire::lib::BlockInfo;
-use crate::tcp_wire::messages::HandshakeOld;
+use crate::tcp_wire::messages::Handshake;
 use crate::tcp_wire::messages::Message;
 use crate::tcp_wire::messages::PeerCodec;
 use crate::tracker::tracker::Tracker;
@@ -70,7 +70,7 @@ impl Torrent {
     #[tracing::instrument]
     pub async fn listen_to_peer(
         peer: SocketAddr,
-        our_handshake: HandshakeOld,
+        our_handshake: Handshake,
     ) -> Result<(), Error> {
         let mut tick_timer = interval(Duration::from_secs(1));
         let mut socket = TcpStream::connect(peer).await?;
@@ -81,7 +81,7 @@ impl Torrent {
         // Read Handshake from peer
         let mut handshake_buf = [0u8; 68];
         socket.read_exact(&mut handshake_buf).await?;
-        if !HandshakeOld::deserialize(&handshake_buf)?.validate(&our_handshake) {
+        if !Handshake::deserialize(&handshake_buf)?.validate(&our_handshake) {
             return Err(Error::HandshakeInvalid);
         }
 
@@ -95,6 +95,9 @@ impl Torrent {
                 Some(msg) = stream.next() => {
                     let msg = msg?;
                     match msg {
+                        Message::KeepAlive => {
+                            info!("Peer {:?} sent Keepalive", peer);
+                        }
                         Message::Bitfield(bitfield) => {
                             info!("\t received bitfield");
                             let first = bitfield.into_iter().find(|x| *x == 1);
@@ -120,7 +123,7 @@ impl Torrent {
                             info!("Peer {:?} is not interested in us", peer);
                             // peer won't request blocks from us anymore
                         }
-                        Message::Have { piece_index } => {
+                        Message::Have(piece_index) => {
                             info!("Peer {:?} has a new piece_index", piece_index);
                         }
                         Message::Piece(block) => {
@@ -129,7 +132,9 @@ impl Torrent {
                         Message::Cancel(block_info) => {
                             info!("Peer {:?} canceled a block", block_info);
                         }
-                        _ => {}
+                        Message::Request(block_info) => {
+                            info!("Peer {:?} request a block", block_info);
+                        }
                     }
                 }
             }
@@ -140,7 +145,7 @@ impl Torrent {
     #[tracing::instrument]
     pub async fn spawn_peers_tasks(
         peers: Vec<SocketAddr>,
-        our_handshake: HandshakeOld,
+        our_handshake: Handshake,
     ) -> Result<(), Error> {
         for peer in peers {
             let our_handshake = our_handshake.clone();
@@ -174,7 +179,7 @@ impl Torrent {
 
         info!("sending handshake req to {:?} peers...", peers.len());
 
-        let our_handshake = HandshakeOld::new(info_hash, peer_id);
+        let our_handshake = Handshake::new(info_hash, peer_id);
 
         // each peer will have its own event loop
         Torrent::spawn_peers_tasks(peers, our_handshake).await?;
