@@ -1,4 +1,5 @@
 pub mod bitfield;
+pub mod peer;
 pub mod cli;
 pub mod error;
 pub mod frontend;

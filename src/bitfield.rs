@@ -222,14 +222,27 @@ mod tests {
 
     #[test]
     fn can_set_a_bit() {
-        let bits: Vec<u8> = vec![0b0000_0000];
+        let bits: Vec<u8> = vec![0b0000_0000, 0b0000_0000];
         let mut bitfield = Bitfield::from(bits);
 
         bitfield.set(0 as usize);
         assert_eq!(bitfield.inner[0], 0b1000_0000);
+        assert_eq!(bitfield.get(0 as usize), Some(BitItem { bit: 1, index: 0 }));
 
         bitfield.set(7 as usize);
         assert_eq!(bitfield.inner[0], 0b1000_0001);
+        assert_eq!(bitfield.get(7 as usize), Some(BitItem { bit: 1, index: 7 }));
+
+        bitfield.set(8 as usize);
+        assert_eq!(bitfield.inner[1], 0b1000_0000);
+        assert_eq!(bitfield.get(8 as usize), Some(BitItem { bit: 1, index: 8 }));
+
+        bitfield.set(15 as usize);
+        assert_eq!(bitfield.inner[1], 0b1000_0001);
+        assert_eq!(
+            bitfield.get(15 as usize),
+            Some(BitItem { bit: 1, index: 15 })
+        );
     }
 
     #[test]

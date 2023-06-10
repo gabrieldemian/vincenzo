@@ -63,6 +63,7 @@ impl TryFrom<u8> for MessageId {
     }
 }
 
+#[derive(Debug)]
 pub struct PeerCodec;
 
 // Encode bytes into messages

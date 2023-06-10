@@ -12,7 +12,7 @@ use tokio::{
     time::{interval, timeout},
 };
 
-use crate::{error::Error, torrent::TorrentMsg};
+use crate::{error::Error, peer::Peer, torrent::TorrentMsg};
 
 use super::{announce, connect};
 
@@ -62,7 +62,7 @@ impl Tracker {
         Err(Error::TrackerNoHosts)
     }
 
-    pub async fn announce_exchange(&self, infohash: [u8; 20]) -> Result<Vec<SocketAddr>, Error> {
+    pub async fn announce_exchange(&self, infohash: [u8; 20]) -> Result<Vec<Peer>, Error> {
         let connection_id = match self.connection_id {
             Some(x) => x,
             None => return Err(Error::TrackerNoConnectionId),
@@ -175,7 +175,7 @@ impl Tracker {
         Ok(sock)
     }
 
-    fn parse_compact_peer_list(buf: &[u8], is_ipv6: bool) -> Result<Vec<SocketAddr>, Error> {
+    fn parse_compact_peer_list(buf: &[u8], is_ipv6: bool) -> Result<Vec<Peer>, Error> {
         let mut peer_list = Vec::<SocketAddr>::new();
 
         // in ipv4 the addresses come in packets of 6 bytes,
@@ -205,7 +205,9 @@ impl Tracker {
             peer_list.push((ip, port).into());
         }
 
-        Ok(peer_list)
+        let peers: Vec<Peer> = peer_list.into_iter().map(|p| p.into()).collect();
+
+        Ok(peers)
     }
 
     // the addr used to announce will be added, by the tracker,
