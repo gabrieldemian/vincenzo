@@ -106,7 +106,7 @@ impl Torrent {
         Ok(())
     }
 
-    pub async fn add_magnet(&mut self) -> Result<(), Error> {
+    pub async fn start(&mut self) -> Result<Vec<Peer>, Error> {
         debug!("{:#?}", self.ctx.magnet);
         info!("received add_magnet call");
 
@@ -120,18 +120,9 @@ impl Torrent {
         // second, do a `announce` handshake to the tracker
         // and get the list of peers for this torrent
         let peers = tracker.announce_exchange(info_hash).await?;
-
         self.tracker_ctx = Arc::new(tracker.ctx);
 
-        // listen to events on our peer socket,
-        // that we used to announce to trackers.
-        // spawn tracker event loop
-        // let tx = self.tx.clone();
-        // spawn(async move {
-        //     tracker.run(tx).await;
-        // });
-        self.spawn_peers_tasks(peers).await?;
-        Ok(())
+        Ok(peers)
     }
 }
 

@@ -27,8 +27,8 @@ impl From<Vec<u8>> for Bitfield {
 impl Iterator for Bitfield {
     type Item = BitItem;
     fn next(&mut self) -> Option<Self::Item> {
-        self.curr += 1;
         let bit = self.get(self.curr);
+        self.curr += 1;
         bit
     }
 }
@@ -69,10 +69,9 @@ impl Bitfield {
         // position of the bit/index under slice_index
         let bit_index = index % 8;
 
-        if self.inner.len() - 1 < slice_index {
+        if self.inner.len() - 1 < slice_index || index > self.len() {
             return None;
         }
-
         // byte where `index` lives in
         let byte = self.inner[slice_index];
 
@@ -108,9 +107,6 @@ impl Bitfield {
     pub fn set<I: Into<usize>>(&mut self, index: I) -> Option<u8> {
         let (byte, slice_index, bit_index) = self.get_byte(index)?;
         let r = byte.set_bit(bit_index as u32);
-
-        // 353
-        // 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 252
 
         match r {
             Ok(r) => {
@@ -212,6 +208,9 @@ mod tests {
         let index_b = bitfield.get(24 as usize);
         assert_eq!(index_a, Some(BitItem { bit: 0, index: 23 }));
         assert_eq!(index_b, None);
+
+        let index_a = bitfield.get(2000 as usize);
+        assert_eq!(index_a, None);
     }
 
     #[test]
@@ -246,6 +245,9 @@ mod tests {
             bitfield.get(15 as usize),
             Some(BitItem { bit: 1, index: 15 })
         );
+
+        let r = bitfield.set(500 as usize);
+        assert_eq!(r, None);
     }
 
     #[test]
@@ -265,7 +267,7 @@ mod tests {
         let bits: Vec<u8> = vec![0b1000_0101, 0b0111_0001];
         let mut bitfield = Bitfield::from(bits).into_iter();
 
-        assert_eq!(Some(BitItem { bit: 1, index: 0 }), bitfield.get(0 as usize));
+        assert_eq!(Some(BitItem { bit: 1, index: 0 }), bitfield.next());
         assert_eq!(Some(BitItem { bit: 0, index: 1 }), bitfield.next());
         assert_eq!(Some(BitItem { bit: 0, index: 2 }), bitfield.next());
         assert_eq!(Some(BitItem { bit: 0, index: 3 }), bitfield.next());
@@ -284,5 +286,45 @@ mod tests {
         assert_eq!(Some(BitItem { bit: 1, index: 15 }), bitfield.next());
 
         assert_eq!(None, bitfield.next());
+    }
+
+    #[test]
+    fn receive_lazy_bitfield() {
+        let bitfield = Bitfield::from(vec![0b0000_1111, 0b1111_1111]);
+        let mut empty_bitfield = Bitfield::default();
+
+        assert_eq!(empty_bitfield.inner.len(), 0 as usize);
+
+        let inner = vec![0_u8; bitfield.len_bytes()];
+
+        empty_bitfield = Bitfield::from(inner);
+
+        assert_eq!(empty_bitfield.len_bytes(), 2 as usize);
+
+        empty_bitfield.set(0 as usize);
+
+        assert_eq!(
+            empty_bitfield.get(0 as usize).unwrap(),
+            BitItem { index: 0, bit: 1 }
+        );
+
+        assert_eq!(
+            empty_bitfield.get(1 as usize).unwrap(),
+            BitItem { index: 1, bit: 0 }
+        );
+
+        empty_bitfield.set(1 as usize);
+
+        assert_eq!(
+            empty_bitfield.get(1 as usize).unwrap(),
+            BitItem { index: 1, bit: 1 }
+        );
+
+        empty_bitfield.set(500 as usize);
+
+        assert_eq!(
+            empty_bitfield.get(0 as usize).unwrap(),
+            BitItem { index: 0, bit: 1 }
+        );
     }
 }

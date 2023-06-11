@@ -4,8 +4,8 @@ use std::{
     sync::Arc,
     time::Duration,
 };
-use tokio::io::AsyncWriteExt;
 use tokio::{io::AsyncReadExt, select, sync::mpsc::Sender};
+use tokio::{io::AsyncWriteExt, time::timeout};
 use tokio_util::codec::Framed;
 
 use log::{debug, info};
@@ -38,6 +38,8 @@ pub struct Peer {
     pub pieces: Bitfield,
     /// TCP addr that this peer is listening on
     pub addr: SocketAddr,
+    /// Updated when the peer sends us its peer
+    /// id, in the handshake.
     pub id: Option<[u8; 20]>,
     /// Requests that we'll send to this peer,
     /// once he unchoke us
@@ -89,6 +91,10 @@ impl Peer {
         self.torrent_ctx = Some(ctx);
         self
     }
+    pub fn id(mut self, id: [u8; 20]) -> Self {
+        self.id = Some(id);
+        self
+    }
     pub async fn run(
         &mut self,
         tx: Sender<TorrentMsg>,
@@ -104,17 +110,17 @@ impl Peer {
         let info_hash = get_info_hash(xt);
         let our_handshake = Handshake::new(info_hash, tracker_ctx.peer_id);
 
-        println!("sending handshake {:?}", our_handshake);
-
         // Send Handshake to peer
         socket.write_all(&mut our_handshake.serialize()?).await?;
 
         // Read Handshake from peer
         let mut handshake_buf = [0u8; 68];
-        socket.read_exact(&mut handshake_buf).await?;
-        let their_handshake = Handshake::deserialize(&handshake_buf)?;
+        socket
+            .read_exact(&mut handshake_buf)
+            .await
+            .expect("read handshake_buf");
 
-        println!("received handshake {:?}", their_handshake);
+        let their_handshake = Handshake::deserialize(&handshake_buf)?;
 
         // Validate their handshake against ours
         if !their_handshake.validate(&our_handshake) {
@@ -132,20 +138,20 @@ impl Peer {
         // receive it here, add this information to peer
         // and create a new Bitfield for `Torrent` with the same length,
         // but completely empty
+        let msg = timeout(Duration::new(2, 0), stream.next()).await;
 
-        let msg = stream.next().await;
-        println!("received msg {:?}", msg);
-
-        if let Some(Ok(Message::Bitfield(bitfield))) = msg {
-            // println!("received bitfield {:?}", bitfield);
-            info!("Received Bitfield message from peer {:?}", self.addr);
-            // info!("{:?}", bitfield);
-            // update the bitfield of the `Torrent`
-            // will create a new, empty bitfield, with
-            // the same len
-            tx.send(TorrentMsg::UpdateBitfield(bitfield.inner.len()))
-                .await
-                .unwrap();
+        if let Ok(msg) = msg {
+            if let Some(Ok(Message::Bitfield(bitfield))) = msg {
+                // println!("received bitfield {:?}", bitfield);
+                info!("Received Bitfield message from peer {:?}", self.addr);
+                // info!("{:?}", bitfield);
+                // update the bitfield of the `Torrent`
+                // will create a new, empty bitfield, with
+                // the same len
+                tx.send(TorrentMsg::UpdateBitfield(bitfield.inner.len()))
+                    .await
+                    .unwrap();
+            }
         }
 
         // Send Interested & Unchoke to peer
@@ -169,9 +175,10 @@ impl Peer {
                         }
                         Message::Bitfield(bitfield) => {
                             info!("\t received bitfield");
+                            self.pieces = bitfield;
                             // info!("{:?}", bitfield);
 
-                            // let first = bitfield.into_iter().find(|x| x.bit == 1);
+                            // let first = self.pieces.into_iter().find(|x| x.bit == 1);
                             //
                             // if let Some(first) = first {
                             //     info!("requesting first bit with index {:?}", first.index);
@@ -267,12 +274,80 @@ impl Peer {
     }
 }
 
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
-//
-//     #[test]
-//     fn a() {
-//         //
-//     }
-// }
+#[cfg(test)]
+mod tests {
+    use crate::bitfield::BitItem;
+
+    use super::*;
+
+    #[test]
+    fn piece_picker_algo() {
+        // bitfield of the torrent, representing the pieces
+        // that we have downloaded (if 1)
+        let torrent_bitfield = Bitfield::from(vec![0b0000_0000]);
+
+        // bitfield from Bitfield message
+        let bitfield = Bitfield::from(vec![0b1111_1111]);
+
+        // look for a piece in `bitfield` that has not
+        // been request on `torrent_bitfield`
+        let piece = bitfield
+            .clone()
+            .zip(torrent_bitfield)
+            .find(|(bt, tr)| bt.bit == 1 as u8 && tr.bit == 0);
+
+        if let Some((piece, _)) = piece {
+            assert_eq!(piece, BitItem { index: 0, bit: 1 })
+        }
+
+        // ------------
+
+        let torrent_bitfield = Bitfield::from(vec![0b1000_0000]);
+        let bitfield = Bitfield::from(vec![0b1111_1111]);
+        let piece = bitfield
+            .clone()
+            .zip(torrent_bitfield)
+            .find(|(bt, tr)| bt.bit == 1 as u8 && tr.bit == 0);
+
+        if let Some((piece, _)) = piece {
+            assert_eq!(piece, BitItem { index: 1, bit: 1 })
+        }
+
+        // ------------
+
+        let torrent_bitfield = Bitfield::from(vec![0b1100_0000]);
+        let bitfield = Bitfield::from(vec![0b0111_1111]);
+        let piece = bitfield
+            .clone()
+            .zip(torrent_bitfield)
+            .find(|(bt, tr)| bt.bit == 1 as u8 && tr.bit == 0);
+
+        if let Some((piece, _)) = piece {
+            assert_eq!(piece, BitItem { index: 2, bit: 1 })
+        }
+
+        // ------------
+
+        let torrent_bitfield = Bitfield::from(vec![0b1111_1110]);
+        let bitfield = Bitfield::from(vec![0b1111_1111]);
+        let piece = bitfield
+            .clone()
+            .zip(torrent_bitfield)
+            .find(|(bt, tr)| bt.bit == 1 as u8 && tr.bit == 0);
+
+        if let Some((piece, _)) = piece {
+            assert_eq!(piece, BitItem { index: 7, bit: 1 })
+        }
+
+        // ------------
+
+        let torrent_bitfield = Bitfield::from(vec![0b1111_1111]);
+        let bitfield = Bitfield::from(vec![0b1111_1111]);
+        let piece = bitfield
+            .clone()
+            .zip(torrent_bitfield)
+            .find(|(bt, tr)| bt.bit == 1 as u8 && tr.bit == 0);
+
+        assert_eq!(piece, None)
+    }
+}

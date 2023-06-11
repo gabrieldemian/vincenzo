@@ -19,11 +19,13 @@ async fn main() -> Result<(), Error> {
     let mut torrent = Torrent::new(tx.clone(), rx, m).await;
 
     spawn(async move {
-        torrent.add_magnet().await.unwrap();
-        torrent.run().await.unwrap();
+        let peers = torrent.start().await?;
+        torrent.spawn_peers_tasks(peers).await?;
+        torrent.run().await?;
+        Ok::<_, Error>(())
     })
     .await
-    .unwrap();
+    .unwrap()?;
 
     Ok(())
 }
