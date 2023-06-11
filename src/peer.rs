@@ -14,11 +14,13 @@ use tokio::{net::TcpStream, time::interval};
 use crate::{
     bitfield::Bitfield,
     error::Error,
+    magnet_parser::get_info_hash,
     tcp_wire::{
         lib::BlockInfo,
         messages::{Handshake, Message, PeerCodec},
     },
-    torrent::{Torrent, TorrentCtx, TorrentMsg},
+    torrent::{TorrentCtx, TorrentMsg},
+    tracker::tracker::TrackerCtx,
 };
 
 #[derive(Debug, Clone)]
@@ -40,7 +42,8 @@ pub struct Peer {
     /// Requests that we'll send to this peer,
     /// once he unchoke us
     pub pending_requests: Vec<BlockInfo>,
-    pub torrent: Option<Arc<Torrent>>,
+    pub torrent_ctx: Option<Arc<TorrentCtx>>,
+    pub tracker_ctx: Arc<TrackerCtx>,
 }
 
 impl Default for Peer {
@@ -56,7 +59,8 @@ impl Default for Peer {
             addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
             pending_requests: vec![],
             id: None,
-            torrent: None,
+            torrent_ctx: None,
+            tracker_ctx: Arc::new(TrackerCtx::default()),
         }
     }
 }
@@ -72,19 +76,35 @@ impl From<SocketAddr> for Peer {
 }
 
 impl Peer {
-    pub fn new(torrent: Arc<Torrent>) -> Self {
+    pub fn new(torrent_ctx: Arc<TorrentCtx>) -> Self {
         let mut p = Self::default();
-        p.torrent = Some(torrent);
+        p.torrent_ctx = Some(torrent_ctx);
         p
+    }
+    pub fn addr(mut self, addr: SocketAddr) -> Self {
+        self.addr = addr;
+        self
+    }
+    pub fn torrent_ctx(mut self, ctx: Arc<TorrentCtx>) -> Self {
+        self.torrent_ctx = Some(ctx);
+        self
     }
     pub async fn run(
         &mut self,
-        our_handshake: Handshake,
-        ctx: Arc<TorrentCtx>,
         tx: Sender<TorrentMsg>,
+        tcp_stream: Option<TcpStream>,
     ) -> Result<(), Error> {
         let mut tick_timer = interval(Duration::from_secs(1));
-        let mut socket = TcpStream::connect(self.addr).await?;
+        let mut socket = tcp_stream.unwrap_or(TcpStream::connect(self.addr).await?);
+
+        let torrent_ctx = self.torrent_ctx.clone().unwrap();
+        let tracker_ctx = self.tracker_ctx.clone();
+        let xt = torrent_ctx.magnet.xt.as_ref().unwrap();
+
+        let info_hash = get_info_hash(xt);
+        let our_handshake = Handshake::new(info_hash, tracker_ctx.peer_id);
+
+        println!("sending handshake {:?}", our_handshake);
 
         // Send Handshake to peer
         socket.write_all(&mut our_handshake.serialize()?).await?;
@@ -93,6 +113,8 @@ impl Peer {
         let mut handshake_buf = [0u8; 68];
         socket.read_exact(&mut handshake_buf).await?;
         let their_handshake = Handshake::deserialize(&handshake_buf)?;
+
+        println!("received handshake {:?}", their_handshake);
 
         // Validate their handshake against ours
         if !their_handshake.validate(&our_handshake) {
@@ -110,10 +132,14 @@ impl Peer {
         // receive it here, add this information to peer
         // and create a new Bitfield for `Torrent` with the same length,
         // but completely empty
+
         let msg = stream.next().await;
+        println!("received msg {:?}", msg);
+
         if let Some(Ok(Message::Bitfield(bitfield))) = msg {
+            // println!("received bitfield {:?}", bitfield);
             info!("Received Bitfield message from peer {:?}", self.addr);
-            info!("{:?}", bitfield);
+            // info!("{:?}", bitfield);
             // update the bitfield of the `Torrent`
             // will create a new, empty bitfield, with
             // the same len
@@ -143,18 +169,18 @@ impl Peer {
                         }
                         Message::Bitfield(bitfield) => {
                             info!("\t received bitfield");
-                            info!("{:?}", bitfield);
+                            // info!("{:?}", bitfield);
 
-                            let first = bitfield.into_iter().find(|x| x.bit == 1);
-
-                            if let Some(first) = first {
-                                info!("requesting first bit with index {:?}", first.index);
-                                let block = BlockInfo::new().index(first.index as u32);
-                                sink.send(Message::Request(block)).await?;
-                                // todo: I have to wait until Unchoke to send
-                                // most of the times, Bitfield and Have are immediately
-                                // followed by an Unchoke,
-                            }
+                            // let first = bitfield.into_iter().find(|x| x.bit == 1);
+                            //
+                            // if let Some(first) = first {
+                            //     info!("requesting first bit with index {:?}", first.index);
+                            //     let block = BlockInfo::new().index(first.index as u32);
+                            //     sink.send(Message::Request(block)).await?;
+                            //     // todo: I have to wait until Unchoke to send
+                            //     // most of the times, Bitfield and Have are immediately
+                            //     // followed by an Unchoke,
+                            // }
                         }
                         Message::Unchoke => {
                             self.peer_choking = false;
@@ -173,14 +199,14 @@ impl Peer {
                             // true? update torrent.requested_pieces
                             // send the Request
 
-                            if self.am_interested {
-                                let rp = ctx.requested_pieces.read().await;
-                                let piece = self.pieces.clone().zip(rp.iter()).find(|(p, r)| p.index != **r as usize);
-
-                                if let Some(piece) = piece {
-                                    println!("found a piece {:?}", piece.0);
-                                }
-                            }
+                            // if self.am_interested {
+                            //     let rp = torrent_ctx.requested_pieces.read().await;
+                            //     let piece = self.pieces.clone().zip(rp.iter()).find(|(p, r)| p.index != **r as usize);
+                            //
+                            //     if let Some(piece) = piece {
+                            //         println!("found a piece {:?}", piece.0);
+                            //     }
+                            // }
                         }
                         Message::Choke => {
                             self.peer_choking = true;
@@ -208,9 +234,9 @@ impl Peer {
                             // this client uses the Bitfield as a source of truth
                             // to manage pieces. For each Have message, we will
                             // overwrite the piece_index on the peer bitfield.
-                            self.pieces.set(piece as usize);
+                            // self.pieces.set(piece as usize);
                             let block = BlockInfo::new().index(piece as u32);
-                            // this will be sent, as a request, on Unchoke
+                            // 353
                             self.pending_requests.push(block);
                         }
                         Message::Piece(block) => {
@@ -241,10 +267,12 @@ impl Peer {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn a() {
-        //
-    }
-}
+// #[cfg(test)]
+// mod tests {
+//     use super::*;
+//
+//     #[test]
+//     fn a() {
+//         //
+//     }
+// }

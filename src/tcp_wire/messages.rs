@@ -301,7 +301,7 @@ impl Handshake {
             warn!("! handshake with wrong pstr_len, dropping connection");
             return false;
         }
-        if target.pstr != *b"BitTorrent protocol" {
+        if target.pstr != PSTR {
             warn!("! handshake with wrong pstr, dropping connection");
             return false;
         }

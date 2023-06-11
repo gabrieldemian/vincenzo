@@ -3,6 +3,14 @@ use magnet_url::{Magnet, MagnetError};
 pub fn get_magnet(str: &str) -> Result<Magnet, MagnetError> {
     let mut m = Magnet::new(str)?;
 
+    // Remove URL encoding of Display Name of torrent
+    if let Some(dn) = m.dn.clone() {
+        if let Ok(dn) = urlencoding::decode(&dn) {
+            m.dn = Some(dn.to_string());
+        }
+    }
+
+    // Remove URL encoding of trackers URLs
     let tr: Vec<String> =
         m.tr.iter_mut()
             .map(|x| {

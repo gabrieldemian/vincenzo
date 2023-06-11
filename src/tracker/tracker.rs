@@ -18,11 +18,32 @@ use super::{announce, connect};
 
 #[derive(Debug)]
 pub struct Tracker {
-    pub peer_id: [u8; 20],
-    pub tracker_addr: SocketAddr,
     /// UDP Socket of the `tracker_addr`
+    /// Peers announcing will send handshakes
+    /// to this addr
     pub socket: UdpSocket,
+    pub ctx: TrackerCtx,
+}
+
+#[derive(Debug)]
+pub struct TrackerCtx {
+    /// Our ID for this connected Tracker
+    pub peer_id: [u8; 20],
+    /// UDP Socket of the `socket` in Tracker
+    /// Peers announcing will send handshakes
+    /// to this addr
+    pub tracker_addr: SocketAddr,
     pub connection_id: Option<u64>,
+}
+
+impl Default for TrackerCtx {
+    fn default() -> Self {
+        Self {
+            peer_id: [0u8; 20],
+            tracker_addr: "0.0.0.0:0".parse().unwrap(),
+            connection_id: None,
+        }
+    }
 }
 
 impl Tracker {
@@ -39,23 +60,25 @@ impl Tracker {
                 .map_err(Error::TrackerSocketAddrs)?;
 
             for tracker_addr in addrs {
-                let sock = match Self::new_udp_socket(tracker_addr).await {
-                    Ok(sock) => sock,
+                let socket = match Self::new_udp_socket(tracker_addr).await {
+                    Ok(socket) => socket,
                     Err(_) => {
                         warn!("could not connect to tracker {tracker_addr}");
                         continue;
                     }
                 };
-                let mut client = Tracker {
-                    peer_id: rand::random(),
-                    tracker_addr,
-                    socket: sock,
-                    connection_id: None,
+                let mut tracker = Tracker {
+                    ctx: TrackerCtx {
+                        peer_id: rand::random(),
+                        tracker_addr,
+                        connection_id: None,
+                    },
+                    socket,
                 };
-                if client.connect_exchange().await.is_ok() {
+                if tracker.connect_exchange().await.is_ok() {
                     info!("connected with tracker addr {tracker_addr}");
                     debug!("DNS of the tracker {:?}", tracker);
-                    return Ok(client);
+                    return Ok(tracker);
                 }
             }
         }
@@ -63,7 +86,7 @@ impl Tracker {
     }
 
     pub async fn announce_exchange(&self, infohash: [u8; 20]) -> Result<Vec<Peer>, Error> {
-        let connection_id = match self.connection_id {
+        let connection_id = match self.ctx.connection_id {
             Some(x) => x,
             None => return Err(Error::TrackerNoConnectionId),
         };
@@ -71,7 +94,7 @@ impl Tracker {
         let req = announce::Request::new(
             connection_id,
             infohash,
-            self.peer_id,
+            self.ctx.peer_id,
             self.socket.local_addr()?.port(),
         );
 
@@ -156,7 +179,7 @@ impl Tracker {
             return Err(Error::TrackerResponse);
         }
 
-        self.connection_id.replace(res.connection_id);
+        self.ctx.connection_id.replace(res.connection_id);
         Ok(())
     }
 
