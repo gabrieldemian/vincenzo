@@ -42,15 +42,15 @@ impl BlockInfo {
         Self::default()
     }
     pub fn index(mut self, index: u32) -> Self {
-        self.index = u32::to_be(index);
+        self.index = index;
         self
     }
     pub fn begin(mut self, begin: u32) -> Self {
-        self.begin = u32::to_be(begin);
+        self.begin = begin;
         self
     }
     pub fn len(mut self, len: u32) -> Self {
-        self.len = u32::to_be(len);
+        self.len = len;
         self
     }
     /// Encodes the block info in the network binary protocol's format into the
@@ -94,5 +94,9 @@ impl Block {
         buf.put_u32(self.begin);
         buf.extend_from_slice(&self.block);
         Ok(())
+    }
+
+    pub fn is_valid(&self) -> bool {
+        self.block.len() <= BLOCK_LEN as usize
     }
 }

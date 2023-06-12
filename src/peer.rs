@@ -43,7 +43,7 @@ pub struct Peer {
     pub id: Option<[u8; 20]>,
     /// Requests that we'll send to this peer,
     /// once he unchoke us
-    pub pending_requests: Vec<BlockInfo>,
+    pub pending_pieces: Vec<u32>,
     pub torrent_ctx: Option<Arc<TorrentCtx>>,
     pub tracker_ctx: Arc<TrackerCtx>,
 }
@@ -59,7 +59,7 @@ impl Default for Peer {
             peer_interested: false,
             pieces: Bitfield::default(),
             addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
-            pending_requests: vec![],
+            pending_pieces: vec![],
             id: None,
             torrent_ctx: None,
             tracker_ctx: Arc::new(TrackerCtx::default()),
@@ -139,18 +139,26 @@ impl Peer {
         // and create a new Bitfield for `Torrent` with the same length,
         // but completely empty
         let msg = timeout(Duration::new(2, 0), stream.next()).await;
+        // let msg = stream.next().await;
 
         if let Ok(msg) = msg {
             if let Some(Ok(Message::Bitfield(bitfield))) = msg {
-                // println!("received bitfield {:?}", bitfield);
                 info!("Received Bitfield message from peer {:?}", self.addr);
-                // info!("{:?}", bitfield);
+
                 // update the bitfield of the `Torrent`
                 // will create a new, empty bitfield, with
                 // the same len
-                tx.send(TorrentMsg::UpdateBitfield(bitfield.inner.len()))
+                tx.send(TorrentMsg::UpdateBitfield(bitfield.len_bytes()))
                     .await
                     .unwrap();
+
+                bitfield.clone().for_each(|p| {
+                    self.pending_pieces.push(p.index as u32);
+                });
+                self.pieces = bitfield;
+
+                // debug!("pieces bitfield {:?}", self.pieces);
+                // info!("pending {:?}", self.pending_pieces);
             }
         }
 
@@ -174,20 +182,15 @@ impl Peer {
                             info!("Peer {:?} sent Keepalive", self.addr);
                         }
                         Message::Bitfield(bitfield) => {
-                            info!("\t received bitfield");
+                            info!("\t received late bitfield");
+                            // take entire pieces from bitfield
+                            // and put in pending_requests
+                            bitfield.clone().for_each(|p| {
+                                self.pending_pieces.push(p.index as u32);
+                            });
                             self.pieces = bitfield;
-                            // info!("{:?}", bitfield);
-
-                            // let first = self.pieces.into_iter().find(|x| x.bit == 1);
-                            //
-                            // if let Some(first) = first {
-                            //     info!("requesting first bit with index {:?}", first.index);
-                            //     let block = BlockInfo::new().index(first.index as u32);
-                            //     sink.send(Message::Request(block)).await?;
-                            //     // todo: I have to wait until Unchoke to send
-                            //     // most of the times, Bitfield and Have are immediately
-                            //     // followed by an Unchoke,
-                            // }
+                            // debug!("pieces {:?}", self.pieces);
+                            // info!("pending {:?}", self.pending_pieces);
                         }
                         Message::Unchoke => {
                             self.peer_choking = false;
@@ -196,30 +199,63 @@ impl Peer {
                             // the download flow (Request and Piece) msgs
                             // will start when the peer Unchokes us
                             // send the first request to peer here
-                            // - logic fn piece.request
-                            // loop
-                            // 1 - get next piece from bitfield
-                            // check:
-                            // if it has already been requested,
-                            // on the list: torrent.requested_pieces
-                            // false? go back to 1
-                            // true? update torrent.requested_pieces
-                            // send the Request
+                            // when he answers us,
+                            // on the corresponding Piece message,
+                            // send another Request
+
+                            if self.am_interested {
+                                let piece = self.pending_pieces.pop();
+                                if let Some(piece) = piece {
+                                    info!("available piece {piece}, requesting...");
+
+                                    let block = BlockInfo::new().index(piece);
+                                    let mut rp = torrent_ctx.requested_pieces.write().await;
+
+                                    rp.set(block.index as usize);
+                                    sink.send(Message::Request(block)).await.unwrap();
+                                }
+
+                                // let rp = torrent_ctx.requested_pieces.read().await;
+                                // info!("torrent.requested_pieces {:?}", rp);
+                                // let piece =
+                                //     rp.clone()
+                                //     .zip(self.pieces.clone())
+                                //     .find(|(tp, p)| p.bit == 1 as u8 && tp.bit == 0);
+                                //
+                                // if let Some(piece) = piece {
+                                //     info!("--- found valid, piece, requesting {:?}", piece.1.index);
+                                //     let block = BlockInfo::new().index(piece.1.index as u32);
+                                //     sink.send(Message::Request(block)).await.unwrap();
+                                //
+                                //     let mut rp = torrent_ctx.requested_pieces.write().await;
+                                //     rp.set(piece.1.index);
+                                // }
+                            }
 
                             // if self.am_interested {
                             //     let rp = torrent_ctx.requested_pieces.read().await;
-                            //     let piece = self.pieces.clone().zip(rp.iter()).find(|(p, r)| p.index != **r as usize);
+                            //
+                            //     // find the next piece of the peer pieces,
+                            //     // which has not been requested yet
+                            //     let piece = self.pieces
+                            //         .clone()
+                            //         .zip(rp.clone())
+                            //         .find(|(bt, tr)| bt.bit == 1 as u8 && tr.bit == 0);
                             //
                             //     if let Some(piece) = piece {
-                            //         println!("found a piece {:?}", piece.0);
+                            //         let block = BlockInfo::new().index(piece.0.index as u32);
+                            //         sink.send(Message::Request(block)).await.unwrap();
+                            //
+                            //         let mut rp = torrent_ctx.requested_pieces.write().await;
+                            //         rp.set(piece.0.index);
+                            //         // todo: remove piece from peer.pending_requests
                             //     }
                             // }
                         }
                         Message::Choke => {
+                            info!("Peer {:?} choked us", self.addr);
                             self.peer_choking = true;
-                            self.pending_requests.clear();
-                            info!("Peer {:?} choked us", self);
-                            // clear any pending requests
+                            self.pending_pieces.clear();
                         }
                         Message::Interested => {
                             self.peer_interested = true;
@@ -237,29 +273,41 @@ impl Peer {
                             // a new block, however, some peers, after handshake,
                             // send an incomplete bitfield followed by a sequence of
                             // have's. They do this to try to prevent censhorship
-                            // from ISPs. This is one of the reasons why
-                            // this client uses the Bitfield as a source of truth
-                            // to manage pieces. For each Have message, we will
-                            // overwrite the piece_index on the peer bitfield.
-                            // self.pieces.set(piece as usize);
-                            let block = BlockInfo::new().index(piece as u32);
-                            // 353
-                            self.pending_requests.push(block);
+                            // from ISPs.
+                            // Overwrite pieces on bitfield, if the peer has one
+                            // info!("pieces {:?}", self.pieces);
+                            self.pieces.set(piece as usize);
+                            // todo: add and change set to push_index
+                            self.pending_pieces.push(piece as u32);
+                            // info!("pending {:?}", self.pending_pieces);
                         }
                         Message::Piece(block) => {
-                            // validate block,
-                            // if we requested it,
-                            // if it has 16KiB,
-                            // if the hash is valid,
-                            // false? remove from torrent.requested_blocks
-                            // true? update our bitfield
-                            // send msg to `Disk` tx
-                            // Advertise to the peers that
-                            // doesn't have this piece, that
-                            // we Have it.
-                            // Request another piece
-                            // call fn piece.request from Unchoke logic
-                            // ping pong of request & piece will start
+                            info!("!!! received a block");
+                            info!("index: {:?}", block.index);
+                            info!("begin: {:?}", block.begin);
+                            info!("block size: {:?} KiB", block.block.len() / 1000);
+                            info!("is valid: {:?}", block.is_valid());
+
+                            let rp = torrent_ctx.requested_pieces.read().await;
+                            info!("rp? {:?}", rp);
+                            let was_requested = rp.has(block.index);
+                            info!("was_requested? {:?}", was_requested);
+                            // let was_requested = self.pending_pieces.iter().find(|b| **b == block.index as u32);
+
+                            if was_requested.is_some() && block.is_valid() {
+                                info!("valid block\n");
+                                // send msg to `Disk` tx
+                                // Advertise to the peers that
+                                // doesn't have this piece, that
+                                // we Have it.
+                                // Request another piece
+                                // call fn piece.request from Unchoke logic
+                                // ping pong of request & piece will start
+                            } else {
+                                // block not valid, remove it from requested blocks
+                                // let mut rp = torrent_ctx.requested_pieces.write().await;
+                                // rp.clear(block.index);
+                            }
                         }
                         Message::Cancel(block_info) => {
                             info!("Peer {:?} canceled a block {:?}", self.addr, block_info);
@@ -276,9 +324,33 @@ impl Peer {
 
 #[cfg(test)]
 mod tests {
-    use crate::bitfield::BitItem;
+    use crate::{
+        bitfield::BitItem,
+        tcp_wire::lib::{Block, BLOCK_LEN},
+    };
 
     use super::*;
+
+    #[test]
+    fn validate_block() {
+        // requested pieces from torrent
+        let mut rp = Bitfield::from(vec![0b1000_0000]);
+        // block received from Piece
+        let block = Block {
+            index: 0,
+            block: vec![0u8; BLOCK_LEN as usize],
+            begin: 0,
+        };
+        let was_requested = rp.find(|b| b.index == block.index);
+
+        // check if we requested this block
+        assert!(was_requested.is_some());
+
+        if was_requested.is_some() {
+            // check if the block is 16 <= KiB
+            assert!(block.is_valid());
+        }
+    }
 
     #[test]
     fn piece_picker_algo() {

@@ -56,7 +56,7 @@ impl Default for Bitfield {
 }
 
 impl Bitfield {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self::default()
     }
 
@@ -69,7 +69,7 @@ impl Bitfield {
         // position of the bit/index under slice_index
         let bit_index = index % 8;
 
-        if self.inner.len() - 1 < slice_index || index > self.len() {
+        if self.inner.len() <= slice_index || index > self.len() {
             return None;
         }
         // byte where `index` lives in
@@ -129,6 +129,10 @@ impl Bitfield {
             }
             Err(_) => None,
         }
+    }
+    pub fn push(&mut self, index: usize) -> Option<u8> {
+        //
+        todo!();
     }
     /// Returns the lenght of inner as bits
     pub fn len(&self) -> usize {
@@ -220,6 +224,11 @@ mod tests {
 
         let index_a = bitfield.has(8 as usize);
         assert_eq!(index_a, None);
+
+        let bits: Vec<u8> = vec![];
+        let bitfield = Bitfield::from(bits);
+        let index_a = bitfield.has(8 as usize);
+        assert_eq!(index_a, None);
     }
 
     #[test]
@@ -248,6 +257,11 @@ mod tests {
 
         let r = bitfield.set(500 as usize);
         assert_eq!(r, None);
+
+        let bits: Vec<u8> = vec![];
+        let mut bitfield = Bitfield::from(bits);
+        let r = bitfield.set(500 as usize);
+        assert_eq!(r, None);
     }
 
     #[test]
@@ -260,6 +274,11 @@ mod tests {
 
         bitfield.clear(7 as usize);
         assert_eq!(bitfield.inner[0], 0b0000_0000);
+
+        let bits: Vec<u8> = vec![];
+        let mut bitfield = Bitfield::from(bits);
+        let r = bitfield.set(500 as usize);
+        assert_eq!(r, None);
     }
 
     #[test]

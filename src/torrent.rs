@@ -45,12 +45,12 @@ pub struct Torrent {
 #[derive(Debug)]
 pub struct TorrentCtx {
     pub magnet: Magnet,
-    pub requested_pieces: Arc<RwLock<Vec<u32>>>,
+    pub requested_pieces: Arc<RwLock<Bitfield>>,
 }
 
 impl Torrent {
     pub async fn new(tx: Sender<TorrentMsg>, rx: Receiver<TorrentMsg>, magnet: Magnet) -> Self {
-        let requested_pieces = Arc::new(RwLock::new(Vec::new()));
+        let requested_pieces = Arc::new(RwLock::new(Bitfield::default()));
 
         let tracker_ctx = Arc::new(TrackerCtx::default());
         let ctx = Arc::new(TorrentCtx {
