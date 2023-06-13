@@ -211,6 +211,9 @@ impl Peer {
                                     let block = BlockInfo::new().index(piece);
                                     let mut rp = torrent_ctx.requested_pieces.write().await;
 
+                                    // was_requested is failing because
+                                    // this set is not working because the bitfield
+                                    // does not have the length of the index
                                     rp.set(block.index as usize);
                                     sink.send(Message::Request(block)).await.unwrap();
                                 }

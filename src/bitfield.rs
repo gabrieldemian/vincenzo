@@ -117,6 +117,41 @@ impl Bitfield {
         }
     }
 
+    /// Set a bit. If the given index is out of bounds with the inner vec,
+    /// The vector will be increased dynamically to fit in the bounds of the index.
+    pub fn set_and_push(&mut self, index: usize) -> Option<u8> {
+        // index of the bit
+        let index: usize = index.into();
+        // index of the slice, where the bit lives in
+        let slice_index = index / 8;
+        // position of the bit/index under slice_index
+        let bit_index = index % 8;
+
+        // index is in bounds, no need to increase the inner vec
+        if self.inner.len() > slice_index || index <= self.len() {
+            // byte where `index` lives in
+            let byte = self.inner[slice_index];
+            let r = byte.set_bit(bit_index as u32);
+
+            return match r {
+                Ok(r) => {
+                    self.inner[slice_index] = r;
+                    Some(r)
+                }
+                Err(_) => None,
+            };
+        }
+        // index out of bounds here, will increase the inner vec
+        // to accomodate the given `index`
+
+        // need to grow the inner vec by this number of times
+        let diff = slice_index - self.inner.len();
+        for _ in 0..=diff {
+            self.inner.push(0);
+        }
+        Some(index as u8)
+    }
+
     /// Clear a bit, turn a 1 into a 0
     pub fn clear<I: Into<usize>>(&mut self, index: I) -> Option<u8> {
         let (byte, slice_index, bit_index) = self.get_byte(index)?;
@@ -129,10 +164,6 @@ impl Bitfield {
             }
             Err(_) => None,
         }
-    }
-    pub fn push(&mut self, index: usize) -> Option<u8> {
-        //
-        todo!();
     }
     /// Returns the lenght of inner as bits
     pub fn len(&self) -> usize {
@@ -152,6 +183,28 @@ mod tests {
     fn can_create_from_vec() {
         let bitfield = Bitfield::from(vec![255 as u8]);
         assert_eq!(bitfield.inner, vec![255 as u8]);
+    }
+
+    #[test]
+    fn can_set_and_push() {
+        let mut bitfield = Bitfield::new();
+        // [0..7] [8..15] [16..23] [24..31]
+        bitfield.set_and_push(10);
+        assert_eq!(bitfield.len_bytes(), 2);
+
+        bitfield.set_and_push(23);
+        assert_eq!(bitfield.len_bytes(), 3);
+
+        bitfield.set_and_push(31);
+        assert_eq!(bitfield.len_bytes(), 4);
+
+        let mut bitfield = Bitfield::from(vec![0b0000_0000]);
+        bitfield.set_and_push(2);
+        assert_eq!(
+            bitfield.get(2 as usize).unwrap(),
+            BitItem { index: 2, bit: 1 }
+        );
+        assert_eq!(bitfield.len_bytes(), 1);
     }
 
     #[test]
