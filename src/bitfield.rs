@@ -104,7 +104,7 @@ impl Bitfield {
     }
 
     /// Set a bit, turn a 0 into a 1
-    pub fn set<I: Into<usize>>(&mut self, index: I) -> Option<u8> {
+    pub fn try_set<I: Into<usize>>(&mut self, index: I) -> Option<u8> {
         let (byte, slice_index, bit_index) = self.get_byte(index)?;
         let r = byte.set_bit(bit_index as u32);
 
@@ -117,39 +117,28 @@ impl Bitfield {
         }
     }
 
-    /// Set a bit. If the given index is out of bounds with the inner vec,
-    /// The vector will be increased dynamically to fit in the bounds of the index.
-    pub fn set_and_push(&mut self, index: usize) -> Option<u8> {
+    /// Set a bit. turn a 0 into 1. If the given index is out of bounds with the inner vec,
+    /// The vec will be increased dynamically to fit in the bounds of the index.
+    pub fn set(&mut self, index: usize) -> Option<u8> {
         // index of the bit
         let index: usize = index.into();
         // index of the slice, where the bit lives in
         let slice_index = index / 8;
-        // position of the bit/index under slice_index
-        let bit_index = index % 8;
 
-        // index is in bounds, no need to increase the inner vec
-        if self.inner.len() > slice_index || index <= self.len() {
-            // byte where `index` lives in
-            let byte = self.inner[slice_index];
-            let r = byte.set_bit(bit_index as u32);
-
-            return match r {
-                Ok(r) => {
-                    self.inner[slice_index] = r;
-                    Some(r)
+        // try to set if it is inbound
+        match self.try_set(index) {
+            Some(a) => Some(a),
+            None => {
+                // index out of bounds here, will increase the inner vec
+                // to accomodate the given `index`
+                // need to grow the inner vec by this number of times
+                let diff = slice_index - self.inner.len();
+                for _ in 0..=diff {
+                    self.inner.push(0);
                 }
-                Err(_) => None,
-            };
+                Some(index as u8)
+            }
         }
-        // index out of bounds here, will increase the inner vec
-        // to accomodate the given `index`
-
-        // need to grow the inner vec by this number of times
-        let diff = slice_index - self.inner.len();
-        for _ in 0..=diff {
-            self.inner.push(0);
-        }
-        Some(index as u8)
     }
 
     /// Clear a bit, turn a 1 into a 0
@@ -183,28 +172,6 @@ mod tests {
     fn can_create_from_vec() {
         let bitfield = Bitfield::from(vec![255 as u8]);
         assert_eq!(bitfield.inner, vec![255 as u8]);
-    }
-
-    #[test]
-    fn can_set_and_push() {
-        let mut bitfield = Bitfield::new();
-        // [0..7] [8..15] [16..23] [24..31]
-        bitfield.set_and_push(10);
-        assert_eq!(bitfield.len_bytes(), 2);
-
-        bitfield.set_and_push(23);
-        assert_eq!(bitfield.len_bytes(), 3);
-
-        bitfield.set_and_push(31);
-        assert_eq!(bitfield.len_bytes(), 4);
-
-        let mut bitfield = Bitfield::from(vec![0b0000_0000]);
-        bitfield.set_and_push(2);
-        assert_eq!(
-            bitfield.get(2 as usize).unwrap(),
-            BitItem { index: 2, bit: 1 }
-        );
-        assert_eq!(bitfield.len_bytes(), 1);
     }
 
     #[test]
@@ -285,35 +252,57 @@ mod tests {
     }
 
     #[test]
-    fn can_set_a_bit() {
+    fn can_set() {
+        let mut bitfield = Bitfield::new();
+        // [0..7] [8..15] [16..23] [24..31]
+        bitfield.set(10 as usize);
+        assert_eq!(bitfield.len_bytes(), 2);
+
+        bitfield.set(23 as usize);
+        assert_eq!(bitfield.len_bytes(), 3);
+
+        bitfield.set(31 as usize);
+        assert_eq!(bitfield.len_bytes(), 4);
+
+        let mut bitfield = Bitfield::from(vec![0b0000_0000]);
+        bitfield.set(2 as usize);
+        assert_eq!(
+            bitfield.get(2 as usize).unwrap(),
+            BitItem { index: 2, bit: 1 }
+        );
+        assert_eq!(bitfield.len_bytes(), 1);
+    }
+
+    #[test]
+    fn can_try_set() {
         let bits: Vec<u8> = vec![0b0000_0000, 0b0000_0000];
         let mut bitfield = Bitfield::from(bits);
 
-        bitfield.set(0 as usize);
+        bitfield.try_set(0 as usize);
         assert_eq!(bitfield.inner[0], 0b1000_0000);
         assert_eq!(bitfield.get(0 as usize), Some(BitItem { bit: 1, index: 0 }));
 
-        bitfield.set(7 as usize);
+        bitfield.try_set(7 as usize);
         assert_eq!(bitfield.inner[0], 0b1000_0001);
         assert_eq!(bitfield.get(7 as usize), Some(BitItem { bit: 1, index: 7 }));
 
-        bitfield.set(8 as usize);
+        bitfield.try_set(8 as usize);
         assert_eq!(bitfield.inner[1], 0b1000_0000);
         assert_eq!(bitfield.get(8 as usize), Some(BitItem { bit: 1, index: 8 }));
 
-        bitfield.set(15 as usize);
+        bitfield.try_set(15 as usize);
         assert_eq!(bitfield.inner[1], 0b1000_0001);
         assert_eq!(
             bitfield.get(15 as usize),
             Some(BitItem { bit: 1, index: 15 })
         );
 
-        let r = bitfield.set(500 as usize);
+        let r = bitfield.try_set(500 as usize);
         assert_eq!(r, None);
 
         let bits: Vec<u8> = vec![];
         let mut bitfield = Bitfield::from(bits);
-        let r = bitfield.set(500 as usize);
+        let r = bitfield.try_set(500 as usize);
         assert_eq!(r, None);
     }
 
@@ -330,7 +319,7 @@ mod tests {
 
         let bits: Vec<u8> = vec![];
         let mut bitfield = Bitfield::from(bits);
-        let r = bitfield.set(500 as usize);
+        let r = bitfield.try_set(500 as usize);
         assert_eq!(r, None);
     }
 
@@ -373,7 +362,7 @@ mod tests {
 
         assert_eq!(empty_bitfield.len_bytes(), 2 as usize);
 
-        empty_bitfield.set(0 as usize);
+        empty_bitfield.try_set(0 as usize);
 
         assert_eq!(
             empty_bitfield.get(0 as usize).unwrap(),
@@ -385,14 +374,14 @@ mod tests {
             BitItem { index: 1, bit: 0 }
         );
 
-        empty_bitfield.set(1 as usize);
+        empty_bitfield.try_set(1 as usize);
 
         assert_eq!(
             empty_bitfield.get(1 as usize).unwrap(),
             BitItem { index: 1, bit: 1 }
         );
 
-        empty_bitfield.set(500 as usize);
+        empty_bitfield.try_set(500 as usize);
 
         assert_eq!(
             empty_bitfield.get(0 as usize).unwrap(),

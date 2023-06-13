@@ -204,6 +204,7 @@ impl Peer {
                             // send another Request
 
                             if self.am_interested {
+
                                 let piece = self.pending_pieces.pop();
                                 if let Some(piece) = piece {
                                     info!("available piece {piece}, requesting...");
@@ -280,7 +281,6 @@ impl Peer {
                             // Overwrite pieces on bitfield, if the peer has one
                             // info!("pieces {:?}", self.pieces);
                             self.pieces.set(piece as usize);
-                            // todo: add and change set to push_index
                             self.pending_pieces.push(piece as u32);
                             // info!("pending {:?}", self.pending_pieces);
                         }
