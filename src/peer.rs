@@ -157,8 +157,8 @@ impl Peer {
                 });
                 self.pieces = bitfield;
 
-                // debug!("pieces bitfield {:?}", self.pieces);
-                // info!("pending {:?}", self.pending_pieces);
+                debug!("pieces bitfield {:?}", self.pieces);
+                info!("pending_pieces {:?}", self.pending_pieces);
             }
         }
 
@@ -204,7 +204,6 @@ impl Peer {
                             // send another Request
 
                             if self.am_interested {
-
                                 let piece = self.pending_pieces.pop();
                                 if let Some(piece) = piece {
                                     info!("available piece {piece}, requesting...");
@@ -212,49 +211,13 @@ impl Peer {
                                     let block = BlockInfo::new().index(piece);
                                     let mut rp = torrent_ctx.requested_pieces.write().await;
 
-                                    // was_requested is failing because
-                                    // this set is not working because the bitfield
-                                    // does not have the length of the index
+                                    sink.send(Message::Request(block.clone())).await.unwrap();
                                     rp.set(block.index as usize);
-                                    sink.send(Message::Request(block)).await.unwrap();
+                                    self.pending_pieces.retain(|x| *x != block.index as u32);
+                                    info!("requested, new pending_pieces {:?}", self.pending_pieces);
+                                    info!("requested, new rp {:?}", *rp);
                                 }
-
-                                // let rp = torrent_ctx.requested_pieces.read().await;
-                                // info!("torrent.requested_pieces {:?}", rp);
-                                // let piece =
-                                //     rp.clone()
-                                //     .zip(self.pieces.clone())
-                                //     .find(|(tp, p)| p.bit == 1 as u8 && tp.bit == 0);
-                                //
-                                // if let Some(piece) = piece {
-                                //     info!("--- found valid, piece, requesting {:?}", piece.1.index);
-                                //     let block = BlockInfo::new().index(piece.1.index as u32);
-                                //     sink.send(Message::Request(block)).await.unwrap();
-                                //
-                                //     let mut rp = torrent_ctx.requested_pieces.write().await;
-                                //     rp.set(piece.1.index);
-                                // }
                             }
-
-                            // if self.am_interested {
-                            //     let rp = torrent_ctx.requested_pieces.read().await;
-                            //
-                            //     // find the next piece of the peer pieces,
-                            //     // which has not been requested yet
-                            //     let piece = self.pieces
-                            //         .clone()
-                            //         .zip(rp.clone())
-                            //         .find(|(bt, tr)| bt.bit == 1 as u8 && tr.bit == 0);
-                            //
-                            //     if let Some(piece) = piece {
-                            //         let block = BlockInfo::new().index(piece.0.index as u32);
-                            //         sink.send(Message::Request(block)).await.unwrap();
-                            //
-                            //         let mut rp = torrent_ctx.requested_pieces.write().await;
-                            //         rp.set(piece.0.index);
-                            //         // todo: remove piece from peer.pending_requests
-                            //     }
-                            // }
                         }
                         Message::Choke => {
                             info!("Peer {:?} choked us", self.addr);
@@ -293,11 +256,12 @@ impl Peer {
 
                             let rp = torrent_ctx.requested_pieces.read().await;
                             info!("rp? {:?}", rp);
-                            let was_requested = rp.has(block.index);
-                            info!("was_requested? {:?}", was_requested);
-                            // let was_requested = self.pending_pieces.iter().find(|b| **b == block.index as u32);
 
-                            if was_requested.is_some() && block.is_valid() {
+                            let block_index = block.index as u32;
+                            let was_requested = rp.has(block.index) && self.pending_pieces.contains(&block_index);
+                            info!("was_requested? {:?}", was_requested);
+
+                            if was_requested && block.is_valid() {
                                 info!("valid block\n");
                                 // send msg to `Disk` tx
                                 // Advertise to the peers that
@@ -307,10 +271,16 @@ impl Peer {
                                 // call fn piece.request from Unchoke logic
                                 // ping pong of request & piece will start
                             } else {
-                                // block not valid, remove it from requested blocks
-                                // let mut rp = torrent_ctx.requested_pieces.write().await;
-                                // rp.clear(block.index);
+                                // block not valid nor requested,
+                                // remove it from requested blocks
+                                let mut rp = torrent_ctx.requested_pieces.write().await;
+                                rp.clear(block.index);
+                                self.pending_pieces.retain(|x| *x != block.index as u32);
+                                info!("deleted, new pending_pieces {:?}", self.pending_pieces);
+                                info!("deleted, new rp {:?}", *rp);
                             }
+
+                            // request another piece
                         }
                         Message::Cancel(block_info) => {
                             info!("Peer {:?} canceled a block {:?}", self.addr, block_info);

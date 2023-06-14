@@ -1,6 +1,6 @@
 use std::{
     fmt::Debug,
-    net::{IpAddr, Ipv6Addr, SocketAddr, ToSocketAddrs},
+    net::{IpAddr, Ipv6Addr, SocketAddr, ToSocketAddrs, Ipv4Addr},
     time::Duration,
 };
 
@@ -60,6 +60,7 @@ impl Tracker {
                 .map_err(Error::TrackerSocketAddrs)?;
 
             for tracker_addr in addrs {
+                debug!("trying to connect {tracker_addr:?}");
                 let socket = match Self::new_udp_socket(tracker_addr).await {
                     Ok(socket) => socket,
                     Err(_) => {
@@ -108,7 +109,7 @@ impl Tracker {
         for i in 0..=2 {
             info!("trying to send announce number {i}...");
             self.socket.send(&req.serialize()).await?;
-            match timeout(Duration::new(3, 0), self.socket.recv(&mut res)).await {
+            match timeout(Duration::new(7, 0), self.socket.recv(&mut res)).await {
                 Ok(Ok(lenn)) => {
                     len = lenn;
                     break;
@@ -156,7 +157,7 @@ impl Tracker {
             debug!("sending connect number {i}...");
             self.socket.send(&req.serialize()).await?;
 
-            match timeout(Duration::new(3, 0), self.socket.recv(&mut buf)).await {
+            match timeout(Duration::new(7, 0), self.socket.recv(&mut buf)).await {
                 Ok(Ok(lenn)) => {
                     len = lenn;
                     break;
@@ -187,7 +188,7 @@ impl Tracker {
     // todo: make this non-blocking
     pub async fn new_udp_socket(addr: SocketAddr) -> Result<UdpSocket, Error> {
         let sock = match addr {
-            SocketAddr::V4(_) => UdpSocket::bind("0.0.0.0:6881").await,
+            SocketAddr::V4(_) => UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).await,
             SocketAddr::V6(_) => UdpSocket::bind((Ipv6Addr::UNSPECIFIED, 0)).await,
         }
         .expect("Failed to bind udp socket");

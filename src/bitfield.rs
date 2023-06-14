@@ -1,4 +1,4 @@
-use std::ops::{Deref, DerefMut};
+// use core::iter::Iterator;
 
 use bitlab::*;
 
@@ -33,17 +33,10 @@ impl Iterator for Bitfield {
     }
 }
 
-impl Deref for Bitfield {
-    type Target = Vec<u8>;
-    fn deref(&self) -> &Self::Target {
-        &self.inner
-    }
-}
-
-impl DerefMut for Bitfield {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.inner
-    }
+pub trait IntoIterator {
+    type Item;
+    type IntoIter: Iterator<Item = Self::Item>;
+    fn into_iter(self) -> Self::IntoIter;
 }
 
 impl Default for Bitfield {
@@ -79,10 +72,15 @@ impl Bitfield {
     }
 
     /// Return true if the provided index is 1. False otherwise.
-    pub fn has<I: Into<usize>>(&self, index: I) -> Option<bool> {
-        let (byte, _, bit_index) = self.get_byte(index)?;
-        let r = byte.get_bit(bit_index as u32);
-        Some(r.unwrap())
+    pub fn has<I: Into<usize>>(&self, index: I) -> bool {
+        if let Some((byte, _, bit_index)) = self.get_byte(index) {
+            let r = byte.get_bit(bit_index as u32);
+            if let Ok(r) = r {
+                return r;
+            }
+            return false;
+        }
+        return false;
     }
 
     /// Get a bit and its index
@@ -183,22 +181,22 @@ mod tests {
         let index_b = bitfield.has(3 as usize);
         let index_c = bitfield.has(6 as usize);
         let index_d = bitfield.has(7 as usize);
-        assert_eq!(index_a, Some(true));
-        assert_eq!(index_b, Some(false));
-        assert_eq!(index_c, Some(true));
-        assert_eq!(index_d, Some(false));
+        assert_eq!(index_a, true);
+        assert_eq!(index_b, false);
+        assert_eq!(index_c, true);
+        assert_eq!(index_d, false);
 
         let index_a = bitfield.has(8 as usize);
         let index_b = bitfield.has(9 as usize);
         let index_c = bitfield.has(10 as usize);
         let index_d = bitfield.has(11 as usize);
         let index_e = bitfield.has(12 as usize);
-        assert_eq!(index_a, Some(false));
-        assert_eq!(index_b, Some(false));
-        assert_eq!(index_c, Some(false));
-        assert_eq!(index_d, Some(true));
-        assert_eq!(index_e, Some(true));
-        assert_eq!(index_c, Some(false));
+        assert_eq!(index_a, false);
+        assert_eq!(index_b, false);
+        assert_eq!(index_c, false);
+        assert_eq!(index_d, true);
+        assert_eq!(index_e, true);
+        assert_eq!(index_c, false);
     }
 
     #[test]
@@ -243,12 +241,12 @@ mod tests {
         let bitfield = Bitfield::from(bits);
 
         let index_a = bitfield.has(8 as usize);
-        assert_eq!(index_a, None);
+        assert_eq!(index_a, false);
 
         let bits: Vec<u8> = vec![];
         let bitfield = Bitfield::from(bits);
         let index_a = bitfield.has(8 as usize);
-        assert_eq!(index_a, None);
+        assert_eq!(index_a, false);
     }
 
     #[test]

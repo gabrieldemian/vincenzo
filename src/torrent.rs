@@ -89,7 +89,7 @@ impl Torrent {
         }
     }
 
-    /// each connected peer has its own event loop
+    /// Spawn an event loop for each peer to listen/send messages.
     pub async fn spawn_peers_tasks(&self, peers: Vec<Peer>) -> Result<(), Error> {
         for mut peer in peers {
             peer.torrent_ctx = Some(Arc::clone(&self.ctx));
@@ -106,6 +106,8 @@ impl Torrent {
         Ok(())
     }
 
+    /// Start the Torrent, by sending `connect` and `announce_exchange`
+    /// messages to one of the trackers, and returning a list of peers.
     pub async fn start(&mut self) -> Result<Vec<Peer>, Error> {
         debug!("{:#?}", self.ctx.magnet);
         info!("received add_magnet call");
