@@ -1,14 +1,16 @@
 use std::{
     fmt::Debug,
-    net::{IpAddr, Ipv6Addr, SocketAddr, ToSocketAddrs, Ipv4Addr},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs},
     time::Duration,
 };
 
+use futures::future::join_all;
 use log::{debug, info, warn};
 use tokio::{
     net::UdpSocket,
-    select,
+    select, spawn,
     sync::mpsc::Sender,
+    task::JoinHandle,
     time::{interval, timeout},
 };
 
@@ -16,16 +18,16 @@ use crate::{error::Error, peer::Peer, torrent::TorrentMsg};
 
 use super::{announce, connect};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Tracker {
     /// UDP Socket of the `tracker_addr`
     /// Peers announcing will send handshakes
     /// to this addr
-    pub socket: UdpSocket,
+    pub socket: SocketAddr,
     pub ctx: TrackerCtx,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TrackerCtx {
     /// Our ID for this connected Tracker
     pub peer_id: [u8; 20],
@@ -51,39 +53,66 @@ impl Tracker {
 
     /// Bind UDP socket and send a connect handshake,
     /// to one of the trackers.
-    pub async fn connect<A: ToSocketAddrs + Debug>(trackers: Vec<A>) -> Result<Self, Error> {
+    pub async fn connect<A: ToSocketAddrs + Debug + Send + Sync + 'static>(
+        trackers: Vec<A>,
+    ) -> Result<Self, Error>
+    where
+        <A as std::net::ToSocketAddrs>::Iter: std::marker::Send,
+    {
         info!("...trying to connect to 1 of {:?} trackers", trackers.len());
+        let mut handles: Vec<JoinHandle<Result<Tracker, Error>>> = vec![];
 
         for tracker in trackers {
-            let addrs = tracker
-                .to_socket_addrs()
-                .map_err(Error::TrackerSocketAddrs)?;
+            let handle = spawn(async move {
+                debug!("trying to tracker {tracker:?}");
 
-            for tracker_addr in addrs {
-                debug!("trying to connect {tracker_addr:?}");
-                let socket = match Self::new_udp_socket(tracker_addr).await {
-                    Ok(socket) => socket,
-                    Err(_) => {
-                        warn!("could not connect to tracker {tracker_addr}");
-                        continue;
+                let addrs = tracker
+                    .to_socket_addrs()
+                    .map_err(Error::TrackerSocketAddrs)?;
+
+                for tracker_addr in addrs {
+                    debug!("trying to connect {tracker_addr:?}");
+                    let socket = match Self::new_udp_socket(tracker_addr).await {
+                        Ok(socket) => socket,
+                        Err(_) => {
+                            warn!("could not connect to tracker {tracker_addr}");
+                            continue;
+                        }
+                    };
+                    let mut tracker = Tracker {
+                        ctx: TrackerCtx {
+                            peer_id: rand::random(),
+                            tracker_addr,
+                            connection_id: None,
+                        },
+                        socket: socket.local_addr().unwrap(),
+                    };
+                    if tracker.connect_exchange().await.is_ok() {
+                        info!("connected with tracker addr {tracker_addr}");
+                        debug!("DNS of the tracker {:?}", tracker);
+                        return Ok(tracker);
                     }
-                };
-                let mut tracker = Tracker {
-                    ctx: TrackerCtx {
-                        peer_id: rand::random(),
-                        tracker_addr,
-                        connection_id: None,
-                    },
-                    socket,
-                };
-                if tracker.connect_exchange().await.is_ok() {
-                    info!("connected with tracker addr {tracker_addr}");
-                    debug!("DNS of the tracker {:?}", tracker);
-                    return Ok(tracker);
                 }
-            }
+                Err(Error::TrackerNoHosts)
+            });
+            handles.push(handle);
         }
-        Err(Error::TrackerNoHosts)
+        let r = join_all(handles).await;
+        let r: Vec<Tracker> = r
+            .into_iter()
+            .filter_map(|x| {
+                if let Ok(Ok(x)) = x {
+                    return Some(x);
+                }
+                None
+            })
+            .collect();
+
+        if r.is_empty() {
+            return Err(Error::TrackerNoHosts);
+        }
+
+        Ok(r[0].clone())
     }
 
     pub async fn announce_exchange(&self, infohash: [u8; 20]) -> Result<Vec<Peer>, Error> {
@@ -96,20 +125,22 @@ impl Tracker {
             connection_id,
             infohash,
             self.ctx.peer_id,
-            self.socket.local_addr()?.port(),
+            self.socket.port(),
         );
 
-        debug!("local ip is {}", self.socket.local_addr()?);
+        debug!("local ip is {}", self.socket);
 
         let mut len = 0_usize;
         let mut res = [0u8; Self::ANNOUNCE_RES_BUF_LEN];
+
+        let socket = Self::new_udp_socket(self.socket).await.unwrap();
 
         // will try to connect up to 3 times
         // breaking if succesfull
         for i in 0..=2 {
             info!("trying to send announce number {i}...");
-            self.socket.send(&req.serialize()).await?;
-            match timeout(Duration::new(7, 0), self.socket.recv(&mut res)).await {
+            socket.send(&req.serialize()).await?;
+            match timeout(Duration::new(3, 0), socket.recv(&mut res)).await {
                 Ok(Ok(lenn)) => {
                     len = lenn;
                     break;
@@ -139,7 +170,7 @@ impl Tracker {
         info!("* announce successful");
         info!("res from announce {:?}", res);
 
-        let peers = Self::parse_compact_peer_list(payload, self.socket.local_addr()?.is_ipv6())?;
+        let peers = Self::parse_compact_peer_list(payload, self.socket.is_ipv6())?;
         debug!("got peers: {:#?}", peers);
 
         Ok(peers)
@@ -151,13 +182,15 @@ impl Tracker {
         let mut buf = [0u8; connect::Response::LENGTH];
         let mut len: usize = 0;
 
+        let socket = Self::new_udp_socket(self.socket).await.unwrap();
+
         // will try to connect up to 3 times
         // breaking if succesfull
         for i in 0..=2 {
             debug!("sending connect number {i}...");
-            self.socket.send(&req.serialize()).await?;
+            socket.send(&req.serialize()).await?;
 
-            match timeout(Duration::new(7, 0), self.socket.recv(&mut buf)).await {
+            match timeout(Duration::new(3, 0), socket.recv(&mut buf)).await {
                 Ok(Ok(lenn)) => {
                     len = lenn;
                     break;
@@ -243,13 +276,15 @@ impl Tracker {
         info!("# listening to tracker events...");
         let mut tick_timer = interval(Duration::from_secs(1));
 
+        let socket = Self::new_udp_socket(self.socket).await.unwrap();
+
         let mut buf = [0; 1024];
         loop {
             select! {
                 _ = tick_timer.tick() => {
                     debug!("tick tracker");
                 }
-                Ok(n) = self.socket.recv(&mut buf) => {
+                Ok(n) = socket.recv(&mut buf) => {
                     match n {
                         0 => {
                             warn!("peer closed");
