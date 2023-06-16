@@ -7,9 +7,13 @@ pub enum Error {
     #[error("Failed to send a connect request to the tracker")]
     ConnectSendFailed,
     #[error("Failed to resolve socket address")]
-    TrackerSocketAddrs(#[from] io::Error),
+    PeerSocketAddrs(#[from] io::Error),
+    #[error("Peer resolved to no unusable addresses")]
+    PeerSocketAddr,
     #[error("Tracker resolved to no unusable addresses")]
     TrackerNoHosts,
+    #[error("Peer resolved to no unusable addresses")]
+    TrackerSocketAddr,
     #[error("The response received from the connect handshake was wrong")]
     TrackerResponse,
     #[error("Tried to call announce without calling connect first")]
@@ -18,6 +22,8 @@ pub enum Error {
     TrackerNoConnectionId,
     #[error("The peer list returned by the announce request is not valid")]
     TrackerCompactPeerList,
+    #[error("Could not connect to the UDP socket of the tracker")]
+    TrackerSocketConnect,
     #[error("Error when serializing/deserializing")]
     SpeedyError(#[from] speedy::Error),
     #[error("Error when reading magnet link")]

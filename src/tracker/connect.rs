@@ -1,4 +1,4 @@
-use rand::Rng;
+use log::debug;
 use speedy::{BigEndian, Readable, Writable};
 
 use crate::error::Error;
@@ -20,18 +20,23 @@ impl Default for Request {
 
 impl Request {
     pub(crate) const LENGTH: usize = 16;
-    const MAGIC: u64 = 0x0000_0417_2710_1980;
+    const MAGIC: u64 = 0x41727101980;
 
     pub fn new() -> Self {
         Self {
             protocol_id: Self::MAGIC,
             action: Action::Connect.into(),
-            transaction_id: rand::thread_rng().gen(),
+            transaction_id: rand::random::<u32>(),
         }
     }
 
-    pub fn serialize(&self) -> Vec<u8> {
-        self.write_to_vec_with_ctx(BigEndian {}).unwrap()
+    pub fn serialize(&self) -> [u8; 16] {
+        debug!("sending connect request {self:#?}");
+        let mut buf = [0u8; 16];
+        buf[..8].copy_from_slice(&Self::MAGIC.to_be_bytes());
+        buf[8..12].copy_from_slice(&self.action.to_be_bytes());
+        buf[12..16].copy_from_slice(&self.transaction_id.to_be_bytes());
+        buf
     }
 
     pub fn deserialize(buf: &[u8]) -> Result<(Self, &[u8]), Error> {
@@ -55,22 +60,25 @@ pub struct Response {
 impl Response {
     pub(crate) const LENGTH: usize = 16;
 
-    pub fn new() -> Self {
-        Self {
-            action: 0,
-            transaction_id: 0,
-            connection_id: 0,
-        }
-    }
-
     pub fn deserialize(buf: &[u8]) -> Result<(Self, &[u8]), Error> {
         if buf.len() != Self::LENGTH {
             return Err(Error::TrackerResponse);
         }
 
-        let res = Self::read_from_buffer_with_ctx(BigEndian {}, buf).map_err(Error::SpeedyError)?;
+        let action = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]);
+        let transaction_id = u32::from_be_bytes([buf[4], buf[5], buf[6], buf[7]]);
+        let connection_id = u64::from_be_bytes([
+            buf[8], buf[9], buf[10], buf[11], buf[12], buf[13], buf[14], buf[15],
+        ]);
 
-        Ok((res, &buf[Self::LENGTH..]))
+        Ok((
+            Self {
+                action,
+                transaction_id,
+                connection_id,
+            },
+            &buf[Self::LENGTH..],
+        ))
     }
 
     pub fn serialize(&self) -> Vec<u8> {

@@ -1,15 +1,16 @@
 use std::{
     fmt::Debug,
-    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs},
+    net::{IpAddr, SocketAddr},
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
 use futures::future::join_all;
 use log::{debug, info, warn};
 use tokio::{
-    net::UdpSocket,
+    net::{ToSocketAddrs, UdpSocket},
     select, spawn,
-    sync::mpsc::Sender,
+    sync::mpsc::{self, Sender},
     task::JoinHandle,
     time::{interval, timeout},
 };
@@ -18,12 +19,12 @@ use crate::{error::Error, peer::Peer, torrent::TorrentMsg};
 
 use super::{announce, connect};
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Tracker {
     /// UDP Socket of the `tracker_addr`
     /// Peers announcing will send handshakes
     /// to this addr
-    pub socket: SocketAddr,
+    pub socket: UdpSocket,
     pub ctx: TrackerCtx,
 }
 
@@ -34,7 +35,7 @@ pub struct TrackerCtx {
     /// UDP Socket of the `socket` in Tracker
     /// Peers announcing will send handshakes
     /// to this addr
-    pub tracker_addr: SocketAddr,
+    pub tracker_addr: String,
     pub connection_id: Option<u64>,
 }
 
@@ -53,66 +54,92 @@ impl Tracker {
 
     /// Bind UDP socket and send a connect handshake,
     /// to one of the trackers.
-    pub async fn connect<A: ToSocketAddrs + Debug + Send + Sync + 'static>(
-        trackers: Vec<A>,
-    ) -> Result<Self, Error>
+    /// todo: return only tracker woth the most seeders?
+    pub async fn connect<A>(trackers: Vec<A>) -> Result<Self, Error>
     where
-        <A as std::net::ToSocketAddrs>::Iter: std::marker::Send,
+        A: ToSocketAddrs + Debug + Send + Sync + 'static + std::fmt::Display + Clone,
+        A::Iter: Send,
     {
-        info!("...trying to connect to 1 of {:?} trackers", trackers.len());
-        let mut handles: Vec<JoinHandle<Result<Tracker, Error>>> = vec![];
+        info!("...trying to connect to {:?} trackers", trackers.len());
 
-        for tracker in trackers {
-            let handle = spawn(async move {
-                debug!("trying to tracker {tracker:?}");
+        let (tx, mut rx) = mpsc::channel::<Tracker>(30);
 
-                let addrs = tracker
-                    .to_socket_addrs()
-                    .map_err(Error::TrackerSocketAddrs)?;
+        // Connect to all trackers, return on the first
+        // succesful handshake
+        for tracker_addr in trackers {
+            debug!("trying to connect {tracker_addr:?}");
+            let tx = tx.clone();
 
-                for tracker_addr in addrs {
-                    debug!("trying to connect {tracker_addr:?}");
-                    let socket = match Self::new_udp_socket(tracker_addr).await {
-                        Ok(socket) => socket,
-                        Err(_) => {
-                            warn!("could not connect to tracker {tracker_addr}");
-                            continue;
-                        }
-                    };
-                    let mut tracker = Tracker {
-                        ctx: TrackerCtx {
-                            peer_id: rand::random(),
-                            tracker_addr,
-                            connection_id: None,
-                        },
-                        socket: socket.local_addr().unwrap(),
-                    };
-                    if tracker.connect_exchange().await.is_ok() {
-                        info!("connected with tracker addr {tracker_addr}");
-                        debug!("DNS of the tracker {:?}", tracker);
-                        return Ok(tracker);
+            spawn(async move {
+                let socket = match Self::new_udp_socket(tracker_addr.clone()).await {
+                    Ok(socket) => socket,
+                    Err(_) => {
+                        warn!("could not connect to tracker");
+                        return Ok::<(), Error>(());
                     }
+                };
+                let mut tracker = Tracker {
+                    ctx: TrackerCtx {
+                        peer_id: rand::random(),
+                        tracker_addr: tracker_addr.to_string(),
+                        connection_id: None,
+                    },
+                    socket,
+                };
+                if tracker.connect_exchange().await.is_ok() {
+                    info!("connected_exchange tracker {tracker_addr}");
+                    debug!("DNS of the tracker {tracker:?}");
+                    if let Err(_) = tx.send(tracker).await {
+                        return Ok(());
+                    };
                 }
-                Err(Error::TrackerNoHosts)
+                Ok(())
             });
-            handles.push(handle);
         }
-        let r = join_all(handles).await;
-        let r: Vec<Tracker> = r
-            .into_iter()
-            .filter_map(|x| {
-                if let Ok(Ok(x)) = x {
-                    return Some(x);
+
+        while let Some(tracker) = rx.recv().await {
+            println!("Connect to tracker {tracker:#?}");
+            return Ok(tracker);
+        }
+
+        return Err(Error::TrackerNoHosts);
+    }
+    async fn connect_exchange(&mut self) -> Result<(), Error> {
+        let req = connect::Request::new();
+        let mut buf = [0u8; connect::Response::LENGTH];
+        let mut len: usize = 0;
+
+        // will try to connect up to 3 times
+        // breaking if succesfull
+        for i in 0..=2 {
+            debug!("sending connect number {i}...");
+            self.socket.send(&req.serialize()).await?;
+
+            match timeout(Duration::new(5, 0), self.socket.recv(&mut buf)).await {
+                Ok(Ok(lenn)) => {
+                    len = lenn;
+                    break;
                 }
-                None
-            })
-            .collect();
-
-        if r.is_empty() {
-            return Err(Error::TrackerNoHosts);
+                Err(e) => warn!("error receiving connect response, {e}"),
+                _ => {}
+            }
         }
 
-        Ok(r[0].clone())
+        if len == 0 {
+            return Err(Error::TrackerResponse);
+        }
+
+        let (res, _) = connect::Response::deserialize(&buf)?;
+
+        info!("received res from tracker {res:#?}");
+
+        if res.transaction_id != req.transaction_id || res.action != req.action {
+            warn!("response not valid!");
+            return Err(Error::TrackerResponse);
+        }
+
+        self.ctx.connection_id.replace(res.connection_id);
+        Ok(())
     }
 
     pub async fn announce_exchange(&self, infohash: [u8; 20]) -> Result<Vec<Peer>, Error> {
@@ -125,28 +152,26 @@ impl Tracker {
             connection_id,
             infohash,
             self.ctx.peer_id,
-            self.socket.port(),
+            self.socket.local_addr()?.port(),
         );
 
-        debug!("local ip is {}", self.socket);
+        debug!("local ip is {}", self.socket.local_addr()?);
 
         let mut len = 0_usize;
         let mut res = [0u8; Self::ANNOUNCE_RES_BUF_LEN];
-
-        let socket = Self::new_udp_socket(self.socket).await.unwrap();
 
         // will try to connect up to 3 times
         // breaking if succesfull
         for i in 0..=2 {
             info!("trying to send announce number {i}...");
-            socket.send(&req.serialize()).await?;
-            match timeout(Duration::new(3, 0), socket.recv(&mut res)).await {
+            self.socket.send(&req.serialize()).await?;
+            match timeout(Duration::new(3, 0), self.socket.recv(&mut res)).await {
                 Ok(Ok(lenn)) => {
                     len = lenn;
                     break;
                 }
                 Err(e) => {
-                    warn!("failed to announce {:#?}", e);
+                    warn!("failed to announce {e:#?}");
                 }
                 _ => {}
             }
@@ -170,66 +195,27 @@ impl Tracker {
         info!("* announce successful");
         info!("res from announce {:?}", res);
 
-        let peers = Self::parse_compact_peer_list(payload, self.socket.is_ipv6())?;
+        let peers = Self::parse_compact_peer_list(payload, self.socket.peer_addr()?.is_ipv6())?;
         debug!("got peers: {:#?}", peers);
 
         Ok(peers)
     }
 
     /// Connect is the first step in getting the file
-    async fn connect_exchange(&mut self) -> Result<(), Error> {
-        let req = connect::Request::new();
-        let mut buf = [0u8; connect::Response::LENGTH];
-        let mut len: usize = 0;
-
-        let socket = Self::new_udp_socket(self.socket).await.unwrap();
-
-        // will try to connect up to 3 times
-        // breaking if succesfull
-        for i in 0..=2 {
-            debug!("sending connect number {i}...");
-            socket.send(&req.serialize()).await?;
-
-            match timeout(Duration::new(3, 0), socket.recv(&mut buf)).await {
-                Ok(Ok(lenn)) => {
-                    len = lenn;
-                    break;
-                }
-                Err(e) => info!("error receiving {e}"),
-                _ => {}
-            }
-        }
-
-        if len == 0 {
-            return Err(Error::TrackerResponse);
-        }
-
-        let (res, _) = connect::Response::deserialize(&buf)?;
-
-        info!("received res from tracker {:#?}", res);
-
-        if res.transaction_id != req.transaction_id || res.action != req.action {
-            warn!("response not valid!");
-            return Err(Error::TrackerResponse);
-        }
-
-        self.ctx.connection_id.replace(res.connection_id);
-        Ok(())
-    }
-
     /// Create an UDP Socket for the given tracker address
-    // todo: make this non-blocking
-    pub async fn new_udp_socket(addr: SocketAddr) -> Result<UdpSocket, Error> {
-        let sock = match addr {
-            SocketAddr::V4(_) => UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).await,
-            SocketAddr::V6(_) => UdpSocket::bind((Ipv6Addr::UNSPECIFIED, 0)).await,
+    pub async fn new_udp_socket<A: ToSocketAddrs>(addr: A) -> Result<UdpSocket, Error> {
+        // let socket = match addr {
+        //     SocketAddr::V4(_) => UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).await,
+        //     SocketAddr::V6(_) => UdpSocket::bind((Ipv6Addr::UNSPECIFIED, 0)).await,
+        // };
+        let socket = UdpSocket::bind("0.0.0.0:0").await;
+        if let Ok(socket) = socket {
+            if let Ok(_) = socket.connect(addr).await {
+                return Ok(socket);
+            }
+            return Err(Error::TrackerSocketConnect);
         }
-        .expect("Failed to bind udp socket");
-        sock.connect(addr)
-            .await
-            .expect("Failed to connect to udp socket");
-
-        Ok(sock)
+        Err(Error::TrackerSocketAddr)
     }
 
     fn parse_compact_peer_list(buf: &[u8], is_ipv6: bool) -> Result<Vec<Peer>, Error> {
@@ -276,15 +262,13 @@ impl Tracker {
         info!("# listening to tracker events...");
         let mut tick_timer = interval(Duration::from_secs(1));
 
-        let socket = Self::new_udp_socket(self.socket).await.unwrap();
-
         let mut buf = [0; 1024];
         loop {
             select! {
                 _ = tick_timer.tick() => {
                     debug!("tick tracker");
                 }
-                Ok(n) = socket.recv(&mut buf) => {
+                Ok(n) = self.socket.recv(&mut buf) => {
                     match n {
                         0 => {
                             warn!("peer closed");
@@ -298,3 +282,86 @@ impl Tracker {
         }
     }
 }
+
+// pub async fn connect_test() -> Result<(), Error> {
+//     // Create a UDP socket bound to a specific local address and port
+//     let socket = UdpSocket::bind("0.0.0.0:0").await?;
+//
+//     // Destination address and port for the tracker
+//     socket.connect("tracker1.bt.moack.co.kr:80").await?;
+//
+//     // Build the connect request packet
+//     let mut buf = [0; 16];
+//     buf[..8].copy_from_slice(&0x41727101980u64.to_be_bytes()); // Connection ID: 0x41727101980
+//     buf[8..12].copy_from_slice(&0x00u32.to_be_bytes()); // Action: 0 (connect)
+//     buf[12..16].copy_from_slice(&(0x12345678u32).to_be_bytes()); // Transaction ID: 0x12345678
+//
+//     // Send the connect request packet
+//     socket.send(&buf).await?;
+//
+//     // Receive the connect response
+//     let mut connect_response = [0; 16];
+//     socket.recv(&mut connect_response).await?;
+//     let action = u32::from_be_bytes([
+//         connect_response[0],
+//         connect_response[1],
+//         connect_response[2],
+//         connect_response[3],
+//     ]);
+//     let transaction_id = u32::from_be_bytes([
+//         connect_response[4],
+//         connect_response[5],
+//         connect_response[6],
+//         connect_response[7],
+//     ]);
+//     let connection_id = u64::from_be_bytes([
+//         connect_response[8],
+//         connect_response[9],
+//         connect_response[10],
+//         connect_response[11],
+//         connect_response[12],
+//         connect_response[13],
+//         connect_response[14],
+//         connect_response[15],
+//     ]);
+//
+//     // Check if the response action and transaction ID match the request
+//     if action == 0 && transaction_id == 0x12345678 {
+//         println!("Connection ID: {}", connection_id);
+//
+//         // Prepare the announce request data
+//         // let info_hash = "0123456789abcdef0123456789abcdef01234567".to_owned();
+//         // let peer_id = "ABCDEFGHIJKLMNOPQRST".to_owned();
+//         // let port: u16 = 6881;
+//         // let event = "started";
+//         //
+//         // // Build the announce request packet
+//         // let mut announce_request = Vec::new();
+//         // announce_request.extend_from_slice(&connection_id.to_be_bytes()); // Connection ID
+//         // announce_request.extend_from_slice(&0x00u32.to_be_bytes()); // Action: 1 (announce)
+//         // announce_request.extend_from_slice(&(0x87654321u32).to_be_bytes()); // Transaction ID: 0x87654321
+//         // announce_request.extend_from_slice(info_hash.as_bytes()); // Info Hash
+//         // announce_request.extend_from_slice(peer_id.as_bytes()); // Peer ID
+//         // announce_request.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]); // Downloaded: 0
+//         // announce_request.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]); // Left: 0
+//         // announce_request.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]); // Uploaded: 0
+//         // announce_request.extend_from_slice(&[0x00, 0x00, 0x00, 0x02]); // Event: 2 (started)
+//         // announce_request.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]); // IP Address: 0
+//         // announce_request.extend_from_slice(&[0x00, 0x00, 0x1A, 0xE1]); // Key: 0x1AE1
+//         // announce_request.extend_from_slice(&[0xFF, 0xFF, 0xFF, 0xFF]); // Num Want: -1 (default)
+//         // announce_request.extend_from_slice(&port.to_be_bytes()); // Port
+//         //
+//         // // Send the announce request packet
+//         // socket.send_to(&announce_request, tracker_addr).await?;
+//         //
+//         // // Receive the announce response
+//         // let mut announce_response = [0; 4096];
+//         // let (bytes_read, _src_addr) = socket.recv_from(&mut announce_response).await?;
+//         // let response = &announce_response[..bytes_read];
+//         //
+//         // // Process the response as needed
+//         // println!("Received announce response: {:?}", response);
+//     }
+//
+//     Ok(())
+// }

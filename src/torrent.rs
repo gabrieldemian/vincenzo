@@ -126,6 +126,11 @@ impl Torrent {
 
         Ok(peers)
     }
+    pub async fn start_test(&mut self) -> Result<(), Error> {
+        Tracker::connect_test().await?;
+        Ok(())
+    }
+
 }
 
 // #[cfg(test)]
