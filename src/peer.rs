@@ -8,7 +8,7 @@ use tokio::{io::AsyncReadExt, select, sync::mpsc::Sender};
 use tokio::{io::AsyncWriteExt, time::timeout};
 use tokio_util::codec::Framed;
 
-use log::{debug, info};
+use log::{debug, info, warn};
 use tokio::{net::TcpStream, time::interval};
 
 use crate::{
@@ -139,11 +139,14 @@ impl Peer {
         // and create a new Bitfield for `Torrent` with the same length,
         // but completely empty
         let msg = timeout(Duration::new(2, 0), stream.next()).await;
-        // let msg = stream.next().await;
 
         if let Ok(msg) = msg {
             if let Some(Ok(Message::Bitfield(bitfield))) = msg {
-                info!("Received Bitfield message from peer {:?}", self.addr);
+                info!("------------------------------");
+                info!("| {:?} Bitfield |", self.addr);
+                info!("------------------------------");
+
+                self.pieces = bitfield.clone();
 
                 // update the bitfield of the `Torrent`
                 // will create a new, empty bitfield, with
@@ -152,13 +155,8 @@ impl Peer {
                     .await
                     .unwrap();
 
-                bitfield.clone().for_each(|p| {
-                    self.pending_pieces.push(p.index as u32);
-                });
-                self.pieces = bitfield;
-
-                debug!("pieces bitfield {:?}", self.pieces);
-                info!("pending_pieces {:?}", self.pending_pieces);
+                info!("{:?}", self.pieces);
+                info!("------------------------------\n");
             }
         }
 
@@ -179,22 +177,23 @@ impl Peer {
                     let msg = msg?;
                     match msg {
                         Message::KeepAlive => {
-                            info!("Peer {:?} sent Keepalive", self.addr);
+                            info!("--------------------------------");
+                            info!("| {:?} Keepalive  |", self.addr);
+                            info!("--------------------------------");
                         }
                         Message::Bitfield(bitfield) => {
-                            info!("\t received late bitfield");
                             // take entire pieces from bitfield
                             // and put in pending_requests
-                            bitfield.clone().for_each(|p| {
-                                self.pending_pieces.push(p.index as u32);
-                            });
+                            info!("---------------------------------");
+                            info!("| {:?} Bitfield  |", self.addr);
+                            info!("---------------------------------\n");
                             self.pieces = bitfield;
-                            // debug!("pieces {:?}", self.pieces);
-                            // info!("pending {:?}", self.pending_pieces);
                         }
                         Message::Unchoke => {
                             self.peer_choking = false;
-                            info!("Peer {:?} unchoked us", self.addr);
+                            info!("---------------------------------");
+                            info!("| {:?} Unchoke  |", self.addr);
+                            info!("---------------------------------");
 
                             // the download flow (Request and Piece) msgs
                             // will start when the peer Unchokes us
@@ -204,38 +203,59 @@ impl Peer {
                             // send another Request
 
                             if self.am_interested {
-                                let piece = self.pending_pieces.pop();
-                                if let Some(piece) = piece {
-                                    info!("available piece {piece}, requesting...");
+                                let tr_pieces = torrent_ctx.pieces.lock().await;
+                                info!("tr_pieces {tr_pieces:?}");
+                                // look for a piece in `bitfield` that has not
+                                // been request on `torrent_bitfield`
+                                let piece = self.pieces
+                                    .clone()
+                                    .zip(tr_pieces.clone())
+                                    .find(|(bt, tr)| bt.bit == 1 as u8 && tr.bit == 0);
 
-                                    let block = BlockInfo::new().index(piece);
-                                    let mut rp = torrent_ctx.requested_pieces.write().await;
+                                drop(tr_pieces);
+
+                                info!("piece {piece:?}");
+
+                                if let Some((piece, _)) = piece {
+                                    let block = BlockInfo::new().index(piece.index as u32);
+
+                                    info!("Will request {block:#?}");
 
                                     sink.send(Message::Request(block.clone())).await.unwrap();
-                                    rp.set(block.index as usize);
-                                    self.pending_pieces.retain(|x| *x != block.index as u32);
-                                    info!("requested, new pending_pieces {:?}", self.pending_pieces);
-                                    info!("requested, new rp {:?}", *rp);
+
+                                    let mut tr_pieces = torrent_ctx.pieces.lock().await;
+                                    tr_pieces.set(block.index as usize);
+
+                                    info!("tr_pieces after sent block {tr_pieces:?}");
                                 }
                             }
+                            info!("---------------------------------\n");
                         }
                         Message::Choke => {
-                            info!("Peer {:?} choked us", self.addr);
                             self.peer_choking = true;
                             self.pending_pieces.clear();
+                            info!("--------------------------------");
+                            info!("| {:?} Choke  |", self.addr);
+                            info!("---------------------------------");
                         }
                         Message::Interested => {
+                            info!("------------------------------");
+                            info!("| {:?} Interested  |", self.addr);
+                            info!("-------------------------------");
                             self.peer_interested = true;
-                            info!("Peer {:?} is interested in us", self.addr);
                             // peer will start to request blocks from us soon
                         }
                         Message::NotInterested => {
+                            info!("------------------------------");
+                            info!("| {:?} NotInterested  |", self.addr);
+                            info!("-------------------------------");
                             self.peer_interested = false;
-                            info!("Peer {:?} is not interested in us", self.addr);
                             // peer won't request blocks from us anymore
                         }
                         Message::Have(piece) => {
-                            debug!("Peer {:?} has a piece_index of {:?}", self.addr, piece);
+                            debug!("-------------------------------");
+                            debug!("| {:?} Have  |", self.addr);
+                            info!("--------------------------------");
                             // Have is usually sent when I peer has downloaded
                             // a new block, however, some peers, after handshake,
                             // send an incomplete bitfield followed by a sequence of
@@ -244,25 +264,25 @@ impl Peer {
                             // Overwrite pieces on bitfield, if the peer has one
                             // info!("pieces {:?}", self.pieces);
                             self.pieces.set(piece as usize);
-                            self.pending_pieces.push(piece as u32);
-                            // info!("pending {:?}", self.pending_pieces);
                         }
                         Message::Piece(block) => {
-                            info!("!!! received a block");
+                            info!("-------------------------------");
+                            info!("| {:?} Piece  |", self.addr);
+                            info!("-------------------------------");
                             info!("index: {:?}", block.index);
                             info!("begin: {:?}", block.begin);
+                            info!("block size: {:?} bytes", block.block.len());
                             info!("block size: {:?} KiB", block.block.len() / 1000);
-                            info!("is valid: {:?}", block.is_valid());
+                            info!("is valid? {:?}", block.is_valid());
 
-                            let rp = torrent_ctx.requested_pieces.read().await;
-                            info!("rp? {:?}", rp);
+                            let tr_pieces = torrent_ctx.pieces.lock().await;
+                            info!("tr_pieces {tr_pieces:?}");
 
-                            let block_index = block.index as u32;
-                            let was_requested = rp.has(block.index) && self.pending_pieces.contains(&block_index);
-                            info!("was_requested? {:?}", was_requested);
+                            let was_requested = tr_pieces.has(block.index) && self.pieces.has(block.index);
+                            info!("was_requested? {was_requested:?}");
 
                             if was_requested && block.is_valid() {
-                                info!("valid block\n");
+                                info!("inside if statement");
                                 // send msg to `Disk` tx
                                 // Advertise to the peers that
                                 // doesn't have this piece, that
@@ -273,20 +293,26 @@ impl Peer {
                             } else {
                                 // block not valid nor requested,
                                 // remove it from requested blocks
-                                let mut rp = torrent_ctx.requested_pieces.write().await;
-                                rp.clear(block.index);
-                                self.pending_pieces.retain(|x| *x != block.index as u32);
-                                info!("deleted, new pending_pieces {:?}", self.pending_pieces);
-                                info!("deleted, new rp {:?}", *rp);
+                                warn!("invalid block from Piece");
+                                let mut tr_pieces = torrent_ctx.pieces.lock().await;
+                                tr_pieces.clear(block.index);
+                                info!("deleted, new tr_pieces {:?}", *tr_pieces);
                             }
 
+                            info!("---------------------------------\n");
                             // request another piece
                         }
                         Message::Cancel(block_info) => {
-                            info!("Peer {:?} canceled a block {:?}", self.addr, block_info);
+                            info!("------------------------------");
+                            info!("| {:?} cancel  |", self.addr);
+                            info!("------------------------------");
+                            info!("{block_info:?}");
                         }
                         Message::Request(block_info) => {
-                            info!("Peer {:?} request a block {:?}", self.addr, block_info);
+                            info!("------------------------------");
+                            info!("| {:?} Request  |", self.addr);
+                            info!("------------------------------");
+                            info!("{block_info:?}");
                         }
                     }
                 }
@@ -328,7 +354,7 @@ mod tests {
     #[test]
     fn piece_picker_algo() {
         // bitfield of the torrent, representing the pieces
-        // that we have downloaded (if 1)
+        // that we have downloaded so far (if 1)
         let torrent_bitfield = Bitfield::from(vec![0b0000_0000]);
 
         // bitfield from Bitfield message

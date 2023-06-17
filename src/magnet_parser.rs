@@ -1,5 +1,8 @@
 use magnet_url::{Magnet, MagnetError};
 
+/// Extra trackers in case the torrent doesn't have
+/// a lot of them, will be pushed to the end of the
+/// vector of trackers
 // const MORE_TRACKERS: [&str; 19] = [
 //     "udp://tracker.opentrackr.org:1337/announce",
 //     "udp://opentracker.i2p.rocks:6969/announce",

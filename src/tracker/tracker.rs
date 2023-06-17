@@ -1,17 +1,14 @@
 use std::{
     fmt::Debug,
     net::{IpAddr, SocketAddr},
-    sync::{Arc, Mutex},
     time::Duration,
 };
 
-use futures::future::join_all;
 use log::{debug, info, warn};
 use tokio::{
     net::{ToSocketAddrs, UdpSocket},
     select, spawn,
     sync::mpsc::{self, Sender},
-    task::JoinHandle,
     time::{interval, timeout},
 };
 
@@ -54,7 +51,7 @@ impl Tracker {
 
     /// Bind UDP socket and send a connect handshake,
     /// to one of the trackers.
-    /// todo: return only tracker woth the most seeders?
+    // todo: return only tracker woth the most seeders?
     pub async fn connect<A>(trackers: Vec<A>) -> Result<Self, Error>
     where
         A: ToSocketAddrs + Debug + Send + Sync + 'static + std::fmt::Display + Clone,
@@ -87,8 +84,8 @@ impl Tracker {
                     socket,
                 };
                 if tracker.connect_exchange().await.is_ok() {
-                    info!("connected_exchange tracker {tracker_addr}");
-                    debug!("DNS of the tracker {tracker:?}");
+                    info!("announced to tracker {tracker_addr}");
+                    debug!("DNS of the tracker {tracker:#?}");
                     if let Err(_) = tx.send(tracker).await {
                         return Ok(());
                     };
@@ -98,7 +95,7 @@ impl Tracker {
         }
 
         while let Some(tracker) = rx.recv().await {
-            println!("Connect to tracker {tracker:#?}");
+            debug!("Connected and announced to tracker {tracker:#?}");
             return Ok(tracker);
         }
 
@@ -120,7 +117,9 @@ impl Tracker {
                     len = lenn;
                     break;
                 }
-                Err(e) => warn!("error receiving connect response, {e}"),
+                Err(e) => {
+                    debug!("error receiving connect response, {e}");
+                }
                 _ => {}
             }
         }
@@ -192,7 +191,7 @@ impl Tracker {
             return Err(Error::TrackerResponse);
         }
 
-        info!("* announce successful");
+        info!("* announce successful with {self:?}");
         info!("res from announce {:?}", res);
 
         let peers = Self::parse_compact_peer_list(payload, self.socket.peer_addr()?.is_ipv6())?;

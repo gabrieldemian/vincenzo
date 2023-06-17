@@ -9,9 +9,11 @@ use log::info;
 use magnet_url::Magnet;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::select;
 use tokio::spawn;
 use tokio::sync::mpsc::Receiver;
 use tokio::sync::mpsc::Sender;
+use tokio::sync::Mutex;
 use tokio::sync::RwLock;
 use tokio::time::interval;
 use tokio::time::Interval;
@@ -31,7 +33,6 @@ pub enum TorrentMsg {
 pub struct Torrent {
     pub ctx: Arc<TorrentCtx>,
     pub tracker_ctx: Arc<TrackerCtx>,
-    pub bitfield: Bitfield,
     pub tx: Sender<TorrentMsg>,
     pub rx: Receiver<TorrentMsg>,
     pub tick_interval: Interval,
@@ -45,44 +46,51 @@ pub struct Torrent {
 #[derive(Debug)]
 pub struct TorrentCtx {
     pub magnet: Magnet,
-    pub requested_pieces: Arc<RwLock<Bitfield>>,
+    pub pieces: Mutex<Bitfield>,
+    // pub pieces: RwLock<Bitfield>,
 }
 
 impl Torrent {
     pub async fn new(tx: Sender<TorrentMsg>, rx: Receiver<TorrentMsg>, magnet: Magnet) -> Self {
-        let requested_pieces = Arc::new(RwLock::new(Bitfield::default()));
+        let pieces = Mutex::new(Bitfield::default());
 
         let tracker_ctx = Arc::new(TrackerCtx::default());
-        let ctx = Arc::new(TorrentCtx {
-            requested_pieces,
-            magnet,
-        });
+        let ctx = Arc::new(TorrentCtx { pieces, magnet });
 
         Self {
             tracker_ctx,
             ctx,
-            bitfield: Bitfield::default(),
             in_end_game: false,
             tx,
             rx,
-            tick_interval: interval(Duration::new(1, 0)),
+            tick_interval: interval(Duration::from_millis(300)),
         }
     }
 
     pub async fn run(&mut self) -> Result<(), Error> {
         loop {
-            self.tick_interval.tick().await;
-            debug!("tick torrent");
-            if let Ok(msg) = self.rx.try_recv() {
-                // in the future, this event loop will
-                // send messages to the frontend,
-                // the terminal ui.
-                match msg {
-                    TorrentMsg::UpdateBitfield(len) => {
-                        // create an empty bitfield with the same
-                        // len as the bitfield from the peer
-                        let inner = vec![0_u8; len];
-                        self.bitfield = Bitfield::from(inner);
+            select! {
+                _ = self.tick_interval.tick() => {
+                    debug!("tick torrent");
+                },
+                Some(msg) = self.rx.recv() => {
+                    // in the future, this event loop will
+                    // send messages to the frontend,
+                    // the terminal ui.
+                    match msg {
+                        TorrentMsg::UpdateBitfield(len) => {
+                            // create an empty bitfield with the same
+                            // len as the bitfield from the peer
+                            let ctx = Arc::clone(&self.ctx);
+                            let mut pieces = ctx.pieces.lock().await;
+
+                            // only create the bitfield if we don't have one
+                            // pieces.len() will start at 0
+                            if pieces.len() < len {
+                                let inner = vec![0_u8; len];
+                                *pieces = Bitfield::from(inner);
+                            }
+                        }
                     }
                 }
             }
@@ -126,11 +134,6 @@ impl Torrent {
 
         Ok(peers)
     }
-    pub async fn start_test(&mut self) -> Result<(), Error> {
-        Tracker::connect_test().await?;
-        Ok(())
-    }
-
 }
 
 // #[cfg(test)]
