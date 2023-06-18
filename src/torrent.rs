@@ -7,14 +7,13 @@ use crate::tracker::tracker::TrackerCtx;
 use log::debug;
 use log::info;
 use magnet_url::Magnet;
+use tokio::sync::RwLock;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::select;
 use tokio::spawn;
 use tokio::sync::mpsc::Receiver;
 use tokio::sync::mpsc::Sender;
-use tokio::sync::Mutex;
-use tokio::sync::RwLock;
 use tokio::time::interval;
 use tokio::time::Interval;
 
@@ -46,13 +45,13 @@ pub struct Torrent {
 #[derive(Debug)]
 pub struct TorrentCtx {
     pub magnet: Magnet,
-    pub pieces: Mutex<Bitfield>,
-    // pub pieces: RwLock<Bitfield>,
+    // pub pieces: Mutex<Bitfield>,
+    pub pieces: RwLock<Bitfield>,
 }
 
 impl Torrent {
     pub async fn new(tx: Sender<TorrentMsg>, rx: Receiver<TorrentMsg>, magnet: Magnet) -> Self {
-        let pieces = Mutex::new(Bitfield::default());
+        let pieces = RwLock::new(Bitfield::default());
 
         let tracker_ctx = Arc::new(TrackerCtx::default());
         let ctx = Arc::new(TorrentCtx { pieces, magnet });
@@ -82,7 +81,7 @@ impl Torrent {
                             // create an empty bitfield with the same
                             // len as the bitfield from the peer
                             let ctx = Arc::clone(&self.ctx);
-                            let mut pieces = ctx.pieces.lock().await;
+                            let mut pieces = ctx.pieces.write().await;
 
                             // only create the bitfield if we don't have one
                             // pieces.len() will start at 0

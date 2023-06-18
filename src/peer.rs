@@ -1,4 +1,4 @@
-use futures::{SinkExt, StreamExt};
+use futures::{stream::SplitSink, SinkExt, StreamExt};
 use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
     sync::Arc,
@@ -94,6 +94,46 @@ impl Peer {
     pub fn id(mut self, id: [u8; 20]) -> Self {
         self.id = Some(id);
         self
+    }
+    /// Request a new piece that hasn't been requested before,
+    /// the logic to pick a new piece is simple:
+    /// `find` the next piece from this peer, that doesn't exist
+    /// on the pieces of `Torrent`.
+    /// Ideally, it should request the rarest pieces first,
+    /// but this is good enough for the initial version.
+    pub async fn request_next_piece(
+        &mut self,
+        sink: &mut SplitSink<Framed<TcpStream, PeerCodec>, Message>,
+    ) -> Result<(), Error> {
+        let torrent_ctx = self.torrent_ctx.clone().unwrap();
+        let tr_pieces = torrent_ctx.pieces.read().await;
+        info!("tr_pieces {tr_pieces:?}");
+        // look for a piece in `bitfield` that has not
+        // been request on `torrent_bitfield`
+        let piece = self
+            .pieces
+            .clone()
+            .zip(tr_pieces.clone())
+            .find(|(bt, tr)| bt.bit == 1 as u8 && tr.bit == 0);
+
+        drop(tr_pieces);
+
+        info!("piece {piece:?}");
+
+        if let Some((piece, _)) = piece {
+            let block = BlockInfo::new().index(piece.index as u32);
+
+            info!("Will request {block:#?}");
+
+            sink.send(Message::Request(block.clone())).await?;
+
+            let mut tr_pieces = torrent_ctx.pieces.write().await;
+            tr_pieces.set(block.index as usize);
+
+            info!("tr_pieces after sent block {tr_pieces:?}");
+        }
+
+        Ok(())
     }
     pub async fn run(
         &mut self,
@@ -201,39 +241,13 @@ impl Peer {
                             // when he answers us,
                             // on the corresponding Piece message,
                             // send another Request
-
                             if self.am_interested {
-                                let tr_pieces = torrent_ctx.pieces.lock().await;
-                                info!("tr_pieces {tr_pieces:?}");
-                                // look for a piece in `bitfield` that has not
-                                // been request on `torrent_bitfield`
-                                let piece = self.pieces
-                                    .clone()
-                                    .zip(tr_pieces.clone())
-                                    .find(|(bt, tr)| bt.bit == 1 as u8 && tr.bit == 0);
-
-                                drop(tr_pieces);
-
-                                info!("piece {piece:?}");
-
-                                if let Some((piece, _)) = piece {
-                                    let block = BlockInfo::new().index(piece.index as u32);
-
-                                    info!("Will request {block:#?}");
-
-                                    sink.send(Message::Request(block.clone())).await.unwrap();
-
-                                    let mut tr_pieces = torrent_ctx.pieces.lock().await;
-                                    tr_pieces.set(block.index as usize);
-
-                                    info!("tr_pieces after sent block {tr_pieces:?}");
-                                }
+                                self.request_next_piece(&mut sink).await?;
                             }
                             info!("---------------------------------\n");
                         }
                         Message::Choke => {
                             self.peer_choking = true;
-                            self.pending_pieces.clear();
                             info!("--------------------------------");
                             info!("| {:?} Choke  |", self.addr);
                             info!("---------------------------------");
@@ -275,10 +289,11 @@ impl Peer {
                             info!("block size: {:?} KiB", block.block.len() / 1000);
                             info!("is valid? {:?}", block.is_valid());
 
-                            let tr_pieces = torrent_ctx.pieces.lock().await;
+                            let tr_pieces = torrent_ctx.pieces.read().await;
                             info!("tr_pieces {tr_pieces:?}");
 
                             let was_requested = tr_pieces.has(block.index) && self.pieces.has(block.index);
+                            drop(tr_pieces);
                             info!("was_requested? {was_requested:?}");
 
                             if was_requested && block.is_valid() {
@@ -294,13 +309,14 @@ impl Peer {
                                 // block not valid nor requested,
                                 // remove it from requested blocks
                                 warn!("invalid block from Piece");
-                                let mut tr_pieces = torrent_ctx.pieces.lock().await;
+                                let mut tr_pieces = torrent_ctx.pieces.write().await;
                                 tr_pieces.clear(block.index);
                                 info!("deleted, new tr_pieces {:?}", *tr_pieces);
                             }
 
                             info!("---------------------------------\n");
-                            // request another piece
+
+                            self.request_next_piece(&mut sink).await?;
                         }
                         Message::Cancel(block_info) => {
                             info!("------------------------------");
