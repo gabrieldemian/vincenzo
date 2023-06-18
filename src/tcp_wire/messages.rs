@@ -187,22 +187,26 @@ impl Decoder for PeerCodec {
         let msg_id = MessageId::try_from(buf.get_u8())?;
 
         let msg = match msg_id {
+            // <len=0001><id=0>
             MessageId::Choke => Message::Choke,
+            // <len=0001><id=1>
             MessageId::Unchoke => Message::Unchoke,
+            // <len=0001><id=2>
             MessageId::Interested => Message::Interested,
+            // <len=0001><id=3>
             MessageId::NotInterested => Message::NotInterested,
+            // <len=0005><id=4><piece index>
             MessageId::Have => {
                 let piece_index = buf.get_u32();
-                let piece_index = piece_index
-                    .try_into()
-                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
-                Message::Have(piece_index)
+                Message::Have(piece_index as usize)
             }
+            // <len=0001+X><id=5><bitfield>
             MessageId::Bitfield => {
                 let mut bitfield = vec![0; msg_len - 1];
                 buf.copy_to_slice(&mut bitfield);
                 Message::Bitfield(Bitfield::from(bitfield))
             }
+            // <len=0013><id=6><index><begin><length>
             MessageId::Request => {
                 let index = buf.get_u32();
                 let begin = buf.get_u32();
@@ -210,19 +214,21 @@ impl Decoder for PeerCodec {
 
                 Message::Request(BlockInfo { index, begin, len })
             }
+            // <len=0009+X><id=7><index><begin><block>
             MessageId::Piece => {
-                let index = buf.get_u32();
+                let index = buf.get_u32() as usize;
+                let begin = buf.get_u32();
 
                 let mut block = vec![0; msg_len - 9];
-
                 buf.copy_to_slice(&mut block);
 
                 Message::Piece(Block {
-                    index: index as usize,
-                    begin: buf.get_u32(),
+                    index,
+                    begin,
                     block,
                 })
             }
+            // <len=0013><id=8><index><begin><length>
             MessageId::Cancel => {
                 let index = buf.get_u32();
                 let begin = buf.get_u32();

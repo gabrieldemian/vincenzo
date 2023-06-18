@@ -269,7 +269,7 @@ impl Peer {
                         Message::Have(piece) => {
                             debug!("-------------------------------");
                             debug!("| {:?} Have  |", self.addr);
-                            info!("--------------------------------");
+                            debug!("-------------------------------");
                             // Have is usually sent when I peer has downloaded
                             // a new block, however, some peers, after handshake,
                             // send an incomplete bitfield followed by a sequence of
