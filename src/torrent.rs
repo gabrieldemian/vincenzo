@@ -7,13 +7,13 @@ use crate::tracker::tracker::TrackerCtx;
 use log::debug;
 use log::info;
 use magnet_url::Magnet;
-use tokio::sync::RwLock;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::select;
 use tokio::spawn;
 use tokio::sync::mpsc::Receiver;
 use tokio::sync::mpsc::Sender;
+use tokio::sync::RwLock;
 use tokio::time::interval;
 use tokio::time::Interval;
 
@@ -131,16 +131,13 @@ impl Torrent {
         let peers = tracker.announce_exchange(info_hash).await?;
         self.tracker_ctx = Arc::new(tracker.ctx);
 
+        let local = tracker.local_addr;
+        let peer = tracker.peer_addr;
+
+        spawn(async move {
+            Tracker::run(local, peer).await.unwrap();
+        });
+
         Ok(peers)
     }
 }
-
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
-//
-//     #[test]
-//     fn peers() {
-//         let peer_1 = "";
-//     }
-// }

@@ -22,6 +22,8 @@ pub struct Tracker {
     /// Peers announcing will send handshakes
     /// to this addr
     pub socket: UdpSocket,
+    pub local_addr: SocketAddr,
+    pub peer_addr: SocketAddr,
     pub ctx: TrackerCtx,
 }
 
@@ -81,6 +83,8 @@ impl Tracker {
                         tracker_addr: tracker_addr.to_string(),
                         connection_id: None,
                     },
+                    local_addr: socket.local_addr().unwrap(),
+                    peer_addr: socket.peer_addr().unwrap(),
                     socket,
                 };
                 if tracker.connect_exchange().await.is_ok() {
@@ -257,17 +261,21 @@ impl Tracker {
     // listen to handshake events with this addr here.
     // and this function needs a Sender to the `Torrent`
     #[tracing::instrument]
-    pub async fn run(&self, _tx: Sender<TorrentMsg>) {
+    pub async fn run(local_addr: SocketAddr, peer_addr: SocketAddr) -> Result<(), Error> {
         info!("# listening to tracker events...");
         let mut tick_timer = interval(Duration::from_secs(1));
 
         let mut buf = [0; 1024];
+
+        let socket = UdpSocket::bind(local_addr).await?;
+        socket.connect(peer_addr).await?;
+
         loop {
             select! {
                 _ = tick_timer.tick() => {
                     debug!("tick tracker");
                 }
-                Ok(n) = self.socket.recv(&mut buf) => {
+                Ok(n) = socket.recv(&mut buf) => {
                     match n {
                         0 => {
                             warn!("peer closed");
