@@ -100,7 +100,8 @@ impl Peer {
     /// Request a new piece that hasn't been requested before,
     /// the logic to pick a new piece is simple:
     /// `find` the next piece from this peer, that doesn't exist
-    /// on the pieces of `Torrent`.
+    /// on the pieces of `Torrent`. The result is that the pieces will
+    /// be requested sequentially.
     /// Ideally, it should request the rarest pieces first,
     /// but this is good enough for the initial version.
     pub async fn request_next_piece(

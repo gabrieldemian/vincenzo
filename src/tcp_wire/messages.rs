@@ -107,6 +107,7 @@ impl Encoder<Message> for PeerCodec {
                     .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
                 buf.put_u32(piece_index);
             }
+            // <len=0013><id=6><index><begin><length>
             Message::Request(block) => {
                 let msg_len = 1 + 4 + 4 + 4;
                 buf.put_u32(msg_len);
@@ -307,7 +308,81 @@ impl Handshake {
 
 #[cfg(test)]
 mod tests {
+    use crate::tcp_wire::lib::BLOCK_LEN;
+
     use super::*;
+    use bytes::{Buf, BytesMut};
+    use tokio_util::codec::{Decoder, Encoder};
+
+    #[test]
+    fn request() {
+        let mut buf = BytesMut::new();
+        let msg = Message::Request(BlockInfo::default());
+        PeerCodec.encode(msg.clone(), &mut buf).unwrap();
+
+        // size of buf
+        assert_eq!(buf.len(), 17);
+        // len
+        assert_eq!(buf.get_u32(), 13);
+        // id
+        assert_eq!(buf.get_u8(), MessageId::Request as u8);
+        // index
+        assert_eq!(buf.get_u32(), 0);
+        // begin
+        assert_eq!(buf.get_u32(), 0);
+        // len of block
+        assert_eq!(buf.get_u32(), BLOCK_LEN);
+
+        let mut buf = BytesMut::new();
+        PeerCodec.encode(msg, &mut buf).unwrap();
+        let msg = PeerCodec.decode(&mut buf).unwrap().unwrap();
+
+        match msg {
+            Message::Request(block_info) => {
+                assert_eq!(block_info.index, 0);
+                assert_eq!(block_info.begin, 0);
+                assert_eq!(block_info.len, BLOCK_LEN);
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn piece() {
+        let mut buf = BytesMut::new();
+        let msg = Message::Piece(Block {
+            index: 0,
+            begin: 0,
+            block: vec![0],
+        });
+        PeerCodec.encode(msg.clone(), &mut buf).unwrap();
+
+        // len
+        assert_eq!(buf.get_u32(), 9 + 1);
+        // id
+        assert_eq!(buf.get_u8(), MessageId::Piece as u8);
+        // index
+        assert_eq!(buf.get_u32(), 0);
+        // begin
+        assert_eq!(buf.get_u32(), 0);
+        // block
+        let mut block = BytesMut::new();
+        buf.copy_to_slice(&mut block);
+        assert_eq!(block.len(), 0);
+
+        let mut buf = BytesMut::new();
+        PeerCodec.encode(msg.clone(), &mut buf).unwrap();
+        let msg = PeerCodec.decode(&mut buf).unwrap().unwrap();
+
+        match msg {
+            Message::Piece(block) => {
+                assert_eq!(block.index, 0);
+                assert_eq!(block.begin, 0);
+                assert_eq!(block.block.len(), 1);
+            }
+            _ => panic!(),
+        }
+    }
 
     #[test]
     fn handshake() {
