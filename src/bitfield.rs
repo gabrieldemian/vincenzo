@@ -2,7 +2,7 @@
 
 use bitlab::*;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Bitfield {
     pub inner: Vec<u8>,
     curr: usize,
@@ -39,15 +39,6 @@ pub trait IntoIterator {
     fn into_iter(self) -> Self::IntoIter;
 }
 
-impl Default for Bitfield {
-    fn default() -> Self {
-        Self {
-            curr: 0,
-            inner: vec![],
-        }
-    }
-}
-
 impl Bitfield {
     pub fn new() -> Self {
         Self::default()
@@ -80,7 +71,7 @@ impl Bitfield {
             }
             return false;
         }
-        return false;
+        false
     }
 
     /// Get a bit and its index
@@ -89,15 +80,15 @@ impl Bitfield {
         let r = byte.get_bit(bit_index as u32).unwrap();
 
         if r {
-            return Some(BitItem {
-                bit: 1 as u8,
+            Some(BitItem {
+                bit: 1_u8,
                 index: index.into(),
-            });
+            })
         } else {
-            return Some(BitItem {
-                bit: 0 as u8,
+            Some(BitItem {
+                bit: 0_u8,
                 index: index.into(),
-            });
+            })
         }
     }
 
@@ -119,7 +110,7 @@ impl Bitfield {
     /// The vec will be increased dynamically to fit in the bounds of the index.
     pub fn set(&mut self, index: usize) -> Option<u8> {
         // index of the bit
-        let index: usize = index.into();
+        let index: usize = index;
         // index of the slice, where the bit lives in
         let slice_index = index / 8;
 
@@ -154,11 +145,14 @@ impl Bitfield {
     }
     /// Returns the lenght of inner as bits
     pub fn len(&self) -> usize {
-        self.inner.len() * 8 as usize
+        self.inner.len() * 8_usize
     }
     /// Returns the lenght of inner as bytes
     pub fn len_bytes(&self) -> usize {
         self.inner.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_empty()
     }
 }
 
@@ -168,57 +162,57 @@ mod tests {
 
     #[test]
     fn can_create_from_vec() {
-        let bitfield = Bitfield::from(vec![255 as u8]);
-        assert_eq!(bitfield.inner, vec![255 as u8]);
+        let bitfield = Bitfield::from(vec![255_u8]);
+        assert_eq!(bitfield.inner, vec![255_u8]);
     }
 
     #[test]
     fn can_has_from_bitfield() {
         let bits: Vec<u8> = vec![0b10101010, 0b00011011, 0b00111110];
-        let bitfield = Bitfield::from(bits.clone());
+        let bitfield = Bitfield::from(bits);
 
-        let index_a = bitfield.has(0 as usize);
-        let index_b = bitfield.has(3 as usize);
-        let index_c = bitfield.has(6 as usize);
-        let index_d = bitfield.has(7 as usize);
-        assert_eq!(index_a, true);
-        assert_eq!(index_b, false);
-        assert_eq!(index_c, true);
-        assert_eq!(index_d, false);
+        let index_a = bitfield.has(0_usize);
+        let index_b = bitfield.has(3_usize);
+        let index_c = bitfield.has(6_usize);
+        let index_d = bitfield.has(7_usize);
+        assert!(index_a);
+        assert!(!index_b);
+        assert!(index_c);
+        assert!(!index_d);
 
-        let index_a = bitfield.has(8 as usize);
-        let index_b = bitfield.has(9 as usize);
-        let index_c = bitfield.has(10 as usize);
-        let index_d = bitfield.has(11 as usize);
-        let index_e = bitfield.has(12 as usize);
-        assert_eq!(index_a, false);
-        assert_eq!(index_b, false);
-        assert_eq!(index_c, false);
-        assert_eq!(index_d, true);
-        assert_eq!(index_e, true);
-        assert_eq!(index_c, false);
+        let index_a = bitfield.has(8_usize);
+        let index_b = bitfield.has(9_usize);
+        let index_c = bitfield.has(10_usize);
+        let index_d = bitfield.has(11_usize);
+        let index_e = bitfield.has(12_usize);
+        assert!(!index_a);
+        assert!(!index_b);
+        assert!(!index_c);
+        assert!(index_d);
+        assert!(index_e);
+        assert!(!index_c);
     }
 
     #[test]
     fn can_get_from_bitfield() {
         let bits: Vec<u8> = vec![0b1010_1010, 0b0001_1011, 0b0011_1110];
-        let bitfield = Bitfield::from(bits.clone());
+        let bitfield = Bitfield::from(bits);
 
-        let index_a = bitfield.get(0 as usize);
-        let index_b = bitfield.get(3 as usize);
-        let index_c = bitfield.get(6 as usize);
-        let index_d = bitfield.get(7 as usize);
+        let index_a = bitfield.get(0_usize);
+        let index_b = bitfield.get(3_usize);
+        let index_c = bitfield.get(6_usize);
+        let index_d = bitfield.get(7_usize);
 
         assert_eq!(index_a, Some(BitItem { bit: 1, index: 0 }));
         assert_eq!(index_b, Some(BitItem { bit: 0, index: 3 }));
         assert_eq!(index_c, Some(BitItem { bit: 1, index: 6 }));
         assert_eq!(index_d, Some(BitItem { bit: 0, index: 7 }));
 
-        let index_a = bitfield.get(8 as usize);
-        let index_b = bitfield.get(9 as usize);
-        let index_c = bitfield.get(10 as usize);
-        let index_d = bitfield.get(11 as usize);
-        let index_e = bitfield.get(12 as usize);
+        let index_a = bitfield.get(8_usize);
+        let index_b = bitfield.get(9_usize);
+        let index_c = bitfield.get(10_usize);
+        let index_d = bitfield.get(11_usize);
+        let index_e = bitfield.get(12_usize);
 
         assert_eq!(index_a, Some(BitItem { bit: 0, index: 8 }));
         assert_eq!(index_b, Some(BitItem { bit: 0, index: 9 }));
@@ -226,12 +220,12 @@ mod tests {
         assert_eq!(index_d, Some(BitItem { bit: 1, index: 11 }));
         assert_eq!(index_e, Some(BitItem { bit: 1, index: 12 }));
 
-        let index_a = bitfield.get(23 as usize);
-        let index_b = bitfield.get(24 as usize);
+        let index_a = bitfield.get(23_usize);
+        let index_b = bitfield.get(24_usize);
         assert_eq!(index_a, Some(BitItem { bit: 0, index: 23 }));
         assert_eq!(index_b, None);
 
-        let index_a = bitfield.get(2000 as usize);
+        let index_a = bitfield.get(2000_usize);
         assert_eq!(index_a, None);
     }
 
@@ -240,34 +234,31 @@ mod tests {
         let bits: Vec<u8> = vec![0b10101010];
         let bitfield = Bitfield::from(bits);
 
-        let index_a = bitfield.has(8 as usize);
-        assert_eq!(index_a, false);
+        let index_a = bitfield.has(8_usize);
+        assert!(!index_a);
 
         let bits: Vec<u8> = vec![];
         let bitfield = Bitfield::from(bits);
-        let index_a = bitfield.has(8 as usize);
-        assert_eq!(index_a, false);
+        let index_a = bitfield.has(8_usize);
+        assert!(!index_a);
     }
 
     #[test]
     fn can_set() {
         let mut bitfield = Bitfield::new();
         // [0..7] [8..15] [16..23] [24..31]
-        bitfield.set(10 as usize);
+        bitfield.set(10_usize);
         assert_eq!(bitfield.len_bytes(), 2);
 
-        bitfield.set(23 as usize);
+        bitfield.set(23_usize);
         assert_eq!(bitfield.len_bytes(), 3);
 
-        bitfield.set(31 as usize);
+        bitfield.set(31_usize);
         assert_eq!(bitfield.len_bytes(), 4);
 
         let mut bitfield = Bitfield::from(vec![0b0000_0000]);
-        bitfield.set(2 as usize);
-        assert_eq!(
-            bitfield.get(2 as usize).unwrap(),
-            BitItem { index: 2, bit: 1 }
-        );
+        bitfield.set(2_usize);
+        assert_eq!(bitfield.get(2_usize).unwrap(), BitItem { index: 2, bit: 1 });
         assert_eq!(bitfield.len_bytes(), 1);
     }
 
@@ -276,31 +267,28 @@ mod tests {
         let bits: Vec<u8> = vec![0b0000_0000, 0b0000_0000];
         let mut bitfield = Bitfield::from(bits);
 
-        bitfield.try_set(0 as usize);
+        bitfield.try_set(0_usize);
         assert_eq!(bitfield.inner[0], 0b1000_0000);
-        assert_eq!(bitfield.get(0 as usize), Some(BitItem { bit: 1, index: 0 }));
+        assert_eq!(bitfield.get(0_usize), Some(BitItem { bit: 1, index: 0 }));
 
-        bitfield.try_set(7 as usize);
+        bitfield.try_set(7_usize);
         assert_eq!(bitfield.inner[0], 0b1000_0001);
-        assert_eq!(bitfield.get(7 as usize), Some(BitItem { bit: 1, index: 7 }));
+        assert_eq!(bitfield.get(7_usize), Some(BitItem { bit: 1, index: 7 }));
 
-        bitfield.try_set(8 as usize);
+        bitfield.try_set(8_usize);
         assert_eq!(bitfield.inner[1], 0b1000_0000);
-        assert_eq!(bitfield.get(8 as usize), Some(BitItem { bit: 1, index: 8 }));
+        assert_eq!(bitfield.get(8_usize), Some(BitItem { bit: 1, index: 8 }));
 
-        bitfield.try_set(15 as usize);
+        bitfield.try_set(15_usize);
         assert_eq!(bitfield.inner[1], 0b1000_0001);
-        assert_eq!(
-            bitfield.get(15 as usize),
-            Some(BitItem { bit: 1, index: 15 })
-        );
+        assert_eq!(bitfield.get(15_usize), Some(BitItem { bit: 1, index: 15 }));
 
-        let r = bitfield.try_set(500 as usize);
+        let r = bitfield.try_set(500_usize);
         assert_eq!(r, None);
 
         let bits: Vec<u8> = vec![];
         let mut bitfield = Bitfield::from(bits);
-        let r = bitfield.try_set(500 as usize);
+        let r = bitfield.try_set(500_usize);
         assert_eq!(r, None);
     }
 
@@ -309,22 +297,22 @@ mod tests {
         let bits: Vec<u8> = vec![0b1000_0001];
         let mut bitfield = Bitfield::from(bits);
 
-        bitfield.clear(0 as usize);
+        bitfield.clear(0_usize);
         assert_eq!(bitfield.inner[0], 0b0000_0001);
 
-        bitfield.clear(7 as usize);
+        bitfield.clear(7_usize);
         assert_eq!(bitfield.inner[0], 0b0000_0000);
 
         let bits: Vec<u8> = vec![];
         let mut bitfield = Bitfield::from(bits);
-        let r = bitfield.try_set(500 as usize);
+        let r = bitfield.try_set(500_usize);
         assert_eq!(r, None);
     }
 
     #[test]
     fn can_iter_a_bit() {
         let bits: Vec<u8> = vec![0b1000_0101, 0b0111_0001];
-        let mut bitfield = Bitfield::from(bits).into_iter();
+        let mut bitfield = Bitfield::from(bits);
 
         assert_eq!(Some(BitItem { bit: 1, index: 0 }), bitfield.next());
         assert_eq!(Some(BitItem { bit: 0, index: 1 }), bitfield.next());
@@ -352,37 +340,37 @@ mod tests {
         let bitfield = Bitfield::from(vec![0b0000_1111, 0b1111_1111]);
         let mut empty_bitfield = Bitfield::default();
 
-        assert_eq!(empty_bitfield.inner.len(), 0 as usize);
+        assert_eq!(empty_bitfield.inner.len(), 0_usize);
 
         let inner = vec![0_u8; bitfield.len_bytes()];
 
         empty_bitfield = Bitfield::from(inner);
 
-        assert_eq!(empty_bitfield.len_bytes(), 2 as usize);
+        assert_eq!(empty_bitfield.len_bytes(), 2_usize);
 
-        empty_bitfield.try_set(0 as usize);
+        empty_bitfield.try_set(0_usize);
 
         assert_eq!(
-            empty_bitfield.get(0 as usize).unwrap(),
+            empty_bitfield.get(0_usize).unwrap(),
             BitItem { index: 0, bit: 1 }
         );
 
         assert_eq!(
-            empty_bitfield.get(1 as usize).unwrap(),
+            empty_bitfield.get(1_usize).unwrap(),
             BitItem { index: 1, bit: 0 }
         );
 
-        empty_bitfield.try_set(1 as usize);
+        empty_bitfield.try_set(1_usize);
 
         assert_eq!(
-            empty_bitfield.get(1 as usize).unwrap(),
+            empty_bitfield.get(1_usize).unwrap(),
             BitItem { index: 1, bit: 1 }
         );
 
-        empty_bitfield.try_set(500 as usize);
+        empty_bitfield.try_set(500_usize);
 
         assert_eq!(
-            empty_bitfield.get(0 as usize).unwrap(),
+            empty_bitfield.get(0_usize).unwrap(),
             BitItem { index: 0, bit: 1 }
         );
     }

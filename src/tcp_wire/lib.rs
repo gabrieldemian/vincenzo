@@ -56,11 +56,7 @@ impl BlockInfo {
     /// Encodes the block info in the network binary protocol's format into the
     /// given buffer.
     pub fn encode(&self, buf: &mut BytesMut) -> io::Result<()> {
-        let piece_index = self
-            .index
-            .try_into()
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
-        buf.put_u32(piece_index);
+        buf.put_u32(self.index);
         buf.put_u32(self.begin);
         buf.put_u32(self.len);
         Ok(())

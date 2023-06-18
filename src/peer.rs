@@ -71,17 +71,19 @@ impl Default for Peer {
 // an announce request with a tracker
 impl From<SocketAddr> for Peer {
     fn from(addr: SocketAddr) -> Self {
-        let mut s: Self = Self::default();
-        s.addr = addr;
-        s
+        Peer {
+            addr,
+            ..Default::default()
+        }
     }
 }
 
 impl Peer {
     pub fn new(torrent_ctx: Arc<TorrentCtx>) -> Self {
-        let mut p = Self::default();
-        p.torrent_ctx = Some(torrent_ctx);
-        p
+        Peer {
+            torrent_ctx: Some(torrent_ctx),
+            ..Default::default()
+        }
     }
     pub fn addr(mut self, addr: SocketAddr) -> Self {
         self.addr = addr;
@@ -114,7 +116,7 @@ impl Peer {
             .pieces
             .clone()
             .zip(tr_pieces.clone())
-            .find(|(bt, tr)| bt.bit == 1 as u8 && tr.bit == 0);
+            .find(|(bt, tr)| bt.bit == 1_u8 && tr.bit == 0);
 
         drop(tr_pieces);
 
@@ -151,7 +153,7 @@ impl Peer {
         let our_handshake = Handshake::new(info_hash, tracker_ctx.peer_id);
 
         // Send Handshake to peer
-        socket.write_all(&mut our_handshake.serialize()?).await?;
+        socket.write_all(&our_handshake.serialize()?).await?;
 
         // Read Handshake from peer
         let mut handshake_buf = [0u8; 68];
@@ -180,24 +182,22 @@ impl Peer {
         // but completely empty
         let msg = timeout(Duration::new(2, 0), stream.next()).await;
 
-        if let Ok(msg) = msg {
-            if let Some(Ok(Message::Bitfield(bitfield))) = msg {
-                info!("------------------------------");
-                info!("| {:?} Bitfield |", self.addr);
-                info!("------------------------------");
+        if let Ok(Some(Ok(Message::Bitfield(bitfield)))) = msg {
+            info!("------------------------------");
+            info!("| {:?} Bitfield |", self.addr);
+            info!("------------------------------");
 
-                self.pieces = bitfield.clone();
+            self.pieces = bitfield.clone();
 
-                // update the bitfield of the `Torrent`
-                // will create a new, empty bitfield, with
-                // the same len
-                tx.send(TorrentMsg::UpdateBitfield(bitfield.len_bytes()))
-                    .await
-                    .unwrap();
+            // update the bitfield of the `Torrent`
+            // will create a new, empty bitfield, with
+            // the same len
+            tx.send(TorrentMsg::UpdateBitfield(bitfield.len_bytes()))
+                .await
+                .unwrap();
 
-                info!("{:?}", self.pieces);
-                info!("------------------------------\n");
-            }
+            info!("{:?}", self.pieces);
+            info!("------------------------------\n");
         }
 
         // Send Interested & Unchoke to peer
@@ -277,7 +277,7 @@ impl Peer {
                             // from ISPs.
                             // Overwrite pieces on bitfield, if the peer has one
                             // info!("pieces {:?}", self.pieces);
-                            self.pieces.set(piece as usize);
+                            self.pieces.set(piece);
                         }
                         Message::Piece(block) => {
                             info!("-------------------------------");
@@ -379,9 +379,8 @@ mod tests {
         // look for a piece in `bitfield` that has not
         // been request on `torrent_bitfield`
         let piece = bitfield
-            .clone()
             .zip(torrent_bitfield)
-            .find(|(bt, tr)| bt.bit == 1 as u8 && tr.bit == 0);
+            .find(|(bt, tr)| bt.bit == 1_u8 && tr.bit == 0);
 
         if let Some((piece, _)) = piece {
             assert_eq!(piece, BitItem { index: 0, bit: 1 })
@@ -392,9 +391,8 @@ mod tests {
         let torrent_bitfield = Bitfield::from(vec![0b1000_0000]);
         let bitfield = Bitfield::from(vec![0b1111_1111]);
         let piece = bitfield
-            .clone()
             .zip(torrent_bitfield)
-            .find(|(bt, tr)| bt.bit == 1 as u8 && tr.bit == 0);
+            .find(|(bt, tr)| bt.bit == 1_u8 && tr.bit == 0);
 
         if let Some((piece, _)) = piece {
             assert_eq!(piece, BitItem { index: 1, bit: 1 })
@@ -405,9 +403,8 @@ mod tests {
         let torrent_bitfield = Bitfield::from(vec![0b1100_0000]);
         let bitfield = Bitfield::from(vec![0b0111_1111]);
         let piece = bitfield
-            .clone()
             .zip(torrent_bitfield)
-            .find(|(bt, tr)| bt.bit == 1 as u8 && tr.bit == 0);
+            .find(|(bt, tr)| bt.bit == 1_u8 && tr.bit == 0);
 
         if let Some((piece, _)) = piece {
             assert_eq!(piece, BitItem { index: 2, bit: 1 })
@@ -418,9 +415,8 @@ mod tests {
         let torrent_bitfield = Bitfield::from(vec![0b1111_1110]);
         let bitfield = Bitfield::from(vec![0b1111_1111]);
         let piece = bitfield
-            .clone()
             .zip(torrent_bitfield)
-            .find(|(bt, tr)| bt.bit == 1 as u8 && tr.bit == 0);
+            .find(|(bt, tr)| bt.bit == 1_u8 && tr.bit == 0);
 
         if let Some((piece, _)) = piece {
             assert_eq!(piece, BitItem { index: 7, bit: 1 })
@@ -431,9 +427,8 @@ mod tests {
         let torrent_bitfield = Bitfield::from(vec![0b1111_1111]);
         let bitfield = Bitfield::from(vec![0b1111_1111]);
         let piece = bitfield
-            .clone()
             .zip(torrent_bitfield)
-            .find(|(bt, tr)| bt.bit == 1 as u8 && tr.bit == 0);
+            .find(|(bt, tr)| bt.bit == 1_u8 && tr.bit == 0);
 
         assert_eq!(piece, None)
     }

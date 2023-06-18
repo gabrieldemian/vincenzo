@@ -86,7 +86,7 @@ impl Tracker {
                 if tracker.connect_exchange().await.is_ok() {
                     info!("announced to tracker {tracker_addr}");
                     debug!("DNS of the tracker {tracker:#?}");
-                    if let Err(_) = tx.send(tracker).await {
+                    if tx.send(tracker).await.is_err() {
                         return Ok(());
                     };
                 }
@@ -99,7 +99,7 @@ impl Tracker {
             return Ok(tracker);
         }
 
-        return Err(Error::TrackerNoHosts);
+        Err(Error::TrackerNoHosts)
     }
     async fn connect_exchange(&mut self) -> Result<(), Error> {
         let req = connect::Request::new();

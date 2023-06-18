@@ -207,34 +207,24 @@ impl Decoder for PeerCodec {
                 let index = buf.get_u32();
                 let begin = buf.get_u32();
                 let len = buf.get_u32();
-                let index = index
-                    .try_into()
-                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
 
                 Message::Request(BlockInfo { index, begin, len })
             }
             MessageId::Piece => {
                 let index = buf.get_u32();
-                let index = index
-                    .try_into()
-                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
 
                 let mut block = vec![0; msg_len - 9];
 
                 buf.copy_to_slice(&mut block);
 
                 Message::Piece(Block {
-                    index,
+                    index: index as usize,
                     begin: buf.get_u32(),
                     block,
                 })
             }
             MessageId::Cancel => {
                 let index = buf.get_u32();
-                let index = index
-                    .try_into()
-                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
-
                 let begin = buf.get_u32();
                 let len = buf.get_u32();
 
@@ -293,7 +283,7 @@ impl Handshake {
             warn!("! invalid peer_id from receiving handshake");
             return false;
         }
-        if self.info_hash != self.info_hash {
+        if self.info_hash != target.info_hash {
             warn!("! info_hash from receiving handshake does not match ours");
             return false;
         }
