@@ -4,7 +4,7 @@ use std::{
     sync::Arc,
     time::Duration,
 };
-use tokio::{io::AsyncReadExt, select, sync::mpsc::Sender};
+use tokio::{io::AsyncReadExt, select, sync::mpsc::Sender, time::Instant};
 use tokio::{io::AsyncWriteExt, time::timeout};
 use tokio_util::codec::Framed;
 
@@ -209,10 +209,18 @@ impl Peer {
         sink.send(Message::Unchoke).await?;
         self.am_choking = false;
 
+        let keepalive_interval = Duration::from_secs(120);
+        let mut last_tick = Instant::now();
+
         loop {
             select! {
                 _ = tick_timer.tick() => {
                     debug!("tick peer {:?}", self.addr);
+                    // send Keepalive every 2 minutes
+                    if last_tick.elapsed() >= keepalive_interval {
+                        last_tick = Instant::now();
+                        sink.send(Message::KeepAlive).await?;
+                    }
                 }
                 Some(msg) = stream.next() => {
                     let msg = msg?;
