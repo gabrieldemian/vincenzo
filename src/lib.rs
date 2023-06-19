@@ -1,5 +1,6 @@
 pub mod bitfield;
 pub mod cli;
+pub mod disk;
 pub mod error;
 pub mod frontend;
 pub mod magnet_parser;

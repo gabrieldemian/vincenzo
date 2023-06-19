@@ -1,4 +1,5 @@
 use crate::bitfield::Bitfield;
+use crate::disk::DiskMsg;
 use crate::error::Error;
 use crate::magnet_parser::get_info_hash;
 use crate::peer::Peer;
@@ -33,6 +34,7 @@ pub struct Torrent {
     pub ctx: Arc<TorrentCtx>,
     pub tracker_ctx: Arc<TrackerCtx>,
     pub tx: Sender<TorrentMsg>,
+    pub disk_tx: Sender<DiskMsg>,
     pub rx: Receiver<TorrentMsg>,
     pub tick_interval: Interval,
     pub in_end_game: bool,
@@ -50,7 +52,12 @@ pub struct TorrentCtx {
 }
 
 impl Torrent {
-    pub async fn new(tx: Sender<TorrentMsg>, rx: Receiver<TorrentMsg>, magnet: Magnet) -> Self {
+    pub async fn new(
+        tx: Sender<TorrentMsg>,
+        disk_tx: Sender<DiskMsg>,
+        rx: Receiver<TorrentMsg>,
+        magnet: Magnet,
+    ) -> Self {
         let pieces = RwLock::new(Bitfield::default());
 
         let tracker_ctx = Arc::new(TrackerCtx::default());
@@ -60,6 +67,7 @@ impl Torrent {
             tracker_ctx,
             ctx,
             in_end_game: false,
+            disk_tx,
             tx,
             rx,
             tick_interval: interval(Duration::from_millis(300)),

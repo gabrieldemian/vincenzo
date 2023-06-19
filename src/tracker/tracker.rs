@@ -8,11 +8,11 @@ use log::{debug, info, warn};
 use tokio::{
     net::{ToSocketAddrs, UdpSocket},
     select, spawn,
-    sync::mpsc::{self, Sender},
+    sync::mpsc,
     time::{interval, timeout},
 };
 
-use crate::{error::Error, peer::Peer, torrent::TorrentMsg};
+use crate::{error::Error, peer::Peer};
 
 use super::{announce, connect};
 

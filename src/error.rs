@@ -36,4 +36,6 @@ pub enum Error {
     MessageTimeout,
     #[error("The handshake received is not valid")]
     HandshakeInvalid,
+    #[error("Could not open the file")]
+    FileOpenError,
 }
