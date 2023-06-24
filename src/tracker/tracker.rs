@@ -273,7 +273,7 @@ impl Tracker {
         loop {
             select! {
                 _ = tick_timer.tick() => {
-                    debug!("tick tracker");
+                    // debug!("tick tracker");
                 }
                 Ok(n) = socket.recv(&mut buf) => {
                     match n {

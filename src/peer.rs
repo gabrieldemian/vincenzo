@@ -1,4 +1,5 @@
 use bendy::decoding::FromBencode;
+use bitlab::SingleBits;
 use futures::{stream::SplitSink, SinkExt, StreamExt};
 use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
@@ -187,32 +188,10 @@ impl Peer {
 
         let (mut sink, mut stream) = Framed::new(socket, PeerCodec).split();
 
-        // extended handshake must be sent after the handshake
-        // sink.send(Message::Extended((0, vec![]))).await?;
-
-        // If there is a Bitfield message to be received,
-        // it will be after the handshake,
-        // receive it here, add this information to peer
-        // and create a new Bitfield for `Torrent` with the same length,
-        // but completely empty
-        let msg = timeout(Duration::new(3, 0), stream.next()).await;
-
-        if let Ok(Some(Ok(Message::Bitfield(bitfield)))) = msg {
-            info!("------------------------------");
-            info!("| {:?} Bitfield |", self.addr);
-            info!("------------------------------");
-
-            self.pieces = bitfield.clone();
-
-            // update the bitfield of the `Torrent`
-            // will create a new, empty bitfield, with
-            // the same len
-            tx.send(TorrentMsg::UpdateBitfield(bitfield.len_bytes()))
-                .await
-                .unwrap();
-
-            info!("{:?}", self.pieces);
-            info!("------------------------------\n");
+        // check if peer supports Extended Protocol
+        if let Ok(true) = their_handshake.reserved[5].get_bit(3) {
+            // extended handshake must be sent after the handshake
+            sink.send(Message::Extended((0, vec![]))).await?;
         }
 
         // Send Interested & Unchoke to peer
@@ -223,18 +202,13 @@ impl Peer {
         sink.send(Message::Unchoke).await?;
         self.am_choking = false;
 
-        // let msg = timeout(Duration::new(3, 0), stream.next()).await;
-        // if let Ok(Some(Ok(Message::Extended(ext_id)))) = msg {
-        //     info!("received ext {ext_id} from peer");
-        // }
-
         let keepalive_interval = Duration::from_secs(120);
         let mut last_tick = Instant::now();
 
         loop {
             select! {
                 _ = tick_timer.tick() => {
-                    debug!("tick peer {:?}", self.addr);
+                    // debug!("tick peer {:?}", self.addr);
                     // send Keepalive every 2 minutes
                     if last_tick.elapsed() >= keepalive_interval {
                         last_tick = Instant::now();
@@ -252,10 +226,20 @@ impl Peer {
                         Message::Bitfield(bitfield) => {
                             // take entire pieces from bitfield
                             // and put in pending_requests
-                            info!("---------------------------------");
+                            info!("----------------------------------");
                             info!("| {:?} Bitfield  |", self.addr);
-                            info!("---------------------------------\n");
-                            self.pieces = bitfield;
+                            info!("----------------------------------\n");
+                            self.pieces = bitfield.clone();
+
+                            // update the bitfield of the `Torrent`
+                            // will create a new, empty bitfield, with
+                            // the same len
+                            tx.send(TorrentMsg::UpdateBitfield(bitfield.len_bytes()))
+                                .await
+                                .unwrap();
+
+                            info!("{:?}", self.pieces);
+                            info!("------------------------------\n");
                         }
                         Message::Unchoke => {
                             self.peer_choking = false;
@@ -335,8 +319,8 @@ impl Peer {
                                 let r = rx.await.unwrap();
 
                                 match r {
-                                    Ok(_) => info!("wrote piece with success"),
-                                    Err(e) => warn!("could not write piece {e:#?}")
+                                    Ok(_) => info!("wrote piece with success on disk"),
+                                    Err(e) => warn!("could not write piece to disk {e:#?}")
                                 }
 
                                 // send msg to `Disk` tx
@@ -377,6 +361,7 @@ impl Peer {
                             info!("----------------------------------");
                             let extension = Extension::from_bencode(&extension).unwrap();
                             info!("extension {extension:#?}");
+                            self.extension = extension;
                         }
                     }
                 }

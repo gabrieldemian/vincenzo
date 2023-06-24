@@ -117,10 +117,6 @@ mod tests {
     use crate::tcp_wire::lib::Block;
 
     use super::*;
-    use glommio::{
-        io::{DmaFile, DmaStreamWriterBuilder},
-        LocalExecutorBuilder, Placement,
-    };
     use tokio::{
         io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
         spawn,
@@ -231,27 +227,5 @@ mod tests {
         assert_eq!(buf, block.block);
 
         tokio::fs::remove_file("foo.txt").await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn glommio() {
-        LocalExecutorBuilder::new(Placement::Fixed(0))
-            .spawn(move || async move {
-                // write
-                let file = DmaFile::create("foo.txt").await.unwrap();
-
-                let mut buf = file.alloc_dma_buffer(11);
-                buf.as_bytes_mut().copy_from_slice(b"hello world");
-
-                file.write_at(buf, 0).await.unwrap();
-
-                // read
-                // let mut buf = file.alloc_dma_buffer(11);
-                // let a = file.read_at(0, 11).await.unwrap();
-                // println!("read {a:#?}");
-            })
-            .unwrap()
-            .join()
-            .unwrap();
     }
 }

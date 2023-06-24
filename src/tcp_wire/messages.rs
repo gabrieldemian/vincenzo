@@ -1,5 +1,5 @@
 use bytes::{Buf, BufMut, BytesMut};
-use log::{info, warn};
+use log::{debug, info, warn};
 use speedy::{BigEndian, Readable, Writable};
 use std::io::Cursor;
 use tokio::io;
@@ -187,7 +187,6 @@ impl Decoder for PeerCodec {
             buf.advance(4);
             // the message length is only 0 if this is a keep alive message (all
             // other message types have at least one more field, the message id)
-            println!("msg_len {msg_len}");
             if msg_len == 0 {
                 return Ok(Some(Message::KeepAlive));
             }
@@ -201,7 +200,6 @@ impl Decoder for PeerCodec {
         }
 
         let msg_id = MessageId::try_from(buf.get_u8())?;
-        info!("{msg_id:?}");
 
         let msg = match msg_id {
             // <len=0001><id=0>
@@ -256,7 +254,10 @@ impl Decoder for PeerCodec {
             MessageId::Extended => {
                 let ext_id = buf.get_u8();
 
-                let payload = buf.to_vec();
+                let mut payload = vec![0u8; msg_len - 2];
+                buf.copy_to_slice(&mut payload);
+
+                debug!("payload is {payload:?}");
 
                 Message::Extended((ext_id, payload))
             }
@@ -290,7 +291,7 @@ impl Handshake {
         let mut reserved = [0u8; 8];
 
         // we support the `extension protocol`
-        // reserved[5] |= 0x10;
+        reserved[5] |= 0x10;
 
         Self {
             pstr_len: u8::to_be(19),
@@ -339,6 +340,7 @@ mod tests {
     use crate::tcp_wire::lib::BLOCK_LEN;
 
     use super::*;
+    use bitlab::SingleBits;
     use bytes::{Buf, BytesMut};
     use tokio_util::codec::{Decoder, Encoder};
 
@@ -455,7 +457,7 @@ mod tests {
             our_handshake,
             [
                 19, 66, 105, 116, 84, 111, 114, 114, 101, 110, 116, 32, 112, 114, 111, 116, 111,
-                99, 111, 108, 0, 0, 0, 0, 0, 0, 0, 0, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+                99, 111, 108, 0, 0, 0, 0, 0, 16, 0, 0, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
                 5, 5, 5, 5, 5, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7
             ]
         );
@@ -467,6 +469,10 @@ mod tests {
         reserved[5] |= 0x10;
 
         assert_eq!(reserved, [0, 0, 0, 0, 0, 16, 0, 0]);
+
+        let support_extension_protocol = reserved[5].get_bit(3).unwrap();
+
+        assert!(support_extension_protocol)
     }
 }
 
@@ -487,8 +493,8 @@ mod tests {
 // and that peer is interested in the client.
 //
 // c <-handshake-> p
-// c <-(optional) bitfield- p
-// c -(optional) bitfield-> p
+// c <-extended (if supported)->p
+// c <-(optional) bitfield-> p
 // c -interested-> p
 // c <-unchoke- p
 // c <-have- p
