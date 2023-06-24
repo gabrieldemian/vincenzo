@@ -14,9 +14,9 @@ use crate::{
 
 #[derive(Debug)]
 pub enum DiskMsg {
-    NewTorrent { id: u32, name: String },
+    NewTorrent { name: String },
     ReadBlock((BlockInfo, Sender<Vec<u8>>)),
-    WriteBlock((Block, Sender<()>)),
+    WriteBlock((Block, Sender<Result<(), Error>>)),
 }
 
 #[derive(Debug)]
@@ -47,13 +47,14 @@ impl Disk {
             match msg {
                 DiskMsg::NewTorrent { name, .. } => {
                     self.ctx.file_path = Some(name);
+                    self.open_file().await?;
                 }
                 DiskMsg::ReadBlock((block_info, tx)) => {
                     let bytes = self.read_block(block_info).await?;
                     tx.send(bytes).unwrap();
                 }
                 DiskMsg::WriteBlock((block, tx)) => {
-                    let bytes = self.write_block(block).await?;
+                    let bytes = self.write_block(block).await;
                     tx.send(bytes).unwrap();
                 }
             }
@@ -101,8 +102,7 @@ impl Disk {
 
         // advance buffer until the start of the offset
         file.seek(SeekFrom::Start(block.index as u64 * BLOCK_LEN as u64))
-            .await
-            .unwrap();
+            .await?;
 
         file.write_all(&block.block).await?;
 
@@ -117,22 +117,32 @@ mod tests {
     use crate::tcp_wire::lib::Block;
 
     use super::*;
+    use glommio::{
+        io::{DmaFile, DmaStreamWriterBuilder},
+        LocalExecutorBuilder, Placement,
+    };
     use tokio::{
         io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
+        spawn,
         sync::mpsc,
     };
 
     #[tokio::test]
-    async fn create_file() {
-        let (_, rx) = mpsc::channel(1);
+    async fn send_new_torrent_msg() {
+        let (tx, rx) = mpsc::channel(1);
         let mut disk = Disk::new(rx);
-        disk.ctx.file_path = Some("foo.txt".to_string());
 
-        let file = disk.open_file().await;
+        spawn(async move {
+            disk.run().await.unwrap();
+        });
 
-        assert!(file.is_ok());
+        tx.send(DiskMsg::NewTorrent {
+            name: "foo.txt".to_string(),
+        })
+        .await
+        .unwrap();
 
-        tokio::fs::remove_file("foo.txt").await.unwrap();
+        std::fs::remove_file("foo.txt").unwrap();
     }
 
     // test that we can read individual, out of order, pieces
@@ -221,5 +231,27 @@ mod tests {
         assert_eq!(buf, block.block);
 
         tokio::fs::remove_file("foo.txt").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn glommio() {
+        LocalExecutorBuilder::new(Placement::Fixed(0))
+            .spawn(move || async move {
+                // write
+                let file = DmaFile::create("foo.txt").await.unwrap();
+
+                let mut buf = file.alloc_dma_buffer(11);
+                buf.as_bytes_mut().copy_from_slice(b"hello world");
+
+                file.write_at(buf, 0).await.unwrap();
+
+                // read
+                // let mut buf = file.alloc_dma_buffer(11);
+                // let a = file.read_at(0, 11).await.unwrap();
+                // println!("read {a:#?}");
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 }

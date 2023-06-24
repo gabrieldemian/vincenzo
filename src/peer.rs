@@ -1,10 +1,16 @@
+use bendy::decoding::FromBencode;
 use futures::{stream::SplitSink, SinkExt, StreamExt};
 use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
     sync::Arc,
     time::Duration,
 };
-use tokio::{io::AsyncReadExt, select, sync::mpsc::Sender, time::Instant};
+use tokio::{
+    io::AsyncReadExt,
+    select,
+    sync::{mpsc::Sender, oneshot},
+    time::Instant,
+};
 use tokio::{io::AsyncWriteExt, time::timeout};
 use tokio_util::codec::Framed;
 
@@ -13,7 +19,9 @@ use tokio::{net::TcpStream, time::interval};
 
 use crate::{
     bitfield::Bitfield,
+    disk::DiskMsg,
     error::Error,
+    extension::Extension,
     magnet_parser::get_info_hash,
     tcp_wire::{
         lib::BlockInfo,
@@ -38,6 +46,7 @@ pub struct Peer {
     pub pieces: Bitfield,
     /// TCP addr that this peer is listening on
     pub addr: SocketAddr,
+    pub extension: Extension,
     /// Updated when the peer sends us its peer
     /// id, in the handshake.
     pub id: Option<[u8; 20]>,
@@ -46,15 +55,15 @@ pub struct Peer {
     pub pending_pieces: Vec<u32>,
     pub torrent_ctx: Option<Arc<TorrentCtx>>,
     pub tracker_ctx: Arc<TrackerCtx>,
+    pub disk_tx: Option<Sender<DiskMsg>>,
 }
 
 impl Default for Peer {
     fn default() -> Self {
         Self {
-            // connections start out choked and uninterested,
-            // from both sides
             am_choking: true,
             am_interested: false,
+            extension: Extension::default(),
             peer_choking: true,
             peer_interested: false,
             pieces: Bitfield::default(),
@@ -62,6 +71,7 @@ impl Default for Peer {
             pending_pieces: vec![],
             id: None,
             torrent_ctx: None,
+            disk_tx: None,
             tracker_ctx: Arc::new(TrackerCtx::default()),
         }
     }
@@ -164,6 +174,7 @@ impl Peer {
             .expect("read handshake_buf");
 
         let their_handshake = Handshake::deserialize(&handshake_buf)?;
+        info!("--- their handshake is {their_handshake:?}");
 
         // Validate their handshake against ours
         if !their_handshake.validate(&our_handshake) {
@@ -176,12 +187,15 @@ impl Peer {
 
         let (mut sink, mut stream) = Framed::new(socket, PeerCodec).split();
 
+        // extended handshake must be sent after the handshake
+        // sink.send(Message::Extended((0, vec![]))).await?;
+
         // If there is a Bitfield message to be received,
-        // it will be the very first message after the handshake,
+        // it will be after the handshake,
         // receive it here, add this information to peer
         // and create a new Bitfield for `Torrent` with the same length,
         // but completely empty
-        let msg = timeout(Duration::new(2, 0), stream.next()).await;
+        let msg = timeout(Duration::new(3, 0), stream.next()).await;
 
         if let Ok(Some(Ok(Message::Bitfield(bitfield)))) = msg {
             info!("------------------------------");
@@ -208,6 +222,11 @@ impl Peer {
         self.am_interested = true;
         sink.send(Message::Unchoke).await?;
         self.am_choking = false;
+
+        // let msg = timeout(Duration::new(3, 0), stream.next()).await;
+        // if let Ok(Some(Ok(Message::Extended(ext_id)))) = msg {
+        //     info!("received ext {ext_id} from peer");
+        // }
 
         let keepalive_interval = Duration::from_secs(120);
         let mut last_tick = Instant::now();
@@ -307,6 +326,19 @@ impl Peer {
 
                             if was_requested && block.is_valid() {
                                 info!("inside if statement");
+
+                                let (tx, rx) = oneshot::channel();
+                                let disk_tx = self.disk_tx.as_ref().unwrap();
+
+                                disk_tx.send(DiskMsg::WriteBlock((block, tx))).await.unwrap();
+
+                                let r = rx.await.unwrap();
+
+                                match r {
+                                    Ok(_) => info!("wrote piece with success"),
+                                    Err(e) => warn!("could not write piece {e:#?}")
+                                }
+
                                 // send msg to `Disk` tx
                                 // Advertise to the peers that
                                 // doesn't have this piece, that
@@ -338,6 +370,13 @@ impl Peer {
                             info!("| {:?} Request  |", self.addr);
                             info!("------------------------------");
                             info!("{block_info:?}");
+                        }
+                        Message::Extended((_, extension)) => {
+                            info!("----------------------------------");
+                            info!("| {:?} Extended  |", self.addr);
+                            info!("----------------------------------");
+                            let extension = Extension::from_bencode(&extension).unwrap();
+                            info!("extension {extension:#?}");
                         }
                     }
                 }

@@ -109,6 +109,7 @@ impl Torrent {
         for mut peer in peers {
             peer.torrent_ctx = Some(Arc::clone(&self.ctx));
             peer.tracker_ctx = Arc::clone(&self.tracker_ctx);
+            peer.disk_tx = Some(self.disk_tx.clone());
 
             debug!("listening to peer...");
 
@@ -145,6 +146,15 @@ impl Torrent {
         spawn(async move {
             Tracker::run(local, peer).await.unwrap();
         });
+
+        // send msg to Disk to create a new file
+        // on the operating system for our torrent download
+        self.disk_tx
+            .send(DiskMsg::NewTorrent {
+                name: self.ctx.magnet.dn.clone().unwrap(),
+            })
+            .await
+            .unwrap();
 
         Ok(peers)
     }

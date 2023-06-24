@@ -2,6 +2,7 @@ pub mod bitfield;
 pub mod cli;
 pub mod disk;
 pub mod error;
+pub mod extension;
 pub mod frontend;
 pub mod magnet_parser;
 pub mod peer;

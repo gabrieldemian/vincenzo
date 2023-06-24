@@ -1,5 +1,5 @@
 use bytes::{Buf, BufMut, BytesMut};
-use log::warn;
+use log::{info, warn};
 use speedy::{BigEndian, Readable, Writable};
 use std::io::Cursor;
 use tokio::io;
@@ -24,6 +24,7 @@ pub enum Message {
     Request(BlockInfo),
     Piece(Block),
     Cancel(BlockInfo),
+    Extended((u8, Vec<u8>)),
 }
 
 #[repr(u8)]
@@ -38,6 +39,7 @@ pub enum MessageId {
     Request = 6,
     Piece = 7,
     Cancel = 8,
+    Extended = 20,
 }
 
 impl TryFrom<u8> for MessageId {
@@ -55,6 +57,7 @@ impl TryFrom<u8> for MessageId {
             k if k == Request as u8 => Ok(Request),
             k if k == Piece as u8 => Ok(Piece),
             k if k == Cancel as u8 => Ok(Cancel),
+            k if k == Extended as u8 => Ok(Extended),
             _ => Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "Unknown message id",
@@ -142,6 +145,17 @@ impl Encoder<Message> for PeerCodec {
 
                 block.encode(buf)?;
             }
+            Message::Extended((ext_id, payload)) => {
+                let msg_len = payload.len() as u32 + 2;
+                buf.put_u32(msg_len);
+                buf.put_u8(MessageId::Extended as u8);
+                buf.put_u8(ext_id);
+
+                // only ext_msg of 1 (data) has a payload
+                if ext_id == 1 {
+                    buf.copy_from_slice(&payload);
+                }
+            }
         }
         Ok(())
     }
@@ -173,6 +187,7 @@ impl Decoder for PeerCodec {
             buf.advance(4);
             // the message length is only 0 if this is a keep alive message (all
             // other message types have at least one more field, the message id)
+            println!("msg_len {msg_len}");
             if msg_len == 0 {
                 return Ok(Some(Message::KeepAlive));
             }
@@ -186,6 +201,7 @@ impl Decoder for PeerCodec {
         }
 
         let msg_id = MessageId::try_from(buf.get_u8())?;
+        info!("{msg_id:?}");
 
         let msg = match msg_id {
             // <len=0001><id=0>
@@ -237,6 +253,13 @@ impl Decoder for PeerCodec {
 
                 Message::Cancel(BlockInfo { index, begin, len })
             }
+            MessageId::Extended => {
+                let ext_id = buf.get_u8();
+
+                let payload = buf.to_vec();
+
+                Message::Extended((ext_id, payload))
+            }
         };
 
         Ok(Some(msg))
@@ -264,10 +287,15 @@ pub struct Handshake {
 
 impl Handshake {
     pub fn new(info_hash: [u8; 20], peer_id: [u8; 20]) -> Self {
+        let mut reserved = [0u8; 8];
+
+        // we support the `extension protocol`
+        // reserved[5] |= 0x10;
+
         Self {
             pstr_len: u8::to_be(19),
             pstr: PSTR,
-            reserved: [0u8; 8],
+            reserved,
             info_hash,
             peer_id,
         }
@@ -313,6 +341,33 @@ mod tests {
     use super::*;
     use bytes::{Buf, BytesMut};
     use tokio_util::codec::{Decoder, Encoder};
+
+    #[test]
+    fn extended() {
+        let mut buf = BytesMut::new();
+        let msg = Message::Extended((0, vec![]));
+        PeerCodec.encode(msg.clone(), &mut buf).unwrap();
+
+        // len
+        assert_eq!(buf.len(), 6);
+        // len prefix
+        assert_eq!(buf.get_u32(), 2);
+        // ext id
+        assert_eq!(buf.get_u8(), MessageId::Extended as u8);
+        // ext id
+        assert_eq!(buf.get_u8(), 0);
+
+        let mut buf = BytesMut::new();
+        PeerCodec.encode(msg, &mut buf).unwrap();
+        let msg = PeerCodec.decode(&mut buf).unwrap().unwrap();
+
+        match msg {
+            Message::Extended((ext_id, _payload)) => {
+                assert_eq!(ext_id, 0);
+            }
+            _ => panic!(),
+        }
+    }
 
     #[test]
     fn request() {
@@ -404,6 +459,14 @@ mod tests {
                 5, 5, 5, 5, 5, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7
             ]
         );
+    }
+
+    #[test]
+    fn reserved_bytes() {
+        let mut reserved = [0u8; 8];
+        reserved[5] |= 0x10;
+
+        assert_eq!(reserved, [0, 0, 0, 0, 0, 16, 0, 0]);
     }
 }
 
