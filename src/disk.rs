@@ -1,6 +1,6 @@
-use std::io::SeekFrom;
+use std::{collections::VecDeque, io::SeekFrom};
 
-use log::info;
+use log::{debug, info};
 use tokio::{
     fs::{File, OpenOptions},
     io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
@@ -31,6 +31,18 @@ pub struct DiskCtx {
     pub base_path: String,
 }
 
+/// basically a wrapper for `metainfo::File`
+/// includes all the block_infos of this path,
+/// alongside fields from `metainfo::File`
+#[derive(Debug, PartialEq, Clone, Default)]
+pub struct DiskFile {
+    pub length: u32,
+    pub path: Vec<String>,
+    // all blocks that we can request for this file
+    // in sequential order, for now
+    pub block_infos: VecDeque<BlockInfo>,
+}
+
 impl Disk {
     pub fn new(rx: Receiver<DiskMsg>) -> Self {
         let ctx = DiskCtx {
@@ -41,7 +53,7 @@ impl Disk {
     }
 
     pub async fn run(&mut self) -> Result<(), Error> {
-        info!("running Disk event loop");
+        debug!("running Disk event loop");
 
         while let Some(msg) = self.rx.recv().await {
             match msg {
@@ -112,16 +124,139 @@ impl Disk {
 
 #[cfg(test)]
 mod tests {
-    use std::io::{Cursor, SeekFrom};
+    use std::{
+        collections::VecDeque,
+        io::{Cursor, SeekFrom},
+    };
 
-    use crate::tcp_wire::lib::Block;
+    use crate::{metainfo::File, tcp_wire::lib::Block};
 
     use super::*;
     use tokio::{
+        fs::create_dir_all,
         io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
         spawn,
         sync::mpsc,
     };
+
+    #[tokio::test]
+    async fn create_file_tree() {
+        // # examples
+        // piece_len: 262144 2.6MiB
+        // block_len:  16384 16KiB
+        // qnt pieces: 10
+        // 16 blocks in 1 piece
+        //
+        // block_len: 2 byte
+        // piece_len: 4 bytes
+        // file 1 len: 5 + half of the last block
+        // file 2 len: 5 + half of the first block
+        //
+        // # strategy 1
+        // get equal sized blocks but split them between pieces
+        // |----p0----|----p1----|
+        // |  b0  |  b1  |  b2   |
+        // |----------|-----------
+        // |  file|0  |  |file1  |
+        // -----------------------
+        //    5bytes     5bytes
+        //
+        // # strategy 2
+        // ask for blocks <= block_len. The last block may be smaller to fit the piece
+        // |----p0----|----p1----|
+        // |  b0  | b1|  b2  | b3|
+        // |----------|-----------
+        // |  file|0  |  |file1  |
+        // -----------------------
+        //    5bytes     5bytes
+        //
+        // b0: begin 0, len: 2
+        // b1: begin: 3, len: 1
+        // b2: begin: 5, len: 2
+        // b2: begin: 8, len: 1
+        //
+        // p0: has entire b0 and half b1
+        // p1: has half b1 and entire b2
+        // the last and first block of a piece may be a different size than block_len
+
+        let block_len: usize = 2;
+        let piece_len = 4;
+
+        let files: Vec<File> = vec![
+            File {
+                length: 7,
+                path: vec!["foo.txt".to_owned()],
+            },
+            File {
+                length: 6,
+                path: vec!["uva".to_owned(), "foo.txt".to_owned()],
+            },
+            File {
+                length: 4,
+                path: vec!["morango".to_owned(), "foo.txt".to_owned()],
+            },
+        ];
+
+        let block_len = block_len as u32;
+        let mut index: u32 = 0;
+
+        fn get_piece_len(length: u32, index: u32) -> u32 {
+            let piece_len = 4;
+            let last_piece_len = length % piece_len;
+            let last_piece_index = length / piece_len;
+
+            if index as u32 == last_piece_index {
+                // last piece is smaller, return the remainder
+                last_piece_len
+            } else {
+                // pieces are all equal sized
+                piece_len
+            }
+        }
+
+        let mut queue: VecDeque<DiskFile> = VecDeque::new();
+
+        for file in files {
+            // create dirs here and create the file
+            // create_dir_all();
+            let mut infos: VecDeque<BlockInfo> = VecDeque::new();
+            let pieces = file.length as f32 / piece_len as f32;
+            let pieces = pieces.ceil() as u32;
+            let blocks = pieces as f32 / block_len as f32;
+            let blocks = blocks.ceil() as u32;
+
+            for piece in 0..pieces {
+                let piece_len = get_piece_len(file.length, piece);
+                let blocks_per_piece = piece_len as f32 / block_len as f32;
+                let blocks_per_piece = blocks_per_piece.ceil() as u32;
+
+                for block in 0..blocks_per_piece {
+                    let begin = infos.len() as u32 * block_len as u32;
+
+                    let len = if begin + block_len <= file.length {
+                        block_len
+                    } else {
+                        (begin + block_len) - file.length
+                    };
+
+                    let bi = BlockInfo { index, begin, len };
+                    infos.push_back(bi);
+
+                    if block == blocks {
+                        index += 1;
+                    }
+                }
+            }
+            let disk_file = DiskFile {
+                path: file.path,
+                block_infos: infos,
+                length: file.length,
+                ..Default::default()
+            };
+            queue.push_back(disk_file);
+        }
+        println!("queue {queue:#?}");
+    }
 
     #[tokio::test]
     async fn send_new_torrent_msg() {

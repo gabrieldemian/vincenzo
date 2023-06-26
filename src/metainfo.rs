@@ -3,27 +3,42 @@ use bendy::{
     encoding::{self, AsString, Error, SingleItemEncoder, ToBencode},
 };
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Clone, Default)]
 pub struct MetaInfo {
     pub announce: String,
     pub announce_list: Option<Vec<Vec<String>>>,
     pub info: Info,
     pub comment: Option<String>,
-    pub creation_date: Option<u64>,
+    pub creation_date: Option<u32>,
     pub http_seeds: Option<Vec<String>>,
 }
 
 /// File related information (Single-file format)
-#[derive(Debug)]
+/// https://fileformats.fandom.com/wiki/Torrent_file
+// in a multi file format, `name` is name of the directory
+// `file_length` is specific to Single File format
+// in a multi file format, `file_length` is replaced to `files`
+#[derive(Debug, PartialEq, Clone, Default)]
 pub struct Info {
-    pub piece_length: u64,
+    /// piece length - number of bytes in a piece
+    pub piece_length: u32,
+    /// A (byte) string consisting of the concatenation of all 20-byte SHA1 hash values, one per piece.
     pub pieces: Vec<u8>,
+    /// name of the file
     pub name: String,
-    pub file_length: u64,
+    /// length - bytes of the entire file
+    pub file_length: Option<u32>,
+    // pub files: Option<Vec<File>>,
+}
+
+#[derive(Debug, PartialEq, Clone, Default)]
+pub struct File {
+    pub length: u32,
+    pub path: Vec<String>,
 }
 
 impl ToBencode for MetaInfo {
-    const MAX_DEPTH: usize = 20;
+    const MAX_DEPTH: usize = 2;
 
     fn encode(&self, encoder: SingleItemEncoder) -> Result<(), encoding::Error> {
         encoder.emit_dict(|mut e| {
@@ -55,11 +70,13 @@ impl ToBencode for MetaInfo {
 }
 
 impl ToBencode for Info {
-    const MAX_DEPTH: usize = 20;
+    const MAX_DEPTH: usize = 2;
 
     fn encode(&self, encoder: SingleItemEncoder) -> Result<(), Error> {
         encoder.emit_dict(|mut e| {
-            e.emit_pair(b"length", &self.file_length)?;
+            if let Some(file_length) = &self.file_length {
+                e.emit_pair(b"length", file_length)?;
+            }
             e.emit_pair(b"name", &self.name)?;
             e.emit_pair(b"piece length", &self.piece_length)?;
             e.emit_pair(b"pieces", AsString(&self.pieces))
@@ -99,7 +116,7 @@ impl FromBencode for MetaInfo {
                         .map(Some)?;
                 }
                 (b"creation date", value) => {
-                    creation_date = u64::decode_bencode_object(value)
+                    creation_date = u32::decode_bencode_object(value)
                         .context("creation_date")
                         .map(Some)?;
                 }
@@ -145,7 +162,7 @@ impl FromBencode for Info {
         while let Some(pair) = dict_dec.next_pair()? {
             match pair {
                 (b"length", value) => {
-                    file_length = u64::decode_bencode_object(value)
+                    file_length = u32::decode_bencode_object(value)
                         .context("file.length")
                         .map(Some)?;
                 }
@@ -155,7 +172,7 @@ impl FromBencode for Info {
                         .map(Some)?;
                 }
                 (b"piece length", value) => {
-                    piece_length = u64::decode_bencode_object(value)
+                    piece_length = u32::decode_bencode_object(value)
                         .context("piece length")
                         .map(Some)?;
                 }
@@ -168,8 +185,6 @@ impl FromBencode for Info {
             }
         }
 
-        let file_length =
-            file_length.ok_or_else(|| decoding::Error::missing_field("file_length"))?;
         let name = name.ok_or_else(|| decoding::Error::missing_field("name"))?;
         let piece_length =
             piece_length.ok_or_else(|| decoding::Error::missing_field("piece_length"))?;
@@ -193,13 +208,20 @@ mod tests {
     fn should_decode_single_file_torrent() -> Result<(), decoding::Error> {
         let torrent = include_bytes!("../debian.torrent");
         let torrent = MetaInfo::from_bencode(torrent)?;
-        println!("info piece[0] {:?}", torrent.info.pieces[0]);
-        println!("info piece[1] {:?}", torrent.info.pieces[1]);
-        println!("info piece[2] {:?}", torrent.info.pieces[2]);
-        println!("info pieces len {:?}", torrent.info.pieces.len());
         println!("info name {:?}", torrent.info.name);
-        println!("info piece len {:?}", torrent.info.piece_length);
-        println!("info file len {:?}", torrent.info.file_length);
+        println!("info how many pieces {:?}", torrent.info.pieces.len() / 20);
+        println!("info piece bytes {:?}", torrent.info.piece_length);
+        println!(
+            "info how many blocks in a piece {:?}",
+            torrent.info.piece_length / 16384
+        );
+        println!("info file bytes {:?}", torrent.info.file_length);
+        // each hash value of the piece has 20 bytes, so divide by 20
+        // to get the len of 1 piece
+        println!(
+            "info proof of file bytes {:?}",
+            torrent.info.piece_length as usize * (torrent.info.pieces.len() / 20)
+        );
 
         Ok(())
     }
@@ -234,7 +256,7 @@ mod tests {
             piece_length: 262_144,
             pieces: include_bytes!("../pieces.iso").to_vec(),
             name: "debian-9.4.0-amd64-netinst.iso".to_owned(),
-            file_length: 305_135_616,
+            file_length: Some(305_135_616),
         },
     };
 

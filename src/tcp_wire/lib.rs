@@ -22,8 +22,7 @@ pub struct BlockInfo {
     pub index: u32,
     /// The zero-based byte offset into the piece.
     pub begin: u32,
-    /// The block's length in bytes. Always 16 KiB (0x4000 bytes) or less, for
-    /// now.
+    /// The block's length in bytes. <= 16 KiB
     pub len: u32,
 }
 
@@ -69,12 +68,11 @@ impl BlockInfo {
 /// granularity.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Block {
-    /// The index of the piece of which this is a block.
+    /// The index of the piece this block belongs to.
     pub index: usize,
     /// The zero-based byte offset into the piece.
     pub begin: u32,
-    /// The block's length in bytes. Always 16 KiB (0x4000 bytes) or less, for
-    /// now.
+    /// The block's length in bytes. 16 KiB most of the times.
     pub block: Vec<u8>,
 }
 
