@@ -129,7 +129,10 @@ mod tests {
         io::{Cursor, SeekFrom},
     };
 
-    use crate::{metainfo::File, tcp_wire::lib::Block};
+    use crate::{
+        metainfo::{File, Info},
+        tcp_wire::lib::Block,
+    };
 
     use super::*;
     use tokio::{
@@ -178,84 +181,6 @@ mod tests {
         // p0: has entire b0 and half b1
         // p1: has half b1 and entire b2
         // the last and first block of a piece may be a different size than block_len
-
-        let block_len: usize = 2;
-        let piece_len = 4;
-
-        let files: Vec<File> = vec![
-            File {
-                length: 7,
-                path: vec!["foo.txt".to_owned()],
-            },
-            File {
-                length: 6,
-                path: vec!["uva".to_owned(), "foo.txt".to_owned()],
-            },
-            File {
-                length: 4,
-                path: vec!["morango".to_owned(), "foo.txt".to_owned()],
-            },
-        ];
-
-        let block_len = block_len as u32;
-        let mut index: u32 = 0;
-
-        fn get_piece_len(length: u32, index: u32) -> u32 {
-            let piece_len = 4;
-            let last_piece_len = length % piece_len;
-            let last_piece_index = length / piece_len;
-
-            if index as u32 == last_piece_index {
-                // last piece is smaller, return the remainder
-                last_piece_len
-            } else {
-                // pieces are all equal sized
-                piece_len
-            }
-        }
-
-        let mut queue: VecDeque<DiskFile> = VecDeque::new();
-
-        for file in files {
-            // create dirs here and create the file
-            // create_dir_all();
-            let mut infos: VecDeque<BlockInfo> = VecDeque::new();
-            let pieces = file.length as f32 / piece_len as f32;
-            let pieces = pieces.ceil() as u32;
-            let blocks = pieces as f32 / block_len as f32;
-            let blocks = blocks.ceil() as u32;
-
-            for piece in 0..pieces {
-                let piece_len = get_piece_len(file.length, piece);
-                let blocks_per_piece = piece_len as f32 / block_len as f32;
-                let blocks_per_piece = blocks_per_piece.ceil() as u32;
-
-                for block in 0..blocks_per_piece {
-                    let begin = infos.len() as u32 * block_len as u32;
-
-                    let len = if begin + block_len <= file.length {
-                        block_len
-                    } else {
-                        (begin + block_len) - file.length
-                    };
-
-                    let bi = BlockInfo { index, begin, len };
-                    infos.push_back(bi);
-
-                    if block == blocks {
-                        index += 1;
-                    }
-                }
-            }
-            let disk_file = DiskFile {
-                path: file.path,
-                block_infos: infos,
-                length: file.length,
-                ..Default::default()
-            };
-            queue.push_back(disk_file);
-        }
-        println!("queue {queue:#?}");
     }
 
     #[tokio::test]
