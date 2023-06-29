@@ -38,6 +38,33 @@ pub struct Info {
     pub files: Option<Vec<File>>,
 }
 
+impl Into<VecDeque<BlockInfo>> for Info {
+    fn into(self) -> VecDeque<BlockInfo> {
+        let mut v = VecDeque::new();
+
+        // get block_infos for a Multi File Info
+        if let Some(files) = &self.files {
+            for file in files {
+                let torrent_len = files.iter().fold(0, |acc, f| acc + f.length);
+                let mut block_infos = file.get_block_infos(self.piece_length, Some(torrent_len));
+                v.append(&mut block_infos);
+            }
+        }
+
+        // get block_infos for a Single File Info
+        if let Some(file_length) = self.file_length {
+            let file = File {
+                length: file_length,
+                path: vec![self.name.clone()],
+            };
+            let mut block_infos = file.get_block_infos(self.piece_length, None);
+            v.append(&mut block_infos);
+        }
+
+        v
+    }
+}
+
 impl Info {
     pub fn get_disk_files(&self) -> VecDeque<DiskFile> {
         let mut disks = VecDeque::new();
@@ -81,17 +108,39 @@ pub struct File {
     pub path: Vec<String>,
 }
 
+// impl From<File> for DiskFile {
+//     fn from(value: File) -> Self {
+//         Self {
+//             block_infos: value.get_block_infos(value.length, None),
+//             path: value.path,
+//             length: value.length,
+//         }
+//     }
+// }
+
 impl File {
+    pub fn to_disk_file(&self, piece_length: u32, torrent_len: Option<u32>) -> DiskFile {
+        DiskFile {
+            block_infos: self.get_block_infos(piece_length, torrent_len),
+            path: self.path.clone(),
+            length: self.length,
+        }
+    }
     pub fn get_piece_len(&self, piece: u32, piece_length: u32) -> u32 {
         let last_piece_len = self.length % piece_length;
         let last_piece_index = self.length / piece_length;
+        let piece_end = (piece + 1) * piece_length;
 
-        if piece as u32 == last_piece_index {
-            // last piece is the last one, return the remainder
-            last_piece_len
+        println!("last_piece_len {last_piece_len}");
+        println!("last_piece_index {last_piece_index}");
+        println!("self.length {:?}", self.length);
+
+        if piece_end > self.length {
+            // piece does not fit, return the remainder
+            piece_end - self.length
         } else {
-            // return length of piece
-            self.length
+            // piece fits, return default piece len
+            piece_length
         }
     }
     pub fn get_block_infos(
@@ -118,11 +167,25 @@ impl File {
         println!("{piece_length} piece_len");
         println!("{pieces} pieces");
         println!("{blocks} blocks\n");
+        println!("{torrent_len:?} torrent_len\n");
 
         let mut index = 0 as u32;
 
+        // get initial index based on the length
+        // of all the files, and the length of the current file
+        // if not provided, assume this is a single file torrent
+        if let Some(torrent_len) = torrent_len {
+            let ws = 0..(torrent_len / piece_length);
+            for w in ws {
+                if self.length == ((w + 1) * piece_length) {
+                    index = w;
+                }
+            }
+        }
+
         for piece in 0..pieces {
             let piece_len = self.get_piece_len(piece, piece_length);
+            println!("{piece_len} piece_len\n");
 
             let blocks_per_piece = piece_len as f32 / BLOCK_LEN as f32;
             let blocks_per_piece = blocks_per_piece.ceil() as u32;
@@ -137,8 +200,7 @@ impl File {
                 // size of the current file, write only the bytes
                 // that fits the max amount, which is the file bytes
                 let len = if len > self.length {
-                    let remainder = len - self.length;
-                    remainder
+                    len - self.length
                 } else {
                     BLOCK_LEN
                 };
@@ -548,9 +610,7 @@ mod tests {
         // let torrent = include_bytes!("../debian.torrent");
         // let torrent = MetaInfo::from_bencode(torrent).unwrap();
         // let _infos = torrent.info.get_disk_files();
-
         let piece_len: u32 = 262_144;
-
         let files: Vec<File> = vec![
             File {
                 length: piece_len * 1,
@@ -571,18 +631,28 @@ mod tests {
         };
 
         let queue = myinfo.get_disk_files();
+        let first = queue.get(0).unwrap();
+        let second = queue.get(1).unwrap();
 
-        println!("queue {queue:#?}");
+        assert_eq!(first.block_infos.len(), 16);
+        assert_eq!(second.block_infos.len(), 32);
+        assert_eq!(first.length, piece_len);
+        assert_eq!(second.length, piece_len * 2);
+        assert_eq!(
+            first.block_infos.back().unwrap().begin + first.block_infos.back().unwrap().len,
+            piece_len,
+        );
+        let last_block_second = second.block_infos.back().unwrap();
+        assert_eq!(
+            last_block_second.begin + last_block_second.len,
+            myinfo.files.unwrap()[1].length
+        );
 
         Ok(())
     }
 
     #[test]
-    fn should_get_block_infos_for_piece() -> Result<(), Error> {
-        // let torrent = include_bytes!("../debian.torrent");
-        // let torrent = MetaInfo::from_bencode(torrent).unwrap();
-        // let _infos = torrent.info.get_disk_files();
-
+    fn should_get_disk_files_for_info() -> Result<(), Error> {
         let index: u32 = 0;
         let piece_len: u32 = 262_144;
         let piece_begin = index * piece_len;
@@ -590,36 +660,46 @@ mod tests {
 
         let files: Vec<File> = vec![
             File {
-                length: piece_len * 8,
-                path: vec!["uva".to_owned(), "foo.txt".to_owned()],
+                length: piece_len * 1,
+                path: vec!["foo".to_owned(), "foo.txt".to_owned()],
             },
             File {
-                length: piece_len * 9,
-                path: vec!["morango".to_owned(), "foo.txt".to_owned()],
+                length: piece_len * 2,
+                path: vec!["bar".to_owned(), "bazz.txt".to_owned()],
             },
         ];
 
-        let file_length: u32 = files.iter().fold(0, |acc, f| acc + f.length);
+        // multi file info
+        let info = Info {
+            name: "arch-linux".to_owned(),
+            piece_length: piece_len,
+            files: Some(files),
+            file_length: None,
+            pieces: vec![0],
+        };
 
-        println!("file_length: {file_length:#?}");
-        println!("piece index: {index:#?}");
-        println!("piece_begin: {piece_begin:#?}");
-        println!("piece_end: {piece_end:#?}");
+        let df = info.get_disk_files();
+        let first = df.front().unwrap();
+        let second = df.back().unwrap();
+        // println!("all dfs: {:#?}", df.front().unwrap());
 
-        let (_, file) = files
-            .into_iter()
-            .enumerate()
-            .find(|(i, f)| piece_begin < f.length * (*i as u32 + 1))
-            .unwrap();
+        // test first file
+        assert_eq!(first.path, info.files.as_ref().unwrap()[0].path);
+        assert_eq!(first.length, info.files.as_ref().unwrap()[0].length);
+        assert_eq!(
+            first.block_infos.back().unwrap().begin + first.block_infos.back().unwrap().len,
+            piece_len
+        );
+        assert_eq!(first.block_infos.len(), 16);
 
-        println!("found file: {file:#?}");
-
-        // we can get all the block_infos of a piece,
-        // given a piece index, and the length of the entire torrent files
-        // the index, begin, and len, are correctly calculated.
-        let infos = file.get_block_infos(piece_len, None);
-
-        println!("infos on this piece: {infos:#?}");
+        // test second file
+        assert_eq!(second.path, info.files.as_ref().unwrap()[1].path);
+        assert_eq!(second.length, info.files.as_ref().unwrap()[1].length);
+        assert_eq!(
+            second.block_infos.back().unwrap().begin + second.block_infos.back().unwrap().len,
+            piece_len * 2
+        );
+        assert_eq!(second.block_infos.len(), 32);
 
         Ok(())
     }

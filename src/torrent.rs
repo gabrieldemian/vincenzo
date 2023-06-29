@@ -149,12 +149,12 @@ impl Torrent {
 
         // send msg to Disk to create a new file
         // on the operating system for our torrent download
-        self.disk_tx
-            .send(DiskMsg::NewTorrent {
-                name: self.ctx.magnet.dn.clone().unwrap(),
-            })
-            .await
-            .unwrap();
+        // self.disk_tx
+        //     .send(DiskMsg::NewTorrent {
+        //         name: self.ctx.magnet.dn.clone().unwrap(),
+        //     })
+        //     .await
+        //     .unwrap();
 
         Ok(peers)
     }
