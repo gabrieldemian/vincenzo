@@ -127,13 +127,9 @@ impl File {
         }
     }
     pub fn get_piece_len(&self, piece: u32, piece_length: u32) -> u32 {
-        let last_piece_len = self.length % piece_length;
-        let last_piece_index = self.length / piece_length;
+        // let last_piece_len = self.length % piece_length;
+        // let last_piece_index = self.length / piece_length;
         let piece_end = (piece + 1) * piece_length;
-
-        println!("last_piece_len {last_piece_len}");
-        println!("last_piece_index {last_piece_index}");
-        println!("self.length {:?}", self.length);
 
         if piece_end > self.length {
             // piece does not fit, return the remainder
@@ -162,12 +158,12 @@ impl File {
         let pieces = pieces as u32;
         let blocks = blocks.ceil() as u32;
 
-        println!("{:?} self.length", self.length);
-        println!("{BLOCK_LEN} block_len");
-        println!("{piece_length} piece_len");
-        println!("{pieces} pieces");
-        println!("{blocks} blocks\n");
-        println!("{torrent_len:?} torrent_len\n");
+        // println!("{:?} self.length", self.length);
+        // println!("{BLOCK_LEN} block_len");
+        // println!("{piece_length} piece_len");
+        // println!("{pieces} pieces");
+        // println!("{blocks} blocks\n");
+        // println!("{torrent_len:?} torrent_len\n");
 
         let mut index = 0 as u32;
 
@@ -185,7 +181,6 @@ impl File {
 
         for piece in 0..pieces {
             let piece_len = self.get_piece_len(piece, piece_length);
-            println!("{piece_len} piece_len\n");
 
             let blocks_per_piece = piece_len as f32 / BLOCK_LEN as f32;
             let blocks_per_piece = blocks_per_piece.ceil() as u32;

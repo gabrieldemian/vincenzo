@@ -1,6 +1,6 @@
 use std::{collections::VecDeque, io::SeekFrom};
 
-use log::{debug, info};
+use log::debug;
 use tokio::{
     fs::{create_dir_all, File, OpenOptions},
     io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
@@ -10,7 +10,7 @@ use tokio::{
 use crate::{
     error::Error,
     metainfo::Info,
-    tcp_wire::lib::{Block, BlockInfo, BLOCK_LEN},
+    tcp_wire::lib::{Block, BlockInfo},
 };
 
 #[derive(Debug)]
@@ -81,15 +81,12 @@ impl Disk {
                                 "{:}{:}/{dir_path}",
                                 &self.ctx.base_path, &self.ctx.info.name,
                             );
+
                             create_dir_all(&file_dir).await?;
 
                             // now with the dirs created, we create the file
                             if let Some(file_ext) = last {
-                                self.open_file(&format!(
-                                    "{:}/{dir_path}{:}",
-                                    &self.ctx.info.name, &file_ext,
-                                ))
-                                .await?;
+                                self.open_file(&format!("{dir_path}/{file_ext}")).await?;
                             }
                         }
                     }
@@ -117,75 +114,121 @@ impl Disk {
     }
 
     pub async fn open_file(&self, path: &str) -> Result<File, Error> {
+        let path = format!("{:}{:}/{path}", self.ctx.base_path, self.ctx.info.name);
+
         return OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
-            .open(&format!("{:}{path}", self.ctx.base_path))
+            .open(&path)
             .await
             .map_err(|_| Error::FileOpenError);
     }
 
     pub async fn read_block(&self, block_info: BlockInfo) -> Result<Vec<u8>, Error> {
-        let path = "foo.txt";
-        // let path = "../Kerkour S. Black Hat Rust...Rust programming language 2022../Kerkour S. Black Hat Rust...Rust programming language 2022.pdf";
-        let mut file = self.open_file(path).await?;
-
-        // advance buffer until the start of the offset
-        file.seek(SeekFrom::Start(block_info.index as u64 * BLOCK_LEN as u64))
-            .await
-            .unwrap();
+        let mut file = self
+            .get_file_from_index(block_info.index as u32, block_info.begin)
+            .await?;
 
         // how many bytes to read, after offset (begin)
-        // it will be 16KiB for all blocks, except the last one
-        // which may be smaller
         let mut buf = vec![0; block_info.len as usize];
 
-        // how many bytes were read, if <= BLOCK_LEN
-        // then we know it's the last block
-        // or if the index is the last index
         file.read_exact(&mut buf).await?;
 
         Ok(buf)
     }
 
     pub async fn write_block(&self, block: Block) -> Result<(), Error> {
-        let path = "foo.txt";
-        // let path = "../Kerkour S. Black Hat Rust...Rust programming language 2022../Kerkour S. Black Hat Rust...Rust programming language 2022.pdf";
-        let mut file = self.open_file(path).await?;
-
-        // advance buffer until the start of the offset
-        file.seek(SeekFrom::Start(block.index as u64 * BLOCK_LEN as u64))
+        let mut file = self
+            .get_file_from_index(block.index as u32, block.begin)
             .await?;
 
         file.write_all(&block.block).await?;
 
         Ok(())
     }
+
+    /// Return a seeked fs::File, given an `index` and `begin`.
+    /// use cases:
+    /// - After we receive a Piece msg with the Block, we need to
+    /// map a block to a fs::File to be able to write to disk efficiently
+    /// - When a leecher sends a Request msg with a BlockInfo msg, we need
+    /// to first get the corresponding file and advance the corresponding bytes
+    /// of the `piece` and `begin` variables. After that, we can get the correct Block
+    /// on the returned File.
+    pub async fn get_file_from_index(&self, piece: u32, begin: u32) -> Result<File, Error> {
+        // find a file on a list of files,
+        // given a piece_index and a piece_len
+        let piece_begin = piece * self.ctx.info.piece_length;
+        let info = &self.ctx.info;
+
+        // multi file torrent
+        if let Some(files) = &info.files {
+            let file = files
+                .into_iter()
+                .enumerate()
+                .find(|(i, f)| piece_begin < f.length * (*i as u32 + 1))
+                .map(|a| a.1);
+
+            if let Some(file) = file {
+                let path = file.path.join("/");
+
+                let mut file = self.open_file(&path).await?;
+
+                file.seek(SeekFrom::Start(piece_begin as u64 + begin as u64))
+                    .await
+                    .unwrap();
+
+                return Ok(file);
+            }
+
+            return Err(Error::FileOpenError);
+        }
+
+        // single file torrent
+        let mut file = self.open_file(&info.name).await?;
+        file.seek(SeekFrom::Start(piece_begin as u64 + begin as u64))
+            .await
+            .unwrap();
+
+        return Ok(file);
+    }
+    pub async fn get_block_from_block_info(&self, block_info: &BlockInfo) -> Result<Block, Error> {
+        let mut file = self
+            .get_file_from_index(block_info.index, block_info.begin)
+            .await?;
+
+        let mut buf = vec![0; block_info.len as usize];
+
+        file.read_exact(&mut buf).await.unwrap();
+
+        let block = Block {
+            index: block_info.index as usize,
+            begin: block_info.begin,
+            block: buf,
+        };
+
+        Ok(block)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use bendy::decoding::FromBencode;
-    use std::{
-        collections::VecDeque,
-        io::{Cursor, SeekFrom},
-        sync::Arc,
-    };
 
     use crate::{
-        metainfo::{File, Info, MetaInfo},
+        metainfo::{self, Info, MetaInfo},
         tcp_wire::lib::Block,
     };
 
     use super::*;
     use tokio::{
-        fs::create_dir_all,
-        io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
         spawn,
-        sync::{mpsc, oneshot, Mutex},
+        sync::{mpsc, oneshot},
     };
 
+    // when we send the msg `NewTorrent` the `Disk` must create
+    // the "skeleton" of the torrent tree. Empty folders and empty files.
     #[tokio::test]
     async fn create_file_tree() {
         // # examples
@@ -224,7 +267,8 @@ mod tests {
         //
         // p0: has entire b0 and half b1
         // p1: has half b1 and entire b2
-        let path = "Kerkour S. Black Hat Rust...Rust programming language 2022/Kerkour S. Black Hat Rust...Rust programming language 2022.pdf";
+
+        let path = "Kerkour S. Black Hat Rust...Rust programming language 2022.pdf";
 
         let (tx, rx) = mpsc::channel(5);
         let mut disk = Disk::new(rx);
@@ -238,7 +282,6 @@ mod tests {
         let info = metainfo.info;
 
         let (tx_oneshot, rx_oneshot) = oneshot::channel();
-
         tx.send(DiskMsg::NewTorrent(info)).await.unwrap();
         tx.send(DiskMsg::OpenFile((path.to_owned(), tx_oneshot)))
             .await
@@ -253,39 +296,133 @@ mod tests {
         assert!(!metadata.is_dir());
     }
 
+    // given a `BlockInfo`, we must be to read the right file,
+    // at the right offset.
+    // when we seed to other peers, this is how it will work.
+    // when we get the bytes, it's easy to just create a Block from a BlockInfo.
     #[tokio::test]
-    async fn send_new_torrent_msg() {
-        let (tx, rx) = mpsc::channel(1);
+    async fn multi_file_write_read_block() {
+        let (tx, rx) = mpsc::channel(3);
         let mut disk = Disk::new(rx);
+
+        let info = Info {
+            file_length: None,
+            name: "arch".to_owned(),
+            piece_length: 6,
+            pieces: vec![0],
+            files: Some(vec![
+                metainfo::File {
+                    length: 12,
+                    path: vec!["foo.txt".to_owned()],
+                },
+                metainfo::File {
+                    length: 12,
+                    path: vec!["bar".to_owned(), "baz.txt".to_owned()],
+                },
+                metainfo::File {
+                    length: 12,
+                    path: vec!["bar".to_owned(), "buzz".to_owned(), "bee.txt".to_owned()],
+                },
+            ]),
+        };
 
         spawn(async move {
             disk.run().await.unwrap();
         });
 
-        let info = Info::default();
-
         tx.send(DiskMsg::NewTorrent(info)).await.unwrap();
 
-        std::fs::remove_file("foo.txt").unwrap();
-    }
+        //
+        //  WRITE BLOCKS
+        //
 
-    // test that we can read individual, out of order, pieces
-    // of a file
-    #[tokio::test]
-    async fn read_piece() {
-        let (_, rx) = mpsc::channel(1);
-        let mut disk = Disk::new(rx);
-        let info = Info::default();
-        disk.ctx.info = info;
+        // write a block before reading it
+        // write entire first file
+        let block = Block {
+            index: 0,
+            begin: 0,
+            block: vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+        };
 
-        let path = "foo.txt";
-        // let path = "../Kerkour S. Black Hat Rust...Rust programming language 2022../Kerkour S. Black Hat Rust...Rust programming language 2022.pdf";
-        let mut file = disk.open_file(path).await.unwrap();
+        let (tx_oneshot, rx_oneshot) = oneshot::channel();
+        tx.send(DiskMsg::WriteBlock((block.clone(), tx_oneshot)))
+            .await
+            .unwrap();
+        let result = rx_oneshot.await.unwrap();
+        assert!(result.is_ok());
 
-        // in reality, the block_len is 16 KiB
-        // i can use the block_len to split the file buffer
-        // and read and write in a non-sequential way
-        let block_len: u64 = 3;
+        // validate that the first file contains the bytes that we wrote
+        let block_info = BlockInfo {
+            index: 0,
+            begin: 0,
+            len: 12,
+        };
+        let (tx_oneshot, rx_oneshot) = oneshot::channel();
+        tx.send(DiskMsg::ReadBlock((block_info, tx_oneshot)))
+            .await
+            .unwrap();
+        let result = rx_oneshot.await.unwrap();
+        assert_eq!(result, block.block);
+
+        // write a block before reading it
+        // write entire second file
+        let block = Block {
+            index: 2,
+            begin: 0,
+            block: vec![13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24],
+        };
+
+        let (tx_oneshot, rx_oneshot) = oneshot::channel();
+        tx.send(DiskMsg::WriteBlock((block.clone(), tx_oneshot)))
+            .await
+            .unwrap();
+        let result = rx_oneshot.await.unwrap();
+        assert!(result.is_ok());
+
+        // validate that the second file contains the bytes that we wrote
+        let block_info = BlockInfo {
+            index: 2,
+            begin: 0,
+            len: 12,
+        };
+        let (tx_oneshot, rx_oneshot) = oneshot::channel();
+        tx.send(DiskMsg::ReadBlock((block_info, tx_oneshot)))
+            .await
+            .unwrap();
+        let result = rx_oneshot.await.unwrap();
+        assert_eq!(result, block.block);
+
+        // write a block before reading it
+        // write entire third file
+        let block = Block {
+            index: 4,
+            begin: 0,
+            block: vec![25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36],
+        };
+
+        let (tx_oneshot, rx_oneshot) = oneshot::channel();
+        tx.send(DiskMsg::WriteBlock((block.clone(), tx_oneshot)))
+            .await
+            .unwrap();
+        let result = rx_oneshot.await.unwrap();
+        assert!(result.is_ok());
+
+        // validate that the third file contains the bytes that we wrote
+        let block_info = BlockInfo {
+            index: 4,
+            begin: 0,
+            len: 12,
+        };
+        let (tx_oneshot, rx_oneshot) = oneshot::channel();
+        tx.send(DiskMsg::ReadBlock((block_info, tx_oneshot)))
+            .await
+            .unwrap();
+        let result = rx_oneshot.await.unwrap();
+        assert_eq!(result, block.block);
+
+        //
+        //  READ BLOCKS
+        //
 
         let block_info = BlockInfo {
             index: 1,
@@ -293,124 +430,68 @@ mod tests {
             len: 3,
         };
 
-        // when we write, we also advance the cursor of the buffer
-        file.write_all_buf(&mut Cursor::new(&[255, 120, 50, 35, 2, 76, 30, 12, 4]))
+        // read piece 0 block from first file
+        let (tx_oneshot, rx_oneshot) = oneshot::channel();
+        tx.send(DiskMsg::ReadBlock((block_info, tx_oneshot)))
             .await
             .unwrap();
-
-        // advance buffer until the start of the offset
-        // since I'm only using blocks with 16KiB
-        // and rejecting pieces larget than that,
-        // it's safe to make this calculation to get the piece offset
-        // with the only exception being the last piece/block which
-        // may be smallar than 16 KiB
-        file.seek(SeekFrom::Start(block_len * block_info.index as u64))
-            .await
-            .unwrap();
-
-        let mut buf = vec![0; block_info.len as usize];
-        file.read_exact(&mut buf).await.unwrap();
-
-        assert_eq!(buf, &[35, 2, 76]);
-
-        tokio::fs::remove_file("foo.txt").await.unwrap();
-    }
-
-    // test that we can write pieces in the middle of the file buffer
-    // and return the bytes written
-    #[tokio::test]
-    async fn write_piece() {
-        let (_, rx) = mpsc::channel(1);
-        let mut disk = Disk::new(rx);
-        let info = Info::default();
-        disk.ctx.info = info;
-
-        let path = "foo.txt";
-        let mut file = disk.open_file(path).await.unwrap();
-
-        // in reality, the block_len is 16 KiB
-        // i can use the block_len to split the file buffer
-        // and read and write in a non-sequential way
-        let block_len: u64 = 3;
-
-        let block = Block {
-            index: 1,
-            begin: 0,
-            block: vec![35, 2, 76],
-        };
-
-        file.write_all_buf(&mut Cursor::new(&[0; 9])).await.unwrap();
-
-        // advance buffer until the start of the offset
-        file.seek(SeekFrom::Start(block_len * block.index as u64))
-            .await
-            .unwrap();
-
-        // when we write, we also advance the cursor of the buffer
-        file.write_all(&block.block).await.unwrap();
-
-        // now we go back again to the start of the offset
-        file.seek(SeekFrom::Start(block_len * block.index as u64))
-            .await
-            .unwrap();
-
-        let mut buf = vec![0; block_len as usize];
-        file.read_exact(&mut buf).await.unwrap();
-
-        assert_eq!(buf, block.block);
-
-        tokio::fs::remove_file("foo.txt").await.unwrap();
-    }
-
-    // simulate seeding. a Peer will send a block info and expect a Block in return,
-    // we must read the bytes from disk and construct the Block.
-    #[test]
-    fn read_bytes_from_torrent() -> Result<(), Error> {
-        let index: u32 = 0;
-        let piece_len: u32 = 262_144;
-        let piece_begin = index * piece_len;
-        let piece_end = piece_begin + piece_len;
-
-        // multi file info
-        let metainfo = include_bytes!("../book.torrent");
-        let metainfo = MetaInfo::from_bencode(metainfo).unwrap();
-        let info = metainfo.info;
-
-        let torrent_len: u32 = info
-            .files
-            .as_ref()
-            .unwrap()
-            .iter()
-            .fold(0, |acc, f| acc * f.length);
-
-        println!("torrent_len: {torrent_len:#?}");
-        println!("piece index: {index:#?}");
-        println!("piece_begin: {piece_begin:#?}");
-        println!("piece_end: {piece_end:#?}");
-
-        // find a file on a list of files,
-        // given a piece_index and a piece_len
-        let (_, file) = info
-            .files
-            .as_ref()
-            .unwrap()
-            .into_iter()
-            .enumerate()
-            .find(|(i, f)| piece_begin < f.length * (*i as u32 + 1))
-            .unwrap();
-
-        println!("found file: {file:#?}");
-
-        let bis: VecDeque<BlockInfo> = info.into();
-
-        println!("file to disk_file: {bis:#?}");
+        let result = rx_oneshot.await.unwrap();
+        assert_eq!(result, vec![7, 8, 9]);
 
         let block_info = BlockInfo {
-            len: BLOCK_LEN,
             index: 0,
-            begin: 0,
+            begin: 1,
+            len: 3,
         };
 
-        Ok(())
+        // read piece 1 block from first file
+        let (tx_oneshot, rx_oneshot) = oneshot::channel();
+        tx.send(DiskMsg::ReadBlock((block_info, tx_oneshot)))
+            .await
+            .unwrap();
+        let result = rx_oneshot.await.unwrap();
+        assert_eq!(result, vec![2, 3, 4]);
+
+        let block_info = BlockInfo {
+            index: 2,
+            begin: 0,
+            len: 3,
+        };
+
+        // read piece 2 block from second file
+        let (tx_oneshot, rx_oneshot) = oneshot::channel();
+        tx.send(DiskMsg::ReadBlock((block_info, tx_oneshot)))
+            .await
+            .unwrap();
+        let result = rx_oneshot.await.unwrap();
+        assert_eq!(result, vec![13, 14, 15]);
+
+        let block_info = BlockInfo {
+            index: 2,
+            begin: 1,
+            len: 6,
+        };
+
+        // read piece 2 block from second file
+        let (tx_oneshot, rx_oneshot) = oneshot::channel();
+        tx.send(DiskMsg::ReadBlock((block_info, tx_oneshot)))
+            .await
+            .unwrap();
+        let result = rx_oneshot.await.unwrap();
+        assert_eq!(result, vec![14, 15, 16, 17, 18, 19]);
+
+        let block_info = BlockInfo {
+            index: 4,
+            begin: 0,
+            len: 6,
+        };
+
+        // read piece 3 block from third file
+        let (tx_oneshot, rx_oneshot) = oneshot::channel();
+        tx.send(DiskMsg::ReadBlock((block_info, tx_oneshot)))
+            .await
+            .unwrap();
+        let result = rx_oneshot.await.unwrap();
+        assert_eq!(result, vec![25, 26, 27, 28, 29, 30]);
     }
 }
