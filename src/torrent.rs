@@ -2,9 +2,12 @@ use crate::bitfield::Bitfield;
 use crate::disk::DiskMsg;
 use crate::error::Error;
 use crate::magnet_parser::get_info_hash;
+use crate::metainfo::Info;
+use crate::metainfo::MetaInfo;
 use crate::peer::Peer;
 use crate::tracker::tracker::Tracker;
 use crate::tracker::tracker::TrackerCtx;
+use bendy::decoding::FromBencode;
 use log::debug;
 use log::info;
 use magnet_url::Magnet;
@@ -47,8 +50,8 @@ pub struct Torrent {
 #[derive(Debug)]
 pub struct TorrentCtx {
     pub magnet: Magnet,
-    // pub pieces: Mutex<Bitfield>,
     pub pieces: RwLock<Bitfield>,
+    pub info: RwLock<Info>,
 }
 
 impl Torrent {
@@ -60,8 +63,13 @@ impl Torrent {
     ) -> Self {
         let pieces = RwLock::new(Bitfield::default());
 
+        let info = RwLock::new(Info::default());
         let tracker_ctx = Arc::new(TrackerCtx::default());
-        let ctx = Arc::new(TorrentCtx { pieces, magnet });
+        let ctx = Arc::new(TorrentCtx {
+            pieces,
+            magnet,
+            info,
+        });
 
         Self {
             tracker_ctx,
@@ -78,7 +86,7 @@ impl Torrent {
         loop {
             select! {
                 _ = self.tick_interval.tick() => {
-                    debug!("tick torrent");
+                    // debug!("tick torrent");
                 },
                 Some(msg) = self.rx.recv() => {
                     // in the future, this event loop will
@@ -90,6 +98,8 @@ impl Torrent {
                             // len as the bitfield from the peer
                             let ctx = Arc::clone(&self.ctx);
                             let mut pieces = ctx.pieces.write().await;
+
+                            println!("update bitfield len {:?}", len);
 
                             // only create the bitfield if we don't have one
                             // pieces.len() will start at 0
@@ -114,6 +124,7 @@ impl Torrent {
             debug!("listening to peer...");
 
             let tx = self.tx.clone();
+
             spawn(async move {
                 peer.run(tx, None).await?;
                 Ok::<_, Error>(())
@@ -147,14 +158,22 @@ impl Torrent {
             Tracker::run(local, peer).await.unwrap();
         });
 
+        // pretending we get this from bep 09 msg,
+        // its not ready yet
+        let torrent_book_bytes = include_bytes!("../book.torrent");
+        let torrent = MetaInfo::from_bencode(torrent_book_bytes).unwrap();
+
+        let ctx = self.ctx.clone();
+        let mut info = ctx.info.write().await;
+
+        *info = torrent.info.clone();
+
         // send msg to Disk to create a new file
         // on the operating system for our torrent download
-        // self.disk_tx
-        //     .send(DiskMsg::NewTorrent {
-        //         name: self.ctx.magnet.dn.clone().unwrap(),
-        //     })
-        //     .await
-        //     .unwrap();
+        self.disk_tx
+            .send(DiskMsg::NewTorrent(torrent.info))
+            .await
+            .unwrap();
 
         Ok(peers)
     }

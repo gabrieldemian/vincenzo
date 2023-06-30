@@ -38,4 +38,6 @@ pub enum Error {
     HandshakeInvalid,
     #[error("Could not open the file")]
     FileOpenError,
+    #[error("This torrent is already downloaded fully")]
+    TorrentComplete,
 }

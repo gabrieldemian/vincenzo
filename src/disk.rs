@@ -63,6 +63,7 @@ impl Disk {
             match msg {
                 DiskMsg::NewTorrent(info) => {
                     self.ctx.block_infos = info.clone().into();
+                    println!("block_infos len {:?}", self.ctx.block_infos.len());
                     self.ctx.info = info;
 
                     // create the skeleton of the torrent tree,

@@ -7,6 +7,7 @@ use bendy::{
 
 use crate::{
     disk::DiskFile,
+    error,
     tcp_wire::lib::{BlockInfo, BLOCK_LEN},
 };
 
@@ -66,6 +67,30 @@ impl Into<VecDeque<BlockInfo>> for Info {
 }
 
 impl Info {
+    pub async fn get_block_infos(&self, piece: u32) -> Result<VecDeque<BlockInfo>, error::Error> {
+        // let available_space = self.piece_length;
+        let piece_begin = piece * self.piece_length;
+
+        // multi file torrent
+        if let Some(files) = &self.files {
+            let file = files
+                .into_iter()
+                .enumerate()
+                .find(|(i, f)| piece_begin < f.length * (*i as u32 + 1))
+                .map(|a| a.1);
+
+            if let Some(file) = file {
+                let torrent_len = files.iter().fold(0, |acc, f| acc + f.length);
+                let infos = file.get_block_infos(self.piece_length, Some(torrent_len));
+
+                return Ok(infos);
+            }
+
+            return Err(error::Error::FileOpenError);
+        }
+        todo!()
+    }
+
     pub fn get_disk_files(&self) -> VecDeque<DiskFile> {
         let mut disks = VecDeque::new();
 
@@ -108,16 +133,6 @@ pub struct File {
     pub path: Vec<String>,
 }
 
-// impl From<File> for DiskFile {
-//     fn from(value: File) -> Self {
-//         Self {
-//             block_infos: value.get_block_infos(value.length, None),
-//             path: value.path,
-//             length: value.length,
-//         }
-//     }
-// }
-
 impl File {
     pub fn to_disk_file(&self, piece_length: u32, torrent_len: Option<u32>) -> DiskFile {
         DiskFile {
@@ -153,17 +168,12 @@ impl File {
         // bytes of entire file
         // todo: get this on argument,
         // let file_length = pieces as u32 * piece_length;
-        let blocks = pieces / BLOCK_LEN as f32;
-
         let pieces = pieces as u32;
-        let blocks = blocks.ceil() as u32;
 
-        // println!("{:?} self.length", self.length);
-        // println!("{BLOCK_LEN} block_len");
-        // println!("{piece_length} piece_len");
-        // println!("{pieces} pieces");
-        // println!("{blocks} blocks\n");
-        // println!("{torrent_len:?} torrent_len\n");
+        println!("{:?} self.length", self.length);
+        println!("{piece_length} piece_len");
+        println!("{pieces} pieces");
+        println!("{torrent_len:?} torrent_len\n");
 
         let mut index = 0 as u32;
 
@@ -186,7 +196,12 @@ impl File {
             let blocks_per_piece = blocks_per_piece.ceil() as u32;
 
             for block in 0..blocks_per_piece {
-                let begin = infos.len() as u32 * BLOCK_LEN as u32;
+                // let begin_max = infos.len() as u32 * BLOCK_LEN as u32;
+                let begin = if blocks_per_piece == 1 {
+                    0
+                } else {
+                    infos.len() as u32 * BLOCK_LEN as u32
+                };
                 let is_last_block = blocks_per_piece == block + 1;
 
                 let len = begin + BLOCK_LEN;
@@ -424,6 +439,32 @@ mod tests {
     use crate::error::Error;
 
     use super::*;
+
+    #[tokio::test]
+    async fn should_get_block_infos() -> Result<(), encoding::Error> {
+        let torrent_book_bytes = include_bytes!("../book.torrent");
+
+        let torrent = MetaInfo::from_bencode(torrent_book_bytes).unwrap();
+        let info = torrent.info;
+
+        let blocks_in_piece = info.piece_length / BLOCK_LEN;
+        let total_blocks = blocks_in_piece * (info.pieces.len() as u32 / 20);
+
+        println!("\npiece_length {:?}", info.piece_length);
+        println!("block_len {:?}", BLOCK_LEN);
+        println!("bip {blocks_in_piece:?}");
+        println!("tb {total_blocks:?}");
+
+        let infos = info.get_block_infos(0).await.unwrap();
+
+        assert_eq!(250, infos.len());
+        println!("\ninfos {:#?}", infos[0]);
+        println!("\ninfos {:#?}", infos[1]);
+        println!("\ninfos {:#?}", infos[2]);
+
+        Ok(())
+    }
+
     #[test]
     fn should_encode_multi_file_torrent() -> Result<(), encoding::Error> {
         let torrent_book_bytes = include_bytes!("../book.torrent");
@@ -648,10 +689,7 @@ mod tests {
 
     #[test]
     fn should_get_disk_files_for_info() -> Result<(), Error> {
-        let index: u32 = 0;
         let piece_len: u32 = 262_144;
-        let piece_begin = index * piece_len;
-        let piece_end = piece_begin + piece_len;
 
         let files: Vec<File> = vec![
             File {

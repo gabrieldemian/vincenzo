@@ -6,13 +6,13 @@ use std::{
     sync::Arc,
     time::Duration,
 };
+use tokio::io::AsyncWriteExt;
 use tokio::{
     io::AsyncReadExt,
     select,
     sync::{mpsc::Sender, oneshot},
     time::Instant,
 };
-use tokio::{io::AsyncWriteExt, time::timeout};
 use tokio_util::codec::Framed;
 
 use log::{debug, info, warn};
@@ -25,7 +25,7 @@ use crate::{
     extension::Extension,
     magnet_parser::get_info_hash,
     tcp_wire::{
-        lib::BlockInfo,
+        lib::{BlockInfo, BLOCK_LEN},
         messages::{Handshake, Message, PeerCodec},
     },
     torrent::{TorrentCtx, TorrentMsg},
@@ -120,31 +120,54 @@ impl Peer {
         sink: &mut SplitSink<Framed<TcpStream, PeerCodec>, Message>,
     ) -> Result<(), Error> {
         let torrent_ctx = self.torrent_ctx.clone().unwrap();
+        // disk cannot be None at this point, this is safe
+        let disk_tx = self.disk_tx.clone().unwrap();
+        let info = torrent_ctx.info.read().await;
+
         let tr_pieces = torrent_ctx.pieces.read().await;
-        info!("tr_pieces {tr_pieces:?}");
+
+        if tr_pieces.inner == self.pieces.inner {
+            drop(tr_pieces);
+            return Err(Error::TorrentComplete);
+        }
+
+        println!("tr_pieces {tr_pieces:?}");
+        println!("tr_pieces len: {:?}", tr_pieces.len());
+        println!("self.pieces: {:?}", self.pieces);
+        println!("self.pieces len: {:?}", self.pieces.len());
+
+        let blocks_in_piece = info.piece_length / BLOCK_LEN;
+
         // look for a piece in `bitfield` that has not
         // been request on `torrent_bitfield`
         let piece = self
             .pieces
             .clone()
             .zip(tr_pieces.clone())
-            .find(|(bt, tr)| bt.bit == 1_u8 && tr.bit == 0);
+            .find(|(peer, torrent)| peer.bit == 1_u8 && torrent.bit == 0);
 
         drop(tr_pieces);
 
-        info!("piece {piece:?}");
+        println!("piece index {piece:?}");
 
         if let Some((piece, _)) = piece {
-            let block = BlockInfo::new().index(piece.index as u32);
+            let info = torrent_ctx.info.read().await;
 
-            info!("Will request {block:#?}");
+            // all block infos for this Info
+            let infos = info.get_block_infos(piece.index as u32).await?;
+            // let mut tr_pieces = torrent_ctx.pieces.write().await;
 
-            sink.send(Message::Request(block.clone())).await?;
+            println!("Requesting {:?} blocks...", infos.len());
+            let last = infos.back();
+            println!("last block {last:#?}");
 
-            let mut tr_pieces = torrent_ctx.pieces.write().await;
-            tr_pieces.set(block.index as usize);
-
-            info!("tr_pieces after sent block {tr_pieces:?}");
+            for info in infos
+                .into_iter()
+                .take(self.extension.reqq.unwrap_or(10).into())
+            {
+                // tr_pieces.set(info.index as usize);
+                sink.send(Message::Request(info)).await?;
+            }
         }
 
         Ok(())
@@ -175,7 +198,6 @@ impl Peer {
             .expect("read handshake_buf");
 
         let their_handshake = Handshake::deserialize(&handshake_buf)?;
-        info!("--- their handshake is {their_handshake:?}");
 
         // Validate their handshake against ours
         if !their_handshake.validate(&our_handshake) {
@@ -301,15 +323,35 @@ impl Peer {
                             info!("block size: {:?} KiB", block.block.len() / 1000);
                             info!("is valid? {:?}", block.is_valid());
 
-                            let tr_pieces = torrent_ctx.pieces.read().await;
-                            info!("tr_pieces {tr_pieces:?}");
+                            println!("-------------------------------");
+                            println!("| {:?} Piece  |", self.addr);
+                            println!("-------------------------------");
+                            println!("index: {:?}", block.index);
+                            println!("begin: {:?}", block.begin);
+                            println!("block size: {:?} bytes", block.block.len());
+                            println!("block size: {:?} KiB", block.block.len() / 1000);
+                            println!("is valid? {:?}", block.is_valid());
+                            println!("-------------------------------");
 
-                            let was_requested = tr_pieces.has(block.index) && self.pieces.has(block.index);
-                            drop(tr_pieces);
-                            info!("was_requested? {was_requested:?}");
 
-                            if was_requested && block.is_valid() {
-                                info!("inside if statement");
+                            // let mut tr_pieces = torrent_ctx.pieces.write().await;
+
+                            // info!("tr_pieces {tr_pieces:?}");
+
+                            // let was_requested = tr_pieces.has(block.index) && self.pieces.has(block.index);
+                            // info!("was_requested? {was_requested:?}");
+
+                            if block.is_valid() {
+                                let mut tr_pieces = torrent_ctx.pieces.write().await;
+                                let info = torrent_ctx.info.read().await;
+
+                                // if this is the last block, update torrent.bitfield
+                                if block.begin + block.block.len() as u32 >= info.piece_length {
+                                    tr_pieces.set(block.index);
+                                }
+
+                                drop(tr_pieces);
+                                drop(info);
 
                                 let (tx, rx) = oneshot::channel();
                                 let disk_tx = self.disk_tx.as_ref().unwrap();
@@ -342,6 +384,7 @@ impl Peer {
                             info!("---------------------------------\n");
 
                             self.request_next_piece(&mut sink).await?;
+
                         }
                         Message::Cancel(block_info) => {
                             info!("------------------------------");
@@ -362,6 +405,13 @@ impl Peer {
                             let extension = Extension::from_bencode(&extension).unwrap();
                             info!("extension {extension:#?}");
                             self.extension = extension;
+
+                            // send handshake from bep 09 to get the metainfo.info
+                            if let Some(ut_metadata) = self.extension.m.ut_metadata {
+                                info!("peer supports ut_metadata {ut_metadata}, sending handshake");
+                                let h = b"d8:msg_typei0e5:piecei0ee";
+                                sink.send(Message::Extended((ut_metadata, h.to_vec()))).await?;
+                            }
                         }
                     }
                 }
@@ -402,6 +452,16 @@ mod tests {
 
     #[test]
     fn piece_picker_algo() {
+        let torrent_bitfield = Bitfield::from(vec![0u8; 32]);
+
+        let bitfield = Bitfield::from(vec![0u8; 32]);
+
+        let piece = bitfield
+            .zip(torrent_bitfield)
+            .find(|(bt, tr)| bt.bit == 1_u8 && tr.bit == 0);
+
+        // ------------
+
         // bitfield of the torrent, representing the pieces
         // that we have downloaded so far (if 1)
         let torrent_bitfield = Bitfield::from(vec![0b0000_0000]);

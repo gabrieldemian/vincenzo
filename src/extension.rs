@@ -1,6 +1,6 @@
 use bendy::{
     decoding::{FromBencode, Object, ResultExt},
-    encoding::ToBencode,
+    encoding::{AsString, ToBencode},
 };
 
 /// This is the payload of the extension protocol described on:
@@ -31,6 +31,31 @@ pub struct Extension {
 pub struct M {
     pub ut_metadata: Option<u8>,
     pub ut_pex: Option<u8>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct MetadataMsg {
+    pub msg_type: u32,
+    pub piece: u32,
+    pub total_size: Option<u32>,
+    pub data: Option<Vec<u8>>,
+}
+
+impl ToBencode for MetadataMsg {
+    const MAX_DEPTH: usize = 20;
+    fn encode(
+        &self,
+        encoder: bendy::encoding::SingleItemEncoder,
+    ) -> Result<(), bendy::encoding::Error> {
+        encoder.emit_dict(|mut e| {
+            e.emit_pair(b"msg_type", self.msg_type)?;
+            e.emit_pair(b"piece", self.piece)?;
+            if let Some(total_size) = self.total_size {
+                e.emit_pair(b"total_size", total_size)?;
+            }
+            Ok(())
+        })
+    }
 }
 
 impl ToBencode for M {
