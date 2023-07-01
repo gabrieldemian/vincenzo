@@ -1,4 +1,4 @@
-use std::{collections::VecDeque, io::SeekFrom};
+use std::{collections::VecDeque, io::SeekFrom, sync::Arc};
 
 use log::debug;
 use tokio::{
@@ -11,6 +11,7 @@ use crate::{
     error::Error,
     metainfo::Info,
     tcp_wire::lib::{Block, BlockInfo},
+    torrent::TorrentCtx,
 };
 
 #[derive(Debug)]
@@ -19,12 +20,14 @@ pub enum DiskMsg {
     ReadBlock((BlockInfo, Sender<Vec<u8>>)),
     OpenFile((String, Sender<File>)),
     WriteBlock((Block, Sender<Result<(), Error>>)),
+    RequestBlocks((usize, Sender<VecDeque<BlockInfo>>)),
 }
 
 #[derive(Debug)]
 pub struct Disk {
     rx: Receiver<DiskMsg>,
     pub ctx: DiskCtx,
+    pub torrent_ctx: Arc<TorrentCtx>,
 }
 
 #[derive(Debug, Default)]
@@ -47,13 +50,17 @@ pub struct DiskFile {
 }
 
 impl Disk {
-    pub fn new(rx: Receiver<DiskMsg>) -> Self {
+    pub fn new(rx: Receiver<DiskMsg>, torrent_ctx: Arc<TorrentCtx>) -> Self {
         let ctx = DiskCtx {
             // base_path: "~/Downloads/".to_string(),
             base_path: "".to_string(),
             ..Default::default()
         };
-        Self { rx, ctx }
+        Self {
+            rx,
+            ctx,
+            torrent_ctx,
+        }
     }
 
     pub async fn run(&mut self) -> Result<(), Error> {
@@ -62,8 +69,7 @@ impl Disk {
         while let Some(msg) = self.rx.recv().await {
             match msg {
                 DiskMsg::NewTorrent(info) => {
-                    self.ctx.block_infos = info.clone().into();
-                    println!("block_infos len {:?}", self.ctx.block_infos.len());
+                    self.ctx.block_infos = info.get_block_infos().await?;
                     self.ctx.info = info;
 
                     // create the skeleton of the torrent tree,
@@ -107,6 +113,38 @@ impl Disk {
                 DiskMsg::OpenFile((path, tx)) => {
                     let file = self.open_file(&path).await?;
                     let _ = tx.send(file);
+                }
+                DiskMsg::RequestBlocks((n, tx)) => {
+                    println!("meu n eh {n}");
+                    println!("meu block_infos len eh {:?}", self.ctx.block_infos.len());
+
+                    let mut requested = self.torrent_ctx.requested_block_infos.write().await;
+
+                    let mut infos: VecDeque<BlockInfo> = VecDeque::new();
+                    let mut idxs = vec![];
+
+                    for (i, info) in self.ctx.block_infos.iter_mut().enumerate() {
+                        if infos.len() >= n {
+                            break;
+                        }
+
+                        let was_requested = requested.iter().any(|i| i == info);
+                        if was_requested {
+                            continue;
+                        };
+
+                        idxs.push(i);
+                        infos.push_back(info.clone());
+                    }
+                    // remove the requested items from block_infos
+                    // for i in idxs {
+                    //     self.ctx.block_infos.remove(i);
+                    // }
+                    for info in &infos {
+                        requested.push_back(info.clone());
+                    }
+
+                    let _ = tx.send(infos);
                 }
             }
         }
@@ -218,8 +256,10 @@ mod tests {
     use bendy::decoding::FromBencode;
 
     use crate::{
+        magnet_parser::get_magnet,
         metainfo::{self, Info, MetaInfo},
         tcp_wire::lib::Block,
+        torrent::{Torrent, TorrentMsg},
     };
 
     use super::*;
@@ -271,8 +311,15 @@ mod tests {
 
         let path = "Kerkour S. Black Hat Rust...Rust programming language 2022.pdf";
 
+        let (torrent_tx, torrent_rx) = mpsc::channel::<TorrentMsg>(1);
+        let (disk_tx, _) = mpsc::channel::<DiskMsg>(1);
+
+        let m = get_magnet("magnet:?xt=urn:btih:48aac768a865798307ddd4284be77644368dd2c7&dn=Kerkour%20S.%20Black%20Hat%20Rust...Rust%20programming%20language%202022&tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%2Fannounce&tr=udp%3A%2F%2F9.rarbg.to%3A2920%2Fannounce&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&tr=udp%3A%2F%2Ftracker.internetwarriors.net%3A1337%2Fannounce&tr=udp%3A%2F%2Ftracker.leechers-paradise.org%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.pirateparty.gr%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.cyberia.is%3A6969%2Fannounce").unwrap();
+        let torrent = Torrent::new(torrent_tx, disk_tx, torrent_rx, m).await;
+        let torrent_ctx = torrent.ctx.clone();
+
         let (tx, rx) = mpsc::channel(5);
-        let mut disk = Disk::new(rx);
+        let mut disk = Disk::new(rx, torrent_ctx);
 
         spawn(async move {
             disk.run().await.unwrap();
@@ -297,14 +344,125 @@ mod tests {
         assert!(!metadata.is_dir());
     }
 
+    #[tokio::test]
+    async fn request_blocks() {
+        let (torrent_tx, torrent_rx) = mpsc::channel::<TorrentMsg>(1);
+        let (disk_tx, _) = mpsc::channel::<DiskMsg>(1);
+
+        let m = get_magnet("magnet:?xt=urn:btih:48aac768a865798307ddd4284be77644368dd2c7&dn=Kerkour%20S.%20Black%20Hat%20Rust...Rust%20programming%20language%202022&tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%2Fannounce&tr=udp%3A%2F%2F9.rarbg.to%3A2920%2Fannounce&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&tr=udp%3A%2F%2Ftracker.internetwarriors.net%3A1337%2Fannounce&tr=udp%3A%2F%2Ftracker.leechers-paradise.org%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.pirateparty.gr%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.cyberia.is%3A6969%2Fannounce").unwrap();
+
+        let torrent = Torrent::new(torrent_tx, disk_tx, torrent_rx, m).await;
+        let torrent_ctx = torrent.ctx.clone();
+
+        let metainfo = include_bytes!("../book.torrent");
+        let metainfo = MetaInfo::from_bencode(metainfo).unwrap();
+        let info = metainfo.info;
+
+        let mut info_ctx = torrent.ctx.info.write().await;
+        *info_ctx = info.clone();
+
+        let (tx, rx) = mpsc::channel(5);
+        let mut disk = Disk::new(rx, torrent_ctx);
+
+        spawn(async move {
+            disk.run().await.unwrap();
+        });
+
+        tx.send(DiskMsg::NewTorrent(info)).await.unwrap();
+
+        let (tx_oneshot, rx_oneshot) = oneshot::channel();
+
+        tx.send(DiskMsg::RequestBlocks((2, tx_oneshot)))
+            .await
+            .unwrap();
+
+        let expected = VecDeque::from([
+            BlockInfo {
+                index: 0,
+                begin: 0,
+                len: 16384,
+            },
+            BlockInfo {
+                index: 1,
+                begin: 0,
+                len: 16384,
+            },
+        ]);
+
+        let result = rx_oneshot.await.unwrap();
+        assert_eq!(result, expected);
+
+        let requested = torrent.ctx.requested_block_infos.read().await;
+        assert_eq!(*requested, expected);
+        drop(requested);
+
+        // --------
+
+        let (tx_oneshot, rx_oneshot) = oneshot::channel();
+        tx.send(DiskMsg::RequestBlocks((2, tx_oneshot)))
+            .await
+            .unwrap();
+
+        let expected = VecDeque::from([
+            BlockInfo {
+                index: 2,
+                begin: 0,
+                len: 16384,
+            },
+            BlockInfo {
+                index: 3,
+                begin: 0,
+                len: 16384,
+            },
+        ]);
+
+        let result = rx_oneshot.await.unwrap();
+        assert_eq!(result, expected);
+
+        let requested = torrent.ctx.requested_block_infos.read().await;
+
+        let expected = VecDeque::from([
+            BlockInfo {
+                index: 0,
+                begin: 0,
+                len: 16384,
+            },
+            BlockInfo {
+                index: 1,
+                begin: 0,
+                len: 16384,
+            },
+            BlockInfo {
+                index: 2,
+                begin: 0,
+                len: 16384,
+            },
+            BlockInfo {
+                index: 3,
+                begin: 0,
+                len: 16384,
+            },
+        ]);
+
+        assert_eq!(*requested, expected);
+        drop(requested);
+    }
+
     // given a `BlockInfo`, we must be to read the right file,
     // at the right offset.
     // when we seed to other peers, this is how it will work.
     // when we get the bytes, it's easy to just create a Block from a BlockInfo.
     #[tokio::test]
     async fn multi_file_write_read_block() {
-        let (tx, rx) = mpsc::channel(3);
-        let mut disk = Disk::new(rx);
+        let (torrent_tx, torrent_rx) = mpsc::channel::<TorrentMsg>(1);
+        let (disk_tx, _) = mpsc::channel::<DiskMsg>(1);
+
+        let m = get_magnet("magnet:?xt=urn:btih:48aac768a865798307ddd4284be77644368dd2c7&dn=Kerkour%20S.%20Black%20Hat%20Rust...Rust%20programming%20language%202022&tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%2Fannounce&tr=udp%3A%2F%2F9.rarbg.to%3A2920%2Fannounce&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&tr=udp%3A%2F%2Ftracker.internetwarriors.net%3A1337%2Fannounce&tr=udp%3A%2F%2Ftracker.leechers-paradise.org%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.pirateparty.gr%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.cyberia.is%3A6969%2Fannounce").unwrap();
+        let torrent = Torrent::new(torrent_tx, disk_tx, torrent_rx, m).await;
+        let torrent_ctx = torrent.ctx.clone();
+
+        let (tx, rx) = mpsc::channel(5);
+        let mut disk = Disk::new(rx, torrent_ctx);
 
         let info = Info {
             file_length: None,

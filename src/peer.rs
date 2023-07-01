@@ -25,7 +25,7 @@ use crate::{
     extension::Extension,
     magnet_parser::get_info_hash,
     tcp_wire::{
-        lib::{BlockInfo, BLOCK_LEN},
+        lib::BlockInfo,
         messages::{Handshake, Message, PeerCodec},
     },
     torrent::{TorrentCtx, TorrentMsg},
@@ -45,6 +45,7 @@ pub struct Peer {
     /// a `Bitfield` with pieces that this peer
     /// has, and hasn't, containing 0s and 1s
     pub pieces: Bitfield,
+    // pub requested_pieces: Bitfield,
     /// TCP addr that this peer is listening on
     pub addr: SocketAddr,
     pub extension: Extension,
@@ -120,10 +121,6 @@ impl Peer {
         sink: &mut SplitSink<Framed<TcpStream, PeerCodec>, Message>,
     ) -> Result<(), Error> {
         let torrent_ctx = self.torrent_ctx.clone().unwrap();
-        // disk cannot be None at this point, this is safe
-        let disk_tx = self.disk_tx.clone().unwrap();
-        let info = torrent_ctx.info.read().await;
-
         let tr_pieces = torrent_ctx.pieces.read().await;
 
         if tr_pieces.inner == self.pieces.inner {
@@ -131,43 +128,30 @@ impl Peer {
             return Err(Error::TorrentComplete);
         }
 
+        // disk cannot be None at this point, this is safe
+        let disk_tx = self.disk_tx.clone().unwrap();
+
         println!("tr_pieces {tr_pieces:?}");
         println!("tr_pieces len: {:?}", tr_pieces.len());
         println!("self.pieces: {:?}", self.pieces);
         println!("self.pieces len: {:?}", self.pieces.len());
+        // let blocks_in_piece = info.piece_length / BLOCK_LEN;
 
-        let blocks_in_piece = info.piece_length / BLOCK_LEN;
+        // get a list of unique block_infos from the Disk,
+        // those are already marked as requested on Torrent
+        let (otx, orx) = oneshot::channel();
+        let _ = disk_tx
+            .send(DiskMsg::RequestBlocks((
+                // self.extension.reqq.unwrap_or(10) as usize,
+                5, otx,
+            )))
+            .await;
 
-        // look for a piece in `bitfield` that has not
-        // been request on `torrent_bitfield`
-        let piece = self
-            .pieces
-            .clone()
-            .zip(tr_pieces.clone())
-            .find(|(peer, torrent)| peer.bit == 1_u8 && torrent.bit == 0);
+        let r = orx.await.unwrap();
+        println!("rrr {r:#?}");
 
-        drop(tr_pieces);
-
-        println!("piece index {piece:?}");
-
-        if let Some((piece, _)) = piece {
-            let info = torrent_ctx.info.read().await;
-
-            // all block infos for this Info
-            let infos = info.get_block_infos(piece.index as u32).await?;
-            // let mut tr_pieces = torrent_ctx.pieces.write().await;
-
-            println!("Requesting {:?} blocks...", infos.len());
-            let last = infos.back();
-            println!("last block {last:#?}");
-
-            for info in infos
-                .into_iter()
-                .take(self.extension.reqq.unwrap_or(10).into())
-            {
-                // tr_pieces.set(info.index as usize);
-                sink.send(Message::Request(info)).await?;
-            }
+        for info in r {
+            sink.send(Message::Request(info)).await?;
         }
 
         Ok(())
@@ -177,7 +161,6 @@ impl Peer {
         tx: Sender<TorrentMsg>,
         tcp_stream: Option<TcpStream>,
     ) -> Result<(), Error> {
-        let mut tick_timer = interval(Duration::from_secs(1));
         let mut socket = tcp_stream.unwrap_or(TcpStream::connect(self.addr).await?);
 
         let torrent_ctx = self.torrent_ctx.clone().unwrap();
@@ -224,18 +207,21 @@ impl Peer {
         sink.send(Message::Unchoke).await?;
         self.am_choking = false;
 
+        let mut keep_alive_timer = interval(Duration::from_secs(1));
         let keepalive_interval = Duration::from_secs(120);
-        let mut last_tick = Instant::now();
+
+        let mut last_tick_keepalive = Instant::now();
 
         loop {
             select! {
-                _ = tick_timer.tick() => {
+                _ = keep_alive_timer.tick() => {
                     // debug!("tick peer {:?}", self.addr);
                     // send Keepalive every 2 minutes
-                    if last_tick.elapsed() >= keepalive_interval {
-                        last_tick = Instant::now();
+                    if last_tick_keepalive.elapsed() >= keepalive_interval {
+                        last_tick_keepalive = Instant::now();
                         sink.send(Message::KeepAlive).await?;
                     }
+                    // check if there is requested blocks that hasnt been downloaded
                 }
                 Some(msg) = stream.next() => {
                     let msg = msg?;
@@ -332,14 +318,6 @@ impl Peer {
                             println!("block size: {:?} KiB", block.block.len() / 1000);
                             println!("is valid? {:?}", block.is_valid());
                             println!("-------------------------------");
-
-
-                            // let mut tr_pieces = torrent_ctx.pieces.write().await;
-
-                            // info!("tr_pieces {tr_pieces:?}");
-
-                            // let was_requested = tr_pieces.has(block.index) && self.pieces.has(block.index);
-                            // info!("was_requested? {was_requested:?}");
 
                             if block.is_valid() {
                                 let mut tr_pieces = torrent_ctx.pieces.write().await;

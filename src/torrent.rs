@@ -5,12 +5,14 @@ use crate::magnet_parser::get_info_hash;
 use crate::metainfo::Info;
 use crate::metainfo::MetaInfo;
 use crate::peer::Peer;
+use crate::tcp_wire::lib::BlockInfo;
 use crate::tracker::tracker::Tracker;
 use crate::tracker::tracker::TrackerCtx;
 use bendy::decoding::FromBencode;
 use log::debug;
 use log::info;
 use magnet_url::Magnet;
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::select;
@@ -51,6 +53,7 @@ pub struct Torrent {
 pub struct TorrentCtx {
     pub magnet: Magnet,
     pub pieces: RwLock<Bitfield>,
+    pub requested_block_infos: RwLock<VecDeque<BlockInfo>>,
     pub info: RwLock<Info>,
 }
 
@@ -62,11 +65,13 @@ impl Torrent {
         magnet: Magnet,
     ) -> Self {
         let pieces = RwLock::new(Bitfield::default());
-
         let info = RwLock::new(Info::default());
         let tracker_ctx = Arc::new(TrackerCtx::default());
+        let requested_block_infos = RwLock::new(VecDeque::new());
+
         let ctx = Arc::new(TorrentCtx {
             pieces,
+            requested_block_infos,
             magnet,
             info,
         });

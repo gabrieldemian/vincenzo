@@ -18,8 +18,9 @@ async fn main() -> Result<(), Error> {
     let (torrent_tx, torrent_rx) = mpsc::channel::<TorrentMsg>(300);
     let (disk_tx, disk_rx) = mpsc::channel::<DiskMsg>(300);
 
-    let mut disk = Disk::new(disk_rx);
     let mut torrent = Torrent::new(torrent_tx, disk_tx, torrent_rx, m).await;
+    let torrent_ctx = torrent.ctx.clone();
+    let mut disk = Disk::new(disk_rx, torrent_ctx);
 
     spawn(async move {
         let peers = torrent.start().await?;
