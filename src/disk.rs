@@ -121,7 +121,7 @@ impl Disk {
                     let mut requested = self.torrent_ctx.requested_block_infos.write().await;
 
                     let mut infos: VecDeque<BlockInfo> = VecDeque::new();
-                    let mut idxs = vec![];
+                    let mut idxs = VecDeque::new();
 
                     for (i, info) in self.ctx.block_infos.iter_mut().enumerate() {
                         if infos.len() >= n {
@@ -133,13 +133,13 @@ impl Disk {
                             continue;
                         };
 
-                        idxs.push(i);
+                        idxs.push_front(i);
                         infos.push_back(info.clone());
                     }
                     // remove the requested items from block_infos
-                    // for i in idxs {
-                    //     self.ctx.block_infos.remove(i);
-                    // }
+                    for i in idxs {
+                        self.ctx.block_infos.remove(i);
+                    }
                     for info in &infos {
                         requested.push_back(info.clone());
                     }
@@ -278,21 +278,7 @@ mod tests {
         // qnt pieces: 10
         // 16 blocks in 1 piece
         //
-        // block_len: 2 byte
-        // piece_len: 4 bytes
-        // file 1 len: 5 + half of the last block
-        // file 2 len: 5 + half of the first block
-        //
-        // # strategy 1
-        // get equal sized blocks but split them between pieces
-        // |----p0----|----p1----|
-        // |  b0  |  b1  |  b2   |
-        // |----------|-----------
-        // |  file|0  |  |file1  |
-        // -----------------------
-        //    5bytes     5bytes
-        //
-        // # strategy 2
+        // # strategy
         // ask for blocks <= block_len. The last block may be smaller to fit the piece
         // |----p0----|----p1----|
         // |  b0  | b1|  b2  | b3|
@@ -346,8 +332,8 @@ mod tests {
 
     #[tokio::test]
     async fn request_blocks() {
-        let (torrent_tx, torrent_rx) = mpsc::channel::<TorrentMsg>(1);
-        let (disk_tx, _) = mpsc::channel::<DiskMsg>(1);
+        let (torrent_tx, torrent_rx) = mpsc::channel::<TorrentMsg>(3);
+        let (disk_tx, _) = mpsc::channel::<DiskMsg>(3);
 
         let m = get_magnet("magnet:?xt=urn:btih:48aac768a865798307ddd4284be77644368dd2c7&dn=Kerkour%20S.%20Black%20Hat%20Rust...Rust%20programming%20language%202022&tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%2Fannounce&tr=udp%3A%2F%2F9.rarbg.to%3A2920%2Fannounce&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&tr=udp%3A%2F%2Ftracker.internetwarriors.net%3A1337%2Fannounce&tr=udp%3A%2F%2Ftracker.leechers-paradise.org%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.pirateparty.gr%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.cyberia.is%3A6969%2Fannounce").unwrap();
 
