@@ -66,7 +66,13 @@ impl Into<VecDeque<BlockInfo>> for Info {
 }
 
 impl Info {
-    // get all block_infos of a file, starting from `piece`
+    /// Calculate how many blocks there are in the entire torrent.
+    pub fn blocks_len(&self) -> u32 {
+        let blocks_in_piece = self.piece_length / BLOCK_LEN;
+        let total_blocks = blocks_in_piece * (self.pieces.len() as u32 / 20);
+        total_blocks
+    }
+    /// Get all block_infos of a torrent
     pub async fn get_block_infos(&self) -> Result<VecDeque<BlockInfo>, error::Error> {
         // multi file torrent
         if let Some(files) = &self.files {
@@ -515,8 +521,7 @@ mod tests {
         let torrent = MetaInfo::from_bencode(torrent_book_bytes).unwrap();
         let info = torrent.info;
 
-        let blocks_in_piece = info.piece_length / BLOCK_LEN;
-        let total_blocks = blocks_in_piece * (info.pieces.len() as u32 / 20);
+        let total_blocks = info.blocks_len();
 
         println!("--- debian torrent ----");
         println!("piece_length {:?}", info.piece_length);

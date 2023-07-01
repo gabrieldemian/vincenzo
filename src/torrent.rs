@@ -5,6 +5,7 @@ use crate::magnet_parser::get_info_hash;
 use crate::metainfo::Info;
 use crate::metainfo::MetaInfo;
 use crate::peer::Peer;
+use crate::tcp_wire::lib::BLOCK_LEN;
 use crate::tcp_wire::lib::BlockInfo;
 use crate::tracker::tracker::Tracker;
 use crate::tracker::tracker::TrackerCtx;
@@ -54,6 +55,8 @@ pub struct TorrentCtx {
     pub magnet: Magnet,
     pub pieces: RwLock<Bitfield>,
     pub requested_block_infos: RwLock<VecDeque<BlockInfo>>,
+    pub blocks_downloaded: RwLock<VecDeque<BlockInfo>>,
+    // pub blocks_downloaded: AtomicU32,
     pub info: RwLock<Info>,
 }
 
@@ -68,11 +71,13 @@ impl Torrent {
         let info = RwLock::new(Info::default());
         let tracker_ctx = Arc::new(TrackerCtx::default());
         let requested_block_infos = RwLock::new(VecDeque::new());
+        let blocks_downloaded = RwLock::new(VecDeque::new());
 
         let ctx = Arc::new(TorrentCtx {
             pieces,
             requested_block_infos,
             magnet,
+            blocks_downloaded,
             info,
         });
 
@@ -83,7 +88,7 @@ impl Torrent {
             disk_tx,
             tx,
             rx,
-            tick_interval: interval(Duration::from_millis(300)),
+            tick_interval: interval(Duration::new(1, 0)),
         }
     }
 
@@ -91,7 +96,17 @@ impl Torrent {
         loop {
             select! {
                 _ = self.tick_interval.tick() => {
-                    // debug!("tick torrent");
+                    let downloaded = self.ctx.blocks_downloaded.read().await;
+                    let downloaded = downloaded.len();
+                    println!("tick - downloaded blocks {downloaded}");
+
+                    let blocks_len = self.ctx.info.read().await.blocks_len();
+
+                    println!("tick - total blocks {blocks_len}");
+
+                    if (downloaded as u32) == blocks_len {
+                        println!("!!--!!! --- 2!!@#$$$@@@ torrent downloaded fully");
+                    }
                 },
                 Some(msg) = self.rx.recv() => {
                     // in the future, this event loop will

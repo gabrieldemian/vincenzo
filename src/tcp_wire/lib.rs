@@ -36,6 +36,16 @@ impl Default for BlockInfo {
     }
 }
 
+impl Into<BlockInfo> for Block {
+    fn into(self) -> BlockInfo {
+        BlockInfo {
+            index: self.index as u32,
+            begin: self.begin,
+            len: self.block.len() as u32,
+        }
+    }
+}
+
 impl BlockInfo {
     pub fn new() -> Self {
         Self::default()

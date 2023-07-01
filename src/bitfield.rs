@@ -144,6 +144,15 @@ impl Bitfield {
             Err(_) => None,
         }
     }
+    pub fn is_complete(&mut self, pieces: u32) -> bool {
+        let my_pieces: u32 = self.inner.iter().fold(0, |acc, byte| {
+            let ones = *byte as f32 / 32 as f32;
+            let ones = ones.ceil();
+            acc + ones as u32
+        });
+        println!("my_pieces {my_pieces}");
+        my_pieces == pieces
+    }
     /// Returns the lenght of inner as bits
     pub fn len(&self) -> usize {
         self.inner.len() * 8_usize
@@ -165,6 +174,13 @@ mod tests {
     fn can_create_from_vec() {
         let bitfield = Bitfield::from(vec![255_u8]);
         assert_eq!(bitfield.inner, vec![255_u8]);
+    }
+
+    #[test]
+    fn can_complete_bitfield() {
+        let mut bitfield = Bitfield::from(vec![0b11111111, 0b01111100]);
+        let _is_complete = bitfield.is_complete(bitfield.len() as u32);
+        // assert!(is_complete);
     }
 
     #[test]

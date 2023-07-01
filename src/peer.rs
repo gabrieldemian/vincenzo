@@ -25,7 +25,7 @@ use crate::{
     extension::Extension,
     magnet_parser::get_info_hash,
     tcp_wire::{
-        lib::BlockInfo,
+        lib::{Block, BLOCK_LEN},
         messages::{Handshake, Message, PeerCodec},
     },
     torrent::{TorrentCtx, TorrentMsg},
@@ -52,9 +52,6 @@ pub struct Peer {
     /// Updated when the peer sends us its peer
     /// id, in the handshake.
     pub id: Option<[u8; 20]>,
-    /// Requests that we'll send to this peer,
-    /// once he unchoke us
-    pub pending_pieces: Vec<u32>,
     pub torrent_ctx: Option<Arc<TorrentCtx>>,
     pub tracker_ctx: Arc<TrackerCtx>,
     pub disk_tx: Option<Sender<DiskMsg>>,
@@ -70,7 +67,6 @@ impl Default for Peer {
             peer_interested: false,
             pieces: Bitfield::default(),
             addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
-            pending_pieces: vec![],
             id: None,
             torrent_ctx: None,
             disk_tx: None,
@@ -123,19 +119,16 @@ impl Peer {
         let torrent_ctx = self.torrent_ctx.clone().unwrap();
         let tr_pieces = torrent_ctx.pieces.read().await;
 
-        if tr_pieces.inner == self.pieces.inner {
-            drop(tr_pieces);
-            return Err(Error::TorrentComplete);
-        }
-
         // disk cannot be None at this point, this is safe
         let disk_tx = self.disk_tx.clone().unwrap();
 
-        println!("tr_pieces {tr_pieces:?}");
+        println!("downloaded {tr_pieces:?}");
         println!("tr_pieces len: {:?}", tr_pieces.len());
         println!("self.pieces: {:?}", self.pieces);
         println!("self.pieces len: {:?}", self.pieces.len());
-        // let blocks_in_piece = info.piece_length / BLOCK_LEN;
+
+        let reqq = self.extension.reqq;
+        println!("reqq is {reqq:?}");
 
         // get a list of unique block_infos from the Disk,
         // those are already marked as requested on Torrent
@@ -148,7 +141,6 @@ impl Peer {
             .await;
 
         let r = orx.await.unwrap();
-        println!("rrr {r:#?}");
 
         for info in r {
             sink.send(Message::Request(info)).await?;
@@ -208,6 +200,9 @@ impl Peer {
         self.am_choking = false;
 
         let mut keep_alive_timer = interval(Duration::from_secs(1));
+
+        let mut request_timer = interval(Duration::from_secs(5));
+
         let keepalive_interval = Duration::from_secs(120);
 
         let mut last_tick_keepalive = Instant::now();
@@ -215,13 +210,35 @@ impl Peer {
         loop {
             select! {
                 _ = keep_alive_timer.tick() => {
-                    // debug!("tick peer {:?}", self.addr);
                     // send Keepalive every 2 minutes
                     if last_tick_keepalive.elapsed() >= keepalive_interval {
                         last_tick_keepalive = Instant::now();
                         sink.send(Message::KeepAlive).await?;
                     }
+                }
+                //
+                // Sometimes that blocks requested are never sent to us,
+                // this can happen for a lot of reasons, and is normal and expected.
+                // The algorithm to re-request those blocks is simple:
+                // At every 5 seconds, check for blocks that were requested,
+                // but not downloaded, and request them again.
+                //
+                _ = request_timer.tick() => {
                     // check if there is requested blocks that hasnt been downloaded
+                    let downloaded = torrent_ctx.blocks_downloaded.read().await;
+                    let requested = torrent_ctx.requested_block_infos.read().await;
+
+                    let blocks_len = torrent_ctx.info.read().await.blocks_len();
+
+                    if (downloaded.len() as u32) < (blocks_len) {
+                        for req in &*requested {
+                            let f = downloaded.iter().find(|down| **down == *req);
+                            if let None = f {
+                                let _ = sink.send(Message::Request(req.clone())).await;
+                            }
+                        }
+                    }
+
                 }
                 Some(msg) = stream.next() => {
                     let msg = msg?;
@@ -321,6 +338,7 @@ impl Peer {
 
                             if block.is_valid() {
                                 let mut tr_pieces = torrent_ctx.pieces.write().await;
+
                                 let info = torrent_ctx.info.read().await;
 
                                 // if this is the last block, update torrent.bitfield
@@ -334,12 +352,22 @@ impl Peer {
                                 let (tx, rx) = oneshot::channel();
                                 let disk_tx = self.disk_tx.as_ref().unwrap();
 
-                                disk_tx.send(DiskMsg::WriteBlock((block, tx))).await.unwrap();
+                                disk_tx.send(DiskMsg::WriteBlock((block.clone(), tx))).await.unwrap();
 
                                 let r = rx.await.unwrap();
 
                                 match r {
-                                    Ok(_) => info!("wrote piece with success on disk"),
+                                    Ok(_) => {
+                                        let mut bd = torrent_ctx.blocks_downloaded.write().await;
+                                        let was_downloaded = bd.iter().any(|b| *b == block.clone().into() );
+
+                                        if !was_downloaded {
+                                            bd.push_front(block.clone().into());
+                                        }
+                                        drop(bd);
+
+                                        info!("wrote piece with success on disk");
+                                    }
                                     Err(e) => warn!("could not write piece to disk {e:#?}")
                                 }
 
@@ -375,6 +403,22 @@ impl Peer {
                             info!("| {:?} Request  |", self.addr);
                             info!("------------------------------");
                             info!("{block_info:?}");
+
+                            let disk_tx = self.disk_tx.clone().unwrap();
+                            let (tx, rx) = oneshot::channel();
+
+                            let _ = disk_tx.send(DiskMsg::ReadBlock((block_info.clone(), tx))).await;
+
+                            let r = rx.await;
+
+                            if let Ok(Ok(bytes)) = r {
+                                let block = Block {
+                                    index: block_info.index as usize,
+                                    begin: block_info.begin,
+                                    block: bytes,
+                                };
+                                let _ = sink.send(Message::Piece(block)).await;
+                            }
                         }
                         Message::Extended((_, extension)) => {
                             info!("----------------------------------");
@@ -406,6 +450,22 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn can_get_requested_blocks_but_not_downloaded() {
+        let requested = vec![0, 1, 2, 3, 4, 5, 6];
+        let downloaded = vec![0, 1, 2, 3];
+        let mut missing: Vec<i32> = Vec::new();
+
+        for req in &*requested {
+            let f = downloaded.iter().find(|down| **down == *req);
+            if let None = f {
+                missing.push(*req);
+            }
+        }
+
+        assert_eq!(missing, vec![4, 5, 6]);
+    }
 
     #[test]
     fn validate_block() {

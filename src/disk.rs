@@ -17,7 +17,7 @@ use crate::{
 #[derive(Debug)]
 pub enum DiskMsg {
     NewTorrent(Info),
-    ReadBlock((BlockInfo, Sender<Vec<u8>>)),
+    ReadBlock((BlockInfo, Sender<Result<Vec<u8>, Error>>)),
     OpenFile((String, Sender<File>)),
     WriteBlock((Block, Sender<Result<(), Error>>)),
     RequestBlocks((usize, Sender<VecDeque<BlockInfo>>)),
@@ -103,12 +103,12 @@ impl Disk {
                     }
                 }
                 DiskMsg::ReadBlock((block_info, tx)) => {
-                    let bytes = self.read_block(block_info).await?;
-                    tx.send(bytes).unwrap();
+                    let bytes = self.read_block(block_info).await;
+                    let _ = tx.send(bytes);
                 }
                 DiskMsg::WriteBlock((block, tx)) => {
                     let bytes = self.write_block(block).await;
-                    tx.send(bytes).unwrap();
+                    let _ = tx.send(bytes);
                 }
                 DiskMsg::OpenFile((path, tx)) => {
                     let file = self.open_file(&path).await?;
@@ -119,7 +119,6 @@ impl Disk {
                     println!("meu block_infos len eh {:?}", self.ctx.block_infos.len());
 
                     let mut requested = self.torrent_ctx.requested_block_infos.write().await;
-
                     let mut infos: VecDeque<BlockInfo> = VecDeque::new();
                     let mut idxs = VecDeque::new();
 
@@ -507,7 +506,7 @@ mod tests {
             .await
             .unwrap();
         let result = rx_oneshot.await.unwrap();
-        assert_eq!(result, block.block);
+        assert_eq!(result.unwrap(), block.block);
 
         // write a block before reading it
         // write entire second file
@@ -535,7 +534,7 @@ mod tests {
             .await
             .unwrap();
         let result = rx_oneshot.await.unwrap();
-        assert_eq!(result, block.block);
+        assert_eq!(result.unwrap(), block.block);
 
         // write a block before reading it
         // write entire third file
@@ -563,7 +562,7 @@ mod tests {
             .await
             .unwrap();
         let result = rx_oneshot.await.unwrap();
-        assert_eq!(result, block.block);
+        assert_eq!(result.unwrap(), block.block);
 
         //
         //  READ BLOCKS
@@ -581,7 +580,7 @@ mod tests {
             .await
             .unwrap();
         let result = rx_oneshot.await.unwrap();
-        assert_eq!(result, vec![7, 8, 9]);
+        assert_eq!(result.unwrap(), vec![7, 8, 9]);
 
         let block_info = BlockInfo {
             index: 0,
@@ -595,7 +594,7 @@ mod tests {
             .await
             .unwrap();
         let result = rx_oneshot.await.unwrap();
-        assert_eq!(result, vec![2, 3, 4]);
+        assert_eq!(result.unwrap(), vec![2, 3, 4]);
 
         let block_info = BlockInfo {
             index: 2,
@@ -609,7 +608,7 @@ mod tests {
             .await
             .unwrap();
         let result = rx_oneshot.await.unwrap();
-        assert_eq!(result, vec![13, 14, 15]);
+        assert_eq!(result.unwrap(), vec![13, 14, 15]);
 
         let block_info = BlockInfo {
             index: 2,
@@ -623,7 +622,7 @@ mod tests {
             .await
             .unwrap();
         let result = rx_oneshot.await.unwrap();
-        assert_eq!(result, vec![14, 15, 16, 17, 18, 19]);
+        assert_eq!(result.unwrap(), vec![14, 15, 16, 17, 18, 19]);
 
         let block_info = BlockInfo {
             index: 4,
@@ -637,6 +636,6 @@ mod tests {
             .await
             .unwrap();
         let result = rx_oneshot.await.unwrap();
-        assert_eq!(result, vec![25, 26, 27, 28, 29, 30]);
+        assert_eq!(result.unwrap(), vec![25, 26, 27, 28, 29, 30]);
     }
 }
