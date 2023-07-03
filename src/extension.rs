@@ -1,12 +1,9 @@
 use bendy::{
-    decoding::{self, Decoder, FromBencode, Object, ResultExt},
-    encoding::{AsString, ToBencode},
+    decoding::{self, FromBencode, Object, ResultExt},
+    encoding::ToBencode,
 };
 
-use crate::{
-    error,
-    metainfo::{File, Info},
-};
+use crate::{error, metainfo::Info};
 
 /// This is the payload of the extension protocol described on:
 /// BEP 10 - Extension Protocol
@@ -39,13 +36,13 @@ pub struct M {
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
-pub struct MetadataMsg {
+pub struct Metadata {
     pub msg_type: u8,
     pub piece: u32,
     pub total_size: u32,
 }
 
-impl MetadataMsg {
+impl Metadata {
     /// Tries to extract Info from the given buffer.
     ///
     /// # Errors
@@ -53,18 +50,16 @@ impl MetadataMsg {
     /// This function will return an error if the buffer is not a valid Data type of the metadata
     /// extension protocol
     pub fn extract(mut buf: Vec<u8>, info_begin: usize) -> Result<(Self, Info), error::Error> {
-        // let info_begin = 5249 - 5205;
-        let info_bytes: Vec<u8> = buf.drain(info_begin..).collect();
+        let info_buf: Vec<u8> = buf.drain(info_begin..).collect();
 
-        let info = Info::from_bencode(&info_bytes).map_err(|_| error::Error::BencodeError)?;
-        let metadata_msg =
-            MetadataMsg::from_bencode(&buf).map_err(|_| error::Error::BencodeError)?;
+        let info = Info::from_bencode(&info_buf).map_err(|_| error::Error::BencodeError)?;
+        let metadata = Metadata::from_bencode(&buf).map_err(|_| error::Error::BencodeError)?;
 
-        Ok((metadata_msg, info))
+        Ok((metadata, info))
     }
 }
 
-impl FromBencode for MetadataMsg {
+impl FromBencode for Metadata {
     fn decode_bencode_object(object: Object) -> Result<Self, decoding::Error>
     where
         Self: Sized,
@@ -99,7 +94,7 @@ impl FromBencode for MetadataMsg {
     }
 }
 
-impl ToBencode for MetadataMsg {
+impl ToBencode for Metadata {
     const MAX_DEPTH: usize = 20;
     fn encode(
         &self,
@@ -596,7 +591,7 @@ mod tests {
         .to_vec();
 
         let info_begin = 5249 - 5205;
-        let (metadata_msg, info) = MetadataMsg::extract(buf, info_begin).unwrap();
+        let (metadata_msg, info) = Metadata::extract(buf, info_begin).unwrap();
 
         println!("info {info:#?}");
         println!("metadata_msg {metadata_msg:#?}");

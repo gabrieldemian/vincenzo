@@ -182,12 +182,12 @@ impl Torrent {
 
         *info = torrent.info.clone();
 
-        // send msg to Disk to create a new file
-        // on the operating system for our torrent download
-        self.disk_tx
-            .send(DiskMsg::NewTorrent(torrent.info))
-            .await
-            .unwrap();
+        // send this message here only if the user is using a 
+        // metainfo instead of a magnet link
+        // self.disk_tx
+        //     .send(DiskMsg::NewTorrent(torrent.info))
+        //     .await
+        //     .unwrap();
 
         Ok(peers)
     }

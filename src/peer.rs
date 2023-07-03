@@ -22,7 +22,7 @@ use crate::{
     bitfield::Bitfield,
     disk::DiskMsg,
     error::Error,
-    extension::{Extension, MetadataMsg},
+    extension::{Extension, Metadata},
     magnet_parser::get_info_hash,
     tcp_wire::{
         lib::Block,
@@ -126,8 +126,6 @@ impl Peer {
         println!("tr_pieces len: {:?}", tr_pieces.len());
         println!("self.pieces: {:?}", self.pieces);
         println!("self.pieces len: {:?}", self.pieces.len());
-
-        let reqq = self.extension.reqq;
 
         // get a list of unique block_infos from the Disk,
         // those are already marked as requested on Torrent
@@ -439,10 +437,10 @@ impl Peer {
                                     let info_begin = payload.len() - self.extension.metadata_size.unwrap() as usize;
 
                                     if pair == b"1e" {
-                                        let (metadata, info) = MetadataMsg::extract(payload, info_begin as usize).unwrap();
+                                        if let Ok((_, info)) = Metadata::extract(payload, info_begin as usize) {
 
-                                        println!("{metadata:#?}");
-                                        println!("{info:#?}");
+                                            let _ = self.disk_tx.as_ref().unwrap().send(DiskMsg::NewTorrent(info)).await;
+                                        }
                                     }
                                 }
                             }
