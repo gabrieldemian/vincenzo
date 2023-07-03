@@ -309,6 +309,9 @@ impl ToBencode for Info {
             if let Some(file_length) = &self.file_length {
                 e.emit_pair(b"length", file_length)?;
             }
+            if let Some(files) = &self.files {
+                e.emit_pair(b"files", files)?;
+            }
             e.emit_pair(b"name", &self.name)?;
             e.emit_pair(b"piece length", &self.piece_length)?;
             e.emit_pair(b"pieces", AsString(&self.pieces))

@@ -6,6 +6,8 @@ use thiserror::Error;
 pub enum Error {
     #[error("Failed to send a connect request to the tracker")]
     ConnectSendFailed,
+    #[error("Failed to decode the bencode buffer")]
+    BencodeError,
     #[error("Failed to resolve socket address")]
     PeerSocketAddrs(#[from] io::Error),
     #[error("Peer resolved to no unusable addresses")]

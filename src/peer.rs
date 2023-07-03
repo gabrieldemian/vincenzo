@@ -22,10 +22,10 @@ use crate::{
     bitfield::Bitfield,
     disk::DiskMsg,
     error::Error,
-    extension::Extension,
+    extension::{Extension, MetadataMsg},
     magnet_parser::get_info_hash,
     tcp_wire::{
-        lib::{Block, BLOCK_LEN},
+        lib::Block,
         messages::{Handshake, Message, PeerCodec},
     },
     torrent::{TorrentCtx, TorrentMsg},
@@ -128,7 +128,6 @@ impl Peer {
         println!("self.pieces len: {:?}", self.pieces.len());
 
         let reqq = self.extension.reqq;
-        println!("reqq is {reqq:?}");
 
         // get a list of unique block_infos from the Disk,
         // those are already marked as requested on Torrent
@@ -216,17 +215,15 @@ impl Peer {
                         sink.send(Message::KeepAlive).await?;
                     }
                 }
-                //
                 // Sometimes that blocks requested are never sent to us,
                 // this can happen for a lot of reasons, and is normal and expected.
                 // The algorithm to re-request those blocks is simple:
                 // At every 5 seconds, check for blocks that were requested,
                 // but not downloaded, and request them again.
-                //
                 _ = request_timer.tick() => {
                     // check if there is requested blocks that hasnt been downloaded
-                    let downloaded = torrent_ctx.blocks_downloaded.read().await;
-                    let requested = torrent_ctx.requested_block_infos.read().await;
+                    let downloaded = torrent_ctx.downloaded_blocks.read().await;
+                    let requested = torrent_ctx.requested_blocks.read().await;
 
                     let blocks_len = torrent_ctx.info.read().await.blocks_len();
 
@@ -307,8 +304,8 @@ impl Peer {
                             debug!("-------------------------------");
                             debug!("| {:?} Have  |", self.addr);
                             debug!("-------------------------------");
-                            // Have is usually sent when I peer has downloaded
-                            // a new block, however, some peers, after handshake,
+                            // Have is usually sent when the peer has downloaded
+                            // a new piece, however, some peers, after handshake,
                             // send an incomplete bitfield followed by a sequence of
                             // have's. They do this to try to prevent censhorship
                             // from ISPs.
@@ -325,16 +322,6 @@ impl Peer {
                             info!("block size: {:?} bytes", block.block.len());
                             info!("block size: {:?} KiB", block.block.len() / 1000);
                             info!("is valid? {:?}", block.is_valid());
-
-                            println!("-------------------------------");
-                            println!("| {:?} Piece  |", self.addr);
-                            println!("-------------------------------");
-                            println!("index: {:?}", block.index);
-                            println!("begin: {:?}", block.begin);
-                            println!("block size: {:?} bytes", block.block.len());
-                            println!("block size: {:?} KiB", block.block.len() / 1000);
-                            println!("is valid? {:?}", block.is_valid());
-                            println!("-------------------------------");
 
                             if block.is_valid() {
                                 let mut tr_pieces = torrent_ctx.pieces.write().await;
@@ -358,7 +345,7 @@ impl Peer {
 
                                 match r {
                                     Ok(_) => {
-                                        let mut bd = torrent_ctx.blocks_downloaded.write().await;
+                                        let mut bd = torrent_ctx.downloaded_blocks.write().await;
                                         let was_downloaded = bd.iter().any(|b| *b == block.clone().into() );
 
                                         if !was_downloaded {
@@ -371,26 +358,21 @@ impl Peer {
                                     Err(e) => warn!("could not write piece to disk {e:#?}")
                                 }
 
-                                // send msg to `Disk` tx
-                                // Advertise to the peers that
-                                // doesn't have this piece, that
-                                // we Have it.
-                                // Request another piece
-                                // call fn piece.request from Unchoke logic
-                                // ping pong of request & piece will start
+                                // todo: advertise to peers that
+                                // we Have this piece, if this is the last block of a piece
+                                // and the piece has the right Hash on Info
                             } else {
                                 // block not valid nor requested,
                                 // remove it from requested blocks
                                 warn!("invalid block from Piece");
                                 let mut tr_pieces = torrent_ctx.pieces.write().await;
                                 tr_pieces.clear(block.index);
-                                info!("deleted, new tr_pieces {:?}", *tr_pieces);
+                                warn!("deleted, new tr_pieces {:?}", *tr_pieces);
                             }
 
                             info!("---------------------------------\n");
 
                             self.request_next_piece(&mut sink).await?;
-
                         }
                         Message::Cancel(block_info) => {
                             info!("------------------------------");
@@ -420,19 +402,49 @@ impl Peer {
                                 let _ = sink.send(Message::Piece(block)).await;
                             }
                         }
-                        Message::Extended((_, extension)) => {
+                        Message::Extended((ext_id, payload)) => {
                             info!("----------------------------------");
                             info!("| {:?} Extended  |", self.addr);
                             info!("----------------------------------");
-                            let extension = Extension::from_bencode(&extension).unwrap();
-                            info!("extension {extension:#?}");
-                            self.extension = extension;
 
-                            // send handshake from bep 09 to get the metainfo.info
-                            if let Some(ut_metadata) = self.extension.m.ut_metadata {
-                                info!("peer supports ut_metadata {ut_metadata}, sending handshake");
-                                let h = b"d8:msg_typei0e5:piecei0ee";
-                                sink.send(Message::Extended((ut_metadata, h.to_vec()))).await?;
+                            // ext_id of 0 means a bep10 handshake
+                            let msg = String::from_utf8_lossy(&payload);
+
+                            println!("ext_id {ext_id}");
+                            println!("raw extension payload: {msg:?}");
+
+                            if ext_id == 0 {
+                                if self.extension.m.ut_metadata.is_none() {
+                                    let extension = Extension::from_bencode(&payload);
+
+                                    if let Ok(ext) = extension {
+                                        info!("extension {ext:#?}");
+                                        println!("received ext handshake {ext:#?}");
+                                        self.extension = ext;
+
+                                        // send bep09 request to get the Info
+                                        if let Some(ut_metadata) = self.extension.m.ut_metadata {
+                                            info!("peer supports ut_metadata {ut_metadata}, sending request");
+                                            let h = b"d8:msg_typei0e5:piecei0ee";
+                                            println!("sending request msg with ut_metadata {ut_metadata:?}");
+                                            sink.send(Message::Extended((ut_metadata, h.to_vec()))).await?;
+                                        }
+
+                                    }
+                                } else {
+                                    // can be a peer sending the handshake,
+                                    // or the response of a request (a data)
+                                    let pair = &payload[12..=13];
+                                    println!("len payload {:?}", payload.len());
+                                    let info_begin = payload.len() - self.extension.metadata_size.unwrap() as usize;
+
+                                    if pair == b"1e" {
+                                        let (metadata, info) = MetadataMsg::extract(payload, info_begin as usize).unwrap();
+
+                                        println!("{metadata:#?}");
+                                        println!("{info:#?}");
+                                    }
+                                }
                             }
                         }
                     }

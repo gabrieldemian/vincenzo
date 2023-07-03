@@ -5,7 +5,6 @@ use crate::magnet_parser::get_info_hash;
 use crate::metainfo::Info;
 use crate::metainfo::MetaInfo;
 use crate::peer::Peer;
-use crate::tcp_wire::lib::BLOCK_LEN;
 use crate::tcp_wire::lib::BlockInfo;
 use crate::tracker::tracker::Tracker;
 use crate::tracker::tracker::TrackerCtx;
@@ -54,9 +53,8 @@ pub struct Torrent {
 pub struct TorrentCtx {
     pub magnet: Magnet,
     pub pieces: RwLock<Bitfield>,
-    pub requested_block_infos: RwLock<VecDeque<BlockInfo>>,
-    pub blocks_downloaded: RwLock<VecDeque<BlockInfo>>,
-    // pub blocks_downloaded: AtomicU32,
+    pub requested_blocks: RwLock<VecDeque<BlockInfo>>,
+    pub downloaded_blocks: RwLock<VecDeque<BlockInfo>>,
     pub info: RwLock<Info>,
 }
 
@@ -70,14 +68,14 @@ impl Torrent {
         let pieces = RwLock::new(Bitfield::default());
         let info = RwLock::new(Info::default());
         let tracker_ctx = Arc::new(TrackerCtx::default());
-        let requested_block_infos = RwLock::new(VecDeque::new());
-        let blocks_downloaded = RwLock::new(VecDeque::new());
+        let requested_blocks = RwLock::new(VecDeque::new());
+        let downloaded_blocks = RwLock::new(VecDeque::new());
 
         let ctx = Arc::new(TorrentCtx {
             pieces,
-            requested_block_infos,
+            requested_blocks,
             magnet,
-            blocks_downloaded,
+            downloaded_blocks,
             info,
         });
 
@@ -96,16 +94,12 @@ impl Torrent {
         loop {
             select! {
                 _ = self.tick_interval.tick() => {
-                    let downloaded = self.ctx.blocks_downloaded.read().await;
+                    let downloaded = self.ctx.downloaded_blocks.read().await;
                     let downloaded = downloaded.len();
-                    println!("tick - downloaded blocks {downloaded}");
-
                     let blocks_len = self.ctx.info.read().await.blocks_len();
 
-                    println!("tick - total blocks {blocks_len}");
-
                     if (downloaded as u32) == blocks_len {
-                        println!("!!--!!! --- 2!!@#$$$@@@ torrent downloaded fully");
+                        println!("torrent downloaded fully");
                     }
                 },
                 Some(msg) = self.rx.recv() => {

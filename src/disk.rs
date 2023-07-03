@@ -115,10 +115,7 @@ impl Disk {
                     let _ = tx.send(file);
                 }
                 DiskMsg::RequestBlocks((n, tx)) => {
-                    println!("meu n eh {n}");
-                    println!("meu block_infos len eh {:?}", self.ctx.block_infos.len());
-
-                    let mut requested = self.torrent_ctx.requested_block_infos.write().await;
+                    let mut requested = self.torrent_ctx.requested_blocks.write().await;
                     let mut infos: VecDeque<BlockInfo> = VecDeque::new();
                     let mut idxs = VecDeque::new();
 
@@ -377,7 +374,7 @@ mod tests {
         let result = rx_oneshot.await.unwrap();
         assert_eq!(result, expected);
 
-        let requested = torrent.ctx.requested_block_infos.read().await;
+        let requested = torrent.ctx.requested_blocks.read().await;
         assert_eq!(*requested, expected);
         drop(requested);
 
@@ -404,7 +401,7 @@ mod tests {
         let result = rx_oneshot.await.unwrap();
         assert_eq!(result, expected);
 
-        let requested = torrent.ctx.requested_block_infos.read().await;
+        let requested = torrent.ctx.requested_blocks.read().await;
 
         let expected = VecDeque::from([
             BlockInfo {

@@ -1,5 +1,5 @@
 use bytes::{Buf, BufMut, BytesMut};
-use log::{debug, warn};
+use log::warn;
 use speedy::{BigEndian, Readable, Writable};
 use std::io::Cursor;
 use tokio::io;
@@ -177,6 +177,10 @@ impl Decoder for PeerCodec {
         // we just want to peek at this value.
         let mut tmp_buf = Cursor::new(&buf);
         let msg_len = tmp_buf.get_u32() as usize;
+
+        if tmp_buf.get_u8() == 20 {
+            println!("received ext msg, showing raw buf {:?}", buf.to_vec());
+        }
 
         tmp_buf.set_position(0);
 
