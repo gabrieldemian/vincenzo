@@ -1,5 +1,5 @@
-use log::info;
 use std::{io, time::Duration};
+use tracing::info;
 
 use crossterm::{
     event::DisableMouseCapture,

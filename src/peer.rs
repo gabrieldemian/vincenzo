@@ -15,7 +15,7 @@ use tokio::{
 };
 use tokio_util::codec::Framed;
 
-use log::{debug, info, warn};
+use tracing::{debug, info, warn};
 use tokio::{net::TcpStream, time::interval};
 
 use crate::{
@@ -112,6 +112,7 @@ impl Peer {
     /// be requested sequentially.
     /// Ideally, it should request the rarest pieces first,
     /// but this is good enough for the initial version.
+    #[tracing::instrument(skip(self, sink))]
     pub async fn request_next_piece(
         &mut self,
         sink: &mut SplitSink<Framed<TcpStream, PeerCodec>, Message>,
@@ -122,10 +123,10 @@ impl Peer {
         // disk cannot be None at this point, this is safe
         let disk_tx = self.disk_tx.clone().unwrap();
 
-        println!("downloaded {tr_pieces:?}");
-        println!("tr_pieces len: {:?}", tr_pieces.len());
-        println!("self.pieces: {:?}", self.pieces);
-        println!("self.pieces len: {:?}", self.pieces.len());
+        info!("downloaded {tr_pieces:?}");
+        info!("tr_pieces len: {:?}", tr_pieces.len());
+        info!("self.pieces: {:?}", self.pieces);
+        info!("self.pieces len: {:?}", self.pieces.len());
 
         // get a list of unique block_infos from the Disk,
         // those are already marked as requested on Torrent
@@ -145,6 +146,7 @@ impl Peer {
 
         Ok(())
     }
+    #[tracing::instrument(skip(self, tx, tcp_stream), name = "peer::run")]
     pub async fn run(
         &mut self,
         tx: Sender<TorrentMsg>,
@@ -406,40 +408,42 @@ impl Peer {
                             info!("----------------------------------");
 
                             // ext_id of 0 means a bep10 handshake
-                            let msg = String::from_utf8_lossy(&payload);
+                            // let msg = String::from_utf8_lossy(&payload);
 
-                            println!("ext_id {ext_id}");
-                            println!("raw extension payload: {msg:?}");
+                            // println!("ext_id {ext_id}");
+                            // println!("raw extension payload: {msg:?}");
 
                             if ext_id == 0 {
                                 if self.extension.m.ut_metadata.is_none() {
                                     let extension = Extension::from_bencode(&payload);
 
                                     if let Ok(ext) = extension {
-                                        info!("extension {ext:#?}");
-                                        println!("received ext handshake {ext:#?}");
+                                        // info!("extension {ext:#?}");
+                                        // println!("received ext handshake {ext:#?}");
                                         self.extension = ext;
 
                                         // send bep09 request to get the Info
                                         if let Some(ut_metadata) = self.extension.m.ut_metadata {
                                             info!("peer supports ut_metadata {ut_metadata}, sending request");
                                             let h = b"d8:msg_typei0e5:piecei0ee";
-                                            println!("sending request msg with ut_metadata {ut_metadata:?}");
+                                            info!("sending request msg with ut_metadata {ut_metadata:?}");
                                             sink.send(Message::Extended((ut_metadata, h.to_vec()))).await?;
                                         }
 
                                     }
-                                } else {
+                                } else if payload.len() >= 12 {
                                     // can be a peer sending the handshake,
                                     // or the response of a request (a data)
                                     let pair = &payload[12..=13];
-                                    println!("len payload {:?}", payload.len());
                                     let info_begin = payload.len() - self.extension.metadata_size.unwrap() as usize;
 
                                     if pair == b"1e" {
                                         if let Ok((_, info)) = Metadata::extract(payload, info_begin as usize) {
 
                                             let _ = self.disk_tx.as_ref().unwrap().send(DiskMsg::NewTorrent(info)).await;
+                                            if self.am_interested && !self.peer_choking {
+                                                self.request_next_piece(&mut sink).await?;
+                                            }
                                         }
                                     }
                                 }

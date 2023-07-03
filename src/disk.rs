@@ -1,6 +1,6 @@
 use std::{collections::VecDeque, io::SeekFrom, sync::Arc};
 
-use log::debug;
+use tracing::debug;
 use tokio::{
     fs::{create_dir_all, File, OpenOptions},
     io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
@@ -63,6 +63,7 @@ impl Disk {
         }
     }
 
+    #[tracing::instrument]
     pub async fn run(&mut self) -> Result<(), Error> {
         debug!("running Disk event loop");
 

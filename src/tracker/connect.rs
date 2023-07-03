@@ -1,5 +1,5 @@
-use log::debug;
 use speedy::{BigEndian, Readable, Writable};
+use tracing::debug;
 
 use crate::error::Error;
 

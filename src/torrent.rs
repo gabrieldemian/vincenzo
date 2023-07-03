@@ -9,8 +9,8 @@ use crate::tcp_wire::lib::BlockInfo;
 use crate::tracker::tracker::Tracker;
 use crate::tracker::tracker::TrackerCtx;
 use bendy::decoding::FromBencode;
-use log::debug;
-use log::info;
+use tracing::debug;
+use tracing::info;
 use magnet_url::Magnet;
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -90,6 +90,7 @@ impl Torrent {
         }
     }
 
+    #[tracing::instrument(name = "torrent::run", skip(self))]
     pub async fn run(&mut self) -> Result<(), Error> {
         loop {
             select! {
@@ -99,7 +100,7 @@ impl Torrent {
                     let blocks_len = self.ctx.info.read().await.blocks_len();
 
                     if (downloaded as u32) == blocks_len {
-                        println!("torrent downloaded fully");
+                        info!("torrent downloaded fully");
                     }
                 },
                 Some(msg) = self.rx.recv() => {
@@ -113,7 +114,7 @@ impl Torrent {
                             let ctx = Arc::clone(&self.ctx);
                             let mut pieces = ctx.pieces.write().await;
 
-                            println!("update bitfield len {:?}", len);
+                            info!("update bitfield len {:?}", len);
 
                             // only create the bitfield if we don't have one
                             // pieces.len() will start at 0
@@ -149,6 +150,7 @@ impl Torrent {
 
     /// Start the Torrent, by sending `connect` and `announce_exchange`
     /// messages to one of the trackers, and returning a list of peers.
+    #[tracing::instrument(skip(self), name = "torrent::start")]
     pub async fn start(&mut self) -> Result<Vec<Peer>, Error> {
         debug!("{:#?}", self.ctx.magnet);
         info!("received add_magnet call");

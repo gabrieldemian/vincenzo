@@ -1,9 +1,9 @@
 use bytes::{Buf, BufMut, BytesMut};
-use log::warn;
 use speedy::{BigEndian, Readable, Writable};
 use std::io::Cursor;
 use tokio::io;
 use tokio_util::codec::{Decoder, Encoder};
+use tracing::warn;
 
 use crate::{bitfield::Bitfield, error::Error, tcp_wire::lib::Block};
 
@@ -178,9 +178,9 @@ impl Decoder for PeerCodec {
         let mut tmp_buf = Cursor::new(&buf);
         let msg_len = tmp_buf.get_u32() as usize;
 
-        if tmp_buf.get_u8() == 20 {
-            println!("received ext msg, showing raw buf {:?}", buf.to_vec());
-        }
+        // if tmp_buf.get_u8() == 20 {
+        //     println!("received ext msg, showing raw buf {:?}", buf.to_vec());
+        // }
 
         tmp_buf.set_position(0);
 
@@ -194,7 +194,7 @@ impl Decoder for PeerCodec {
                 return Ok(Some(Message::KeepAlive));
             }
         } else {
-            log::trace!(
+            tracing::trace!(
                 "Read buffer is {} bytes long but message is {} bytes long",
                 buf.remaining(),
                 msg_len

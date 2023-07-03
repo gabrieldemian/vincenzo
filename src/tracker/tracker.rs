@@ -4,13 +4,13 @@ use std::{
     time::Duration,
 };
 
-use log::{debug, info, warn};
 use tokio::{
     net::{ToSocketAddrs, UdpSocket},
     select, spawn,
     sync::mpsc,
     time::{interval, timeout},
 };
+use tracing::{debug, info, warn};
 
 use crate::{error::Error, peer::Peer};
 
@@ -54,6 +54,7 @@ impl Tracker {
     /// Bind UDP socket and send a connect handshake,
     /// to one of the trackers.
     // todo: return only tracker woth the most seeders?
+    #[tracing::instrument(skip(trackers))]
     pub async fn connect<A>(trackers: Vec<A>) -> Result<Self, Error>
     where
         A: ToSocketAddrs + Debug + Send + Sync + 'static + std::fmt::Display + Clone,
@@ -105,6 +106,7 @@ impl Tracker {
 
         Err(Error::TrackerNoHosts)
     }
+    #[tracing::instrument(skip(self))]
     async fn connect_exchange(&mut self) -> Result<(), Error> {
         let req = connect::Request::new();
         let mut buf = [0u8; connect::Response::LENGTH];
@@ -145,6 +147,7 @@ impl Tracker {
         Ok(())
     }
 
+    #[tracing::instrument(skip(self, infohash))]
     pub async fn announce_exchange(&self, infohash: [u8; 20]) -> Result<Vec<Peer>, Error> {
         let connection_id = match self.ctx.connection_id {
             Some(x) => x,
@@ -206,7 +209,8 @@ impl Tracker {
 
     /// Connect is the first step in getting the file
     /// Create an UDP Socket for the given tracker address
-    pub async fn new_udp_socket<A: ToSocketAddrs>(addr: A) -> Result<UdpSocket, Error> {
+    #[tracing::instrument(skip(addr))]
+    pub async fn new_udp_socket<A: ToSocketAddrs + std::fmt::Debug>(addr: A) -> Result<UdpSocket, Error> {
         // let socket = match addr {
         //     SocketAddr::V4(_) => UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).await,
         //     SocketAddr::V6(_) => UdpSocket::bind((Ipv6Addr::UNSPECIFIED, 0)).await,
@@ -221,6 +225,7 @@ impl Tracker {
         Err(Error::TrackerSocketAddr)
     }
 
+    #[tracing::instrument(skip(buf, is_ipv6))]
     fn parse_compact_peer_list(buf: &[u8], is_ipv6: bool) -> Result<Vec<Peer>, Error> {
         let mut peer_list = Vec::<SocketAddr>::new();
 
@@ -289,86 +294,3 @@ impl Tracker {
         }
     }
 }
-
-// pub async fn connect_test() -> Result<(), Error> {
-//     // Create a UDP socket bound to a specific local address and port
-//     let socket = UdpSocket::bind("0.0.0.0:0").await?;
-//
-//     // Destination address and port for the tracker
-//     socket.connect("tracker1.bt.moack.co.kr:80").await?;
-//
-//     // Build the connect request packet
-//     let mut buf = [0; 16];
-//     buf[..8].copy_from_slice(&0x41727101980u64.to_be_bytes()); // Connection ID: 0x41727101980
-//     buf[8..12].copy_from_slice(&0x00u32.to_be_bytes()); // Action: 0 (connect)
-//     buf[12..16].copy_from_slice(&(0x12345678u32).to_be_bytes()); // Transaction ID: 0x12345678
-//
-//     // Send the connect request packet
-//     socket.send(&buf).await?;
-//
-//     // Receive the connect response
-//     let mut connect_response = [0; 16];
-//     socket.recv(&mut connect_response).await?;
-//     let action = u32::from_be_bytes([
-//         connect_response[0],
-//         connect_response[1],
-//         connect_response[2],
-//         connect_response[3],
-//     ]);
-//     let transaction_id = u32::from_be_bytes([
-//         connect_response[4],
-//         connect_response[5],
-//         connect_response[6],
-//         connect_response[7],
-//     ]);
-//     let connection_id = u64::from_be_bytes([
-//         connect_response[8],
-//         connect_response[9],
-//         connect_response[10],
-//         connect_response[11],
-//         connect_response[12],
-//         connect_response[13],
-//         connect_response[14],
-//         connect_response[15],
-//     ]);
-//
-//     // Check if the response action and transaction ID match the request
-//     if action == 0 && transaction_id == 0x12345678 {
-//         println!("Connection ID: {}", connection_id);
-//
-//         // Prepare the announce request data
-//         // let info_hash = "0123456789abcdef0123456789abcdef01234567".to_owned();
-//         // let peer_id = "ABCDEFGHIJKLMNOPQRST".to_owned();
-//         // let port: u16 = 6881;
-//         // let event = "started";
-//         //
-//         // // Build the announce request packet
-//         // let mut announce_request = Vec::new();
-//         // announce_request.extend_from_slice(&connection_id.to_be_bytes()); // Connection ID
-//         // announce_request.extend_from_slice(&0x00u32.to_be_bytes()); // Action: 1 (announce)
-//         // announce_request.extend_from_slice(&(0x87654321u32).to_be_bytes()); // Transaction ID: 0x87654321
-//         // announce_request.extend_from_slice(info_hash.as_bytes()); // Info Hash
-//         // announce_request.extend_from_slice(peer_id.as_bytes()); // Peer ID
-//         // announce_request.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]); // Downloaded: 0
-//         // announce_request.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]); // Left: 0
-//         // announce_request.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]); // Uploaded: 0
-//         // announce_request.extend_from_slice(&[0x00, 0x00, 0x00, 0x02]); // Event: 2 (started)
-//         // announce_request.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]); // IP Address: 0
-//         // announce_request.extend_from_slice(&[0x00, 0x00, 0x1A, 0xE1]); // Key: 0x1AE1
-//         // announce_request.extend_from_slice(&[0xFF, 0xFF, 0xFF, 0xFF]); // Num Want: -1 (default)
-//         // announce_request.extend_from_slice(&port.to_be_bytes()); // Port
-//         //
-//         // // Send the announce request packet
-//         // socket.send_to(&announce_request, tracker_addr).await?;
-//         //
-//         // // Receive the announce response
-//         // let mut announce_response = [0; 4096];
-//         // let (bytes_read, _src_addr) = socket.recv_from(&mut announce_response).await?;
-//         // let response = &announce_response[..bytes_read];
-//         //
-//         // // Process the response as needed
-//         // println!("Received announce response: {:?}", response);
-//     }
-//
-//     Ok(())
-// }
