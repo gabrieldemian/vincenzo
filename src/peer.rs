@@ -428,7 +428,9 @@ impl Peer {
                                         // send bep09 request to get the Info
                                         if let Some(ut_metadata) = self.extension.m.ut_metadata {
                                             info!("peer supports ut_metadata {ut_metadata}, sending request");
+
                                             let h = b"d8:msg_typei0e5:piecei0ee";
+
                                             info!("sending request msg with ut_metadata {ut_metadata:?}");
                                             sink.send(Message::Extended((ut_metadata, h.to_vec()))).await?;
                                         }
@@ -442,7 +444,6 @@ impl Peer {
 
                                     if pair == b"1e" {
                                         if let Ok((_, info)) = Metadata::extract(payload, info_begin as usize) {
-
                                             let _ = self.disk_tx.as_ref().unwrap().send(DiskMsg::NewTorrent(info)).await;
                                             if self.am_interested && !self.peer_choking {
                                                 self.request_next_piece(&mut sink).await?;

@@ -10,7 +10,7 @@ use crate::{error, metainfo::Info};
 /// http://www.bittorrent.org/beps/bep_0010.html
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Extension {
-    /// messages (supported extensions)
+    /// messages (dictionary of supported extensions)
     pub m: M,
     /// port
     pub p: Option<u16>,
@@ -25,7 +25,7 @@ pub struct Extension {
     pub metadata_size: Option<u32>,
 }
 
-/// metadata of the Extension struct
+/// Messages of the Extension protocol
 /// lists all extensions that a peer supports
 /// in our case, we only support ut_metadata at the moment
 /// and naturally, we are only interested in reading this part of the metadata
@@ -35,14 +35,46 @@ pub struct M {
     pub ut_pex: Option<u8>,
 }
 
+/// Metadata message used by Metadata Extension protocol (BEP 9)
+/// this message is used to request, reject, and send data (info)
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Metadata {
     pub msg_type: u8,
     pub piece: u32,
-    pub total_size: u32,
+    pub total_size: Option<u32>,
 }
 
 impl Metadata {
+    pub fn request(piece: u32) -> Self {
+        Self {
+            msg_type: 0,
+            piece,
+            total_size: None,
+        }
+    }
+    pub fn data(piece: u32, info: Info) -> Result<Vec<u8>, error::Error> {
+        let info = info.to_bencode().map_err(|_| error::Error::BencodeError)?;
+        let metadata = Self {
+            msg_type: 1,
+            piece,
+            total_size: Some(info.len() as u32),
+        };
+
+        let mut bytes = metadata
+            .to_bencode()
+            .map_err(|_| error::Error::BencodeError)?;
+
+        bytes.extend_from_slice(&info);
+
+        Ok(bytes)
+    }
+    pub fn reject(piece: u32) -> Self {
+        Self {
+            msg_type: 2,
+            piece,
+            total_size: None,
+        }
+    }
     /// Tries to extract Info from the given buffer.
     ///
     /// # Errors
@@ -66,7 +98,7 @@ impl FromBencode for Metadata {
     {
         let mut msg_type = 0;
         let mut piece = 0;
-        let mut total_size = 0;
+        let mut total_size = None;
 
         let mut dict_dec = object.try_into_dictionary()?;
 
@@ -79,7 +111,9 @@ impl FromBencode for Metadata {
                     piece = u32::decode_bencode_object(value).context("piece")?;
                 }
                 (b"total_size", value) => {
-                    total_size = u32::decode_bencode_object(value).context("total_size")?;
+                    total_size = u32::decode_bencode_object(value)
+                        .context("total_size")
+                        .map(Some)?;
                 }
                 _ => {}
             }
@@ -103,7 +137,10 @@ impl ToBencode for Metadata {
         encoder.emit_dict(|mut e| {
             e.emit_pair(b"msg_type", self.msg_type)?;
             e.emit_pair(b"piece", self.piece)?;
-            e.emit_pair(b"total_size", self.total_size)
+            if let Some(total_size) = self.total_size {
+                e.emit_pair(b"total_size", total_size)?;
+            };
+            Ok(())
         })?;
         Ok(())
     }
@@ -235,7 +272,45 @@ impl FromBencode for Extension {
 
 #[cfg(test)]
 mod tests {
+    use crate::metainfo::MetaInfo;
+
     use super::*;
+
+    #[test]
+    fn can_create_metadata_request() {
+        let metadata_request = Metadata::request(0);
+        let bencoded = String::from_utf8(metadata_request.to_bencode().unwrap());
+        assert_eq!(bencoded.unwrap(), "d8:msg_typei0e5:piecei0ee");
+
+        let b = b"d8:msg_typei0e5:piecei0ee";
+        let metadata = Metadata::from_bencode(b);
+        assert_eq!(metadata_request, metadata.unwrap())
+    }
+
+    #[test]
+    fn can_create_metadata_data() {
+        let metainfo_bytes = include_bytes!("../book.torrent");
+        let metainfo = MetaInfo::from_bencode(metainfo_bytes).unwrap();
+
+        let info = metainfo.info;
+        let metadata_data = Metadata::data(0, info.clone()).unwrap();
+
+        let mut r = b"d8:msg_typei1e5:piecei0e10:total_sizei5205ee".to_vec();
+        r.extend_from_slice(&info.to_bencode().unwrap());
+
+        assert_eq!(r, metadata_data);
+    }
+
+    #[test]
+    fn can_create_metadata_reject() {
+        let metadata_request = Metadata::reject(0);
+        let bencoded = String::from_utf8(metadata_request.to_bencode().unwrap());
+        assert_eq!(bencoded.unwrap(), "d8:msg_typei2e5:piecei0ee");
+
+        let b = b"d8:msg_typei2e5:piecei0ee";
+        let metadata = Metadata::from_bencode(b);
+        assert_eq!(metadata_request, metadata.unwrap())
+    }
 
     // should transform a byte array into an Extension
     #[test]
@@ -307,7 +382,7 @@ mod tests {
 
     #[test]
     fn from_bytes_to_metadata_msg() {
-        let mut buf = [
+        let buf = [
             100, 56, 58, 109, 115, 103, 95, 116, 121, 112, 101, 105, 49, 101, 53, 58, 112, 105,
             101, 99, 101, 105, 48, 101, 49, 48, 58, 116, 111, 116, 97, 108, 95, 115, 105, 122, 101,
             105, 53, 50, 48, 53, 101, 101, 100, 53, 58, 102, 105, 108, 101, 115, 108, 100, 54, 58,

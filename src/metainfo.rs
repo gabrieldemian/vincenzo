@@ -115,10 +115,7 @@ pub struct File {
 
 impl File {
     pub fn get_piece_len(&self, piece: u32, piece_length: u32) -> u32 {
-        // let last_piece_len = self.length % piece_length;
-        // let last_piece_index = self.length / piece_length;
         let piece_end = (piece + 1) * piece_length;
-
         if piece_end > self.length {
             // piece does not fit, return the remainder
             piece_end - self.length
@@ -251,8 +248,6 @@ impl ToBencode for MetaInfo {
             }
 
             if let Some(seeds) = &self.http_seeds {
-                // List is a simple iterable wrapper that allows to encode
-                // any list like container as bencode list object.
                 e.emit_pair(b"httpseeds", seeds)?;
             }
 
