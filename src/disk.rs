@@ -1,16 +1,16 @@
 use std::{collections::VecDeque, io::SeekFrom, sync::Arc};
 
-use tracing::debug;
 use tokio::{
     fs::{create_dir_all, File, OpenOptions},
     io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
     sync::{mpsc::Receiver, oneshot::Sender},
 };
+use tracing::debug;
 
 use crate::{
     error::Error,
-    metainfo::Info,
-    tcp_wire::lib::{Block, BlockInfo},
+    metainfo::{self, Info},
+    tcp_wire::lib::{Block, BlockInfo, BLOCK_LEN},
     torrent::TorrentCtx,
 };
 
@@ -18,6 +18,11 @@ use crate::{
 pub enum DiskMsg {
     NewTorrent(Info),
     ReadBlock((BlockInfo, Sender<Result<Vec<u8>, Error>>)),
+    /// Handle a new downloaded Piece, validate that the hash all the blocks of
+    /// this piece matches the hash on Info.pieces. If the hash is valid,
+    /// the fn will send a Have msg to all peers that don't have this piece.
+    /// and update the bitfield of the Torrent struct.
+    ValidatePiece((usize, Sender<Result<(), Error>>)),
     OpenFile((String, Sender<File>)),
     WriteBlock((Block, Sender<Result<(), Error>>)),
     RequestBlocks((usize, Sender<VecDeque<BlockInfo>>)),
@@ -34,18 +39,6 @@ pub struct Disk {
 pub struct DiskCtx {
     pub info: Info,
     pub base_path: String,
-    pub block_infos: VecDeque<BlockInfo>,
-}
-
-/// basically a wrapper for `metainfo::File`
-/// includes all the block_infos of this path,
-/// alongside fields from `metainfo::File`
-#[derive(Debug, PartialEq, Clone, Default)]
-pub struct DiskFile {
-    pub length: u32,
-    pub path: Vec<String>,
-    // all blocks that we can request for this file
-    // in sequential order, for now
     pub block_infos: VecDeque<BlockInfo>,
 }
 
@@ -143,10 +136,57 @@ impl Disk {
 
                     let _ = tx.send(infos);
                 }
+                DiskMsg::ValidatePiece((index, tx)) => {
+                    let r = self.validate_piece(index).await;
+                    let _ = tx.send(r);
+                }
             }
         }
 
         Ok(())
+    }
+
+    #[tracing::instrument(skip(self))]
+    pub async fn validate_piece(&mut self, index: usize) -> Result<(), Error> {
+        let info = &self.ctx.info;
+        let b = index * 20;
+        let e = b + 20;
+
+        let hash_from_info = info.pieces[b..e].to_owned();
+
+        let (mut file_info, _) = self.get_file_from_index(index as u32, 0).await?;
+
+        let piece_len = info.piece_length;
+        let piece_len_capacity = info.blocks_per_piece() * BLOCK_LEN as u32;
+        let last_block_modulus = piece_len_capacity % piece_len;
+        let remainder = if last_block_modulus == 0 {
+            0
+        } else {
+            BLOCK_LEN as u32 - last_block_modulus
+        };
+        let total = piece_len_capacity - remainder;
+
+        // println!("hash_from_info {hash_from_info:?}");
+        // println!("the piece {index} has blocks len of {:?}", file_info.length);
+        // println!("total bytes of {index} is {total}");
+        // println!("blocks per piece {index} is {:?}", info.blocks_per_piece());
+        // println!("piece_len of {index} is {:?}", info.piece_length);
+        // println!("total len of piece {index} {total}");
+
+        let mut buf = vec![0u8; total as usize];
+        file_info.read_exact(&mut buf).await?;
+
+        let mut hash = sha1_smol::Sha1::new();
+        hash.update(&buf);
+
+        let hash = hash.digest().bytes();
+        // println!("hash {hash:?}");
+
+        if hash_from_info == hash {
+            return Ok(());
+        }
+
+        Err(Error::PieceInvalid)
     }
 
     pub async fn open_file(&self, path: &str) -> Result<File, Error> {
@@ -169,7 +209,7 @@ impl Disk {
         // how many bytes to read, after offset (begin)
         let mut buf = vec![0; block_info.len as usize];
 
-        file.read_exact(&mut buf).await?;
+        file.0.read_exact(&mut buf).await?;
 
         Ok(buf)
     }
@@ -179,7 +219,7 @@ impl Disk {
             .get_file_from_index(block.index as u32, block.begin)
             .await?;
 
-        file.write_all(&block.block).await?;
+        file.0.write_all(&block.block).await?;
 
         Ok(())
     }
@@ -192,7 +232,11 @@ impl Disk {
     /// to first get the corresponding file and advance the corresponding bytes
     /// of the `piece` and `begin` variables. After that, we can get the correct Block
     /// on the returned File.
-    pub async fn get_file_from_index(&self, piece: u32, begin: u32) -> Result<File, Error> {
+    pub async fn get_file_from_index(
+        &self,
+        piece: u32,
+        begin: u32,
+    ) -> Result<(File, metainfo::File), Error> {
         // find a file on a list of files,
         // given a piece_index and a piece_len
         let piece_begin = piece * self.ctx.info.piece_length;
@@ -200,14 +244,14 @@ impl Disk {
 
         // multi file torrent
         if let Some(files) = &info.files {
-            let file = files
+            let file_info = files
                 .into_iter()
                 .enumerate()
                 .find(|(i, f)| piece_begin < f.length * (*i as u32 + 1))
                 .map(|a| a.1);
 
-            if let Some(file) = file {
-                let path = file.path.join("/");
+            if let Some(file_info) = file_info {
+                let path = file_info.path.join("/");
 
                 let mut file = self.open_file(&path).await?;
 
@@ -215,7 +259,7 @@ impl Disk {
                     .await
                     .unwrap();
 
-                return Ok(file);
+                return Ok((file, file_info.clone()));
             }
 
             return Err(Error::FileOpenError);
@@ -227,7 +271,12 @@ impl Disk {
             .await
             .unwrap();
 
-        return Ok(file);
+        let file_info = metainfo::File {
+            path: vec![info.name.to_owned()],
+            length: info.file_length.unwrap(),
+        };
+
+        return Ok((file, file_info));
     }
     pub async fn get_block_from_block_info(&self, block_info: &BlockInfo) -> Result<Block, Error> {
         let mut file = self
@@ -236,7 +285,7 @@ impl Disk {
 
         let mut buf = vec![0; block_info.len as usize];
 
-        file.read_exact(&mut buf).await.unwrap();
+        file.0.read_exact(&mut buf).await.unwrap();
 
         let block = Block {
             index: block_info.index as usize,
@@ -255,7 +304,7 @@ mod tests {
     use crate::{
         magnet_parser::get_magnet,
         metainfo::{self, Info, MetaInfo},
-        tcp_wire::lib::Block,
+        tcp_wire::lib::{Block, BLOCK_LEN},
         torrent::{Torrent, TorrentMsg},
     };
 
@@ -264,6 +313,52 @@ mod tests {
         spawn,
         sync::{mpsc, oneshot},
     };
+
+    #[tokio::test]
+    async fn validate_piece() {
+        let m = get_magnet("magnet:?xt=urn:btih:48aac768a865798307ddd4284be77644368dd2c7&dn=Kerkour%20S.%20Black%20Hat%20Rust...Rust%20programming%20language%202022&tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%2Fannounce&tr=udp%3A%2F%2F9.rarbg.to%3A2920%2Fannounce&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&tr=udp%3A%2F%2Ftracker.internetwarriors.net%3A1337%2Fannounce&tr=udp%3A%2F%2Ftracker.leechers-paradise.org%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.pirateparty.gr%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.cyberia.is%3A6969%2Fannounce").unwrap();
+
+        let metainfo_bytes = include_bytes!("../book.torrent");
+        let metainfo = MetaInfo::from_bencode(metainfo_bytes).unwrap();
+
+        let (torrent_tx, torrent_rx) = mpsc::channel::<TorrentMsg>(3);
+        let (disk_tx, disk_rx) = mpsc::channel::<DiskMsg>(3);
+
+        let torrent = Torrent::new(torrent_tx.clone(), disk_tx.clone(), torrent_rx, m).await;
+        let torrent_ctx = torrent.ctx.clone();
+
+        let info = metainfo.info;
+
+        let mut info_ctx = torrent.ctx.info.write().await;
+        *info_ctx = info.clone();
+
+        let mut disk = Disk::new(disk_rx, torrent_ctx.clone());
+
+        spawn(async move {
+            disk.run().await.unwrap();
+        });
+
+        disk_tx.send(DiskMsg::NewTorrent(info)).await.unwrap();
+
+        let block_zero = BlockInfo {
+            index: 0,
+            begin: 0,
+            len: BLOCK_LEN,
+        };
+
+        let mut downloaded_blocks = torrent_ctx.downloaded_blocks.write().await;
+        downloaded_blocks.push_front(block_zero);
+
+        let (otx, orx) = oneshot::channel();
+        disk_tx
+            .send(DiskMsg::ValidatePiece((0, otx)))
+            .await
+            .unwrap();
+
+        let r = orx.await;
+
+        assert!(r.unwrap().is_ok());
+    }
 
     // when we send the msg `NewTorrent` the `Disk` must create
     // the "skeleton" of the torrent tree. Empty folders and empty files.
@@ -329,10 +424,10 @@ mod tests {
 
     #[tokio::test]
     async fn request_blocks() {
+        let m = get_magnet("magnet:?xt=urn:btih:48aac768a865798307ddd4284be77644368dd2c7&dn=Kerkour%20S.%20Black%20Hat%20Rust...Rust%20programming%20language%202022&tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%2Fannounce&tr=udp%3A%2F%2F9.rarbg.to%3A2920%2Fannounce&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&tr=udp%3A%2F%2Ftracker.internetwarriors.net%3A1337%2Fannounce&tr=udp%3A%2F%2Ftracker.leechers-paradise.org%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.pirateparty.gr%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.cyberia.is%3A6969%2Fannounce").unwrap();
+
         let (torrent_tx, torrent_rx) = mpsc::channel::<TorrentMsg>(3);
         let (disk_tx, _) = mpsc::channel::<DiskMsg>(3);
-
-        let m = get_magnet("magnet:?xt=urn:btih:48aac768a865798307ddd4284be77644368dd2c7&dn=Kerkour%20S.%20Black%20Hat%20Rust...Rust%20programming%20language%202022&tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%2Fannounce&tr=udp%3A%2F%2F9.rarbg.to%3A2920%2Fannounce&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&tr=udp%3A%2F%2Ftracker.internetwarriors.net%3A1337%2Fannounce&tr=udp%3A%2F%2Ftracker.leechers-paradise.org%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.pirateparty.gr%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.cyberia.is%3A6969%2Fannounce").unwrap();
 
         let torrent = Torrent::new(torrent_tx, disk_tx, torrent_rx, m).await;
         let torrent_ctx = torrent.ctx.clone();

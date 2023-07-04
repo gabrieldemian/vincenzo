@@ -16,6 +16,7 @@ futures = "0.3.28"
 hex = "0.4.3"
 magnet-url = "2.0.0"
 rand = "0.8.5"
+sha1_smol = { version = "1.0.0", features = ["serde"] }
 speedy = "0.8.6"
 thiserror = "1.0.40"
 tokio = { version = "1.28.2", features = ["rt", "fs", "tracing", "time", "macros", "rt-multi-thread", "sync", "io-std", "io-util",  "net"] }

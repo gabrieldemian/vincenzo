@@ -6,7 +6,6 @@ use bendy::{
 };
 
 use crate::{
-    disk::DiskFile,
     error,
     tcp_wire::lib::{BlockInfo, BLOCK_LEN},
 };
@@ -68,9 +67,13 @@ impl Into<VecDeque<BlockInfo>> for Info {
 impl Info {
     /// Calculate how many blocks there are in the entire torrent.
     pub fn blocks_len(&self) -> u32 {
-        let blocks_in_piece = self.piece_length / BLOCK_LEN;
+        let blocks_in_piece = self.blocks_per_piece();
         let total_blocks = blocks_in_piece * (self.pieces.len() as u32 / 20);
         total_blocks
+    }
+    /// Calculate how many blocks there are per piece
+    pub fn blocks_per_piece(&self) -> u32 {
+        self.piece_length / BLOCK_LEN
     }
     /// Get all block_infos of a torrent
     pub async fn get_block_infos(&self) -> Result<VecDeque<BlockInfo>, error::Error> {
@@ -102,40 +105,6 @@ impl Info {
         }
         return Err(error::Error::FileOpenError);
     }
-
-    pub fn get_disk_files(&self) -> VecDeque<DiskFile> {
-        let mut disks = VecDeque::new();
-
-        // get block_infos for a Multi File Info
-        if let Some(files) = &self.files {
-            for file in files {
-                let block_infos = file.get_block_infos(self.piece_length);
-
-                disks.push_back(DiskFile {
-                    path: file.path.clone(),
-                    length: file.length,
-                    block_infos,
-                });
-            }
-        }
-
-        // get block_infos for a Single File Info
-        if let Some(file_length) = self.file_length {
-            let file = File {
-                length: file_length,
-                path: vec![self.name.clone()],
-            };
-
-            let block_infos = file.get_block_infos(self.piece_length);
-
-            disks.push_back(DiskFile {
-                path: file.path,
-                length: file.length,
-                block_infos,
-            });
-        }
-        disks
-    }
 }
 
 #[derive(Debug, PartialEq, Clone, Default)]
@@ -145,13 +114,6 @@ pub struct File {
 }
 
 impl File {
-    pub fn to_disk_file(&self, piece_length: u32) -> DiskFile {
-        DiskFile {
-            block_infos: self.get_block_infos(piece_length),
-            path: self.path.clone(),
-            length: self.length,
-        }
-    }
     pub fn get_piece_len(&self, piece: u32, piece_length: u32) -> u32 {
         // let last_piece_len = self.length % piece_length;
         // let last_piece_index = self.length / piece_length;
@@ -752,102 +714,6 @@ mod tests {
                 length: 222,
             }
         );
-
-        Ok(())
-    }
-
-    #[test]
-    fn should_get_disk_files() -> Result<(), Error> {
-        // let torrent = include_bytes!("../debian.torrent");
-        // let torrent = MetaInfo::from_bencode(torrent).unwrap();
-        // let _infos = torrent.info.get_disk_files();
-        let piece_len: u32 = 262_144;
-        let files: Vec<File> = vec![
-            File {
-                length: piece_len * 1,
-                path: vec!["foo.txt".to_owned()],
-            },
-            File {
-                length: piece_len * 2,
-                path: vec!["uva".to_owned(), "foo.txt".to_owned()],
-            },
-        ];
-
-        let myinfo = Info {
-            piece_length: piece_len,
-            pieces: vec![],
-            name: "ArchLinux.iso".to_owned(),
-            files: Some(files),
-            file_length: None,
-        };
-
-        let queue = myinfo.get_disk_files();
-        let first = queue.get(0).unwrap();
-        let second = queue.get(1).unwrap();
-
-        assert_eq!(first.block_infos.len(), 16);
-        assert_eq!(second.block_infos.len(), 32);
-        assert_eq!(first.length, piece_len);
-        assert_eq!(second.length, piece_len * 2);
-        assert_eq!(
-            first.block_infos.back().unwrap().begin + first.block_infos.back().unwrap().len,
-            piece_len,
-        );
-        let last_block_second = second.block_infos.back().unwrap();
-        assert_eq!(
-            last_block_second.begin + last_block_second.len,
-            myinfo.files.unwrap()[1].length
-        );
-
-        Ok(())
-    }
-
-    #[test]
-    fn should_get_disk_files_for_info() -> Result<(), Error> {
-        let piece_len: u32 = 262_144;
-
-        let files: Vec<File> = vec![
-            File {
-                length: piece_len * 1,
-                path: vec!["foo".to_owned(), "foo.txt".to_owned()],
-            },
-            File {
-                length: piece_len * 2,
-                path: vec!["bar".to_owned(), "bazz.txt".to_owned()],
-            },
-        ];
-
-        // multi file info
-        let info = Info {
-            name: "arch-linux".to_owned(),
-            piece_length: piece_len,
-            files: Some(files),
-            file_length: None,
-            pieces: vec![0],
-        };
-
-        let df = info.get_disk_files();
-        let first = df.front().unwrap();
-        let second = df.back().unwrap();
-        // println!("all dfs: {:#?}", df.front().unwrap());
-
-        // test first file
-        assert_eq!(first.path, info.files.as_ref().unwrap()[0].path);
-        assert_eq!(first.length, info.files.as_ref().unwrap()[0].length);
-        assert_eq!(
-            first.block_infos.back().unwrap().begin + first.block_infos.back().unwrap().len,
-            piece_len
-        );
-        assert_eq!(first.block_infos.len(), 16);
-
-        // test second file
-        assert_eq!(second.path, info.files.as_ref().unwrap()[1].path);
-        assert_eq!(second.length, info.files.as_ref().unwrap()[1].length);
-        assert_eq!(
-            second.block_infos.back().unwrap().begin + second.block_infos.back().unwrap().len,
-            piece_len * 2
-        );
-        assert_eq!(second.block_infos.len(), 32);
 
         Ok(())
     }

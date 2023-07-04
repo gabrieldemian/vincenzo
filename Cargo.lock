@@ -208,6 +208,7 @@ dependencies = [
  "hex",
  "magnet-url",
  "rand 0.8.5",
+ "sha1_smol",
  "speedy",
  "thiserror",
  "tokio",
@@ -1310,6 +1311,15 @@ checksum = "46266871c240a00b8f503b877622fe33430b3c7d963bdc0f2adc511e54a1eae3"
 dependencies = [
  "itoa",
  "ryu",
+ "serde",
+]
+
+[[package]]
+name = "sha1_smol"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ae1a47186c03a32177042e55dbc5fd5aee900b8e0069a8d70fba96a9375cd012"
+dependencies = [
  "serde",
 ]
 

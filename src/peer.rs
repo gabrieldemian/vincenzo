@@ -15,8 +15,8 @@ use tokio::{
 };
 use tokio_util::codec::Framed;
 
-use tracing::{debug, info, warn};
 use tokio::{net::TcpStream, time::interval};
+use tracing::{debug, info, warn};
 
 use crate::{
     bitfield::Bitfield,
@@ -324,17 +324,25 @@ impl Peer {
                             info!("is valid? {:?}", block.is_valid());
 
                             if block.is_valid() {
-                                let mut tr_pieces = torrent_ctx.pieces.write().await;
-
                                 let info = torrent_ctx.info.read().await;
 
-                                // if this is the last block, update torrent.bitfield
                                 if block.begin + block.block.len() as u32 >= info.piece_length {
-                                    tr_pieces.set(block.index);
-                                }
+                                    let (tx, rx) = oneshot::channel();
+                                    let disk_tx = self.disk_tx.as_ref().unwrap();
 
-                                drop(tr_pieces);
-                                drop(info);
+                                    // Ask Disk to validate the bytes of all blocks of this piece
+                                    let _ = disk_tx.send(DiskMsg::ValidatePiece((block.index, tx))).await;
+                                    let r = rx.await;
+
+                                    // Hash of piece is valid
+                                    if let Ok(Ok(r)) = r {
+                                        let mut tr_pieces = torrent_ctx.pieces.write().await;
+                                        tr_pieces.set(block.index);
+                                        // send Have msg to peers that dont have this piece
+                                    } else {
+                                        warn!("The hash of the piece {:?} is invalid", block.index);
+                                    }
+                                }
 
                                 let (tx, rx) = oneshot::channel();
                                 let disk_tx = self.disk_tx.as_ref().unwrap();
@@ -349,7 +357,7 @@ impl Peer {
                                         let was_downloaded = bd.iter().any(|b| *b == block.clone().into() );
 
                                         if !was_downloaded {
-                                            bd.push_front(block.clone().into());
+                                            bd.push_front(block.into());
                                         }
                                         drop(bd);
 
@@ -408,11 +416,6 @@ impl Peer {
                             info!("----------------------------------");
 
                             // ext_id of 0 means a bep10 handshake
-                            // let msg = String::from_utf8_lossy(&payload);
-
-                            // println!("ext_id {ext_id}");
-                            // println!("raw extension payload: {msg:?}");
-
                             if ext_id == 0 {
                                 if self.extension.m.ut_metadata.is_none() {
                                     let extension = Extension::from_bencode(&payload);

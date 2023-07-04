@@ -9,19 +9,18 @@ use crate::tcp_wire::lib::BlockInfo;
 use crate::tracker::tracker::Tracker;
 use crate::tracker::tracker::TrackerCtx;
 use bendy::decoding::FromBencode;
-use tracing::debug;
-use tracing::info;
 use magnet_url::Magnet;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::select;
 use tokio::spawn;
-use tokio::sync::mpsc::Receiver;
-use tokio::sync::mpsc::Sender;
+use tokio::sync::mpsc;
 use tokio::sync::RwLock;
 use tokio::time::interval;
 use tokio::time::Interval;
+use tracing::debug;
+use tracing::info;
 
 #[derive(Debug)]
 pub enum TorrentMsg {
@@ -38,9 +37,9 @@ pub enum TorrentMsg {
 pub struct Torrent {
     pub ctx: Arc<TorrentCtx>,
     pub tracker_ctx: Arc<TrackerCtx>,
-    pub tx: Sender<TorrentMsg>,
-    pub disk_tx: Sender<DiskMsg>,
-    pub rx: Receiver<TorrentMsg>,
+    pub tx: mpsc::Sender<TorrentMsg>,
+    pub disk_tx: mpsc::Sender<DiskMsg>,
+    pub rx: mpsc::Receiver<TorrentMsg>,
     pub tick_interval: Interval,
     pub in_end_game: bool,
 }
@@ -60,9 +59,9 @@ pub struct TorrentCtx {
 
 impl Torrent {
     pub async fn new(
-        tx: Sender<TorrentMsg>,
-        disk_tx: Sender<DiskMsg>,
-        rx: Receiver<TorrentMsg>,
+        tx: mpsc::Sender<TorrentMsg>,
+        disk_tx: mpsc::Sender<DiskMsg>,
+        rx: mpsc::Receiver<TorrentMsg>,
         magnet: Magnet,
     ) -> Self {
         let pieces = RwLock::new(Bitfield::default());
@@ -184,7 +183,7 @@ impl Torrent {
 
         *info = torrent.info.clone();
 
-        // send this message here only if the user is using a 
+        // send this message here only if the user is using a
         // metainfo instead of a magnet link
         // self.disk_tx
         //     .send(DiskMsg::NewTorrent(torrent.info))
@@ -194,3 +193,4 @@ impl Torrent {
         Ok(peers)
     }
 }
+

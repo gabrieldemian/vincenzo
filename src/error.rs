@@ -42,4 +42,6 @@ pub enum Error {
     FileOpenError,
     #[error("This torrent is already downloaded fully")]
     TorrentComplete,
+    #[error("The piece downloaded does not have a valid hash")]
+    PieceInvalid,
 }
