@@ -146,7 +146,7 @@ impl Bitfield {
     }
     pub fn is_complete(&mut self, pieces: u32) -> bool {
         let my_pieces: u32 = self.inner.iter().fold(0, |acc, byte| {
-            let ones = *byte as f32 / 32 as f32;
+            let ones = *byte as f32 / 32_f32;
             let ones = ones.ceil();
             acc + ones as u32
         });
@@ -267,28 +267,28 @@ mod tests {
         bitfield.set(10_usize);
         assert_eq!(bitfield.len_bytes(), 2);
         assert_eq!(
-            bitfield.get(10 as usize).unwrap(),
+            bitfield.get(10_usize).unwrap(),
             BitItem { index: 10, bit: 1 }
         );
 
         bitfield.set(23_usize);
         assert_eq!(bitfield.len_bytes(), 3);
         assert_eq!(
-            bitfield.get(23 as usize).unwrap(),
+            bitfield.get(23_usize).unwrap(),
             BitItem { index: 23, bit: 1 }
         );
 
         bitfield.set(31_usize);
         assert_eq!(bitfield.len_bytes(), 4);
         assert_eq!(
-            bitfield.get(31 as usize).unwrap(),
+            bitfield.get(31_usize).unwrap(),
             BitItem { index: 31, bit: 1 }
         );
 
         let mut bitfield = Bitfield::from(vec![0b0000_0000]);
         bitfield.set(2_usize);
         assert_eq!(
-            bitfield.get(2 as usize).unwrap(),
+            bitfield.get(2_usize).unwrap(),
             BitItem { index: 2, bit: 1 }
         );
         assert_eq!(bitfield.get(2_usize).unwrap(), BitItem { index: 2, bit: 1 });

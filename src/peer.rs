@@ -232,7 +232,7 @@ impl Peer {
                     if (downloaded.len() as u32) < (blocks_len) {
                         for req in &*requested {
                             let f = downloaded.iter().find(|down| **down == *req);
-                            if let None = f {
+                            if f.is_none() {
                                 let _ = sink.send(Message::Request(req.clone())).await;
                             }
                         }
@@ -337,7 +337,7 @@ impl Peer {
                                     let r = rx.await;
 
                                     // Hash of piece is valid
-                                    if let Ok(Ok(r)) = r {
+                                    if let Ok(Ok(_r)) = r {
                                         let mut tr_pieces = torrent_ctx.pieces.write().await;
                                         tr_pieces.set(block.index);
                                         // send Have msg to peers that dont have this piece
@@ -469,7 +469,7 @@ impl Peer {
                                     let pieces = pieces.ceil() as u32 ;
                                     info!("pieces {pieces:?}");
 
-                                    let (metadata, info) = Metadata::extract(payload, info_begin as usize)?;
+                                    let (metadata, info) = Metadata::extract(payload, info_begin)?;
                                     info!("after extract {metadata:#?}");
 
                                     let mut info_dict = torrent_ctx.info_dict.write().await;
@@ -544,12 +544,12 @@ mod tests {
     #[test]
     fn can_get_requested_blocks_but_not_downloaded() {
         let requested = vec![0, 1, 2, 3, 4, 5, 6];
-        let downloaded = vec![0, 1, 2, 3];
+        let downloaded = [0, 1, 2, 3];
         let mut missing: Vec<i32> = Vec::new();
 
         for req in &*requested {
             let f = downloaded.iter().find(|down| **down == *req);
-            if let None = f {
+            if f.is_none() {
                 missing.push(*req);
             }
         }

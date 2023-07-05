@@ -38,25 +38,25 @@ pub struct Info {
     pub files: Option<Vec<File>>,
 }
 
-impl Into<VecDeque<BlockInfo>> for Info {
-    fn into(self) -> VecDeque<BlockInfo> {
+impl From<Info> for VecDeque<BlockInfo> {
+    fn from(val: Info) -> Self {
         let mut v = VecDeque::new();
 
         // get block_infos for a Multi File Info
-        if let Some(files) = &self.files {
+        if let Some(files) = &val.files {
             for file in files {
-                let mut block_infos = file.get_block_infos(self.piece_length);
+                let mut block_infos = file.get_block_infos(val.piece_length);
                 v.append(&mut block_infos);
             }
         }
 
         // get block_infos for a Single File Info
-        if let Some(file_length) = self.file_length {
+        if let Some(file_length) = val.file_length {
             let file = File {
                 length: file_length,
-                path: vec![self.name.clone()],
+                path: vec![val.name.clone()],
             };
-            let mut block_infos = file.get_block_infos(self.piece_length);
+            let mut block_infos = file.get_block_infos(val.piece_length);
             v.append(&mut block_infos);
         }
 
@@ -68,8 +68,8 @@ impl Info {
     /// Calculate how many blocks there are in the entire torrent.
     pub fn blocks_len(&self) -> u32 {
         let blocks_in_piece = self.blocks_per_piece();
-        let total_blocks = blocks_in_piece * (self.pieces.len() as u32 / 20);
-        total_blocks
+        
+        blocks_in_piece * (self.pieces.len() as u32 / 20)
     }
     /// Calculate how many blocks there are per piece
     pub fn blocks_per_piece(&self) -> u32 {
@@ -80,7 +80,7 @@ impl Info {
         // multi file torrent
         if let Some(files) = &self.files {
             let file = files
-                .into_iter()
+                .iter()
                 .enumerate()
                 .find(|(i, f)| self.piece_length < f.length * (*i as u32 + 1))
                 .map(|a| a.1);
@@ -103,7 +103,7 @@ impl Info {
             let infos = file.get_block_infos(self.piece_length);
             return Ok(infos);
         }
-        return Err(error::Error::FileOpenError);
+        Err(error::Error::FileOpenError)
     }
 }
 
@@ -139,7 +139,7 @@ impl File {
         // println!("{pieces} pieces");
         // println!("{torrent_len:?} torrent_len\n");
 
-        let mut index = 0 as u32;
+        let mut index = 0_u32;
 
         let last_block_len = if self.length % BLOCK_LEN == 0 {
             BLOCK_LEN
@@ -158,7 +158,7 @@ impl File {
                 let begin = if blocks_per_piece == 1 {
                     0
                 } else {
-                    infos.len() as u32 * BLOCK_LEN as u32
+                    infos.len() as u32 * BLOCK_LEN
                 };
                 let is_last_block = blocks_per_piece == block + 1;
 
@@ -196,7 +196,7 @@ impl ToBencode for File {
 
     fn encode(&self, encoder: SingleItemEncoder) -> Result<(), Error> {
         encoder.emit_dict(|mut e| {
-            e.emit_pair(b"length", &self.length)?;
+            e.emit_pair(b"length", self.length)?;
             e.emit_pair(b"path", &self.path)
         })?;
         Ok(())
@@ -270,7 +270,7 @@ impl ToBencode for Info {
                 e.emit_pair(b"files", files)?;
             }
             e.emit_pair(b"name", &self.name)?;
-            e.emit_pair(b"piece length", &self.piece_length)?;
+            e.emit_pair(b"piece length", self.piece_length)?;
             e.emit_pair(b"pieces", AsString(&self.pieces))
         })?;
         Ok(())
@@ -401,7 +401,7 @@ impl FromBencode for Info {
 
 #[cfg(test)]
 mod tests {
-    use crate::error::Error;
+    
 
     use super::*;
 
@@ -461,7 +461,7 @@ mod tests {
                 len: 12718,
             }
         );
-        let last = infos.back().clone().unwrap();
+        let last = infos.back().unwrap();
         assert_eq!(
             *last,
             BlockInfo {
@@ -597,7 +597,7 @@ mod tests {
                     vec!["http://tracker.tfile.co:80/announce".to_owned()],
                 ]),
                 info: Info {
-                    piece_length: 163_84,
+                    piece_length: 16_384,
                     pieces: torrent.info.pieces.clone(),
                     name: "Kerkour S. Black Hat Rust...Rust programming language 2022".to_owned(),
                     files: Some(vec![File {

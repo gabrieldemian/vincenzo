@@ -151,7 +151,7 @@ impl Encoder<Message> for PeerCodec {
                 buf.put_u8(MessageId::Extended as u8);
                 buf.put_u8(ext_id);
 
-                if payload.len() > 0 {
+                if !payload.is_empty() {
                     buf.extend_from_slice(&payload);
                 }
             }

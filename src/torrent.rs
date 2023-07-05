@@ -10,7 +10,7 @@ use crate::tracker::tracker::Tracker;
 use crate::tracker::tracker::TrackerCtx;
 use bendy::decoding::FromBencode;
 use magnet_url::Magnet;
-use tokio::sync::Mutex;
+
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::sync::Arc;

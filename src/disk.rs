@@ -92,7 +92,7 @@ impl Disk {
                         }
                     }
 
-                    if let Some(_) = self.ctx.info.file_length {
+                    if self.ctx.info.file_length.is_some() {
                         self.open_file(&self.ctx.info.name).await?;
                     }
                 }
@@ -157,12 +157,12 @@ impl Disk {
         let (mut file_info, _) = self.get_file_from_index(index as u32, 0).await?;
 
         let piece_len = info.piece_length;
-        let piece_len_capacity = info.blocks_per_piece() * BLOCK_LEN as u32;
+        let piece_len_capacity = info.blocks_per_piece() * BLOCK_LEN;
         let last_block_modulus = piece_len_capacity % piece_len;
         let remainder = if last_block_modulus == 0 {
             0
         } else {
-            BLOCK_LEN as u32 - last_block_modulus
+            BLOCK_LEN - last_block_modulus
         };
         let total = piece_len_capacity - remainder;
 
@@ -184,18 +184,18 @@ impl Disk {
     pub async fn open_file(&self, path: &str) -> Result<File, Error> {
         let path = format!("{:}{:}/{path}", self.ctx.base_path, self.ctx.info.name);
 
-        return OpenOptions::new()
+        OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .open(&path)
             .await
-            .map_err(|_| Error::FileOpenError);
+            .map_err(|_| Error::FileOpenError)
     }
 
     pub async fn read_block(&self, block_info: BlockInfo) -> Result<Vec<u8>, Error> {
         let mut file = self
-            .get_file_from_index(block_info.index as u32, block_info.begin)
+            .get_file_from_index(block_info.index, block_info.begin)
             .await?;
 
         // how many bytes to read, after offset (begin)
@@ -237,7 +237,7 @@ impl Disk {
         // multi file torrent
         if let Some(files) = &info.files {
             let file_info = files
-                .into_iter()
+                .iter()
                 .enumerate()
                 .find(|(i, f)| piece_begin < f.length * (*i as u32 + 1))
                 .map(|a| a.1);
@@ -268,7 +268,7 @@ impl Disk {
             length: info.file_length.unwrap(),
         };
 
-        return Ok((file, file_info));
+        Ok((file, file_info))
     }
     pub async fn get_block_from_block_info(&self, block_info: &BlockInfo) -> Result<Block, Error> {
         let mut file = self

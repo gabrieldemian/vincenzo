@@ -36,12 +36,12 @@ impl Default for BlockInfo {
     }
 }
 
-impl Into<BlockInfo> for Block {
-    fn into(self) -> BlockInfo {
+impl From<Block> for BlockInfo {
+    fn from(val: Block) -> Self {
         BlockInfo {
-            index: self.index as u32,
-            begin: self.begin,
-            len: self.block.len() as u32,
+            index: val.index as u32,
+            begin: val.begin,
+            len: val.block.len() as u32,
         }
     }
 }
