@@ -148,7 +148,7 @@ impl Tracker {
     }
 
     /// Attempts to send an "announce_request" to the tracker
-    #[tracing::instrument(skip(self, infohash))]
+    #[tracing::instrument(skip(self))]
     pub async fn announce_exchange(&self, infohash: [u8; 20]) -> Result<Vec<Peer>, Error> {
         let connection_id = match self.ctx.connection_id {
             Some(x) => x,
@@ -203,7 +203,6 @@ impl Tracker {
         info!("res from announce {:#?}", res);
 
         let peers = Self::parse_compact_peer_list(payload, self.socket.peer_addr()?.is_ipv6())?;
-        info!("peers {peers:?}");
 
         Ok(peers)
     }
@@ -255,6 +254,7 @@ impl Tracker {
             peer_list.push((ip, port).into());
         }
 
+        info!("ips of peers {peer_list:?}");
         let peers: Vec<Peer> = peer_list.into_iter().map(|p| p.into()).collect();
 
         Ok(peers)
@@ -276,6 +276,7 @@ impl Tracker {
         // socket.connect(peer_addr).await?;
 
         let local_peer_socket = TcpListener::bind(local_addr).await?;
+        info!("my local socket is {local_peer_socket:?}");
 
         loop {
             let (mut socket, addr) = local_peer_socket.accept().await?;
