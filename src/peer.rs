@@ -169,10 +169,8 @@ impl Peer {
         // Read Handshake from peer
         info!("about to read handshake from {:#?}", self.addr);
         let mut handshake_buf = [0u8; 68];
-        socket
-            .read_exact(&mut handshake_buf)
-            .await
-            .expect("read handshake_buf");
+
+        socket.read_exact(&mut handshake_buf).await?;
 
         let their_handshake = Handshake::deserialize(&handshake_buf)?;
 

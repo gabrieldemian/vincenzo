@@ -1,6 +1,6 @@
 use std::{
     fmt::Debug,
-    net::{IpAddr, SocketAddr},
+    net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4},
     time::Duration,
 };
 
@@ -148,7 +148,7 @@ impl Tracker {
     }
 
     /// Attempts to send an "announce_request" to the tracker
-    #[tracing::instrument(skip(self))]
+    #[tracing::instrument(skip(self, infohash))]
     pub async fn announce_exchange(&self, infohash: [u8; 20]) -> Result<Vec<Peer>, Error> {
         let connection_id = match self.ctx.connection_id {
             Some(x) => x,
@@ -199,7 +199,7 @@ impl Tracker {
             return Err(Error::TrackerResponse);
         }
 
-        info!("* announce successful with {self:?}");
+        info!("* announce successful");
         info!("res from announce {:#?}", res);
 
         let peers = Self::parse_compact_peer_list(payload, self.socket.peer_addr()?.is_ipv6())?;
@@ -223,7 +223,7 @@ impl Tracker {
         Err(Error::TrackerSocketAddr)
     }
 
-    #[tracing::instrument(skip(buf))]
+    #[tracing::instrument(skip(buf, is_ipv6))]
     fn parse_compact_peer_list(buf: &[u8], is_ipv6: bool) -> Result<Vec<Peer>, Error> {
         let mut peer_list = Vec::<SocketAddr>::new();
 
@@ -269,13 +269,16 @@ impl Tracker {
         info!("# listening to tracker events...");
         // let mut tick_timer = interval(Duration::from_secs(1));
 
-        info!("my ip is {local_addr:?}");
-
         // let mut buf = [0; 19834];
         // let tracker_socket = UdpSocket::bind(local_addr).await?;
         // socket.connect(peer_addr).await?;
 
-        let local_peer_socket = TcpListener::bind(local_addr).await?;
+        let local_peer_socket = TcpListener::bind(SocketAddrV4::new(
+            Ipv4Addr::new(0, 0, 0, 0),
+            local_addr.port(),
+        ))
+        .await?;
+
         info!("my local socket is {local_peer_socket:?}");
 
         loop {
