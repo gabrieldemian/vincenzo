@@ -10,6 +10,8 @@ use crate::tracker::tracker::Tracker;
 use crate::tracker::tracker::TrackerCtx;
 use bendy::decoding::FromBencode;
 use magnet_url::Magnet;
+use tokio::sync::Mutex;
+use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Duration;
@@ -55,6 +57,11 @@ pub struct TorrentCtx {
     pub requested_blocks: RwLock<VecDeque<BlockInfo>>,
     pub downloaded_blocks: RwLock<VecDeque<BlockInfo>>,
     pub info: RwLock<Info>,
+    // If using a Magnet link, the info will be downloaded in pieces
+    // and those pieces may come in different order,
+    // hence the HashMap (dictionary), and not a vec.
+    // After the dict is complete, it will be decoded into "info"
+    pub info_dict: RwLock<HashMap<u32, Vec<u8>>>,
 }
 
 impl Torrent {
@@ -66,11 +73,13 @@ impl Torrent {
     ) -> Self {
         let pieces = RwLock::new(Bitfield::default());
         let info = RwLock::new(Info::default());
+        let info_dict = RwLock::new(HashMap::<u32, Vec<u8>>::new());
         let tracker_ctx = Arc::new(TrackerCtx::default());
         let requested_blocks = RwLock::new(VecDeque::new());
         let downloaded_blocks = RwLock::new(VecDeque::new());
 
         let ctx = Arc::new(TorrentCtx {
+            info_dict,
             pieces,
             requested_blocks,
             magnet,
@@ -193,4 +202,3 @@ impl Torrent {
         Ok(peers)
     }
 }
-

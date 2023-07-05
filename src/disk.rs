@@ -166,13 +166,6 @@ impl Disk {
         };
         let total = piece_len_capacity - remainder;
 
-        // println!("hash_from_info {hash_from_info:?}");
-        // println!("the piece {index} has blocks len of {:?}", file_info.length);
-        // println!("total bytes of {index} is {total}");
-        // println!("blocks per piece {index} is {:?}", info.blocks_per_piece());
-        // println!("piece_len of {index} is {:?}", info.piece_length);
-        // println!("total len of piece {index} {total}");
-
         let mut buf = vec![0u8; total as usize];
         file_info.read_exact(&mut buf).await?;
 
@@ -180,7 +173,6 @@ impl Disk {
         hash.update(&buf);
 
         let hash = hash.digest().bytes();
-        // println!("hash {hash:?}");
 
         if hash_from_info == hash {
             return Ok(());

@@ -81,13 +81,12 @@ impl Metadata {
     ///
     /// This function will return an error if the buffer is not a valid Data type of the metadata
     /// extension protocol
-    pub fn extract(mut buf: Vec<u8>, info_begin: usize) -> Result<(Self, Info), error::Error> {
+    pub fn extract(mut buf: Vec<u8>, info_begin: usize) -> Result<(Self, Vec<u8>), error::Error> {
         let info_buf: Vec<u8> = buf.drain(info_begin..).collect();
 
-        let info = Info::from_bencode(&info_buf).map_err(|_| error::Error::BencodeError)?;
         let metadata = Metadata::from_bencode(&buf).map_err(|_| error::Error::BencodeError)?;
 
-        Ok((metadata, info))
+        Ok((metadata, info_buf))
     }
 }
 

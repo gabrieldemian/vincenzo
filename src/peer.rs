@@ -1,4 +1,4 @@
-use bendy::decoding::FromBencode;
+use bendy::{decoding::FromBencode, encoding::ToBencode};
 use bitlab::SingleBits;
 use futures::{stream::SplitSink, SinkExt, StreamExt};
 use std::{
@@ -24,14 +24,16 @@ use crate::{
     error::Error,
     extension::{Extension, Metadata},
     magnet_parser::get_info_hash,
+    metainfo::Info,
     tcp_wire::{
-        lib::Block,
+        lib::{Block, BLOCK_LEN},
         messages::{Handshake, Message, PeerCodec},
     },
     torrent::{TorrentCtx, TorrentMsg},
     tracker::tracker::TrackerCtx,
 };
 
+/// Data about the remote Peer that we are connected to
 #[derive(Debug, Clone)]
 pub struct Peer {
     /// if this client is choking this peer
@@ -415,39 +417,112 @@ impl Peer {
                             info!("| {:?} Extended  |", self.addr);
                             info!("----------------------------------");
 
-                            // ext_id of 0 means a bep10 handshake
-                            if ext_id == 0 {
-                                if self.extension.m.ut_metadata.is_none() {
-                                    let extension = Extension::from_bencode(&payload);
+                            info!("ext_id {ext_id}");
 
-                                    if let Ok(ext) = extension {
-                                        // info!("extension {ext:#?}");
-                                        // println!("received ext handshake {ext:#?}");
-                                        self.extension = ext;
+                            let info_dict = torrent_ctx.info_dict.read().await;
+                            let no_info = info_dict.is_empty();
+                            drop(info_dict);
 
-                                        // send bep09 request to get the Info
-                                        if let Some(ut_metadata) = self.extension.m.ut_metadata {
-                                            info!("peer supports ut_metadata {ut_metadata}, sending request");
+                            // only request info if we dont have an Info
+                            // and the peer supports the metadata extension protocol
+                            if ext_id == 0 && no_info && self.extension.m.ut_metadata.is_none() {
+                                let extension = Extension::from_bencode(&payload).map_err(|_| Error::BencodeError)?;
+                                self.extension = extension;
 
-                                            let h = b"d8:msg_typei0e5:piecei0ee";
+                                // send bep09 request to get the Info
+                                if let Some(ut_metadata) = self.extension.m.ut_metadata {
+                                    info!("peer supports ut_metadata {ut_metadata}, sending request");
 
-                                            info!("sending request msg with ut_metadata {ut_metadata:?}");
-                                            sink.send(Message::Extended((ut_metadata, h.to_vec()))).await?;
-                                        }
+                                    let t = self.extension.metadata_size.unwrap();
+                                    let pieces = t as f32 / BLOCK_LEN as f32;
+                                    let pieces = pieces.ceil() as u32 ;
 
+                                    for i in 0..pieces {
+                                        let h = Metadata::request(i).to_bencode().map_err(|_| Error::BencodeError)?;
+
+                                        info!("sending request msg with ut_metadata {ut_metadata:?}");
+                                        sink.send(Message::Extended((ut_metadata, h))).await?;
                                     }
-                                } else if payload.len() >= 12 {
+                                }
+                            }
+
+                            // ext_id of 0 means a bep10 extended handshake
+                            info!("payload len {:?}", payload.len());
+                            if ext_id == 0 && Some(payload.len() as u32) >= self.extension.metadata_size {
+                                info!("extension {:?}", self.extension);
+                                info!("payload len {:?}", payload.len());
+                                let t = self.extension.metadata_size;
+                                info!("meta size {t:?}");
+
+                                // the payload is the only msg that is larger than the info len
+                                // we can safely assume this is a data msg with the info bytes
+                                if self.extension.m.ut_metadata.is_some() {
+                                    info!("received data msg");
                                     // can be a peer sending the handshake,
                                     // or the response of a request (a data)
-                                    let pair = &payload[12..=13];
-                                    let info_begin = payload.len() - self.extension.metadata_size.unwrap() as usize;
+                                    let t = self.extension.metadata_size.unwrap();
+                                    info!("t {t:?}");
+                                    let info_begin = payload.len() - t as usize;
+                                    info!("info_begin {info_begin:?}",);
 
-                                    if pair == b"1e" {
-                                        if let Ok((_, info)) = Metadata::extract(payload, info_begin as usize) {
+                                    let pieces = t as f32 / BLOCK_LEN as f32;
+                                    let pieces = pieces.ceil() as u32 ;
+                                    info!("pieces {pieces:?}");
+
+                                    let (metadata, info) = Metadata::extract(payload, info_begin as usize)?;
+                                    info!("after extract {metadata:#?}");
+
+                                    let mut info_dict = torrent_ctx.info_dict.write().await;
+                                    info!("after lock");
+
+                                    info_dict.insert(metadata.piece, info);
+                                    drop(info_dict);
+
+                                    info!("after insert");
+
+                                    let info_dict = torrent_ctx.info_dict.write().await;
+                                    let have_all_pieces = info_dict.keys().count() as u32 >= pieces;
+                                    info!("have_all_pieces {have_all_pieces:?}");
+
+                                    // if this is the last piece
+                                    if have_all_pieces {
+                                        let info_bytes = info_dict.values().fold(Vec::new(), |mut acc, b| {
+                                            acc.extend_from_slice(b);
+                                            acc
+                                        });
+
+                                        drop(info_dict);
+
+                                        // info has a valid bencode format
+                                        let info = Info::from_bencode(&info_bytes).map_err(|_| Error::BencodeError)?;
+                                        info!("downloaded full Info from peer {:?}", self.addr);
+
+                                        let m_info = torrent_ctx.magnet.xt.clone().unwrap();
+
+                                        let mut hash = sha1_smol::Sha1::new();
+                                        hash.update(&info_bytes);
+
+                                        let hash = hash.digest().bytes();
+
+                                        // validate the hash of the downloaded info
+                                        // against the hash of the magnet link
+                                        let hash = hex::encode(hash);
+                                        info!("hash hex: {hash:?}");
+
+                                        if hash == m_info {
+                                            info!("the hash of the downloaded info matches the hash of the magnet link");
+                                            // update our info on torrent.info
+                                            let mut info_t = torrent_ctx.info.write().await;
+                                            *info_t = info.clone();
+                                            drop(info_t);
+
                                             let _ = self.disk_tx.as_ref().unwrap().send(DiskMsg::NewTorrent(info)).await;
                                             if self.am_interested && !self.peer_choking {
                                                 self.request_next_piece(&mut sink).await?;
                                             }
+                                        } else {
+                                            warn!("the peer {:?} sent a valid Info, but the hash does not match the hash of the provided magnet link, panicking", self.addr);
+                                            panic!();
                                         }
                                     }
                                 }
@@ -462,10 +537,7 @@ impl Peer {
 
 #[cfg(test)]
 mod tests {
-    use crate::{
-        bitfield::BitItem,
-        tcp_wire::lib::{Block, BLOCK_LEN},
-    };
+    use crate::tcp_wire::lib::{Block, BLOCK_LEN};
 
     use super::*;
 
@@ -504,81 +576,5 @@ mod tests {
             // check if the block is 16 <= KiB
             assert!(block.is_valid());
         }
-    }
-
-    #[test]
-    fn piece_picker_algo() {
-        let torrent_bitfield = Bitfield::from(vec![0u8; 32]);
-
-        let bitfield = Bitfield::from(vec![0u8; 32]);
-
-        let piece = bitfield
-            .zip(torrent_bitfield)
-            .find(|(bt, tr)| bt.bit == 1_u8 && tr.bit == 0);
-
-        // ------------
-
-        // bitfield of the torrent, representing the pieces
-        // that we have downloaded so far (if 1)
-        let torrent_bitfield = Bitfield::from(vec![0b0000_0000]);
-
-        // bitfield from Bitfield message
-        let bitfield = Bitfield::from(vec![0b1111_1111]);
-
-        // look for a piece in `bitfield` that has not
-        // been request on `torrent_bitfield`
-        let piece = bitfield
-            .zip(torrent_bitfield)
-            .find(|(bt, tr)| bt.bit == 1_u8 && tr.bit == 0);
-
-        if let Some((piece, _)) = piece {
-            assert_eq!(piece, BitItem { index: 0, bit: 1 })
-        }
-
-        // ------------
-
-        let torrent_bitfield = Bitfield::from(vec![0b1000_0000]);
-        let bitfield = Bitfield::from(vec![0b1111_1111]);
-        let piece = bitfield
-            .zip(torrent_bitfield)
-            .find(|(bt, tr)| bt.bit == 1_u8 && tr.bit == 0);
-
-        if let Some((piece, _)) = piece {
-            assert_eq!(piece, BitItem { index: 1, bit: 1 })
-        }
-
-        // ------------
-
-        let torrent_bitfield = Bitfield::from(vec![0b1100_0000]);
-        let bitfield = Bitfield::from(vec![0b0111_1111]);
-        let piece = bitfield
-            .zip(torrent_bitfield)
-            .find(|(bt, tr)| bt.bit == 1_u8 && tr.bit == 0);
-
-        if let Some((piece, _)) = piece {
-            assert_eq!(piece, BitItem { index: 2, bit: 1 })
-        }
-
-        // ------------
-
-        let torrent_bitfield = Bitfield::from(vec![0b1111_1110]);
-        let bitfield = Bitfield::from(vec![0b1111_1111]);
-        let piece = bitfield
-            .zip(torrent_bitfield)
-            .find(|(bt, tr)| bt.bit == 1_u8 && tr.bit == 0);
-
-        if let Some((piece, _)) = piece {
-            assert_eq!(piece, BitItem { index: 7, bit: 1 })
-        }
-
-        // ------------
-
-        let torrent_bitfield = Bitfield::from(vec![0b1111_1111]);
-        let bitfield = Bitfield::from(vec![0b1111_1111]);
-        let piece = bitfield
-            .zip(torrent_bitfield)
-            .find(|(bt, tr)| bt.bit == 1_u8 && tr.bit == 0);
-
-        assert_eq!(piece, None)
     }
 }
