@@ -148,7 +148,7 @@ impl Peer {
 
         Ok(())
     }
-    #[tracing::instrument(skip(self, tx, tcp_stream), name = "peer::run")]
+    #[tracing::instrument(skip(self, tx), name = "peer::run")]
     pub async fn run(
         &mut self,
         tx: Sender<TorrentMsg>,
