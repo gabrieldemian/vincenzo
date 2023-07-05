@@ -167,6 +167,7 @@ impl Peer {
         socket.write_all(&our_handshake.serialize()?).await?;
 
         // Read Handshake from peer
+        info!("about to read handshake from {:#?}", self.addr);
         let mut handshake_buf = [0u8; 68];
         socket
             .read_exact(&mut handshake_buf)

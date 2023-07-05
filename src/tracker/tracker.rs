@@ -254,7 +254,7 @@ impl Tracker {
             peer_list.push((ip, port).into());
         }
 
-        info!("ips of peers {peer_list:?}");
+        info!("ips of peers {peer_list:#?}");
         let peers: Vec<Peer> = peer_list.into_iter().map(|p| p.into()).collect();
 
         Ok(peers)
