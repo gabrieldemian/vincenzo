@@ -1,4 +1,5 @@
 use crate::bitfield::Bitfield;
+use crate::cli::Args;
 use crate::disk::DiskMsg;
 use crate::error::Error;
 use crate::magnet_parser::get_info_hash;
@@ -9,6 +10,7 @@ use crate::tcp_wire::lib::BlockInfo;
 use crate::tracker::tracker::Tracker;
 use crate::tracker::tracker::TrackerCtx;
 use bendy::decoding::FromBencode;
+use clap::Parser;
 use magnet_url::Magnet;
 
 use std::collections::HashMap;
@@ -107,8 +109,15 @@ impl Torrent {
                     let downloaded = downloaded.len();
                     let blocks_len = self.ctx.info.read().await.blocks_len();
 
-                    if (downloaded as u32) == blocks_len {
+                    if (downloaded as u32) >= blocks_len && downloaded > 0 && blocks_len > 0 {
+                        let args = Args::parse();
+
                         info!("torrent downloaded fully");
+
+                        if args.quit_after_complete {
+                            info!("exiting...");
+                            std::process::exit(exitcode::OK);
+                        }
                     }
                 },
                 Some(msg) = self.rx.recv() => {
@@ -168,36 +177,31 @@ impl Torrent {
 
         debug!("info_hash {:?}", info_hash);
 
-        // first, do a `connect` handshake to the tracker
-        let tracker = Tracker::connect(self.ctx.magnet.tr.clone()).await?;
-        // second, do a `announce` handshake to the tracker
-        // and get the list of peers for this torrent
-        let peers = tracker.announce_exchange(info_hash).await?;
+        let args = Args::parse();
+        let mut peers: Vec<Peer> = Vec::new();
+        let mut tracker = Tracker::default();
+
+        match args.seeds {
+            Some(seeds) => {
+                let peers_l: Vec<Peer> = seeds.into_iter().map(|p| p.into()).collect();
+                peers.extend_from_slice(&peers_l);
+            }
+            None => {
+                let tracker_l = Tracker::connect(self.ctx.magnet.tr.clone()).await?;
+                tracker = tracker_l;
+
+                let peers_l = tracker.announce_exchange(info_hash).await?;
+                peers = peers_l;
+
+                spawn(async move {
+                    Tracker::run(tracker.local_addr, tracker.peer_addr)
+                        .await
+                        .unwrap();
+                });
+            }
+        };
+
         self.tracker_ctx = Arc::new(tracker.ctx);
-
-        let local = tracker.local_addr;
-        let peer = tracker.peer_addr;
-
-        spawn(async move {
-            Tracker::run(local, peer).await.unwrap();
-        });
-
-        // pretending we get this from bep 09 msg,
-        // its not ready yet
-        let torrent_book_bytes = include_bytes!("../book.torrent");
-        let torrent = MetaInfo::from_bencode(torrent_book_bytes).unwrap();
-
-        let ctx = self.ctx.clone();
-        let mut info = ctx.info.write().await;
-
-        *info = torrent.info.clone();
-
-        // send this message here only if the user is using a
-        // metainfo instead of a magnet link
-        // self.disk_tx
-        //     .send(DiskMsg::NewTorrent(torrent.info))
-        //     .await
-        //     .unwrap();
 
         Ok(peers)
     }

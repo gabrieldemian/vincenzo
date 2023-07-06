@@ -4,6 +4,7 @@ use std::{
     time::Duration,
 };
 
+use clap::Parser;
 use tokio::{
     io::AsyncReadExt,
     net::{TcpListener, ToSocketAddrs, UdpSocket},
@@ -13,7 +14,7 @@ use tokio::{
 };
 use tracing::{debug, info, warn};
 
-use crate::{error::Error, peer::Peer, tcp_wire::messages::Handshake};
+use crate::{cli::Args, error::Error, peer::Peer, tcp_wire::messages::Handshake};
 
 use super::{announce, connect};
 
@@ -22,10 +23,20 @@ pub struct Tracker {
     /// UDP Socket of the `tracker_addr`
     /// Peers announcing will send handshakes
     /// to this addr
-    pub socket: UdpSocket,
+    // pub socket: UdpSocket,
     pub local_addr: SocketAddr,
     pub peer_addr: SocketAddr,
     pub ctx: TrackerCtx,
+}
+
+impl Default for Tracker {
+    fn default() -> Self {
+        Self {
+            local_addr: "0.0.0.0:0".parse().unwrap(),
+            peer_addr: "0.0.0.0:0".parse().unwrap(),
+            ctx: TrackerCtx::default(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -40,8 +51,8 @@ pub struct TrackerCtx {
 impl Default for TrackerCtx {
     fn default() -> Self {
         Self {
-            peer_id: [0u8; 20],
-            tracker_addr: "0.0.0.0:0".parse().unwrap(),
+            peer_id: rand::random(),
+            tracker_addr: "".to_owned(),
             connection_id: None,
         }
     }
@@ -85,9 +96,8 @@ impl Tracker {
                     },
                     local_addr: socket.local_addr().unwrap(),
                     peer_addr: socket.peer_addr().unwrap(),
-                    socket,
                 };
-                if tracker.connect_exchange().await.is_ok() {
+                if tracker.connect_exchange(socket).await.is_ok() {
                     info!("announced to tracker {tracker_addr}");
                     debug!("DNS of the tracker {tracker:#?}");
                     if tx.send(tracker).await.is_err() {
@@ -107,7 +117,7 @@ impl Tracker {
     }
 
     #[tracing::instrument(skip(self))]
-    async fn connect_exchange(&mut self) -> Result<(), Error> {
+    async fn connect_exchange(&mut self, socket: UdpSocket) -> Result<UdpSocket, Error> {
         let req = connect::Request::new();
         let mut buf = [0u8; connect::Response::LENGTH];
         let mut len: usize = 0;
@@ -116,9 +126,9 @@ impl Tracker {
         // breaking if succesfull
         for i in 0..=2 {
             debug!("sending connect number {i}...");
-            self.socket.send(&req.serialize()).await?;
+            socket.send(&req.serialize()).await?;
 
-            match timeout(Duration::new(5, 0), self.socket.recv(&mut buf)).await {
+            match timeout(Duration::new(5, 0), socket.recv(&mut buf)).await {
                 Ok(Ok(lenn)) => {
                     len = lenn;
                     break;
@@ -144,25 +154,32 @@ impl Tracker {
         }
 
         self.ctx.connection_id.replace(res.connection_id);
-        Ok(())
+        Ok(socket)
     }
 
     /// Attempts to send an "announce_request" to the tracker
     #[tracing::instrument(skip(self, infohash))]
     pub async fn announce_exchange(&self, infohash: [u8; 20]) -> Result<Vec<Peer>, Error> {
+        let socket = UdpSocket::bind(self.local_addr).await?;
+        socket.connect(self.peer_addr).await?;
+
         let connection_id = match self.ctx.connection_id {
             Some(x) => x,
             None => return Err(Error::TrackerNoConnectionId),
         };
 
-        let req = announce::Request::new(
-            connection_id,
-            infohash,
-            self.ctx.peer_id,
-            self.socket.local_addr()?.port(),
-        );
+        let args = Args::parse();
 
-        debug!("local ip is {}", self.socket.local_addr()?);
+        let (ip, port) = {
+            match args.listen {
+                Some(listen) => (0, listen.port()),
+                None => (0, socket.local_addr()?.port()),
+            }
+        };
+
+        let req = announce::Request::new(connection_id, infohash, self.ctx.peer_id, ip, port);
+
+        debug!("local ip is {}", socket.local_addr()?);
 
         let mut len = 0_usize;
         let mut res = [0u8; Self::ANNOUNCE_RES_BUF_LEN];
@@ -171,8 +188,8 @@ impl Tracker {
         // breaking if succesfull
         for i in 0..=2 {
             info!("trying to send announce number {i}...");
-            self.socket.send(&req.serialize()).await?;
-            match timeout(Duration::new(3, 0), self.socket.recv(&mut res)).await {
+            socket.send(&req.serialize()).await?;
+            match timeout(Duration::new(3, 0), socket.recv(&mut res)).await {
                 Ok(Ok(lenn)) => {
                     len = lenn;
                     break;
@@ -202,7 +219,7 @@ impl Tracker {
         info!("* announce successful");
         info!("res from announce {:#?}", res);
 
-        let peers = Self::parse_compact_peer_list(payload, self.socket.peer_addr()?.is_ipv6())?;
+        let peers = Self::parse_compact_peer_list(payload, socket.peer_addr()?.is_ipv6())?;
 
         Ok(peers)
     }

@@ -24,7 +24,13 @@ pub struct Request {
 impl Request {
     pub const LENGTH: usize = 98;
 
-    pub fn new(connection_id: u64, infohash: [u8; 20], peer_id: [u8; 20], port: u16) -> Self {
+    pub fn new(
+        connection_id: u64,
+        infohash: [u8; 20],
+        peer_id: [u8; 20],
+        ip_address: u32,
+        port: u16,
+    ) -> Self {
         let mut rng = rand::thread_rng();
         Self {
             connection_id,

@@ -148,7 +148,7 @@ impl Peer {
 
         Ok(())
     }
-    #[tracing::instrument(skip(self, tx), name = "peer::run")]
+    #[tracing::instrument(skip(self, tx, tcp_stream), name = "peer::run")]
     pub async fn run(
         &mut self,
         tx: Sender<TorrentMsg>,
@@ -325,25 +325,6 @@ impl Peer {
                             info!("is valid? {:?}", block.is_valid());
 
                             if block.is_valid() {
-                                let info = torrent_ctx.info.read().await;
-
-                                if block.begin + block.block.len() as u32 >= info.piece_length {
-                                    let (tx, rx) = oneshot::channel();
-                                    let disk_tx = self.disk_tx.as_ref().unwrap();
-
-                                    // Ask Disk to validate the bytes of all blocks of this piece
-                                    let _ = disk_tx.send(DiskMsg::ValidatePiece((block.index, tx))).await;
-                                    let r = rx.await;
-
-                                    // Hash of piece is valid
-                                    if let Ok(Ok(_r)) = r {
-                                        let mut tr_pieces = torrent_ctx.pieces.write().await;
-                                        tr_pieces.set(block.index);
-                                        // send Have msg to peers that dont have this piece
-                                    } else {
-                                        warn!("The hash of the piece {:?} is invalid", block.index);
-                                    }
-                                }
 
                                 let (tx, rx) = oneshot::channel();
                                 let disk_tx = self.disk_tx.as_ref().unwrap();
@@ -358,7 +339,7 @@ impl Peer {
                                         let was_downloaded = bd.iter().any(|b| *b == block.clone().into() );
 
                                         if !was_downloaded {
-                                            bd.push_front(block.into());
+                                            bd.push_front(block.clone().into());
                                         }
                                         drop(bd);
 
@@ -367,9 +348,28 @@ impl Peer {
                                     Err(e) => warn!("could not write piece to disk {e:#?}")
                                 }
 
-                                // todo: advertise to peers that
-                                // we Have this piece, if this is the last block of a piece
-                                // and the piece has the right Hash on Info
+                                let info = torrent_ctx.info.read().await;
+
+                                // if this is the last block of a piece
+                                if block.begin + block.block.len() as u32 >= info.piece_length {
+                                    drop(info);
+                                    let (tx, rx) = oneshot::channel();
+                                    let disk_tx = self.disk_tx.as_ref().unwrap();
+
+                                    // Ask Disk to validate the bytes of all blocks of this piece
+                                    let _ = disk_tx.send(DiskMsg::ValidatePiece((block.index, tx))).await;
+                                    let r = rx.await;
+
+                                    // Hash of piece is valid
+                                    if let Ok(Ok(_r)) = r {
+                                        info!("hash of piece {:?} is valid", block.index);
+                                        let mut tr_pieces = torrent_ctx.pieces.write().await;
+                                        tr_pieces.set(block.index);
+                                        // todo: send Have msg to peers that dont have this piece
+                                    } else {
+                                        warn!("The hash of the piece {:?} is invalid", block.index);
+                                    }
+                                }
                             } else {
                                 // block not valid nor requested,
                                 // remove it from requested blocks
@@ -449,9 +449,6 @@ impl Peer {
                             info!("payload len {:?}", payload.len());
                             if ext_id == 0 && Some(payload.len() as u32) >= self.extension.metadata_size {
                                 info!("extension {:?}", self.extension);
-                                info!("payload len {:?}", payload.len());
-                                let t = self.extension.metadata_size;
-                                info!("meta size {t:?}");
 
                                 // the payload is the only msg that is larger than the info len
                                 // we can safely assume this is a data msg with the info bytes
@@ -460,24 +457,17 @@ impl Peer {
                                     // can be a peer sending the handshake,
                                     // or the response of a request (a data)
                                     let t = self.extension.metadata_size.unwrap();
-                                    info!("t {t:?}");
                                     let info_begin = payload.len() - t as usize;
-                                    info!("info_begin {info_begin:?}",);
 
                                     let pieces = t as f32 / BLOCK_LEN as f32;
                                     let pieces = pieces.ceil() as u32 ;
-                                    info!("pieces {pieces:?}");
 
                                     let (metadata, info) = Metadata::extract(payload, info_begin)?;
-                                    info!("after extract {metadata:#?}");
 
                                     let mut info_dict = torrent_ctx.info_dict.write().await;
-                                    info!("after lock");
 
                                     info_dict.insert(metadata.piece, info);
                                     drop(info_dict);
-
-                                    info!("after insert");
 
                                     let info_dict = torrent_ctx.info_dict.write().await;
                                     let have_all_pieces = info_dict.keys().count() as u32 >= pieces;
