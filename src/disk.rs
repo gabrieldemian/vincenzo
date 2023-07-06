@@ -311,56 +311,6 @@ mod tests {
         sync::{mpsc, oneshot},
     };
 
-    #[tokio::test]
-    async fn validate_piece() {
-        let mut args = Args::default();
-        args.magnet = "magnet:?xt=urn:btih:48aac768a865798307ddd4284be77644368dd2c7&dn=Kerkour%20S.%20Black%20Hat%20Rust...Rust%20programming%20language%202022&tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%2Fannounce&tr=udp%3A%2F%2F9.rarbg.to%3A2920%2Fannounce&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&tr=udp%3A%2F%2Ftracker.internetwarriors.net%3A1337%2Fannounce&tr=udp%3A%2F%2Ftracker.leechers-paradise.org%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.pirateparty.gr%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.cyberia.is%3A6969%2Fannounce".to_owned();
-        args.download_dir = "/tmp/bittorrent-rust/".to_owned();
-
-        let m = get_magnet(&args.magnet).unwrap();
-
-        let metainfo_bytes = include_bytes!("../book.torrent");
-        let metainfo = MetaInfo::from_bencode(metainfo_bytes).unwrap();
-
-        let (torrent_tx, torrent_rx) = mpsc::channel::<TorrentMsg>(3);
-        let (disk_tx, disk_rx) = mpsc::channel::<DiskMsg>(3);
-
-        let torrent = Torrent::new(torrent_tx.clone(), disk_tx.clone(), torrent_rx, m).await;
-        let torrent_ctx = torrent.ctx.clone();
-
-        let info = metainfo.info;
-
-        let mut info_ctx = torrent.ctx.info.write().await;
-        *info_ctx = info.clone();
-
-        let mut disk = Disk::new(disk_rx, torrent_ctx.clone(), args);
-
-        spawn(async move {
-            disk.run().await.unwrap();
-        });
-
-        disk_tx.send(DiskMsg::NewTorrent(info)).await.unwrap();
-
-        let block_zero = BlockInfo {
-            index: 0,
-            begin: 0,
-            len: BLOCK_LEN,
-        };
-
-        let mut downloaded_blocks = torrent_ctx.downloaded_blocks.write().await;
-        downloaded_blocks.push_front(block_zero);
-
-        let (otx, orx) = oneshot::channel();
-        disk_tx
-            .send(DiskMsg::ValidatePiece((0, otx)))
-            .await
-            .unwrap();
-
-        let r = orx.await;
-
-        assert!(r.unwrap().is_ok());
-    }
-
     // when we send the msg `NewTorrent` the `Disk` must create
     // the "skeleton" of the torrent tree. Empty folders and empty files.
     #[tokio::test]
@@ -443,6 +393,79 @@ mod tests {
         assert!(Path::new(&format!("{base_path}arch/foo.txt")).is_file());
         assert!(Path::new(&format!("{base_path}arch/bar/baz.txt")).is_file());
         assert!(Path::new(&format!("{base_path}arch/bar/buzz/bee.txt")).is_file());
+    }
+
+    #[tokio::test]
+    async fn validate_piece() {
+        let mut args = Args::default();
+        args.magnet = "magnet:?xt=urn:btih:48aac768a865798307ddd4284be77644368dd2c7&dn=Kerkour%20S.%20Black%20Hat%20Rust...Rust%20programming%20language%202022&tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%2Fannounce&tr=udp%3A%2F%2F9.rarbg.to%3A2920%2Fannounce&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&tr=udp%3A%2F%2Ftracker.internetwarriors.net%3A1337%2Fannounce&tr=udp%3A%2F%2Ftracker.leechers-paradise.org%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.pirateparty.gr%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.cyberia.is%3A6969%2Fannounce".to_owned();
+        args.download_dir = "/tmp/bittorrent-rust/".to_owned();
+
+        let m = get_magnet(&args.magnet).unwrap();
+
+        let info = Info {
+            file_length: None,
+            name: "arch".to_owned(),
+            piece_length: 6,
+            pieces: vec![
+                218, 57, 163, 238, 94, 107, 75, 13, 50, 85, 191, 239, 149, 96, 24, 144, 175, 216,
+                7, 9,
+            ],
+            files: Some(vec![metainfo::File {
+                length: 12,
+                path: vec!["foo.txt".to_owned()],
+            }]),
+        };
+
+        let (torrent_tx, torrent_rx) = mpsc::channel::<TorrentMsg>(3);
+        let (disk_tx, disk_rx) = mpsc::channel::<DiskMsg>(3);
+
+        let torrent = Torrent::new(torrent_tx.clone(), disk_tx.clone(), torrent_rx, m).await;
+        let torrent_ctx = torrent.ctx.clone();
+
+        let mut info_ctx = torrent.ctx.info.write().await;
+        *info_ctx = info.clone();
+
+        let mut disk = Disk::new(disk_rx, torrent_ctx.clone(), args);
+
+        spawn(async move {
+            disk.run().await.unwrap();
+        });
+
+        disk_tx.send(DiskMsg::NewTorrent(info)).await.unwrap();
+
+        let block = Block {
+            index: 0,
+            begin: 0,
+            block: vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+        };
+
+        let (tx_oneshot, rx_oneshot) = oneshot::channel();
+        disk_tx
+            .send(DiskMsg::WriteBlock((block.clone(), tx_oneshot)))
+            .await
+            .unwrap();
+        let result = rx_oneshot.await.unwrap();
+        assert!(result.is_ok());
+
+        let block_zero = BlockInfo {
+            index: 0,
+            begin: 0,
+            len: 12,
+        };
+
+        let mut downloaded_blocks = torrent_ctx.downloaded_blocks.write().await;
+        downloaded_blocks.push_front(block_zero);
+
+        let (otx, orx) = oneshot::channel();
+        disk_tx
+            .send(DiskMsg::ValidatePiece((0, otx)))
+            .await
+            .unwrap();
+
+        let r = orx.await;
+
+        assert!(r.unwrap().is_ok());
     }
 
     #[tokio::test]
@@ -557,210 +580,210 @@ mod tests {
     // at the right offset.
     // when we seed to other peers, this is how it will work.
     // when we get the bytes, it's easy to just create a Block from a BlockInfo.
-    // #[tokio::test]
-    // async fn multi_file_write_read_block() {
-    //     let mut args = Args::default();
-    //     args.magnet = "magnet:?xt=urn:btih:48aac768a865798307ddd4284be77644368dd2c7&dn=Kerkour%20S.%20Black%20Hat%20Rust...Rust%20programming%20language%202022&tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%2Fannounce&tr=udp%3A%2F%2F9.rarbg.to%3A2920%2Fannounce&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&tr=udp%3A%2F%2Ftracker.internetwarriors.net%3A1337%2Fannounce&tr=udp%3A%2F%2Ftracker.leechers-paradise.org%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.pirateparty.gr%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.cyberia.is%3A6969%2Fannounce".to_owned();
-    //     args.download_dir = "/tmp/bittorrent-rust/".to_owned();
-    //
-    //     let m = get_magnet(&args.magnet).unwrap();
-    //
-    //     let (torrent_tx, torrent_rx) = mpsc::channel::<TorrentMsg>(1);
-    //     let (disk_tx, _) = mpsc::channel::<DiskMsg>(1);
-    //
-    //     let torrent = Torrent::new(torrent_tx, disk_tx, torrent_rx, m).await;
-    //     let torrent_ctx = torrent.ctx.clone();
-    //
-    //     let (tx, rx) = mpsc::channel(5);
-    //     let mut disk = Disk::new(rx, torrent_ctx, args);
-    //
-    //     let info = Info {
-    //         file_length: None,
-    //         name: "arch".to_owned(),
-    //         piece_length: 6,
-    //         pieces: vec![0],
-    //         files: Some(vec![
-    //             metainfo::File {
-    //                 length: 12,
-    //                 path: vec!["foo.txt".to_owned()],
-    //             },
-    //             metainfo::File {
-    //                 length: 12,
-    //                 path: vec!["bar".to_owned(), "baz.txt".to_owned()],
-    //             },
-    //             metainfo::File {
-    //                 length: 12,
-    //                 path: vec!["bar".to_owned(), "buzz".to_owned(), "bee.txt".to_owned()],
-    //             },
-    //         ]),
-    //     };
-    //
-    //     spawn(async move {
-    //         disk.run().await.unwrap();
-    //     });
-    //
-    //     tx.send(DiskMsg::NewTorrent(info)).await.unwrap();
-    //
-    //     //
-    //     //  WRITE BLOCKS
-    //     //
-    //
-    //     // write a block before reading it
-    //     // write entire first file
-    //     let block = Block {
-    //         index: 0,
-    //         begin: 0,
-    //         block: vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
-    //     };
-    //
-    //     let (tx_oneshot, rx_oneshot) = oneshot::channel();
-    //     tx.send(DiskMsg::WriteBlock((block.clone(), tx_oneshot)))
-    //         .await
-    //         .unwrap();
-    //     let result = rx_oneshot.await.unwrap();
-    //     assert!(result.is_ok());
-    //
-    //     // validate that the first file contains the bytes that we wrote
-    //     let block_info = BlockInfo {
-    //         index: 0,
-    //         begin: 0,
-    //         len: 12,
-    //     };
-    //     let (tx_oneshot, rx_oneshot) = oneshot::channel();
-    //     tx.send(DiskMsg::ReadBlock((block_info, tx_oneshot)))
-    //         .await
-    //         .unwrap();
-    //     let result = rx_oneshot.await.unwrap();
-    //     assert_eq!(result.unwrap(), block.block);
-    //
-    //     // write a block before reading it
-    //     // write entire second file
-    //     let block = Block {
-    //         index: 2,
-    //         begin: 0,
-    //         block: vec![13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24],
-    //     };
-    //
-    //     let (tx_oneshot, rx_oneshot) = oneshot::channel();
-    //     tx.send(DiskMsg::WriteBlock((block.clone(), tx_oneshot)))
-    //         .await
-    //         .unwrap();
-    //     let result = rx_oneshot.await.unwrap();
-    //     assert!(result.is_ok());
-    //
-    //     // validate that the second file contains the bytes that we wrote
-    //     let block_info = BlockInfo {
-    //         index: 2,
-    //         begin: 0,
-    //         len: 12,
-    //     };
-    //     let (tx_oneshot, rx_oneshot) = oneshot::channel();
-    //     tx.send(DiskMsg::ReadBlock((block_info, tx_oneshot)))
-    //         .await
-    //         .unwrap();
-    //     let result = rx_oneshot.await.unwrap();
-    //     assert_eq!(result.unwrap(), block.block);
-    //
-    //     // write a block before reading it
-    //     // write entire third file
-    //     let block = Block {
-    //         index: 4,
-    //         begin: 0,
-    //         block: vec![25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36],
-    //     };
-    //
-    //     let (tx_oneshot, rx_oneshot) = oneshot::channel();
-    //     tx.send(DiskMsg::WriteBlock((block.clone(), tx_oneshot)))
-    //         .await
-    //         .unwrap();
-    //     let result = rx_oneshot.await.unwrap();
-    //     assert!(result.is_ok());
-    //
-    //     // validate that the third file contains the bytes that we wrote
-    //     let block_info = BlockInfo {
-    //         index: 4,
-    //         begin: 0,
-    //         len: 12,
-    //     };
-    //     let (tx_oneshot, rx_oneshot) = oneshot::channel();
-    //     tx.send(DiskMsg::ReadBlock((block_info, tx_oneshot)))
-    //         .await
-    //         .unwrap();
-    //     let result = rx_oneshot.await.unwrap();
-    //     assert_eq!(result.unwrap(), block.block);
-    //
-    //     //
-    //     //  READ BLOCKS
-    //     //
-    //
-    //     let block_info = BlockInfo {
-    //         index: 1,
-    //         begin: 0,
-    //         len: 3,
-    //     };
-    //
-    //     // read piece 0 block from first file
-    //     let (tx_oneshot, rx_oneshot) = oneshot::channel();
-    //     tx.send(DiskMsg::ReadBlock((block_info, tx_oneshot)))
-    //         .await
-    //         .unwrap();
-    //     let result = rx_oneshot.await.unwrap();
-    //     assert_eq!(result.unwrap(), vec![7, 8, 9]);
-    //
-    //     let block_info = BlockInfo {
-    //         index: 0,
-    //         begin: 1,
-    //         len: 3,
-    //     };
-    //
-    //     // read piece 1 block from first file
-    //     let (tx_oneshot, rx_oneshot) = oneshot::channel();
-    //     tx.send(DiskMsg::ReadBlock((block_info, tx_oneshot)))
-    //         .await
-    //         .unwrap();
-    //     let result = rx_oneshot.await.unwrap();
-    //     assert_eq!(result.unwrap(), vec![2, 3, 4]);
-    //
-    //     let block_info = BlockInfo {
-    //         index: 2,
-    //         begin: 0,
-    //         len: 3,
-    //     };
-    //
-    //     // read piece 2 block from second file
-    //     let (tx_oneshot, rx_oneshot) = oneshot::channel();
-    //     tx.send(DiskMsg::ReadBlock((block_info, tx_oneshot)))
-    //         .await
-    //         .unwrap();
-    //     let result = rx_oneshot.await.unwrap();
-    //     assert_eq!(result.unwrap(), vec![13, 14, 15]);
-    //
-    //     let block_info = BlockInfo {
-    //         index: 2,
-    //         begin: 1,
-    //         len: 6,
-    //     };
-    //
-    //     // read piece 2 block from second file
-    //     let (tx_oneshot, rx_oneshot) = oneshot::channel();
-    //     tx.send(DiskMsg::ReadBlock((block_info, tx_oneshot)))
-    //         .await
-    //         .unwrap();
-    //     let result = rx_oneshot.await.unwrap();
-    //     assert_eq!(result.unwrap(), vec![14, 15, 16, 17, 18, 19]);
-    //
-    //     let block_info = BlockInfo {
-    //         index: 4,
-    //         begin: 0,
-    //         len: 6,
-    //     };
-    //
-    //     // read piece 3 block from third file
-    //     let (tx_oneshot, rx_oneshot) = oneshot::channel();
-    //     tx.send(DiskMsg::ReadBlock((block_info, tx_oneshot)))
-    //         .await
-    //         .unwrap();
-    //     let result = rx_oneshot.await.unwrap();
-    //     assert_eq!(result.unwrap(), vec![25, 26, 27, 28, 29, 30]);
-    // }
+    #[tokio::test]
+    async fn multi_file_write_read_block() {
+        let mut args = Args::default();
+        args.magnet = "magnet:?xt=urn:btih:48aac768a865798307ddd4284be77644368dd2c7&dn=Kerkour%20S.%20Black%20Hat%20Rust...Rust%20programming%20language%202022&tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%2Fannounce&tr=udp%3A%2F%2F9.rarbg.to%3A2920%2Fannounce&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&tr=udp%3A%2F%2Ftracker.internetwarriors.net%3A1337%2Fannounce&tr=udp%3A%2F%2Ftracker.leechers-paradise.org%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.pirateparty.gr%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.cyberia.is%3A6969%2Fannounce".to_owned();
+        args.download_dir = "/tmp/bittorrent-rust/".to_owned();
+
+        let m = get_magnet(&args.magnet).unwrap();
+
+        let (torrent_tx, torrent_rx) = mpsc::channel::<TorrentMsg>(1);
+        let (disk_tx, _) = mpsc::channel::<DiskMsg>(1);
+
+        let torrent = Torrent::new(torrent_tx, disk_tx, torrent_rx, m).await;
+        let torrent_ctx = torrent.ctx.clone();
+
+        let (tx, rx) = mpsc::channel(5);
+        let mut disk = Disk::new(rx, torrent_ctx, args);
+
+        let info = Info {
+            file_length: None,
+            name: "arch".to_owned(),
+            piece_length: 6,
+            pieces: vec![0],
+            files: Some(vec![
+                metainfo::File {
+                    length: 12,
+                    path: vec!["foo.txt".to_owned()],
+                },
+                metainfo::File {
+                    length: 12,
+                    path: vec!["bar".to_owned(), "baz.txt".to_owned()],
+                },
+                metainfo::File {
+                    length: 12,
+                    path: vec!["bar".to_owned(), "buzz".to_owned(), "bee.txt".to_owned()],
+                },
+            ]),
+        };
+
+        spawn(async move {
+            disk.run().await.unwrap();
+        });
+
+        tx.send(DiskMsg::NewTorrent(info)).await.unwrap();
+
+        //
+        //  WRITE BLOCKS
+        //
+
+        // write a block before reading it
+        // write entire first file
+        let block = Block {
+            index: 0,
+            begin: 0,
+            block: vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+        };
+
+        let (tx_oneshot, rx_oneshot) = oneshot::channel();
+        tx.send(DiskMsg::WriteBlock((block.clone(), tx_oneshot)))
+            .await
+            .unwrap();
+        let result = rx_oneshot.await.unwrap();
+        assert!(result.is_ok());
+
+        // validate that the first file contains the bytes that we wrote
+        let block_info = BlockInfo {
+            index: 0,
+            begin: 0,
+            len: 12,
+        };
+        let (tx_oneshot, rx_oneshot) = oneshot::channel();
+        tx.send(DiskMsg::ReadBlock((block_info, tx_oneshot)))
+            .await
+            .unwrap();
+        let result = rx_oneshot.await.unwrap();
+        assert_eq!(result.unwrap(), block.block);
+
+        // write a block before reading it
+        // write entire second file
+        let block = Block {
+            index: 2,
+            begin: 0,
+            block: vec![13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24],
+        };
+
+        let (tx_oneshot, rx_oneshot) = oneshot::channel();
+        tx.send(DiskMsg::WriteBlock((block.clone(), tx_oneshot)))
+            .await
+            .unwrap();
+        let result = rx_oneshot.await.unwrap();
+        assert!(result.is_ok());
+
+        // validate that the second file contains the bytes that we wrote
+        let block_info = BlockInfo {
+            index: 2,
+            begin: 0,
+            len: 12,
+        };
+        let (tx_oneshot, rx_oneshot) = oneshot::channel();
+        tx.send(DiskMsg::ReadBlock((block_info, tx_oneshot)))
+            .await
+            .unwrap();
+        let result = rx_oneshot.await.unwrap();
+        assert_eq!(result.unwrap(), block.block);
+
+        // write a block before reading it
+        // write entire third file
+        let block = Block {
+            index: 4,
+            begin: 0,
+            block: vec![25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36],
+        };
+
+        let (tx_oneshot, rx_oneshot) = oneshot::channel();
+        tx.send(DiskMsg::WriteBlock((block.clone(), tx_oneshot)))
+            .await
+            .unwrap();
+        let result = rx_oneshot.await.unwrap();
+        assert!(result.is_ok());
+
+        // validate that the third file contains the bytes that we wrote
+        let block_info = BlockInfo {
+            index: 4,
+            begin: 0,
+            len: 12,
+        };
+        let (tx_oneshot, rx_oneshot) = oneshot::channel();
+        tx.send(DiskMsg::ReadBlock((block_info, tx_oneshot)))
+            .await
+            .unwrap();
+        let result = rx_oneshot.await.unwrap();
+        assert_eq!(result.unwrap(), block.block);
+
+        //
+        //  READ BLOCKS
+        //
+
+        let block_info = BlockInfo {
+            index: 1,
+            begin: 0,
+            len: 3,
+        };
+
+        // read piece 0 block from first file
+        let (tx_oneshot, rx_oneshot) = oneshot::channel();
+        tx.send(DiskMsg::ReadBlock((block_info, tx_oneshot)))
+            .await
+            .unwrap();
+        let result = rx_oneshot.await.unwrap();
+        assert_eq!(result.unwrap(), vec![7, 8, 9]);
+
+        let block_info = BlockInfo {
+            index: 0,
+            begin: 1,
+            len: 3,
+        };
+
+        // read piece 1 block from first file
+        let (tx_oneshot, rx_oneshot) = oneshot::channel();
+        tx.send(DiskMsg::ReadBlock((block_info, tx_oneshot)))
+            .await
+            .unwrap();
+        let result = rx_oneshot.await.unwrap();
+        assert_eq!(result.unwrap(), vec![2, 3, 4]);
+
+        let block_info = BlockInfo {
+            index: 2,
+            begin: 0,
+            len: 3,
+        };
+
+        // read piece 2 block from second file
+        let (tx_oneshot, rx_oneshot) = oneshot::channel();
+        tx.send(DiskMsg::ReadBlock((block_info, tx_oneshot)))
+            .await
+            .unwrap();
+        let result = rx_oneshot.await.unwrap();
+        assert_eq!(result.unwrap(), vec![13, 14, 15]);
+
+        let block_info = BlockInfo {
+            index: 2,
+            begin: 1,
+            len: 6,
+        };
+
+        // read piece 2 block from second file
+        let (tx_oneshot, rx_oneshot) = oneshot::channel();
+        tx.send(DiskMsg::ReadBlock((block_info, tx_oneshot)))
+            .await
+            .unwrap();
+        let result = rx_oneshot.await.unwrap();
+        assert_eq!(result.unwrap(), vec![14, 15, 16, 17, 18, 19]);
+
+        let block_info = BlockInfo {
+            index: 4,
+            begin: 0,
+            len: 6,
+        };
+
+        // read piece 3 block from third file
+        let (tx_oneshot, rx_oneshot) = oneshot::channel();
+        tx.send(DiskMsg::ReadBlock((block_info, tx_oneshot)))
+            .await
+            .unwrap();
+        let result = rx_oneshot.await.unwrap();
+        assert_eq!(result.unwrap(), vec![25, 26, 27, 28, 29, 30]);
+    }
 }
