@@ -274,7 +274,7 @@ impl Decoder for PeerCodec {
 }
 
 /// The protocol version 1 string included in the handshake.
-pub(crate) const PROTOCOL_STRING: &str = "BitTorrent protocol";
+pub const PROTOCOL_STRING: &str = "BitTorrent protocol";
 
 /// Codec for encoding and decoding handshakes.
 ///
@@ -284,7 +284,7 @@ pub(crate) const PROTOCOL_STRING: &str = "BitTorrent protocol";
 /// receiving and sending a handshake the codec should be switched to
 /// [`PeerCodec`], but care should be taken not to discard the underlying
 /// receive and send buffers.
-pub(crate) struct HandshakeCodec;
+pub struct HandshakeCodec;
 
 impl Encoder<Handshake> for HandshakeCodec {
     type Error = io::Error;

@@ -7,7 +7,6 @@ use bittorrent_rust::{
     disk::{Disk, DiskMsg},
     error::Error,
     magnet_parser::get_magnet,
-    peer::Direction,
     torrent::{Torrent, TorrentMsg},
 };
 use tokio::{runtime::Runtime, spawn, sync::mpsc};

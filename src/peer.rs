@@ -166,15 +166,13 @@ impl Peer {
         &mut self,
         tx: Sender<TorrentMsg>,
         direction: Direction,
-        socket: TcpStream,
+        mut socket: Framed<TcpStream, HandshakeCodec>,
     ) -> Result<(), Error> {
         let torrent_ctx = self.torrent_ctx.clone().unwrap();
         let tracker_ctx = self.tracker_ctx.clone();
         let xt = torrent_ctx.magnet.xt.as_ref().unwrap();
 
         info!("my addr is {:?}", self.addr);
-
-        let mut socket = Framed::new(socket, HandshakeCodec);
 
         let info_hash = get_info_hash(xt);
         let our_handshake = Handshake::new(info_hash, tracker_ctx.peer_id);

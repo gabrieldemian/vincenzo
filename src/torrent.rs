@@ -7,12 +7,14 @@ use crate::metainfo::Info;
 use crate::peer::Direction;
 use crate::peer::Peer;
 use crate::tcp_wire::lib::BlockInfo;
+use crate::tcp_wire::messages::HandshakeCodec;
 use crate::tracker::tracker::Tracker;
 use crate::tracker::tracker::TrackerCtx;
 use clap::Parser;
 use magnet_url::Magnet;
 use tokio::net::TcpListener;
 use tokio::net::TcpStream;
+use tokio_util::codec::Framed;
 use tracing::warn;
 
 use std::collections::HashMap;
@@ -163,12 +165,12 @@ impl Torrent {
             spawn(async move {
                 match TcpStream::connect(peer.addr).await {
                     Ok(socket) => {
-                        info!("socket connected with us {socket:?}");
+                        let socket = Framed::new(socket, HandshakeCodec);
+                        info!("we connected with {:?}", peer.addr);
                         let _ = peer.run(tx, Direction::Outbound, socket).await;
                     }
                     Err(e) => {
-                        warn!("could not connect with peer {:?}", peer.addr);
-                        warn!("error: {e:#?}");
+                        warn!("error with peer: {:?} {e:#?}", peer.addr);
                     }
                 }
             });
@@ -190,6 +192,8 @@ impl Torrent {
         spawn(async move {
             loop {
                 if let Ok((socket, addr)) = local_peer_socket.accept().await {
+                    let socket = Framed::new(socket, HandshakeCodec);
+
                     info!("received inbound connection from {addr}");
 
                     let tx = tx.clone();
