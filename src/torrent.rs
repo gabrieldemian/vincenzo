@@ -165,6 +165,7 @@ impl Torrent {
             spawn(async move {
                 match TcpStream::connect(peer.addr).await {
                     Ok(socket) => {
+                        info!("my addr is {:?}", socket.local_addr());
                         let socket = Framed::new(socket, HandshakeCodec);
                         info!("we connected with {:?}", peer.addr);
                         let _ = peer.run(tx, Direction::Outbound, socket).await;

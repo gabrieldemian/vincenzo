@@ -7,10 +7,6 @@ use std::{
     time::Duration,
 };
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    time::timeout,
-};
-use tokio::{
     select,
     sync::{mpsc::Sender, oneshot},
     time::Instant,
@@ -26,7 +22,7 @@ use crate::{
     error::Error,
     extension::{Extension, Metadata},
     magnet_parser::get_info_hash,
-    metainfo::Info,
+    metainfo::{Info, MetaInfo},
     tcp_wire::{
         lib::{Block, BLOCK_LEN},
         messages::{Handshake, HandshakeCodec, Message, PeerCodec},
@@ -172,8 +168,6 @@ impl Peer {
         let tracker_ctx = self.tracker_ctx.clone();
         let xt = torrent_ctx.magnet.xt.as_ref().unwrap();
 
-        info!("my addr is {:?}", self.addr);
-
         let info_hash = get_info_hash(xt);
         let our_handshake = Handshake::new(info_hash, tracker_ctx.peer_id);
 
@@ -206,6 +200,7 @@ impl Peer {
 
         new_parts.read_buf = old_parts.read_buf;
         new_parts.write_buf = old_parts.write_buf;
+
         let socket = Framed::from_parts(new_parts);
 
         let (mut sink, mut stream) = socket.split();
@@ -344,7 +339,11 @@ impl Peer {
                             info!("block size: {:?} KiB", block.block.len() / 1000);
                             info!("is valid? {:?}", block.is_valid());
 
-                            if block.is_valid() {
+                            let bd = torrent_ctx.downloaded_blocks.read().await;
+                            let was_downloaded = bd.iter().any(|b| *b == block.clone().into() );
+                            drop(bd);
+
+                            if block.is_valid() && !was_downloaded {
                                 let (tx, rx) = oneshot::channel();
                                 let disk_tx = self.disk_tx.as_ref().unwrap();
 
@@ -355,11 +354,7 @@ impl Peer {
                                 match r {
                                     Ok(_) => {
                                         let mut bd = torrent_ctx.downloaded_blocks.write().await;
-                                        let was_downloaded = bd.iter().any(|b| *b == block.clone().into() );
-
-                                        if !was_downloaded {
-                                            bd.push_front(block.clone().into());
-                                        }
+                                        bd.push_front(block.clone().into());
                                         drop(bd);
 
                                         info!("wrote piece with success on disk");
@@ -446,6 +441,28 @@ impl Peer {
                             if ext_id == 0 && no_info && self.extension.m.ut_metadata.is_none() {
                                 let extension = Extension::from_bencode(&payload).map_err(|_| Error::BencodeError)?;
                                 self.extension = extension;
+
+                                // if peer is requesting, send or reject
+                                // if let Ok(metadata) = Metadata::from_bencode(&payload) {
+                                //     if metadata.msg_type == 0 {
+                                //         let info_dict = torrent_ctx.info_dict.read().await;
+                                //         let piece = info_dict.get(&(metadata.msg_type as u32));
+                                //
+                                //         match piece {
+                                //             Some(p) => {
+                                //                 let meta = MetaInfo::from_bencode(p).unwrap();
+                                //                 let r = Metadata::data(metadata.msg_type as u32, meta.info)?;
+                                //                 let r = r.to_bencode().map_err(|_| Error::BencodeError)?;
+                                //                 sink.send(Message::Extended((0, r))).await?;
+                                //             }
+                                //             None => {
+                                //                 let r = Metadata::reject(metadata.msg_type as u32).to_bencode()
+                                //                 .map_err(|_| Error::BencodeError)?;
+                                //                 sink.send(Message::Extended((0, r))).await?;
+                                //             }
+                                //         }
+                                //     }
+                                // }
 
                                 // send bep09 request to get the Info
                                 if let Some(ut_metadata) = self.extension.m.ut_metadata {
