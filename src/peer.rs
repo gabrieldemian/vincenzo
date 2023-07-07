@@ -168,6 +168,8 @@ impl Peer {
         let tracker_ctx = self.tracker_ctx.clone();
         let xt = torrent_ctx.magnet.xt.as_ref().unwrap();
 
+        info!("my addr is {:?}", self.addr);
+
         let info_hash = get_info_hash(xt);
         let our_handshake = Handshake::new(info_hash, tracker_ctx.peer_id);
 
