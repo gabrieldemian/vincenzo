@@ -150,7 +150,6 @@ impl Disk {
     pub async fn open_file(&self, path: &str) -> Result<File, Error> {
         let args = &self.ctx.args;
         let path = format!("{:}{:}/{path}", &args.download_dir, self.ctx.info.name);
-        println!("open_file path {path}");
 
         OpenOptions::new()
             .read(true)

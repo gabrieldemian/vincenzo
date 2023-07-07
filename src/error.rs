@@ -44,4 +44,6 @@ pub enum Error {
     TorrentComplete,
     #[error("The piece downloaded does not have a valid hash")]
     PieceInvalid,
+    #[error("The peer took to long to respond")]
+    Timeout,
 }

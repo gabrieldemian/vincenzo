@@ -4,12 +4,11 @@ use crate::disk::DiskMsg;
 use crate::error::Error;
 use crate::magnet_parser::get_info_hash;
 use crate::metainfo::Info;
-use crate::metainfo::MetaInfo;
+use crate::peer::Direction;
 use crate::peer::Peer;
 use crate::tcp_wire::lib::BlockInfo;
 use crate::tracker::tracker::Tracker;
 use crate::tracker::tracker::TrackerCtx;
-use bendy::decoding::FromBencode;
 use clap::Parser;
 use magnet_url::Magnet;
 
@@ -158,7 +157,7 @@ impl Torrent {
             let tx = self.tx.clone();
 
             spawn(async move {
-                peer.run(tx, None).await?;
+                peer.run(tx, Direction::Outbound).await?;
                 Ok::<_, Error>(())
             });
         }

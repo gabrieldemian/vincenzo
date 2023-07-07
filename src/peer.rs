@@ -6,13 +6,13 @@ use std::{
     sync::Arc,
     time::Duration,
 };
-use tokio::io::AsyncWriteExt;
 use tokio::{
     io::AsyncReadExt,
     select,
     sync::{mpsc::Sender, oneshot},
     time::Instant,
 };
+use tokio::{io::AsyncWriteExt, time::timeout};
 use tokio_util::codec::Framed;
 
 use tokio::{net::TcpStream, time::interval};
@@ -32,6 +32,15 @@ use crate::{
     torrent::{TorrentCtx, TorrentMsg},
     tracker::tracker::TrackerCtx,
 };
+
+/// Determines who initiated the connection.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Direction {
+    /// Outbound means we initiated the connection
+    Outbound,
+    /// Inbound means the peer initiated the connection
+    Inbound,
+}
 
 /// Data about the remote Peer that we are connected to
 #[derive(Debug, Clone)]
@@ -148,13 +157,9 @@ impl Peer {
 
         Ok(())
     }
-    #[tracing::instrument(skip(self, tx, tcp_stream), name = "peer::run")]
-    pub async fn run(
-        &mut self,
-        tx: Sender<TorrentMsg>,
-        tcp_stream: Option<TcpStream>,
-    ) -> Result<(), Error> {
-        let mut socket = tcp_stream.unwrap_or(TcpStream::connect(self.addr).await?);
+    #[tracing::instrument(skip(self, tx), name = "peer::run")]
+    pub async fn run(&mut self, tx: Sender<TorrentMsg>, direction: Direction) -> Result<(), Error> {
+        let mut socket = TcpStream::connect(self.addr).await?;
 
         let torrent_ctx = self.torrent_ctx.clone().unwrap();
         let tracker_ctx = self.tracker_ctx.clone();
@@ -163,20 +168,29 @@ impl Peer {
         let info_hash = get_info_hash(xt);
         let our_handshake = Handshake::new(info_hash, tracker_ctx.peer_id);
 
-        // Send Handshake to peer
-        socket.write_all(&our_handshake.serialize()?).await?;
+        // we are connecting, send the first handshake
+        if direction == Direction::Outbound {
+            socket.write_all(&our_handshake.serialize()?).await?;
+        }
 
-        // Read Handshake from peer
         info!("about to read handshake from {:#?}", self.addr);
         let mut handshake_buf = [0u8; 68];
 
-        socket.read_exact(&mut handshake_buf).await?;
+        // Wait and read Handshake from peer
+        timeout(Duration::new(5, 0), socket.read_exact(&mut handshake_buf))
+            .await
+            .map_err(|_| Error::Timeout)??;
 
         let their_handshake = Handshake::deserialize(&handshake_buf)?;
 
-        // Validate their handshake against ours
+        // Validate their handshake
         if !their_handshake.validate(&our_handshake) {
             return Err(Error::HandshakeInvalid);
+        }
+
+        // if they are connecting, answer with our handshake
+        if direction == Direction::Inbound {
+            socket.write_all(&our_handshake.serialize()?).await?;
         }
 
         // Update peer_id that was received from

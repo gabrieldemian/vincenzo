@@ -22,12 +22,12 @@ async fn main() -> Result<(), Error> {
     });
 
     if !Path::new(&args.download_dir).is_dir() {
-        eprintln!("Your download_dir is not a directory!");
+        eprintln!("Your download_dir is not a directory! Did you forget to create it?");
         std::process::exit(exitcode::USAGE)
     }
 
-    if Path::new(&args.download_dir).ends_with("/") {
-        args.download_dir.pop();
+    if !Path::new(&args.download_dir).ends_with("/") {
+        args.download_dir.push('/');
     }
 
     let file = OpenOptions::new()
