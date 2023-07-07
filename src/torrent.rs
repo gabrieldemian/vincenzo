@@ -168,7 +168,8 @@ impl Torrent {
         Ok(())
     }
 
-    pub async fn spawn_intbound_peers(&self) -> Result<(), Error> {
+    #[tracing::instrument(skip(self))]
+    pub async fn spawn_inbound_peers(&self) -> Result<(), Error> {
         let local_peer_socket = TcpListener::bind(self.tracker_ctx.local_peer_addr).await?;
         let tx = self.tx.clone();
         let disk_tx = self.disk_tx.clone();
@@ -236,7 +237,7 @@ impl Torrent {
         };
 
         self.tracker_ctx = Arc::new(tracker.ctx);
-        self.spawn_intbound_peers().await?;
+        self.spawn_inbound_peers().await?;
 
         Ok(peers)
     }
