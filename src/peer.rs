@@ -7,13 +7,15 @@ use std::{
     time::Duration,
 };
 use tokio::{
-    io::AsyncReadExt,
+    io::{AsyncReadExt, AsyncWriteExt},
+    time::timeout,
+};
+use tokio::{
     select,
     sync::{mpsc::Sender, oneshot},
     time::Instant,
 };
-use tokio::{io::AsyncWriteExt, time::timeout};
-use tokio_util::codec::Framed;
+use tokio_util::codec::{Framed, FramedParts};
 
 use tokio::{net::TcpStream, time::interval};
 use tracing::{debug, info, warn};
@@ -27,7 +29,7 @@ use crate::{
     metainfo::Info,
     tcp_wire::{
         lib::{Block, BLOCK_LEN},
-        messages::{Handshake, Message, PeerCodec},
+        messages::{Handshake, HandshakeCodec, Message, PeerCodec},
     },
     torrent::{TorrentCtx, TorrentMsg},
     tracker::tracker::TrackerCtx,
@@ -63,6 +65,7 @@ pub struct Peer {
     /// Updated when the peer sends us its peer
     /// id, in the handshake.
     pub id: Option<[u8; 20]>,
+    pub reserved: [u8; 8],
     pub torrent_ctx: Option<Arc<TorrentCtx>>,
     pub tracker_ctx: Arc<TrackerCtx>,
     pub disk_tx: Option<Sender<DiskMsg>>,
@@ -82,6 +85,7 @@ impl Default for Peer {
             torrent_ctx: None,
             disk_tx: None,
             tracker_ctx: Arc::new(TrackerCtx::default()),
+            reserved: [0_u8; 8],
         }
     }
 }
@@ -162,7 +166,7 @@ impl Peer {
         &mut self,
         tx: Sender<TorrentMsg>,
         direction: Direction,
-        mut socket: TcpStream,
+        socket: TcpStream,
     ) -> Result<(), Error> {
         let torrent_ctx = self.torrent_ctx.clone().unwrap();
         let tracker_ctx = self.tracker_ctx.clone();
@@ -170,60 +174,59 @@ impl Peer {
 
         info!("my addr is {:?}", self.addr);
 
+        let mut socket = Framed::new(socket, HandshakeCodec);
+
         let info_hash = get_info_hash(xt);
         let our_handshake = Handshake::new(info_hash, tracker_ctx.peer_id);
 
         // we are connecting, send the first handshake
         if direction == Direction::Outbound {
-            socket.write_all(&our_handshake.serialize()?).await?;
+            socket.send(our_handshake.clone()).await?;
         }
 
-        info!("about to read handshake from {:#?}", self.addr);
-        let mut handshake_buf = [0u8; 68];
+        // wait for, and validate, their handshake
+        if let Some(their_handshake) = socket.next().await {
+            info!("received handshake from {:#?}", self.addr);
 
-        // Wait and read Handshake from peer
-        timeout(Duration::new(5, 0), socket.read_exact(&mut handshake_buf))
-            .await
-            .map_err(|_| Error::Timeout)??;
+            let their_handshake = their_handshake?;
 
-        let their_handshake = Handshake::deserialize(&handshake_buf)?;
+            if !their_handshake.validate(&our_handshake) {
+                return Err(Error::HandshakeInvalid);
+            }
 
-        // Validate their handshake
-        if !their_handshake.validate(&our_handshake) {
-            return Err(Error::HandshakeInvalid);
+            self.id = Some(their_handshake.peer_id);
+            self.reserved = their_handshake.reserved;
         }
 
         // if they are connecting, answer with our handshake
         if direction == Direction::Inbound {
-            socket.write_all(&our_handshake.serialize()?).await?;
+            socket.send(our_handshake).await?;
         }
 
-        // Update peer_id that was received from
-        // their handshake
-        self.id = Some(their_handshake.peer_id);
+        let old_parts = socket.into_parts();
+        let mut new_parts = FramedParts::new(old_parts.io, PeerCodec);
 
-        let (mut sink, mut stream) = Framed::new(socket, PeerCodec).split();
+        new_parts.read_buf = old_parts.read_buf;
+        new_parts.write_buf = old_parts.write_buf;
+        let socket = Framed::from_parts(new_parts);
+
+        let (mut sink, mut stream) = socket.split();
 
         // check if peer supports Extended Protocol
-        if let Ok(true) = their_handshake.reserved[5].get_bit(3) {
+        if let Ok(true) = self.reserved[5].get_bit(3) {
             // extended handshake must be sent after the handshake
             sink.send(Message::Extended((0, vec![]))).await?;
         }
 
         // Send Interested & Unchoke to peer
-        // We want to send and receive blocks
-        // from everyone
         sink.send(Message::Interested).await?;
         self.am_interested = true;
         sink.send(Message::Unchoke).await?;
         self.am_choking = false;
 
         let mut keep_alive_timer = interval(Duration::from_secs(1));
-
         let mut request_timer = interval(Duration::from_secs(5));
-
         let keepalive_interval = Duration::from_secs(120);
-
         let mut last_tick_keepalive = Instant::now();
 
         loop {

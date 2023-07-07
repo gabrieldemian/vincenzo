@@ -19,7 +19,6 @@ use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::io::AsyncReadExt;
 use tokio::select;
 use tokio::spawn;
 use tokio::sync::mpsc;
@@ -169,6 +168,7 @@ impl Torrent {
                     }
                     Err(e) => {
                         warn!("could not connect with peer {:?}", peer.addr);
+                        warn!("error: {e:#?}");
                     }
                 }
             });

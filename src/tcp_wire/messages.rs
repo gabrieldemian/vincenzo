@@ -273,6 +273,104 @@ impl Decoder for PeerCodec {
     }
 }
 
+/// The protocol version 1 string included in the handshake.
+pub(crate) const PROTOCOL_STRING: &str = "BitTorrent protocol";
+
+/// Codec for encoding and decoding handshakes.
+///
+/// This has to be a separate codec as the handshake has a different structure
+/// than the rest of the messages. Moreover, handshakes may only be sent once at
+/// the beginning of a connection, preceding all other messages. Thus, after
+/// receiving and sending a handshake the codec should be switched to
+/// [`PeerCodec`], but care should be taken not to discard the underlying
+/// receive and send buffers.
+pub(crate) struct HandshakeCodec;
+
+impl Encoder<Handshake> for HandshakeCodec {
+    type Error = io::Error;
+
+    fn encode(&mut self, handshake: Handshake, buf: &mut BytesMut) -> io::Result<()> {
+        let Handshake {
+            pstr_len,
+            pstr,
+            reserved,
+            info_hash,
+            peer_id,
+        } = handshake;
+
+        // protocol length prefix
+        debug_assert_eq!(pstr_len, 19);
+        buf.put_u8(pstr.len() as u8);
+        // we should only be sending the bittorrent protocol string
+        debug_assert_eq!(pstr, PROTOCOL_STRING.as_bytes());
+        // payload
+        buf.extend_from_slice(&pstr);
+        buf.extend_from_slice(&reserved);
+        buf.extend_from_slice(&info_hash);
+        buf.extend_from_slice(&peer_id);
+
+        Ok(())
+    }
+}
+
+impl Decoder for HandshakeCodec {
+    type Item = Handshake;
+    type Error = io::Error;
+
+    fn decode(&mut self, buf: &mut BytesMut) -> io::Result<Option<Handshake>> {
+        if buf.is_empty() {
+            return Ok(None);
+        }
+
+        // `get_*` integer extractors consume the message bytes by advancing
+        // buf's internal cursor. However, we don't want to do this as at this
+        // point we aren't sure we have the full message in the buffer, and thus
+        // we just want to peek at this value.
+        let mut tmp_buf = Cursor::new(&buf);
+        let prot_len = tmp_buf.get_u8() as usize;
+        if prot_len != PROTOCOL_STRING.as_bytes().len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Handshake must have the string \"BitTorrent protocol\"",
+            ));
+        }
+
+        // check that we got the full payload in the buffer (NOTE: we need to
+        // add the message length prefix's byte count to msg_len since the
+        // buffer cursor was not advanced and thus we need to consider the
+        // prefix too)
+        let payload_len = prot_len + 8 + 20 + 20;
+        if buf.remaining() > payload_len {
+            // we have the full message in the buffer so advance the buffer
+            // cursor past the message length header
+            buf.advance(1);
+        } else {
+            return Ok(None);
+        }
+
+        // protocol string
+        let mut pstr = [0; 19];
+        buf.copy_to_slice(&mut pstr);
+        // reserved field
+        let mut reserved = [0; 8];
+        buf.copy_to_slice(&mut reserved);
+        // info hash
+        let mut info_hash = [0; 20];
+        buf.copy_to_slice(&mut info_hash);
+        // peer id
+        let mut peer_id = [0; 20];
+        buf.copy_to_slice(&mut peer_id);
+
+        Ok(Some(Handshake {
+            pstr,
+            pstr_len: pstr.len() as u8,
+            reserved,
+            info_hash,
+            peer_id,
+        }))
+    }
+}
+
 /// <pstrlen><pstr><reserved><info_hash><peer_id>
 /// <u8_1: pstrlen=19>
 /// <u8_19: pstr="BitTorrent protocol">
