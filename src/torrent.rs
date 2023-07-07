@@ -11,11 +11,15 @@ use crate::tracker::tracker::Tracker;
 use crate::tracker::tracker::TrackerCtx;
 use clap::Parser;
 use magnet_url::Magnet;
+use tokio::net::TcpListener;
+use tokio::net::TcpStream;
+use tracing::warn;
 
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::io::AsyncReadExt;
 use tokio::select;
 use tokio::spawn;
 use tokio::sync::mpsc;
@@ -146,21 +150,52 @@ impl Torrent {
     }
 
     /// Spawn an event loop for each peer to listen/send messages.
-    pub async fn spawn_peers_tasks(&self, peers: Vec<Peer>) -> Result<(), Error> {
+    pub async fn spawn_outbound_peers(&self, peers: Vec<Peer>) -> Result<(), Error> {
         for mut peer in peers {
             peer.torrent_ctx = Some(Arc::clone(&self.ctx));
             peer.tracker_ctx = Arc::clone(&self.tracker_ctx);
             peer.disk_tx = Some(self.disk_tx.clone());
 
-            debug!("listening to peer...");
-
             let tx = self.tx.clone();
 
+            // send connections too other peers
             spawn(async move {
-                peer.run(tx, Direction::Outbound).await?;
+                let socket = TcpStream::connect(peer.addr).await?;
+                peer.run(tx, Direction::Outbound, socket).await?;
                 Ok::<_, Error>(())
             });
         }
+        Ok(())
+    }
+
+    pub async fn spawn_intbound_peers(&self) -> Result<(), Error> {
+        let local_peer_socket = TcpListener::bind(self.tracker_ctx.local_peer_addr).await?;
+        let tx = self.tx.clone();
+        let disk_tx = self.disk_tx.clone();
+        let torrent_ctx = Some(Arc::clone(&self.ctx));
+        let tracker_ctx = Arc::clone(&self.tracker_ctx);
+
+        // accept connections from other peers
+        spawn(async move {
+            loop {
+                if let Ok((socket, addr)) = local_peer_socket.accept().await {
+                    info!("received connection from {addr}");
+
+                    let tx = tx.clone();
+                    let mut peer: Peer = addr.into();
+
+                    peer.torrent_ctx = torrent_ctx.clone();
+                    peer.tracker_ctx = tracker_ctx.clone();
+                    peer.disk_tx = Some(disk_tx.clone());
+
+                    spawn(async move {
+                        peer.run(tx, Direction::Inbound, socket).await?;
+                        Ok::<(), Error>(())
+                    });
+                }
+            }
+        });
+
         Ok(())
     }
 
@@ -192,15 +227,16 @@ impl Torrent {
                 let peers_l = tracker.announce_exchange(info_hash).await?;
                 peers = peers_l;
 
-                spawn(async move {
-                    Tracker::run(tracker.local_addr, tracker.peer_addr)
-                        .await
-                        .unwrap();
-                });
+                // spawn(async move {
+                //     Tracker::run(tracker.local_addr, tracker.peer_addr)
+                //         .await
+                //         .unwrap();
+                // });
             }
         };
 
         self.tracker_ctx = Arc::new(tracker.ctx);
+        self.spawn_intbound_peers().await?;
 
         Ok(peers)
     }

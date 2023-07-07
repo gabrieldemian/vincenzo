@@ -8,9 +8,9 @@ use clap::Parser;
 use tokio::{
     io::AsyncReadExt,
     net::{TcpListener, ToSocketAddrs, UdpSocket},
-    select, spawn,
+    spawn,
     sync::mpsc,
-    time::{interval, timeout},
+    time::timeout,
 };
 use tracing::{debug, info, warn};
 
@@ -45,6 +45,9 @@ pub struct TrackerCtx {
     pub peer_id: [u8; 20],
     /// UDP Socket of the `socket` in Tracker struct
     pub tracker_addr: String,
+    /// Our peer socket addr, peers will send handshakes
+    /// to this addr.
+    pub local_peer_addr: SocketAddr,
     pub connection_id: Option<u64>,
 }
 
@@ -53,6 +56,7 @@ impl Default for TrackerCtx {
         Self {
             peer_id: rand::random(),
             tracker_addr: "".to_owned(),
+            local_peer_addr: "0.0.0.0:0".parse().unwrap(),
             connection_id: None,
         }
     }
@@ -92,7 +96,7 @@ impl Tracker {
                     ctx: TrackerCtx {
                         peer_id: rand::random(),
                         tracker_addr: tracker_addr.to_string(),
-                        connection_id: None,
+                        ..Default::default()
                     },
                     local_addr: socket.local_addr().unwrap(),
                     peer_addr: socket.peer_addr().unwrap(),
@@ -159,7 +163,7 @@ impl Tracker {
 
     /// Attempts to send an "announce_request" to the tracker
     #[tracing::instrument(skip(self, infohash))]
-    pub async fn announce_exchange(&self, infohash: [u8; 20]) -> Result<Vec<Peer>, Error> {
+    pub async fn announce_exchange(&mut self, infohash: [u8; 20]) -> Result<Vec<Peer>, Error> {
         let socket = UdpSocket::bind(self.local_addr).await?;
         socket.connect(self.peer_addr).await?;
 
@@ -170,14 +174,25 @@ impl Tracker {
 
         let args = Args::parse();
 
-        let (ip, port) = {
+        let local_peer_socket = {
             match args.listen {
-                Some(listen) => (0, listen.port()),
-                None => (0, socket.local_addr()?.port()),
+                Some(listen) => {
+                    SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), listen.port())
+                }
+                None => SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 0),
             }
         };
 
-        let req = announce::Request::new(connection_id, infohash, self.ctx.peer_id, ip, port);
+        let req = announce::Request::new(
+            connection_id,
+            infohash,
+            self.ctx.peer_id,
+            // local_peer_socket.ip() as u32,
+            0,
+            local_peer_socket.port(),
+        );
+
+        self.ctx.local_peer_addr = local_peer_socket;
 
         debug!("local ip is {}", socket.local_addr()?);
 

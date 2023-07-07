@@ -34,7 +34,7 @@ use crate::{
 };
 
 /// Determines who initiated the connection.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Direction {
     /// Outbound means we initiated the connection
     Outbound,
@@ -157,10 +157,13 @@ impl Peer {
 
         Ok(())
     }
-    #[tracing::instrument(skip(self, tx), name = "peer::run")]
-    pub async fn run(&mut self, tx: Sender<TorrentMsg>, direction: Direction) -> Result<(), Error> {
-        let mut socket = TcpStream::connect(self.addr).await?;
-
+    #[tracing::instrument(skip(self, tx, direction), name = "peer::run", ret)]
+    pub async fn run(
+        &mut self,
+        tx: Sender<TorrentMsg>,
+        direction: Direction,
+        mut socket: TcpStream,
+    ) -> Result<(), Error> {
         let torrent_ctx = self.torrent_ctx.clone().unwrap();
         let tracker_ctx = self.tracker_ctx.clone();
         let xt = torrent_ctx.magnet.xt.as_ref().unwrap();
@@ -339,7 +342,6 @@ impl Peer {
                             info!("is valid? {:?}", block.is_valid());
 
                             if block.is_valid() {
-
                                 let (tx, rx) = oneshot::channel();
                                 let disk_tx = self.disk_tx.as_ref().unwrap();
 
