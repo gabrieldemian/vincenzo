@@ -158,11 +158,19 @@ impl Torrent {
 
             let tx = self.tx.clone();
 
+            info!("outbound peer {:?}", peer.addr);
+
             // send connections too other peers
             spawn(async move {
-                let socket = TcpStream::connect(peer.addr).await?;
-                peer.run(tx, Direction::Outbound, socket).await?;
-                Ok::<_, Error>(())
+                match TcpStream::connect(peer.addr).await {
+                    Ok(socket) => {
+                        info!("socket connected with us {socket:?}");
+                        let _ = peer.run(tx, Direction::Outbound, socket).await;
+                    }
+                    Err(e) => {
+                        warn!("could not connect with peer {:?}", peer.addr);
+                    }
+                }
             });
         }
         Ok(())
@@ -170,7 +178,9 @@ impl Torrent {
 
     #[tracing::instrument(skip(self))]
     pub async fn spawn_inbound_peers(&self) -> Result<(), Error> {
+        info!("running spawn inbound peers...");
         let local_peer_socket = TcpListener::bind(self.tracker_ctx.local_peer_addr).await?;
+
         let tx = self.tx.clone();
         let disk_tx = self.disk_tx.clone();
         let torrent_ctx = Some(Arc::clone(&self.ctx));
@@ -180,7 +190,7 @@ impl Torrent {
         spawn(async move {
             loop {
                 if let Ok((socket, addr)) = local_peer_socket.accept().await {
-                    info!("received connection from {addr}");
+                    info!("received inbound connection from {addr}");
 
                     let tx = tx.clone();
                     let mut peer: Peer = addr.into();
@@ -227,12 +237,6 @@ impl Torrent {
 
                 let peers_l = tracker.announce_exchange(info_hash).await?;
                 peers = peers_l;
-
-                // spawn(async move {
-                //     Tracker::run(tracker.local_addr, tracker.peer_addr)
-                //         .await
-                //         .unwrap();
-                // });
             }
         };
 

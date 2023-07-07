@@ -192,6 +192,8 @@ impl Tracker {
             local_peer_socket.port(),
         );
 
+        info!("announce req {req:?}");
+
         self.ctx.local_peer_addr = local_peer_socket;
 
         debug!("local ip is {}", socket.local_addr()?);
