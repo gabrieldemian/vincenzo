@@ -196,6 +196,8 @@ impl Tracker {
 
         self.ctx.local_peer_addr = local_peer_socket;
 
+        info!("local_peer_addr {:?}", self.ctx.local_peer_addr);
+
         debug!("local ip is {}", socket.local_addr()?);
 
         let mut len = 0_usize;

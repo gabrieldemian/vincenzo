@@ -165,7 +165,6 @@ impl Torrent {
             spawn(async move {
                 match TcpStream::connect(peer.addr).await {
                     Ok(socket) => {
-                        info!("my addr is {:?}", socket.local_addr());
                         let socket = Framed::new(socket, HandshakeCodec);
                         info!("we connected with {:?}", peer.addr);
                         let _ = peer.run(tx, Direction::Outbound, socket).await;
@@ -182,6 +181,11 @@ impl Torrent {
     #[tracing::instrument(skip(self))]
     pub async fn spawn_inbound_peers(&self) -> Result<(), Error> {
         info!("running spawn inbound peers...");
+        info!(
+            "accepting requests in {:?}",
+            self.tracker_ctx.local_peer_addr
+        );
+
         let local_peer_socket = TcpListener::bind(self.tracker_ctx.local_peer_addr).await?;
 
         let tx = self.tx.clone();
@@ -191,6 +195,8 @@ impl Torrent {
 
         // accept connections from other peers
         spawn(async move {
+            info!("accepting requests in {local_peer_socket:?}");
+
             loop {
                 if let Ok((socket, addr)) = local_peer_socket.accept().await {
                     let socket = Framed::new(socket, HandshakeCodec);
@@ -235,17 +241,21 @@ impl Torrent {
             Some(seeds) => {
                 let peers_l: Vec<Peer> = seeds.into_iter().map(|p| p.into()).collect();
                 peers.extend_from_slice(&peers_l);
+                // self.tracker_ctx = tracker.ctx.clone().into();
             }
             None => {
-                let tracker_l = Tracker::connect(self.ctx.magnet.tr.clone()).await?;
-                tracker = tracker_l;
+                let mut tracker_l = Tracker::connect(self.ctx.magnet.tr.clone()).await?;
+                let peers_l = tracker_l.announce_exchange(info_hash).await?;
 
-                let peers_l = tracker.announce_exchange(info_hash).await?;
+                // self.tracker_ctx = tracker.ctx.clone().into();
+                tracker = tracker_l;
                 peers = peers_l;
+
+                info!("tracker.ctx peer {:?}", self.tracker_ctx.local_peer_addr);
             }
         };
 
-        self.tracker_ctx = Arc::new(tracker.ctx);
+        self.tracker_ctx = tracker.ctx.clone().into();
         self.spawn_inbound_peers().await?;
 
         Ok(peers)
