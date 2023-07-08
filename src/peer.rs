@@ -230,7 +230,7 @@ impl Peer {
             select! {
                 _ = keep_alive_timer.tick() => {
                     // send Keepalive every 2 minutes
-                    if last_tick_keepalive.elapsed() >= keepalive_interval {
+                    if last_tick_keepalive.elapsed() >= Instant::now().elapsed() + keepalive_interval {
                         last_tick_keepalive = Instant::now();
                         sink.send(Message::KeepAlive).await?;
                     }
