@@ -214,9 +214,9 @@ impl Peer {
 
         // wait for, and validate, their handshake
         if let Some(their_handshake) = socket.next().await {
-            info!("--------------------------------");
+            info!("-------------------------------------");
             info!("| {:?} Handshake  |", self.addr);
-            info!("--------------------------------");
+            info!("-------------------------------------");
             info!("{direction:#?}");
 
             let their_handshake = their_handshake?;
@@ -262,27 +262,31 @@ impl Peer {
         }
 
         // wait for extended handshake, if supported
-        if let Ok(true) = self.reserved[5].get_bit(3) {
-            if let Some(Ok(msg)) = stream.next().await {
-                if let Message::Extended((_ext_id @ 0, payload)) = msg {
-                    info!("------------------------------------------");
-                    info!("| {:?} Extended Handshake  |", self.addr);
-                    info!("------------------------------------------");
-
-                    if let Ok(extension) = Extension::from_bencode(&payload) {
-                        self.extension = extension;
-                        info!("{:?}", self.extension);
-                    }
-                }
-            }
-        }
+        // if let Ok(true) = self.reserved[5].get_bit(3) {
+        //     if let Some(Ok(msg)) = stream.next().await {
+        //         if let Message::Extended((_ext_id @ 0, payload)) = msg {
+        //             info!("------------------------------------------");
+        //             info!("| {:?} Extended Handshake  |", self.addr);
+        //             info!("------------------------------------------");
+        //
+        //             if let Ok(extension) = Extension::from_bencode(&payload) {
+        //                 self.extension = extension;
+        //                 info!("{:?}", self.extension);
+        //                  self.maybe_request_info(&mut sink).await?;
+        //             }
+        //         }
+        //     }
+        // }
 
         // if Outbound, send our extended handshake
+        // todo: move this to AFTER peer sent their extended handshake
         if direction == Direction::Outbound {
             if let Ok(true) = self.reserved[5].get_bit(3) {
                 info!("outbound, sending extended handshake to {:?}", self.addr);
                 let info = torrent_ctx.info.read().await;
-                let metadata_size = info.to_bencode().map_err(|_| Error::BencodeError)?.len();
+                // let metadata_size = info.to_bencode().map_err(|_| Error::BencodeError)?.len();
+                let metadata_size = 5205;
+                // self.request_next_piece(&mut sink).await?;
 
                 let ext = Extension::supported(Some(metadata_size as u32))
                     .to_bencode()
@@ -291,7 +295,7 @@ impl Peer {
                 let msg = Message::Extended((0, ext));
 
                 sink.send(msg).await?;
-                self.maybe_request_info(&mut sink).await?;
+                // self.maybe_request_info(&mut sink).await?;
             }
         }
 
@@ -486,7 +490,7 @@ impl Peer {
                         }
                         Message::Cancel(block_info) => {
                             info!("------------------------------");
-                            info!("| {:?} cancel  |", self.addr);
+                            info!("| {:?} Cancel  |", self.addr);
                             info!("------------------------------");
                             info!("{block_info:?}");
                         }
@@ -513,30 +517,47 @@ impl Peer {
                             }
                         }
                         Message::Extended((ext_id, payload)) => {
-                            info!("----------------------------------");
-                            info!("| {:?} Extended  |", self.addr);
-                            info!("----------------------------------");
-
                             info!("ext_id {ext_id}");
+                            info!("self ut_metadata {:?}", self.extension.m.ut_metadata);
                             info!("payload len {:?}", payload.len());
 
+                            if ext_id == 0 {
+                                info!("--------------------------------------------");
+                                info!("| {:?} Extended Handshake  |", self.addr);
+                                info!("--------------------------------------------");
+
+                                if let Ok(extension) = Extension::from_bencode(&payload) {
+                                    self.extension = extension;
+                                    info!("self ut_metadata {:?}", self.extension.m.ut_metadata);
+                                    info!("{:?}", self.extension);
+                                    self.maybe_request_info(&mut sink).await?;
+                                }
+                            }
+
                             match self.extension.m.ut_metadata {
-                                Some(ut_metadata) if ext_id == ut_metadata => {
-                                    info!("extension {:?}", self.extension);
+                                // if outbound, the peer will set ext_id to MY ut_metadata
+                                // which is 3
+                                // if inbound, i send the data with the ext_id of THE PEER
+                                Some(ut_metadata) if ext_id == 3 => {
 
                                     let t = self.extension.metadata_size.unwrap();
                                     let info_begin = payload.len() - t as usize;
 
                                     let (metadata, info) = Metadata::extract(payload, info_begin)?;
+                                    info!("metadata {metadata:?}");
 
                                     match metadata.msg_type {
                                         // if peer is requesting, send or reject
                                         0 => {
+                                            info!("-------------------------------------");
+                                            info!("| {:?} Metadata Req  |", self.addr);
+                                            info!("-------------------------------------");
                                             let info_dict = torrent_ctx.info_dict.read().await;
                                             let piece = info_dict.get(&(metadata.msg_type as u32));
 
                                             match piece {
                                                 Some(p) => {
+                                                    info!("sending data with piece {:?}", metadata.piece);
                                                     let meta = MetaInfo::from_bencode(p).unwrap();
                                                     let r = Metadata::data(metadata.piece, meta.info)?;
                                                     let r = r.to_bencode().map_err(|_| Error::BencodeError)?;
@@ -545,6 +566,7 @@ impl Peer {
                                                     ).await?;
                                                 }
                                                 None => {
+                                                    info!("sending reject");
                                                     let r = Metadata::reject(metadata.piece).to_bencode()
                                                         .map_err(|_| Error::BencodeError)?;
                                                     sink.send(
@@ -554,7 +576,9 @@ impl Peer {
                                             }
                                         }
                                         1 => {
-                                            info!("received data msg");
+                                            info!("-------------------------------------");
+                                            info!("| {:?} Metadata Res  |", self.addr);
+                                            info!("-------------------------------------");
                                             let pieces = t as f32 / BLOCK_LEN as f32;
                                             let pieces = pieces.ceil() as u32 ;
 
