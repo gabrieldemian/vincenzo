@@ -22,7 +22,7 @@ use crate::{
     error::Error,
     extension::{Extension, Metadata},
     magnet_parser::get_info_hash,
-    metainfo::Info,
+    metainfo::{Info, MetaInfo},
     tcp_wire::{
         lib::{Block, BLOCK_LEN},
         messages::{Handshake, HandshakeCodec, Message, PeerCodec},
@@ -157,6 +157,41 @@ impl Peer {
 
         Ok(())
     }
+    #[tracing::instrument(skip(self, sink))]
+    pub async fn maybe_request_info(
+        &mut self,
+        sink: &mut SplitSink<Framed<TcpStream, PeerCodec>, Message>,
+    ) -> Result<(), Error> {
+        info!("called maybe_request_info");
+        let torrent_ctx = self.torrent_ctx.as_ref().unwrap().clone();
+        let info_dict = torrent_ctx.info_dict.read().await;
+        let no_info = info_dict.is_empty();
+        info!("no info? {no_info}");
+        drop(info_dict);
+
+        // only request info if we dont have an Info
+        // and the peer supports the metadata extension protocol
+        if no_info {
+            // send bep09 request to get the Info
+            if let Some(ut_metadata) = self.extension.m.ut_metadata {
+                info!("peer supports ut_metadata {ut_metadata}, sending request");
+
+                let t = self.extension.metadata_size.unwrap();
+                let pieces = t as f32 / BLOCK_LEN as f32;
+                let pieces = pieces.ceil() as u32;
+
+                for i in 0..pieces {
+                    let h = Metadata::request(i)
+                        .to_bencode()
+                        .map_err(|_| Error::BencodeError)?;
+
+                    info!("sending request msg with ut_metadata {ut_metadata:?}");
+                    sink.send(Message::Extended((ut_metadata, h))).await?;
+                }
+            }
+        }
+        Ok(())
+    }
     #[tracing::instrument(skip(self, tx, direction, socket), name = "peer::run", ret)]
     pub async fn run(
         &mut self,
@@ -182,6 +217,7 @@ impl Peer {
             info!("--------------------------------");
             info!("| {:?} Handshake  |", self.addr);
             info!("--------------------------------");
+            info!("{direction:#?}");
 
             let their_handshake = their_handshake?;
 
@@ -194,23 +230,9 @@ impl Peer {
         }
 
         // if they are connecting, answer with our handshake
-        // and extended handshake, if supported
         if direction == Direction::Inbound {
             info!("sending the second handshake, inbound");
             socket.send(our_handshake).await?;
-
-            // and extended handshake
-            if let Ok(true) = self.reserved[5].get_bit(3) {
-                info!("sending the second extended handshake, inbound");
-                let info = torrent_ctx.info.read().await;
-                let metadata_size = info.to_bencode().map_err(|_| Error::BencodeError)?.len();
-
-                let ext = Extension::supported(Some(metadata_size as u32))
-                    .to_bencode()
-                    .map_err(|_| Error::BencodeError)?;
-                let msg = Message::Extended((0, ext));
-                sink.send(msg).await?;
-            }
         }
 
         let old_parts = socket.into_parts();
@@ -220,13 +242,32 @@ impl Peer {
         let socket = Framed::from_parts(new_parts);
         let (mut sink, mut stream) = socket.split();
 
+        // if they are connecting, answer with our extended handshake
+        // and extended handshake, if supported
+        if direction == Direction::Inbound {
+            if let Ok(true) = self.reserved[5].get_bit(3) {
+                info!("inbound, sending extended handshake to {:?}", self.addr);
+                let info = torrent_ctx.info.read().await;
+                let metadata_size = info.to_bencode().map_err(|_| Error::BencodeError)?.len();
+
+                let ext = Extension::supported(Some(metadata_size as u32))
+                    .to_bencode()
+                    .map_err(|_| Error::BencodeError)?;
+
+                let extended = Message::Extended((0, ext));
+
+                sink.send(extended).await?;
+                self.maybe_request_info(&mut sink).await?;
+            }
+        }
+
         // wait for extended handshake, if supported
         if let Ok(true) = self.reserved[5].get_bit(3) {
-            if let Some(Ok(msg)) = socket.next().await {
-                if msg == Message::Extended((ext_id, payload)) {
-                    info!("-------------------------------------");
+            if let Some(Ok(msg)) = stream.next().await {
+                if let Message::Extended((_ext_id @ 0, payload)) = msg {
+                    info!("------------------------------------------");
                     info!("| {:?} Extended Handshake  |", self.addr);
-                    info!("-------------------------------------");
+                    info!("------------------------------------------");
 
                     if let Ok(extension) = Extension::from_bencode(&payload) {
                         self.extension = extension;
@@ -237,13 +278,21 @@ impl Peer {
         }
 
         // if Outbound, send our extended handshake
-        if let Ok(true) = self.reserved[5].get_bit(3) && direction == Direction::Outbound {
-            let info = torrent_ctx.info.read().await;
-            let metadata_size = info.to_bencode().map_err(|_| Error::BencodeError)?.len();
+        if direction == Direction::Outbound {
+            if let Ok(true) = self.reserved[5].get_bit(3) {
+                info!("outbound, sending extended handshake to {:?}", self.addr);
+                let info = torrent_ctx.info.read().await;
+                let metadata_size = info.to_bencode().map_err(|_| Error::BencodeError)?.len();
 
-            let ext = Extension::supported(Some(metadata_size as u32)).to_bencode().map_err(|_| Error::BencodeError)?;
-            let msg = Message::Extended((0, ext));
-            sink.send(msg).await?;
+                let ext = Extension::supported(Some(metadata_size as u32))
+                    .to_bencode()
+                    .map_err(|_| Error::BencodeError)?;
+
+                let msg = Message::Extended((0, ext));
+
+                sink.send(msg).await?;
+                self.maybe_request_info(&mut sink).await?;
+            }
         }
 
         // Send Interested & Unchoke to peer
@@ -471,127 +520,100 @@ impl Peer {
                             info!("ext_id {ext_id}");
                             info!("payload len {:?}", payload.len());
 
-                            let info_dict = torrent_ctx.info_dict.read().await;
-                            let no_info = info_dict.is_empty();
-                            drop(info_dict);
+                            match self.extension.m.ut_metadata {
+                                Some(ut_metadata) if ext_id == ut_metadata => {
+                                    info!("extension {:?}", self.extension);
 
-                            // only request info if we dont have an Info
-                            // and the peer supports the metadata extension protocol
-                            if ext_id == 0 && no_info && self.extension.m.ut_metadata.is_none() {
-                                if let Ok(extension) = Extension::from_bencode(&payload).map_err(|_| Error::BencodeError) {
-                                    self.extension = extension;
-
-                                    // if peer is requesting, send or reject
-                                    // if let Ok(metadata) = Metadata::from_bencode(&payload) {
-                                    //     if metadata.msg_type == 0 {
-                                    //         let info_dict = torrent_ctx.info_dict.read().await;
-                                    //         let piece = info_dict.get(&(metadata.msg_type as u32));
-                                    //
-                                    //         match piece {
-                                    //             Some(p) => {
-                                    //                 let meta = MetaInfo::from_bencode(p).unwrap();
-                                    //                 let r = Metadata::data(metadata.msg_type as u32, meta.info)?;
-                                    //                 let r = r.to_bencode().map_err(|_| Error::BencodeError)?;
-                                    //                 sink.send(Message::Extended((0, r))).await?;
-                                    //             }
-                                    //             None => {
-                                    //                 let r = Metadata::reject(metadata.msg_type as u32).to_bencode()
-                                    //                 .map_err(|_| Error::BencodeError)?;
-                                    //                 sink.send(Message::Extended((0, r))).await?;
-                                    //             }
-                                    //         }
-                                    //     }
-                                    // }
-
-                                    // send bep09 request to get the Info
-                                    if let Some(ut_metadata) = self.extension.m.ut_metadata {
-                                        info!("peer supports ut_metadata {ut_metadata}, sending request");
-
-                                        let t = self.extension.metadata_size.unwrap();
-                                        let pieces = t as f32 / BLOCK_LEN as f32;
-                                        let pieces = pieces.ceil() as u32 ;
-
-                                        for i in 0..pieces {
-                                            let h = Metadata::request(i).to_bencode().map_err(|_| Error::BencodeError)?;
-
-                                            info!("sending request msg with ut_metadata {ut_metadata:?}");
-                                            sink.send(Message::Extended((ut_metadata, h))).await?;
-                                        }
-                                    }
-
-                                }
-                            }
-
-                            // ext_id of 0 means a bep10 extended handshake
-                            info!("payload len {:?}", payload.len());
-                            if ext_id == 0 && Some(payload.len() as u32) >= self.extension.metadata_size {
-                                info!("extension {:?}", self.extension);
-
-                                // the payload is the only msg that is larger than the info len
-                                // we can safely assume this is a data msg with the info bytes
-                                if self.extension.m.ut_metadata.is_some() {
-                                    info!("received data msg");
-                                    // can be a peer sending the handshake,
-                                    // or the response of a request (a data)
                                     let t = self.extension.metadata_size.unwrap();
                                     let info_begin = payload.len() - t as usize;
 
-                                    let pieces = t as f32 / BLOCK_LEN as f32;
-                                    let pieces = pieces.ceil() as u32 ;
-
                                     let (metadata, info) = Metadata::extract(payload, info_begin)?;
 
-                                    let mut info_dict = torrent_ctx.info_dict.write().await;
+                                    match metadata.msg_type {
+                                        // if peer is requesting, send or reject
+                                        0 => {
+                                            let info_dict = torrent_ctx.info_dict.read().await;
+                                            let piece = info_dict.get(&(metadata.msg_type as u32));
 
-                                    info_dict.insert(metadata.piece, info);
-                                    drop(info_dict);
-
-                                    let info_dict = torrent_ctx.info_dict.write().await;
-                                    let have_all_pieces = info_dict.keys().count() as u32 >= pieces;
-                                    info!("have_all_pieces {have_all_pieces:?}");
-
-                                    // if this is the last piece
-                                    if have_all_pieces {
-                                        let info_bytes = info_dict.values().fold(Vec::new(), |mut acc, b| {
-                                            acc.extend_from_slice(b);
-                                            acc
-                                        });
-
-                                        drop(info_dict);
-
-                                        // info has a valid bencode format
-                                        let info = Info::from_bencode(&info_bytes).map_err(|_| Error::BencodeError)?;
-                                        info!("downloaded full Info from peer {:?}", self.addr);
-
-                                        let m_info = torrent_ctx.magnet.xt.clone().unwrap();
-
-                                        let mut hash = sha1_smol::Sha1::new();
-                                        hash.update(&info_bytes);
-
-                                        let hash = hash.digest().bytes();
-
-                                        // validate the hash of the downloaded info
-                                        // against the hash of the magnet link
-                                        let hash = hex::encode(hash);
-                                        info!("hash hex: {hash:?}");
-
-                                        if hash == m_info {
-                                            info!("the hash of the downloaded info matches the hash of the magnet link");
-                                            // update our info on torrent.info
-                                            let mut info_t = torrent_ctx.info.write().await;
-                                            *info_t = info.clone();
-                                            drop(info_t);
-
-                                            let _ = self.disk_tx.as_ref().unwrap().send(DiskMsg::NewTorrent(info)).await;
-                                            if self.am_interested && !self.peer_choking {
-                                                self.request_next_piece(&mut sink).await?;
+                                            match piece {
+                                                Some(p) => {
+                                                    let meta = MetaInfo::from_bencode(p).unwrap();
+                                                    let r = Metadata::data(metadata.piece, meta.info)?;
+                                                    let r = r.to_bencode().map_err(|_| Error::BencodeError)?;
+                                                    sink.send(
+                                                        Message::Extended((ut_metadata, r))
+                                                    ).await?;
+                                                }
+                                                None => {
+                                                    let r = Metadata::reject(metadata.piece).to_bencode()
+                                                        .map_err(|_| Error::BencodeError)?;
+                                                    sink.send(
+                                                        Message::Extended((ut_metadata, r))
+                                                    ).await?;
+                                                }
                                             }
-                                        } else {
-                                            warn!("the peer {:?} sent a valid Info, but the hash does not match the hash of the provided magnet link, panicking", self.addr);
-                                            panic!();
                                         }
+                                        1 => {
+                                            info!("received data msg");
+                                            let pieces = t as f32 / BLOCK_LEN as f32;
+                                            let pieces = pieces.ceil() as u32 ;
+
+                                            let mut info_dict = torrent_ctx.info_dict.write().await;
+
+                                            info_dict.insert(metadata.piece, info);
+                                            drop(info_dict);
+
+                                            let info_dict = torrent_ctx.info_dict.write().await;
+                                            let have_all_pieces = info_dict.keys().count() as u32 >= pieces;
+                                            info!("have_all_pieces? {have_all_pieces:?}");
+
+                                            // if this is the last piece
+                                            if have_all_pieces {
+                                                let info_bytes = info_dict.values().fold(Vec::new(), |mut acc, b| {
+                                                    acc.extend_from_slice(b);
+                                                    acc
+                                                });
+
+                                                drop(info_dict);
+
+                                                // info has a valid bencode format
+                                                let info = Info::from_bencode(&info_bytes).map_err(|_| Error::BencodeError)?;
+                                                info!("downloaded full Info from peer {:?}", self.addr);
+
+                                                let m_info = torrent_ctx.magnet.xt.clone().unwrap();
+
+                                                let mut hash = sha1_smol::Sha1::new();
+                                                hash.update(&info_bytes);
+
+                                                let hash = hash.digest().bytes();
+
+                                                // validate the hash of the downloaded info
+                                                // against the hash of the magnet link
+                                                let hash = hex::encode(hash);
+                                                info!("hash hex: {hash:?}");
+
+                                                if hash == m_info {
+                                                    info!("the hash of the downloaded info matches the hash of the magnet link");
+                                                    // update our info on torrent.info
+                                                    let mut info_t = torrent_ctx.info.write().await;
+                                                    *info_t = info.clone();
+                                                    drop(info_t);
+
+                                                    let _ = self.disk_tx.as_ref().unwrap().send(DiskMsg::NewTorrent(info)).await;
+                                                    if self.am_interested && !self.peer_choking {
+                                                        self.request_next_piece(&mut sink).await?;
+                                                    }
+                                                } else {
+                                                    warn!("the peer {:?} sent a valid Info, but the hash does not match the hash of the provided magnet link, panicking", self.addr);
+                                                    panic!();
+                                                }
+                                            }
+
+                                        }
+                                        _ => {}
                                     }
                                 }
+                                _ => {}
                             }
                         }
                     }
