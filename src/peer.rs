@@ -173,12 +173,15 @@ impl Peer {
 
         // we are connecting, send the first handshake
         if direction == Direction::Outbound {
+            info!("sending the first handshake, outbound");
             socket.send(our_handshake.clone()).await?;
         }
 
         // wait for, and validate, their handshake
         if let Some(their_handshake) = socket.next().await {
-            info!("received handshake from {:#?}", self.addr);
+            info!("--------------------------------");
+            info!("| {:?} Keepalive  |", self.addr);
+            info!("--------------------------------");
 
             let their_handshake = their_handshake?;
 
@@ -192,6 +195,7 @@ impl Peer {
 
         // if they are connecting, answer with our handshake
         if direction == Direction::Inbound {
+            info!("sending the second handshake, inbound");
             socket.send(our_handshake).await?;
         }
 
@@ -434,6 +438,7 @@ impl Peer {
                             info!("----------------------------------");
 
                             info!("ext_id {ext_id}");
+                            info!("payload {payload:?}");
 
                             let info_dict = torrent_ctx.info_dict.read().await;
                             let no_info = info_dict.is_empty();
@@ -442,45 +447,47 @@ impl Peer {
                             // only request info if we dont have an Info
                             // and the peer supports the metadata extension protocol
                             if ext_id == 0 && no_info && self.extension.m.ut_metadata.is_none() {
-                                let extension = Extension::from_bencode(&payload).map_err(|_| Error::BencodeError)?;
-                                self.extension = extension;
+                                if let Ok(extension) = Extension::from_bencode(&payload).map_err(|_| Error::BencodeError) {
+                                    self.extension = extension;
 
-                                // if peer is requesting, send or reject
-                                // if let Ok(metadata) = Metadata::from_bencode(&payload) {
-                                //     if metadata.msg_type == 0 {
-                                //         let info_dict = torrent_ctx.info_dict.read().await;
-                                //         let piece = info_dict.get(&(metadata.msg_type as u32));
-                                //
-                                //         match piece {
-                                //             Some(p) => {
-                                //                 let meta = MetaInfo::from_bencode(p).unwrap();
-                                //                 let r = Metadata::data(metadata.msg_type as u32, meta.info)?;
-                                //                 let r = r.to_bencode().map_err(|_| Error::BencodeError)?;
-                                //                 sink.send(Message::Extended((0, r))).await?;
-                                //             }
-                                //             None => {
-                                //                 let r = Metadata::reject(metadata.msg_type as u32).to_bencode()
-                                //                 .map_err(|_| Error::BencodeError)?;
-                                //                 sink.send(Message::Extended((0, r))).await?;
-                                //             }
-                                //         }
-                                //     }
-                                // }
+                                    // if peer is requesting, send or reject
+                                    // if let Ok(metadata) = Metadata::from_bencode(&payload) {
+                                    //     if metadata.msg_type == 0 {
+                                    //         let info_dict = torrent_ctx.info_dict.read().await;
+                                    //         let piece = info_dict.get(&(metadata.msg_type as u32));
+                                    //
+                                    //         match piece {
+                                    //             Some(p) => {
+                                    //                 let meta = MetaInfo::from_bencode(p).unwrap();
+                                    //                 let r = Metadata::data(metadata.msg_type as u32, meta.info)?;
+                                    //                 let r = r.to_bencode().map_err(|_| Error::BencodeError)?;
+                                    //                 sink.send(Message::Extended((0, r))).await?;
+                                    //             }
+                                    //             None => {
+                                    //                 let r = Metadata::reject(metadata.msg_type as u32).to_bencode()
+                                    //                 .map_err(|_| Error::BencodeError)?;
+                                    //                 sink.send(Message::Extended((0, r))).await?;
+                                    //             }
+                                    //         }
+                                    //     }
+                                    // }
 
-                                // send bep09 request to get the Info
-                                if let Some(ut_metadata) = self.extension.m.ut_metadata {
-                                    info!("peer supports ut_metadata {ut_metadata}, sending request");
+                                    // send bep09 request to get the Info
+                                    if let Some(ut_metadata) = self.extension.m.ut_metadata {
+                                        info!("peer supports ut_metadata {ut_metadata}, sending request");
 
-                                    let t = self.extension.metadata_size.unwrap();
-                                    let pieces = t as f32 / BLOCK_LEN as f32;
-                                    let pieces = pieces.ceil() as u32 ;
+                                        let t = self.extension.metadata_size.unwrap();
+                                        let pieces = t as f32 / BLOCK_LEN as f32;
+                                        let pieces = pieces.ceil() as u32 ;
 
-                                    for i in 0..pieces {
-                                        let h = Metadata::request(i).to_bencode().map_err(|_| Error::BencodeError)?;
+                                        for i in 0..pieces {
+                                            let h = Metadata::request(i).to_bencode().map_err(|_| Error::BencodeError)?;
 
-                                        info!("sending request msg with ut_metadata {ut_metadata:?}");
-                                        sink.send(Message::Extended((ut_metadata, h))).await?;
+                                            info!("sending request msg with ut_metadata {ut_metadata:?}");
+                                            sink.send(Message::Extended((ut_metadata, h))).await?;
+                                        }
                                     }
+
                                 }
                             }
 
