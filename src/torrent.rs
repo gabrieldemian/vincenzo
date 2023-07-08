@@ -217,7 +217,6 @@ impl Torrent {
                 }
             }
         });
-
         Ok(())
     }
 
@@ -241,13 +240,11 @@ impl Torrent {
             Some(seeds) => {
                 let peers_l: Vec<Peer> = seeds.into_iter().map(|p| p.into()).collect();
                 peers.extend_from_slice(&peers_l);
-                // self.tracker_ctx = tracker.ctx.clone().into();
             }
             None => {
                 let mut tracker_l = Tracker::connect(self.ctx.magnet.tr.clone()).await?;
                 let peers_l = tracker_l.announce_exchange(info_hash).await?;
 
-                // self.tracker_ctx = tracker.ctx.clone().into();
                 tracker = tracker_l;
                 peers = peers_l;
 
@@ -256,6 +253,10 @@ impl Torrent {
         };
 
         self.tracker_ctx = tracker.ctx.clone().into();
+        info!(
+            "tracker.ctx peer ----- {:?}",
+            self.tracker_ctx.local_peer_addr
+        );
         self.spawn_inbound_peers().await?;
 
         Ok(peers)

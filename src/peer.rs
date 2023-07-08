@@ -22,7 +22,7 @@ use crate::{
     error::Error,
     extension::{Extension, Metadata},
     magnet_parser::get_info_hash,
-    metainfo::{Info, MetaInfo},
+    metainfo::Info,
     tcp_wire::{
         lib::{Block, BLOCK_LEN},
         messages::{Handshake, HandshakeCodec, Message, PeerCodec},
