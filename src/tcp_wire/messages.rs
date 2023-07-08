@@ -12,7 +12,7 @@ use super::lib::{BlockInfo, PSTR};
 // Handshake is an edge-case message,
 // it will be sent separately from the codec,
 // before any other message
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Message {
     KeepAlive,
     Bitfield(Bitfield),

@@ -180,7 +180,7 @@ impl Peer {
         // wait for, and validate, their handshake
         if let Some(their_handshake) = socket.next().await {
             info!("--------------------------------");
-            info!("| {:?} Keepalive  |", self.addr);
+            info!("| {:?} Handshake  |", self.addr);
             info!("--------------------------------");
 
             let their_handshake = their_handshake?;
@@ -194,25 +194,56 @@ impl Peer {
         }
 
         // if they are connecting, answer with our handshake
+        // and extended handshake, if supported
         if direction == Direction::Inbound {
             info!("sending the second handshake, inbound");
             socket.send(our_handshake).await?;
+
+            // and extended handshake
+            if let Ok(true) = self.reserved[5].get_bit(3) {
+                info!("sending the second extended handshake, inbound");
+                let info = torrent_ctx.info.read().await;
+                let metadata_size = info.to_bencode().map_err(|_| Error::BencodeError)?.len();
+
+                let ext = Extension::supported(Some(metadata_size as u32))
+                    .to_bencode()
+                    .map_err(|_| Error::BencodeError)?;
+                let msg = Message::Extended((0, ext));
+                sink.send(msg).await?;
+            }
         }
 
         let old_parts = socket.into_parts();
         let mut new_parts = FramedParts::new(old_parts.io, PeerCodec);
-
         new_parts.read_buf = old_parts.read_buf;
         new_parts.write_buf = old_parts.write_buf;
-
         let socket = Framed::from_parts(new_parts);
-
         let (mut sink, mut stream) = socket.split();
 
-        // check if peer supports Extended Protocol
+        // wait for extended handshake, if supported
         if let Ok(true) = self.reserved[5].get_bit(3) {
-            // extended handshake must be sent after the handshake
-            sink.send(Message::Extended((0, vec![]))).await?;
+            if let Some(Ok(msg)) = socket.next().await {
+                if msg == Message::Extended((ext_id, payload)) {
+                    info!("-------------------------------------");
+                    info!("| {:?} Extended Handshake  |", self.addr);
+                    info!("-------------------------------------");
+
+                    if let Ok(extension) = Extension::from_bencode(&payload) {
+                        self.extension = extension;
+                        info!("{:?}", self.extension);
+                    }
+                }
+            }
+        }
+
+        // if Outbound, send our extended handshake
+        if let Ok(true) = self.reserved[5].get_bit(3) && direction == Direction::Outbound {
+            let info = torrent_ctx.info.read().await;
+            let metadata_size = info.to_bencode().map_err(|_| Error::BencodeError)?.len();
+
+            let ext = Extension::supported(Some(metadata_size as u32)).to_bencode().map_err(|_| Error::BencodeError)?;
+            let msg = Message::Extended((0, ext));
+            sink.send(msg).await?;
         }
 
         // Send Interested & Unchoke to peer
@@ -438,7 +469,7 @@ impl Peer {
                             info!("----------------------------------");
 
                             info!("ext_id {ext_id}");
-                            info!("payload {payload:?}");
+                            info!("payload len {:?}", payload.len());
 
                             let info_dict = torrent_ctx.info_dict.read().await;
                             let no_info = info_dict.is_empty();

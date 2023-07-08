@@ -2,7 +2,7 @@
 
 use bitlab::*;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Bitfield {
     pub inner: Vec<u8>,
     curr: usize,
@@ -287,10 +287,7 @@ mod tests {
 
         let mut bitfield = Bitfield::from(vec![0b0000_0000]);
         bitfield.set(2_usize);
-        assert_eq!(
-            bitfield.get(2_usize).unwrap(),
-            BitItem { index: 2, bit: 1 }
-        );
+        assert_eq!(bitfield.get(2_usize).unwrap(), BitItem { index: 2, bit: 1 });
         assert_eq!(bitfield.get(2_usize).unwrap(), BitItem { index: 2, bit: 1 });
         assert_eq!(bitfield.len_bytes(), 1);
     }

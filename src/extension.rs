@@ -25,6 +25,23 @@ pub struct Extension {
     pub metadata_size: Option<u32>,
 }
 
+impl Extension {
+    /// Extensions that the client supports
+    pub fn supported(metadata_size: Option<u32>) -> Self {
+        let m = M {
+            ut_metadata: Some(3),
+            ut_pex: None,
+        };
+        Self {
+            m,
+            p: None,
+            v: Some("btr 1.0".to_owned()),
+            reqq: Some(6),
+            metadata_size,
+        }
+    }
+}
+
 /// Messages of the Extension protocol
 /// lists all extensions that a peer supports
 /// in our case, we only support ut_metadata at the moment
