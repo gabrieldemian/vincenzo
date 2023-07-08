@@ -261,43 +261,25 @@ impl Peer {
             }
         }
 
-        // wait for extended handshake, if supported
-        // if let Ok(true) = self.reserved[5].get_bit(3) {
-        //     if let Some(Ok(msg)) = stream.next().await {
-        //         if let Message::Extended((_ext_id @ 0, payload)) = msg {
-        //             info!("------------------------------------------");
-        //             info!("| {:?} Extended Handshake  |", self.addr);
-        //             info!("------------------------------------------");
+        // if inbound, send our extended handshake
+        // if direction == Direction::Inbound {
+        //     if let Ok(true) = self.reserved[5].get_bit(3) {
+        //         info!("outbound, sending extended handshake to {:?}", self.addr);
+        //         let info = torrent_ctx.info.read().await;
+        //         // let metadata_size = info.to_bencode().map_err(|_| Error::BencodeError)?.len();
+        //         let metadata_size = 5205;
+        //         // self.request_next_piece(&mut sink).await?;
         //
-        //             if let Ok(extension) = Extension::from_bencode(&payload) {
-        //                 self.extension = extension;
-        //                 info!("{:?}", self.extension);
-        //                  self.maybe_request_info(&mut sink).await?;
-        //             }
-        //         }
+        //         let ext = Extension::supported(Some(metadata_size as u32))
+        //             .to_bencode()
+        //             .map_err(|_| Error::BencodeError)?;
+        //
+        //         let msg = Message::Extended((0, ext));
+        //
+        //         sink.send(msg).await?;
+        //         // self.maybe_request_info(&mut sink).await?;
         //     }
         // }
-
-        // if Outbound, send our extended handshake
-        // todo: move this to AFTER peer sent their extended handshake
-        if direction == Direction::Outbound {
-            if let Ok(true) = self.reserved[5].get_bit(3) {
-                info!("outbound, sending extended handshake to {:?}", self.addr);
-                let info = torrent_ctx.info.read().await;
-                // let metadata_size = info.to_bencode().map_err(|_| Error::BencodeError)?.len();
-                let metadata_size = 5205;
-                // self.request_next_piece(&mut sink).await?;
-
-                let ext = Extension::supported(Some(metadata_size as u32))
-                    .to_bencode()
-                    .map_err(|_| Error::BencodeError)?;
-
-                let msg = Message::Extended((0, ext));
-
-                sink.send(msg).await?;
-                // self.maybe_request_info(&mut sink).await?;
-            }
-        }
 
         // Send Interested & Unchoke to peer
         sink.send(Message::Interested).await?;
@@ -530,7 +512,24 @@ impl Peer {
                                     self.extension = extension;
                                     info!("self ut_metadata {:?}", self.extension.m.ut_metadata);
                                     info!("{:?}", self.extension);
-                                    self.maybe_request_info(&mut sink).await?;
+
+                                    if direction == Direction::Outbound {
+                                        info!("outbound, sending extended handshake to {:?}", self.addr);
+                                        let info = torrent_ctx.info.read().await;
+                                        // let metadata_size = info.to_bencode().map_err(|_| Error::BencodeError)?.len();
+                                        let metadata_size = self.extension.metadata_size.unwrap();
+                                        info!("metadata_size {metadata_size:?}");
+                                        // let metadata_size = 5205;
+
+                                        let ext = Extension::supported(Some(metadata_size as u32))
+                                            .to_bencode()
+                                            .map_err(|_| Error::BencodeError)?;
+
+                                        let msg = Message::Extended((0, ext));
+
+                                        sink.send(msg).await?;
+                                        self.maybe_request_info(&mut sink).await?;
+                                    }
                                 }
                             }
 
