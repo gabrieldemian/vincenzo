@@ -343,6 +343,10 @@ impl Peer {
                             let was_downloaded = bd.iter().any(|b| *b == block.clone().into() );
                             drop(bd);
 
+                            if was_downloaded {
+                                info!("this block is already downloaded, ignoring");
+                            }
+
                             if block.is_valid() && !was_downloaded {
                                 let (tx, rx) = oneshot::channel();
                                 let disk_tx = self.disk_tx.as_ref().unwrap();
@@ -384,13 +388,12 @@ impl Peer {
                                         warn!("The hash of the piece {:?} is invalid", block.index);
                                     }
                                 }
-                            } else {
+                            }
+
+                            if !block.is_valid() {
                                 // block not valid nor requested,
                                 // remove it from requested blocks
-                                warn!("invalid block from Piece");
-                                let mut tr_pieces = torrent_ctx.pieces.write().await;
-                                tr_pieces.clear(block.index);
-                                warn!("deleted, new tr_pieces {:?}", *tr_pieces);
+                                warn!("invalid block from Piece, ignoring...");
                             }
 
                             info!("---------------------------------\n");
