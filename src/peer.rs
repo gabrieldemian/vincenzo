@@ -243,7 +243,7 @@ impl Peer {
         let (mut sink, mut stream) = socket.split();
 
         // if they are connecting, answer with our extended handshake
-        // and extended handshake, if supported
+        // if supported
         if direction == Direction::Inbound {
             if let Ok(true) = self.reserved[5].get_bit(3) {
                 info!("inbound, sending extended handshake to {:?}", self.addr);
@@ -260,26 +260,6 @@ impl Peer {
                 self.maybe_request_info(&mut sink).await?;
             }
         }
-
-        // if inbound, send our extended handshake
-        // if direction == Direction::Inbound {
-        //     if let Ok(true) = self.reserved[5].get_bit(3) {
-        //         info!("outbound, sending extended handshake to {:?}", self.addr);
-        //         let info = torrent_ctx.info.read().await;
-        //         // let metadata_size = info.to_bencode().map_err(|_| Error::BencodeError)?.len();
-        //         let metadata_size = 5205;
-        //         // self.request_next_piece(&mut sink).await?;
-        //
-        //         let ext = Extension::supported(Some(metadata_size as u32))
-        //             .to_bencode()
-        //             .map_err(|_| Error::BencodeError)?;
-        //
-        //         let msg = Message::Extended((0, ext));
-        //
-        //         sink.send(msg).await?;
-        //         // self.maybe_request_info(&mut sink).await?;
-        //     }
-        // }
 
         // Send Interested & Unchoke to peer
         sink.send(Message::Interested).await?;
@@ -468,7 +448,9 @@ impl Peer {
 
                             info!("---------------------------------\n");
 
-                            self.request_next_piece(&mut sink).await?;
+                            if self.am_interested && !self.peer_choking {
+                                self.request_next_piece(&mut sink).await?;
+                            }
                         }
                         Message::Cancel(block_info) => {
                             info!("------------------------------");
@@ -515,11 +497,8 @@ impl Peer {
 
                                     if direction == Direction::Outbound {
                                         info!("outbound, sending extended handshake to {:?}", self.addr);
-                                        let info = torrent_ctx.info.read().await;
-                                        // let metadata_size = info.to_bencode().map_err(|_| Error::BencodeError)?.len();
                                         let metadata_size = self.extension.metadata_size.unwrap();
                                         info!("metadata_size {metadata_size:?}");
-                                        // let metadata_size = 5205;
 
                                         let ext = Extension::supported(Some(metadata_size as u32))
                                             .to_bencode()
