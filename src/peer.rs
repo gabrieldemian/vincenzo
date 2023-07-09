@@ -9,7 +9,7 @@ use std::{
 use tokio::{
     select,
     sync::{mpsc::Sender, oneshot},
-    time::Instant,
+    time::{interval_at, Instant},
 };
 use tokio_util::codec::{Framed, FramedParts};
 
@@ -231,7 +231,7 @@ impl Peer {
 
         // if they are connecting, answer with our handshake
         if direction == Direction::Inbound {
-            info!("sending the second handshake, inbound");
+            info!("sending the second handshake");
             socket.send(our_handshake).await?;
         }
 
@@ -246,7 +246,7 @@ impl Peer {
         // if supported
         if direction == Direction::Inbound {
             if let Ok(true) = self.reserved[5].get_bit(3) {
-                info!("inbound, sending extended handshake to {:?}", self.addr);
+                info!("sending extended handshake to {:?}", self.addr);
                 let info = torrent_ctx.info.read().await;
                 let metadata_size = info.to_bencode().map_err(|_| Error::BencodeError)?.len();
 
@@ -267,19 +267,20 @@ impl Peer {
         sink.send(Message::Unchoke).await?;
         self.am_choking = false;
 
-        let mut keep_alive_timer = interval(Duration::from_secs(1));
-        let mut request_timer = interval(Duration::from_secs(5));
-        let keepalive_interval = Duration::from_secs(120);
-        let mut last_tick_keepalive = Instant::now();
+        let mut keep_alive_timer = interval_at(
+            Instant::now() + Duration::from_secs(120),
+            Duration::from_secs(120),
+        );
+        let mut request_timer = interval_at(
+            Instant::now() + Duration::from_secs(5),
+            Duration::from_secs(5),
+        );
 
         loop {
             select! {
                 _ = keep_alive_timer.tick() => {
                     // send Keepalive every 2 minutes
-                    if last_tick_keepalive.elapsed() >= Instant::now().elapsed() + keepalive_interval {
-                        last_tick_keepalive = Instant::now();
-                        sink.send(Message::KeepAlive).await?;
-                    }
+                    sink.send(Message::KeepAlive).await?;
                 }
                 // Sometimes that blocks requested are never sent to us,
                 // this can happen for a lot of reasons, and is normal and expected.
@@ -300,8 +301,13 @@ impl Peer {
                                 let _ = sink.send(Message::Request(req.clone())).await;
                             }
                         }
+                    } else {
+                        info!("no more blocks to download.");
+                        request_timer = interval_at(
+                            Instant::now() + Duration::from_secs(99999999),
+                            Duration::from_secs(99999999),
+                        );
                     }
-
                 }
                 Some(msg) = stream.next() => {
                     let msg = msg?;
@@ -513,13 +519,17 @@ impl Peer {
                             }
 
                             match self.extension.m.ut_metadata {
+                                // when we send msgs, use the ext_id of the peer
+                                // when we receive msgs, ext_id equals to our ext_id (3)
                                 // if outbound, the peer will set ext_id to MY ut_metadata
                                 // which is 3
                                 // if inbound, i send the data with the ext_id of THE PEER
                                 Some(ut_metadata) if ext_id == 3 => {
-
                                     let t = self.extension.metadata_size.unwrap();
-                                    let info_begin = payload.len() - t as usize;
+                                    let info_begin =
+                                        if payload.len() < t as usize
+                                            { payload.len() }
+                                        else { payload.len() - t as usize };
 
                                     let (metadata, info) = Metadata::extract(payload, info_begin)?;
                                     info!("metadata {metadata:?}");

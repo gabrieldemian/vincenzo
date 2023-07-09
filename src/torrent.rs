@@ -14,6 +14,8 @@ use clap::Parser;
 use magnet_url::Magnet;
 use tokio::net::TcpListener;
 use tokio::net::TcpStream;
+use tokio::time::interval_at;
+use tokio::time::Instant;
 use tokio_util::codec::Framed;
 use tracing::warn;
 
@@ -48,7 +50,6 @@ pub struct Torrent {
     pub tx: mpsc::Sender<TorrentMsg>,
     pub disk_tx: mpsc::Sender<DiskMsg>,
     pub rx: mpsc::Receiver<TorrentMsg>,
-    pub tick_interval: Interval,
     pub in_end_game: bool,
 }
 
@@ -100,15 +101,15 @@ impl Torrent {
             disk_tx,
             tx,
             rx,
-            tick_interval: interval(Duration::new(1, 0)),
         }
     }
 
     #[tracing::instrument(name = "torrent::run", skip(self))]
     pub async fn run(&mut self) -> Result<(), Error> {
+        let mut tick_interval = interval(Duration::new(1, 0));
         loop {
             select! {
-                _ = self.tick_interval.tick() => {
+                _ = tick_interval.tick() => {
                     let downloaded = self.ctx.downloaded_blocks.read().await;
                     let downloaded = downloaded.len();
                     let blocks_len = self.ctx.info.read().await.blocks_len();
@@ -122,6 +123,10 @@ impl Torrent {
                             info!("exiting...");
                             std::process::exit(exitcode::OK);
                         }
+
+                        tick_interval = interval_at(
+                            Instant::now() + Duration::new(9999999, 0), Duration::new(9999999, 0)
+                        );
                     }
                 },
                 Some(msg) = self.rx.recv() => {

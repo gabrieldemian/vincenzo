@@ -177,7 +177,7 @@ impl Tracker {
         let local_peer_socket = {
             match args.listen {
                 Some(listen) => {
-                    SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), listen.port())
+                    SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 4)), listen.port())
                 }
                 None => SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 0),
             }
