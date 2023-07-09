@@ -28,7 +28,7 @@ use tokio::spawn;
 use tokio::sync::mpsc;
 use tokio::sync::RwLock;
 use tokio::time::interval;
-use tokio::time::Interval;
+
 use tracing::debug;
 use tracing::info;
 

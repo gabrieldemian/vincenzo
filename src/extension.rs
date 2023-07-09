@@ -80,7 +80,7 @@ impl Metadata {
             .to_bencode()
             .map_err(|_| error::Error::BencodeError)?;
 
-        bytes.extend_from_slice(&info);
+        bytes.extend_from_slice(info);
 
         Ok(bytes)
     }

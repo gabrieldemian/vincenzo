@@ -3,7 +3,7 @@ use speedy::{BigEndian, Readable, Writable};
 
 use crate::error::Error;
 
-use super::action::Action;
+use super::{action::Action, event::Event};
 
 #[derive(Debug, PartialEq, Readable, Writable)]
 pub struct Request {
@@ -28,8 +28,9 @@ impl Request {
         connection_id: u64,
         infohash: [u8; 20],
         peer_id: [u8; 20],
-        ip_address: u32,
+        _ip_address: u32,
         port: u16,
+        event: Event,
     ) -> Self {
         let mut rng = rand::thread_rng();
         Self {
@@ -41,21 +42,11 @@ impl Request {
             downloaded: 0,
             left: u64::MAX,
             uploaded: 0,
-            event: 0,
+            event: event.try_into().unwrap(),
             ip_address: 0,
             num_want: u32::MAX,
             port,
         }
-    }
-
-    fn _deserialize(buf: &[u8]) -> Result<(Self, &[u8]), Error> {
-        if buf.len() != Self::LENGTH {
-            return Err(Error::TrackerResponseLength);
-        }
-
-        let res = Self::read_from_buffer_with_ctx(BigEndian {}, buf)?;
-
-        Ok((res, &buf[Self::LENGTH..]))
     }
 
     pub fn serialize(&self) -> Vec<u8> {

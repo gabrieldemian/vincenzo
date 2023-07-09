@@ -18,6 +18,8 @@ pub enum Error {
     TrackerSocketAddr,
     #[error("The response received from the connect handshake was wrong")]
     TrackerResponse,
+    #[error("Tracker event only goes from 0..=2 and a different value was used")]
+    TrackerEvent,
     #[error("Tried to call announce without calling connect first")]
     TrackerResponseLength,
     #[error("The response length received from the tracker was less then 20 bytes, when it should be larger")]

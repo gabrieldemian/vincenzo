@@ -1,22 +1,20 @@
 use std::{
     fmt::Debug,
-    net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4},
+    net::{IpAddr, Ipv4Addr, SocketAddr},
     time::Duration,
 };
 
+use crate::{cli::Args, error::Error, peer::Peer};
 use clap::Parser;
 use tokio::{
-    io::AsyncReadExt,
-    net::{TcpListener, ToSocketAddrs, UdpSocket},
+    net::{ToSocketAddrs, UdpSocket},
     spawn,
     sync::mpsc,
     time::timeout,
 };
 use tracing::{debug, info, warn};
 
-use crate::{cli::Args, error::Error, peer::Peer, tcp_wire::messages::Handshake};
-
-use super::{announce, connect};
+use super::{announce, connect, event::Event};
 
 #[derive(Debug)]
 pub struct Tracker {
@@ -61,6 +59,9 @@ impl Default for TrackerCtx {
         }
     }
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TrackerMsg {}
 
 impl Tracker {
     const ANNOUNCE_RES_BUF_LEN: usize = 8192;
@@ -177,7 +178,7 @@ impl Tracker {
         let local_peer_socket = {
             match args.listen {
                 Some(listen) => {
-                    SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 4)), listen.port())
+                    SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), listen.port())
                 }
                 None => SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 0),
             }
@@ -190,6 +191,7 @@ impl Tracker {
             // local_peer_socket.ip() as u32,
             0,
             local_peer_socket.port(),
+            Event::Started,
         );
 
         info!("announce req {req:?}");
@@ -294,80 +296,5 @@ impl Tracker {
         let peers: Vec<Peer> = peer_list.into_iter().map(|p| p.into()).collect();
 
         Ok(peers)
-    }
-
-    // the addr used to announce will be added, by the tracker,
-    // as a peer to the list of peers. This means I need to
-    // listen to handshake events with this addr here.
-    // and this function needs a Sender to the `Torrent`
-    #[tracing::instrument]
-    pub async fn run(local_addr: SocketAddr, peer_addr: SocketAddr) -> Result<(), Error> {
-        info!("# listening to tracker events...");
-        // let mut tick_timer = interval(Duration::from_secs(1));
-
-        // let mut buf = [0; 19834];
-        // let tracker_socket = UdpSocket::bind(local_addr).await?;
-        // socket.connect(peer_addr).await?;
-
-        let local_peer_socket = TcpListener::bind(SocketAddrV4::new(
-            Ipv4Addr::new(0, 0, 0, 0),
-            local_addr.port(),
-        ))
-        .await?;
-
-        info!("my local socket is {local_peer_socket:?}");
-
-        loop {
-            let (mut socket, addr) = local_peer_socket.accept().await?;
-            info!("received connection from {addr}");
-
-            spawn(async move {
-                let mut buf = vec![0; 19834];
-
-                loop {
-                    match socket.read(&mut buf).await {
-                        Ok(0) => {
-                            warn!("The remote {addr} has closed connection");
-                        }
-                        Ok(n) => {
-                            let buf = &buf[..n];
-                            info!("The remote {addr} sent:");
-                            info!("{buf:?}");
-                            let handshake = Handshake::deserialize(&buf);
-
-                            match handshake {
-                                Ok(handshake) => {
-                                    info!("received a handshake {handshake:#?}");
-                                }
-                                Err(_) => info!("the bytes are not a valid handshake"),
-                            };
-                        }
-                        Err(e) => {
-                            warn!("Error on remote {addr}");
-                            warn!("{e:#?}");
-                            return;
-                        }
-                    }
-                }
-            });
-        }
-
-        // loop {
-        //     select! {
-        //         _ = tick_timer.tick() => {
-        //             // debug!("tick tracker");
-        //         }
-        //         Ok(n) = socket.recv(&mut buf) => {
-        //             match n {
-        //                 0 => {
-        //                     warn!("peer closed");
-        //                 }
-        //                 n => {
-        //                     info!("datagram {:?}", &buf[..n]);
-        //                 }
-        //             }
-        //         }
-        //     }
-        // }
     }
 }

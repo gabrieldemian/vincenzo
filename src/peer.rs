@@ -13,7 +13,7 @@ use tokio::{
 };
 use tokio_util::codec::{Framed, FramedParts};
 
-use tokio::{net::TcpStream, time::interval};
+use tokio::{net::TcpStream};
 use tracing::{debug, info, warn};
 
 use crate::{
@@ -22,7 +22,7 @@ use crate::{
     error::Error,
     extension::{Extension, Metadata},
     magnet_parser::get_info_hash,
-    metainfo::{Info, MetaInfo},
+    metainfo::{Info},
     tcp_wire::{
         lib::{Block, BLOCK_LEN},
         messages::{Handshake, HandshakeCodec, Message, PeerCodec},
@@ -506,7 +506,7 @@ impl Peer {
                                         let metadata_size = self.extension.metadata_size.unwrap();
                                         info!("metadata_size {metadata_size:?}");
 
-                                        let ext = Extension::supported(Some(metadata_size as u32))
+                                        let ext = Extension::supported(Some(metadata_size))
                                             .to_bencode()
                                             .map_err(|_| Error::BencodeError)?;
 
