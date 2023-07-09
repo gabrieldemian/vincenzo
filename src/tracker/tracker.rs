@@ -6,15 +6,16 @@ use std::{
 
 use crate::{cli::Args, error::Error, peer::Peer};
 use clap::Parser;
+use rand::Rng;
 use tokio::{
     net::{ToSocketAddrs, UdpSocket},
     spawn,
-    sync::mpsc,
+    sync::mpsc::{self, Receiver},
     time::timeout,
 };
 use tracing::{debug, info, warn};
 
-use super::{announce, connect, event::Event};
+use super::{action::Action, announce, connect, event::Event};
 
 #[derive(Debug)]
 pub struct Tracker {
@@ -61,7 +62,13 @@ impl Default for TrackerCtx {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TrackerMsg {}
+pub enum TrackerMsg {
+    Completed {
+        info_hash: [u8; 20],
+        downloaded: u64,
+        uploaded: u64,
+    },
+}
 
 impl Tracker {
     const ANNOUNCE_RES_BUF_LEN: usize = 8192;
@@ -164,7 +171,11 @@ impl Tracker {
 
     /// Attempts to send an "announce_request" to the tracker
     #[tracing::instrument(skip(self, infohash))]
-    pub async fn announce_exchange(&mut self, infohash: [u8; 20]) -> Result<Vec<Peer>, Error> {
+    pub async fn announce_exchange(
+        &mut self,
+        infohash: [u8; 20],
+        listen: Option<SocketAddr>,
+    ) -> Result<Vec<Peer>, Error> {
         let socket = UdpSocket::bind(self.local_addr).await?;
         socket.connect(self.peer_addr).await?;
 
@@ -173,10 +184,8 @@ impl Tracker {
             None => return Err(Error::TrackerNoConnectionId),
         };
 
-        let args = Args::parse();
-
         let local_peer_socket = {
-            match args.listen {
+            match listen {
                 Some(listen) => {
                     SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), listen.port())
                 }
@@ -296,5 +305,117 @@ impl Tracker {
         let peers: Vec<Peer> = peer_list.into_iter().map(|p| p.into()).collect();
 
         Ok(peers)
+    }
+    #[tracing::instrument(skip(self))]
+    pub async fn completed(
+        &self,
+        info_hash: [u8; 20],
+        downloaded: u64,
+        uploaded: u64,
+    ) -> Result<announce::Response, Error> {
+        let socket = UdpSocket::bind(self.local_addr).await?;
+        socket.connect(self.peer_addr).await?;
+
+        let req = announce::Request {
+            connection_id: self.ctx.connection_id.unwrap_or(0),
+            action: Action::Announce.into(),
+            transaction_id: rand::thread_rng().gen(),
+            infohash: info_hash,
+            peer_id: self.ctx.peer_id,
+            downloaded,
+            left: 0,
+            uploaded,
+            event: Event::Completed.try_into().unwrap_or(1),
+            ip_address: 0,
+            num_want: u32::MAX,
+            port: self.local_addr.port(),
+        };
+
+        println!("{req:#?}");
+
+        let mut len = 0_usize;
+        let mut res = [0u8; Self::ANNOUNCE_RES_BUF_LEN];
+
+        // will try to connect up to 3 times
+        // breaking if succesfull
+        for i in 0..=2 {
+            println!("announcing completed torrent {i}...");
+            socket.send(&req.serialize()).await?;
+            println!("serialized");
+            match timeout(Duration::new(3, 0), socket.recv(&mut res)).await {
+                Ok(Ok(lenn)) => {
+                    len = lenn;
+                    break;
+                }
+                Err(e) => {
+                    warn!("failed to announce {e:#?}");
+                }
+                _ => {}
+            }
+        }
+
+        let res = &res[..len];
+
+        let (res, _) = announce::Response::deserialize(res)?;
+
+        println!("deserialize res {res:#?}");
+
+        Ok(res)
+    }
+
+    #[tracing::instrument(skip(self, rx))]
+    pub async fn run(&self, mut rx: Receiver<TrackerMsg>) -> Result<(), Error> {
+        while let Some(msg) = rx.recv().await {
+            match msg {
+                TrackerMsg::Completed {
+                    info_hash,
+                    downloaded,
+                    uploaded,
+                } => {
+                    self.completed(info_hash, downloaded, uploaded).await?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bendy::decoding::FromBencode;
+
+    use crate::{
+        magnet_parser::{get_info_hash, get_magnet},
+        metainfo::MetaInfo,
+    };
+
+    use super::*;
+
+    #[tokio::test]
+    async fn can_send_completed_msg() -> Result<(), Error> {
+        let magnet = "magnet:?xt=urn:btih:48aac768a865798307ddd4284be77644368dd2c7&dn=Kerkour%20S.%20Black%20Hat%20Rust...Rust%20programming%20language%202022&tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%2Fannounce&tr=udp%3A%2F%2F9.rarbg.to%3A2920%2Fannounce&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&tr=udp%3A%2F%2Ftracker.internetwarriors.net%3A1337%2Fannounce&tr=udp%3A%2F%2Ftracker.leechers-paradise.org%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.pirateparty.gr%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.cyberia.is%3A6969%2Fannounce".to_owned();
+        let m = get_magnet(&magnet).unwrap();
+
+        let metainfo = include_bytes!("../../book.torrent");
+        let metainfo = MetaInfo::from_bencode(metainfo).unwrap();
+        let info = metainfo.info;
+
+        let info_hash = get_info_hash(&m.xt.unwrap());
+        let mut tracker = Tracker::connect(m.tr.clone()).await?;
+        let _peers = tracker.announce_exchange(info_hash, None).await?;
+
+        let downloaded: u64 = info
+            .files
+            .unwrap()
+            .iter()
+            .fold(0, |acc, x| acc + x.length as u64);
+
+        let r = tracker.completed(info_hash, downloaded, 4092334).await?;
+
+        assert_eq!(r.action, Action::Announce.into());
+
+        println!("r from completed announce {r:?}");
+
+        Ok(())
     }
 }

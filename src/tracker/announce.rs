@@ -49,6 +49,16 @@ impl Request {
         }
     }
 
+    pub fn deserialize(buf: &[u8]) -> Result<(Self, &[u8]), Error> {
+        if buf.len() != Self::LENGTH {
+            return Err(Error::TrackerResponseLength);
+        }
+
+        let res = Self::read_from_buffer_with_ctx(BigEndian {}, buf)?;
+
+        Ok((res, &buf[Self::LENGTH..]))
+    }
+
     pub fn serialize(&self) -> Vec<u8> {
         self.write_to_vec_with_ctx(BigEndian {}).unwrap()
     }

@@ -248,7 +248,8 @@ impl Torrent {
             }
             None => {
                 let mut tracker_l = Tracker::connect(self.ctx.magnet.tr.clone()).await?;
-                let peers_l = tracker_l.announce_exchange(info_hash).await?;
+                let args = Args::parse();
+                let peers_l = tracker_l.announce_exchange(info_hash, args.listen).await?;
 
                 tracker = tracker_l;
                 peers = peers_l;
