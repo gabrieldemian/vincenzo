@@ -541,14 +541,12 @@ impl Peer {
                                             info!("| {:?} Metadata Req  |", self.addr);
                                             info!("-------------------------------------");
                                             let info_dict = torrent_ctx.info_dict.read().await;
-                                            let piece = info_dict.get(&(metadata.msg_type as u32));
+                                            let info_slice = info_dict.get(&(metadata.msg_type as u32));
 
-                                            match piece {
-                                                Some(p) => {
+                                            match info_slice {
+                                                Some(info_slice) => {
                                                     info!("sending data with piece {:?}", metadata.piece);
-                                                    let meta = MetaInfo::from_bencode(p).unwrap();
-                                                    let r = Metadata::data(metadata.piece, meta.info)?;
-                                                    let r = r.to_bencode().map_err(|_| Error::BencodeError)?;
+                                                    let r = Metadata::data(metadata.piece, info_slice)?;
                                                     sink.send(
                                                         Message::Extended((ut_metadata, r))
                                                     ).await?;

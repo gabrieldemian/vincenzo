@@ -3,7 +3,7 @@ use bendy::{
     encoding::ToBencode,
 };
 
-use crate::{error, metainfo::Info};
+use crate::error;
 
 /// This is the payload of the extension protocol described on:
 /// BEP 10 - Extension Protocol
@@ -69,8 +69,7 @@ impl Metadata {
             total_size: None,
         }
     }
-    pub fn data(piece: u32, info: Info) -> Result<Vec<u8>, error::Error> {
-        let info = info.to_bencode().map_err(|_| error::Error::BencodeError)?;
+    pub fn data(piece: u32, info: &[u8]) -> Result<Vec<u8>, error::Error> {
         let metadata = Self {
             msg_type: 1,
             piece,
@@ -309,7 +308,7 @@ mod tests {
         let metainfo = MetaInfo::from_bencode(metainfo_bytes).unwrap();
 
         let info = metainfo.info;
-        let metadata_data = Metadata::data(0, info.clone()).unwrap();
+        let metadata_data = Metadata::data(0, &info.clone().to_bencode().unwrap()).unwrap();
 
         let mut r = b"d8:msg_typei1e5:piecei0e10:total_sizei5205ee".to_vec();
         r.extend_from_slice(&info.to_bencode().unwrap());
