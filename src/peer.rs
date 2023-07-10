@@ -149,7 +149,6 @@ impl Peer {
         let torrent_ctx = self.torrent_ctx.clone();
         let tr_pieces = torrent_ctx.pieces.read().await;
 
-        // disk cannot be None at this point, this is safe
         let disk_tx = self.disk_tx.clone().unwrap();
 
         info!("downloaded {tr_pieces:?}");
@@ -161,10 +160,11 @@ impl Peer {
         // those are already marked as requested on Torrent
         let (otx, orx) = oneshot::channel();
         let _ = disk_tx
-            .send(DiskMsg::RequestBlocks((
-                // self.extension.reqq.unwrap_or(10) as usize,
-                5, otx,
-            )))
+            .send(DiskMsg::RequestBlocks {
+                recipient: otx,
+                qnt: 5,
+                pieces: self.pieces.clone(),
+            })
             .await;
 
         let r = orx.await.unwrap();

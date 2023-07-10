@@ -344,51 +344,25 @@ impl Torrent {
                 // interval used to send stats to the UI, and to check if the torrent has
                 // been fully downloaded
                 _ = tick_interval.tick() => {
-                    let downloaded = self.ctx.downloaded.load(Ordering::SeqCst);
                     let info = self.ctx.info.read().await;
-                    let torrent_size = info.get_size();
-                    drop(info);
+                    if info.piece_length > 0 {
+                        let downloaded = self.ctx.downloaded.load(Ordering::SeqCst);
+                        let info = self.ctx.info.read().await;
+                        let torrent_size = info.get_size();
+                        drop(info);
 
-                    if downloaded >= torrent_size {
-                        info!("torrent downloaded fully");
+                        if downloaded >= torrent_size {
+                            info!("torrent downloaded fully");
 
-                        // announce to tracker that we have fully downloaded this torrent
-                        let (otx, orx) = oneshot::channel();
-                        let _ = self.tracker_tx.send(
-                            TrackerMsg::Announce {
-                                event: Event::Completed,
-                                info_hash: self.ctx.info_hash,
-                                downloaded,
-                                uploaded: self.ctx.uploaded.load(Ordering::SeqCst),
-                                left: 0,
-                                recipient: otx,
-                            })
-                        .await;
-
-                        let r = orx.await;
-
-                        if let Ok(Ok(r)) = r {
-                            info!("announced completion with success {r:#?}");
-                        }
-
-                        // announce to tracker that we are stopping
-                        if Args::parse().quit_after_complete {
-                            info!("exiting...");
-
+                            // announce to tracker that we have fully downloaded this torrent
                             let (otx, orx) = oneshot::channel();
-                            let db = self.ctx.downloaded_blocks.read().await;
-                            let downloaded = db.iter().fold(0, |acc, x| acc + x.len as u64);
-                            let info = self.ctx.info.read().await;
-                            let left = downloaded - info.get_size();
-                            drop(info);
-
                             let _ = self.tracker_tx.send(
                                 TrackerMsg::Announce {
-                                    event: Event::Stopped,
+                                    event: Event::Completed,
                                     info_hash: self.ctx.info_hash,
                                     downloaded,
                                     uploaded: self.ctx.uploaded.load(Ordering::SeqCst),
-                                    left,
+                                    left: 0,
                                     recipient: otx,
                                 })
                             .await;
@@ -396,15 +370,45 @@ impl Torrent {
                             let r = orx.await;
 
                             if let Ok(Ok(r)) = r {
-                                info!("announced stopped with success {r:#?}");
+                                info!("announced completion with success {r:#?}");
                             }
-                            std::process::exit(exitcode::OK);
-                        }
 
-                        tick_interval = interval_at(
-                            Instant::now() + Duration::new(u32::MAX.into(), 0), Duration::new(u32::MAX.into(), 0)
-                        );
+                            // announce to tracker that we are stopping
+                            if Args::parse().quit_after_complete {
+                                info!("exiting...");
+
+                                let (otx, orx) = oneshot::channel();
+                                let db = self.ctx.downloaded_blocks.read().await;
+                                let downloaded = db.iter().fold(0, |acc, x| acc + x.len as u64);
+                                let info = self.ctx.info.read().await;
+                                let left = downloaded - info.get_size();
+                                drop(info);
+
+                                let _ = self.tracker_tx.send(
+                                    TrackerMsg::Announce {
+                                        event: Event::Stopped,
+                                        info_hash: self.ctx.info_hash,
+                                        downloaded,
+                                        uploaded: self.ctx.uploaded.load(Ordering::SeqCst),
+                                        left,
+                                        recipient: otx,
+                                    })
+                                .await;
+
+                                let r = orx.await;
+
+                                if let Ok(Ok(r)) = r {
+                                    info!("announced stopped with success {r:#?}");
+                                }
+                                std::process::exit(exitcode::OK);
+                            }
+
+                            tick_interval = interval_at(
+                                Instant::now() + Duration::new(u32::MAX.into(), 0), Duration::new(u32::MAX.into(), 0)
+                            );
+                        }
                     }
+                    drop(info);
                 },
                 Some(msg) = self.rx.recv() => {
                     // in the future, this event loop will
@@ -434,7 +438,7 @@ impl Torrent {
                                 spawn(async move {
                                     let pieces = peer.pieces.read().await;
                                     if let Some(b) = pieces.get(piece) {
-                                        if b.index == 0 {
+                                        if b.bit == 0 {
                                             let _ = peer.peer_tx.send(PeerMsg::DownloadedPiece(piece)).await;
                                         }
                                     }

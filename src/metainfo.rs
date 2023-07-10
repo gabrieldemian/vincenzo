@@ -106,7 +106,6 @@ impl Info {
         Err(error::Error::FileOpenError)
     }
     /// Get the total size of the torrent, in bytes.
-    /// This fn panics if the info is not a valid single file torrent or multi file torrent.
     pub fn get_size(&self) -> u64 {
         // multi file torrent
         if let Some(files) = &self.files {
@@ -114,7 +113,11 @@ impl Info {
         }
 
         // single file torrent
-        self.file_length.unwrap() as u64
+        if let Some(f) = self.file_length {
+            return f as u64;
+        }
+
+        return u64::MAX;
     }
 }
 

@@ -8,6 +8,7 @@ use tokio::{
 use tracing::debug;
 
 use crate::{
+    bitfield::Bitfield,
     cli::Args,
     error::Error,
     metainfo::{self, Info},
@@ -26,7 +27,11 @@ pub enum DiskMsg {
     ValidatePiece((usize, Sender<Result<(), Error>>)),
     OpenFile((String, Sender<File>)),
     WriteBlock((Block, Sender<Result<(), Error>>)),
-    RequestBlocks((usize, Sender<VecDeque<BlockInfo>>)),
+    RequestBlocks {
+        qnt: usize,
+        recipient: Sender<VecDeque<BlockInfo>>,
+        pieces: Bitfield,
+    },
 }
 
 #[derive(Debug)]
@@ -109,13 +114,17 @@ impl Disk {
                     let file = self.open_file(&path).await?;
                     let _ = tx.send(file);
                 }
-                DiskMsg::RequestBlocks((n, tx)) => {
+                DiskMsg::RequestBlocks {
+                    qnt,
+                    recipient,
+                    pieces,
+                } => {
                     let mut requested = self.torrent_ctx.requested_blocks.write().await;
                     let mut infos: VecDeque<BlockInfo> = VecDeque::new();
                     let mut idxs = VecDeque::new();
 
                     for (i, info) in self.ctx.block_infos.iter_mut().enumerate() {
-                        if infos.len() >= n {
+                        if infos.len() >= qnt {
                             break;
                         }
 
@@ -124,8 +133,13 @@ impl Disk {
                             continue;
                         };
 
-                        idxs.push_front(i);
-                        infos.push_back(info.clone());
+                        // only request blocks that the peer has
+                        if let Some(r) = pieces.get(info.index as usize) {
+                            if r.bit == 1 {
+                                idxs.push_front(i);
+                                infos.push_back(info.clone());
+                            }
+                        }
                     }
                     // remove the requested items from block_infos
                     for i in idxs {
@@ -135,7 +149,7 @@ impl Disk {
                         requested.push_back(info.clone());
                     }
 
-                    let _ = tx.send(infos);
+                    let _ = recipient.send(infos);
                 }
                 DiskMsg::ValidatePiece((index, tx)) => {
                     let r = self.validate_piece(index).await;
@@ -527,9 +541,13 @@ mod tests {
 
         let (tx_oneshot, rx_oneshot) = oneshot::channel();
 
-        tx.send(DiskMsg::RequestBlocks((2, tx_oneshot)))
-            .await
-            .unwrap();
+        tx.send(DiskMsg::RequestBlocks {
+            qnt: 2,
+            recipient: tx_oneshot,
+            pieces: Bitfield::from(vec![255, 0]),
+        })
+        .await
+        .unwrap();
 
         let expected = VecDeque::from([
             BlockInfo {
@@ -554,9 +572,13 @@ mod tests {
         // --------
 
         let (tx_oneshot, rx_oneshot) = oneshot::channel();
-        tx.send(DiskMsg::RequestBlocks((2, tx_oneshot)))
-            .await
-            .unwrap();
+        tx.send(DiskMsg::RequestBlocks {
+            qnt: 2,
+            recipient: tx_oneshot,
+            pieces: Bitfield::from(vec![255]),
+        })
+        .await
+        .unwrap();
 
         let expected = VecDeque::from([
             BlockInfo {
@@ -601,6 +623,26 @@ mod tests {
 
         assert_eq!(*requested, expected);
         drop(requested);
+
+        // --------
+
+        let (tx_oneshot, rx_oneshot) = oneshot::channel();
+        tx.send(DiskMsg::RequestBlocks {
+            qnt: 9,
+            recipient: tx_oneshot,
+            pieces: Bitfield::from(vec![0b00000001, 0]),
+        })
+        .await
+        .unwrap();
+
+        let expected = VecDeque::from([BlockInfo {
+            index: 7,
+            begin: 0,
+            len: 16384,
+        }]);
+
+        let result = rx_oneshot.await.unwrap();
+        assert_eq!(result, expected);
     }
 
     // given a `BlockInfo`, we must be to read the right file,
