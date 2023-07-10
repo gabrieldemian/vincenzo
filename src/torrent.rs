@@ -292,8 +292,8 @@ impl Torrent {
         let stats = self.ctx.stats.read().await;
 
         let mut announce_interval = interval_at(
-            Instant::now() + Duration::from_secs(stats.interval.into()),
-            Duration::from_secs(stats.interval as u64),
+            Instant::now() + Duration::from_secs(stats.interval.max(500).into()),
+            Duration::from_secs((stats.interval as u64).max(500)),
         );
         drop(stats);
 
