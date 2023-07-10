@@ -53,9 +53,6 @@ pub struct Peer {
     pub peer_choking: bool,
     /// if this peer is interested in the client
     pub peer_interested: bool,
-    /// a `Bitfield` with pieces that this peer
-    /// has, and hasn't, containing 0s and 1s
-    pub pieces: Bitfield,
     /// TCP addr that this peer is listening on
     pub addr: SocketAddr,
     pub extension: Extension,
@@ -103,7 +100,6 @@ impl Peer {
             extension: Extension::default(),
             peer_choking: true,
             peer_interested: false,
-            pieces: Bitfield::default(),
             addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
             id: None,
             torrent_ctx,
@@ -150,11 +146,12 @@ impl Peer {
         let tr_pieces = torrent_ctx.pieces.read().await;
 
         let disk_tx = self.disk_tx.clone().unwrap();
+        let pieces = self.ctx.pieces.read().await;
 
         info!("downloaded {tr_pieces:?}");
         info!("tr_pieces len: {:?}", tr_pieces.len());
-        info!("self.pieces: {:?}", self.pieces);
-        info!("self.pieces len: {:?}", self.pieces.len());
+        info!("self.pieces: {:?}", pieces);
+        info!("self.pieces len: {:?}", pieces.len());
 
         // get a list of unique block_infos from the Disk,
         // those are already marked as requested on Torrent
@@ -163,7 +160,7 @@ impl Peer {
             .send(DiskMsg::RequestBlocks {
                 recipient: otx,
                 qnt: 1,
-                pieces: self.pieces.clone(),
+                pieces: pieces.clone(),
             })
             .await;
 
@@ -365,7 +362,9 @@ impl Peer {
                             info!("----------------------------------");
                             info!("| {:?} Bitfield  |", self.addr);
                             info!("----------------------------------\n");
-                            self.pieces = bitfield.clone();
+                            let mut pieces = self.ctx.pieces.write().await;
+                            *pieces = bitfield.clone();
+                            drop(pieces);
 
                             // update the bitfield of the `Torrent`
                             // will create a new, empty bitfield, with
@@ -373,7 +372,7 @@ impl Peer {
                             let _ = torrent_tx.send(TorrentMsg::UpdateBitfield(bitfield.len_bytes()))
                                 .await;
 
-                            info!("{:?}", self.pieces);
+                            info!("pieces after bitfield {:?}", self.ctx.pieces);
                             info!("------------------------------\n");
                         }
                         Message::Unchoke => {
@@ -423,8 +422,8 @@ impl Peer {
                             // have's. They do this to try to prevent censhorship
                             // from ISPs.
                             // Overwrite pieces on bitfield, if the peer has one
-                            // info!("pieces {:?}", self.pieces);
-                            self.pieces.set(piece);
+                            let mut pieces = self.ctx.pieces.write().await;
+                            pieces.set(piece);
                         }
                         Message::Piece(block) => {
                             info!("-------------------------------");
