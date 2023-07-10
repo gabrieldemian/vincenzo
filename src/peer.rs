@@ -24,7 +24,6 @@ use crate::{
     disk::DiskMsg,
     error::Error,
     extension::{Extension, Metadata},
-    magnet_parser::get_info_hash,
     metainfo::Info,
     tcp_wire::{
         lib::{Block, BLOCK_LEN},
@@ -64,7 +63,7 @@ pub struct Peer {
     /// id, in the handshake.
     pub id: Option<[u8; 20]>,
     pub reserved: [u8; 8],
-    pub torrent_ctx: Option<Arc<TorrentCtx>>,
+    pub torrent_ctx: Arc<TorrentCtx>,
     pub tracker_ctx: Arc<TrackerCtx>,
     pub disk_tx: Option<Sender<DiskMsg>>,
     pub rx: Receiver<PeerMsg>,
@@ -90,7 +89,7 @@ pub struct PeerCtx {
 impl Peer {
     pub fn new(
         peer_tx: mpsc::Sender<PeerMsg>,
-        torrent_ctx: Option<Arc<TorrentCtx>>,
+        torrent_ctx: Arc<TorrentCtx>,
         rx: Receiver<PeerMsg>,
     ) -> Self {
         let ctx = Arc::new(PeerCtx {
@@ -120,7 +119,7 @@ impl Peer {
         self
     }
     pub fn torrent_ctx(mut self, ctx: Arc<TorrentCtx>) -> Self {
-        self.torrent_ctx = Some(ctx);
+        self.torrent_ctx = ctx;
         self
     }
     pub fn id(mut self, id: [u8; 20]) -> Self {
@@ -147,7 +146,7 @@ impl Peer {
         &mut self,
         sink: &mut SplitSink<Framed<TcpStream, PeerCodec>, Message>,
     ) -> Result<(), Error> {
-        let torrent_ctx = self.torrent_ctx.clone().unwrap();
+        let torrent_ctx = self.torrent_ctx.clone();
         let tr_pieces = torrent_ctx.pieces.read().await;
 
         // disk cannot be None at this point, this is safe
@@ -182,7 +181,7 @@ impl Peer {
         sink: &mut SplitSink<Framed<TcpStream, PeerCodec>, Message>,
     ) -> Result<(), Error> {
         info!("called maybe_request_info");
-        let torrent_ctx = self.torrent_ctx.as_ref().unwrap().clone();
+        let torrent_ctx = self.torrent_ctx.as_ref().clone();
         let info_dict = torrent_ctx.info_dict.read().await;
         let no_info = info_dict.is_empty();
         info!("no info? {no_info}");
@@ -218,12 +217,10 @@ impl Peer {
         direction: Direction,
         mut socket: Framed<TcpStream, HandshakeCodec>,
     ) -> Result<(), Error> {
-        let torrent_ctx = self.torrent_ctx.clone().unwrap();
+        let torrent_ctx = self.torrent_ctx.clone();
         let tracker_ctx = self.tracker_ctx.clone();
-        let xt = torrent_ctx.magnet.xt.as_ref().unwrap();
 
-        let info_hash = get_info_hash(xt);
-        let our_handshake = Handshake::new(info_hash, tracker_ctx.peer_id);
+        let our_handshake = Handshake::new(torrent_ctx.info_hash, tracker_ctx.peer_id);
 
         // we are connecting, send the first handshake
         if direction == Direction::Outbound {
@@ -243,7 +240,6 @@ impl Peer {
             if !their_handshake.validate(&our_handshake) {
                 return Err(Error::HandshakeInvalid);
             }
-
             self.id = Some(their_handshake.peer_id);
             self.reserved = their_handshake.reserved;
         }
@@ -267,16 +263,19 @@ impl Peer {
             if let Ok(true) = self.reserved[5].get_bit(3) {
                 info!("sending extended handshake to {:?}", self.addr);
                 let info = torrent_ctx.info.read().await;
-                let metadata_size = info.to_bencode().map_err(|_| Error::BencodeError)?.len();
 
-                let ext = Extension::supported(Some(metadata_size as u32))
-                    .to_bencode()
-                    .map_err(|_| Error::BencodeError)?;
+                if info.piece_length > 0 {
+                    let metadata_size = info.to_bencode().map_err(|_| Error::BencodeError)?.len();
 
-                let extended = Message::Extended((0, ext));
+                    let ext = Extension::supported(Some(metadata_size as u32))
+                        .to_bencode()
+                        .map_err(|_| Error::BencodeError)?;
 
-                sink.send(extended).await?;
-                self.maybe_request_info(&mut sink).await?;
+                    let extended = Message::Extended((0, ext));
+
+                    sink.send(extended).await?;
+                    self.maybe_request_info(&mut sink).await?;
+                }
             }
         }
 
@@ -285,6 +284,7 @@ impl Peer {
         if downloaded.len() > 0 {
             let bitfield = torrent_ctx.pieces.read().await;
             sink.send(Message::Bitfield(bitfield.clone())).await?;
+            info!("sent Bitfield");
         }
         drop(downloaded);
 
@@ -315,26 +315,34 @@ impl Peer {
                 // At every 5 seconds, check for blocks that were requested,
                 // but not downloaded, and request them again.
                 _ = request_timer.tick() => {
-                    // check if there is requested blocks that hasnt been downloaded
-                    let downloaded = torrent_ctx.downloaded_blocks.read().await;
-                    let requested = torrent_ctx.requested_blocks.read().await;
+                    let info = torrent_ctx.info.read().await;
+                    // we know if the info is downloaded if the piece_length is > 0
+                    if info.piece_length > 0 {
+                        // check if there is requested blocks that hasnt been downloaded
+                        let downloaded_blocks = torrent_ctx.downloaded_blocks.read().await;
+                        let requested = torrent_ctx.requested_blocks.read().await;
 
-                    let blocks_len = torrent_ctx.info.read().await.blocks_len();
+                        let downloaded = torrent_ctx.downloaded.load(Ordering::SeqCst);
+                        let info = torrent_ctx.info.read().await;
+                        let torrent_size = info.get_size();
 
-                    if (downloaded.len() as u32) < (blocks_len) {
-                        for req in &*requested {
-                            let f = downloaded.iter().find(|down| **down == *req);
-                            if f.is_none() {
-                                let _ = sink.send(Message::Request(req.clone())).await;
+                        // if our torrent has not been completely downloaded
+                        if downloaded < torrent_size {
+                            for req in &*requested {
+                                let f = downloaded_blocks.iter().find(|down| **down == *req);
+                                if f.is_none() {
+                                    let _ = sink.send(Message::Request(req.clone())).await;
+                                }
                             }
+                        } else {
+                            info!("no more blocks to download.");
+                            request_timer = interval_at(
+                                Instant::now() + Duration::from_secs(u32::MAX.into()),
+                                Duration::from_secs(u64::MAX),
+                            );
                         }
-                    } else {
-                        info!("no more blocks to download.");
-                        request_timer = interval_at(
-                            Instant::now() + Duration::from_secs(u32::MAX.into()),
-                            Duration::from_secs(u64::MAX),
-                        );
                     }
+                    drop(info);
                 }
                 Some(msg) = self.rx.recv() => {
                     match msg {
@@ -362,9 +370,8 @@ impl Peer {
                             // update the bitfield of the `Torrent`
                             // will create a new, empty bitfield, with
                             // the same len
-                            torrent_tx.send(TorrentMsg::UpdateBitfield(bitfield.len_bytes()))
-                                .await
-                                .unwrap();
+                            let _ = torrent_tx.send(TorrentMsg::UpdateBitfield(bitfield.len_bytes()))
+                                .await;
 
                             info!("{:?}", self.pieces);
                             info!("------------------------------\n");
@@ -447,6 +454,7 @@ impl Peer {
 
                                 match r {
                                     Ok(_) => {
+                                        torrent_ctx.downloaded.fetch_add(block.block.len() as u64, Ordering::SeqCst);
                                         let mut bd = torrent_ctx.downloaded_blocks.write().await;
                                         bd.push_front(block.clone().into());
                                         drop(bd);

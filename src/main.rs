@@ -74,7 +74,7 @@ async fn main() -> Result<(), Error> {
     spawn(async move {
         let peers = torrent.start(tracker_rx).await?;
         torrent.spawn_outbound_peers(peers).await?;
-        torrent.run().await?;
+        // torrent.run().await?;
         Ok::<_, Error>(())
     });
 

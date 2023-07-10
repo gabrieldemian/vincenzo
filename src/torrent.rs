@@ -79,6 +79,8 @@ pub struct TorrentCtx {
     pub stats: RwLock<Stats>,
     /// How many bytes we have uploaded to other peers.
     pub uploaded: AtomicU64,
+    /// How many bytes we have downloaded from other peers.
+    pub downloaded: AtomicU64,
 }
 
 // Status of the current Torrent, updated at every announce request.
@@ -117,6 +119,7 @@ impl Torrent {
             downloaded_blocks,
             info,
             uploaded: AtomicU64::new(0),
+            downloaded: AtomicU64::new(0),
         });
 
         Self {
@@ -152,7 +155,7 @@ impl Torrent {
                         let tracker_ctx = self.tracker_ctx.clone();
                         let disk_tx = self.disk_tx.clone();
 
-                        let peer = Peer::new(peer_tx, Some(torrent_ctx), peer_rx)
+                        let peer = Peer::new(peer_tx, torrent_ctx, peer_rx)
                             .addr(addr)
                             .tracker_ctx(tracker_ctx)
                             .disk_tx(disk_tx);
@@ -189,7 +192,7 @@ impl Torrent {
                         let tracker_ctx = self.tracker_ctx.clone();
                         let disk_tx = self.disk_tx.clone();
 
-                        let peer = Peer::new(peer_tx, Some(torrent_ctx), peer_rx)
+                        let peer = Peer::new(peer_tx, torrent_ctx, peer_rx)
                             .addr(addr)
                             .tracker_ctx(tracker_ctx)
                             .disk_tx(disk_tx);
@@ -254,7 +257,7 @@ impl Torrent {
 
         let tx = self.tx.clone();
         let disk_tx = self.disk_tx.clone();
-        let torrent_ctx = Some(Arc::clone(&self.ctx));
+        let torrent_ctx = Arc::clone(&self.ctx);
         let tracker_ctx = Arc::clone(&self.tracker_ctx);
 
         // accept connections from other peers
@@ -301,52 +304,53 @@ impl Torrent {
             select! {
                 // periodically announce to tracker, at the specified interval
                 // to update the tracker about the client's stats.
+                // let have_info = self.ctx.info_dict;
                 _ = announce_interval.tick() => {
-                    info!("sending periodic announce");
-
                     let info = self.ctx.info.read().await;
-                    let db = self.ctx.downloaded_blocks.read().await;
-                    let downloaded = db.iter().fold(0, |acc, x| acc + x.len as u64);
-                    let left = downloaded - info.get_size();
-                    drop(db);
-                    let (otx, orx) = oneshot::channel();
+                    // we know if the info is downloaded if the piece_length is > 0
+                    if info.piece_length > 0 {
+                        info!("sending periodic announce");
+                        let db = self.ctx.downloaded_blocks.read().await;
+                        let downloaded = db.iter().fold(0, |acc, x| acc + x.len as u64);
+                        let left = downloaded - info.get_size();
+                        drop(db);
+                        let (otx, orx) = oneshot::channel();
 
-                    let _ = self.tracker_tx.send(
-                        TrackerMsg::Announce {
-                            event: Event::None,
-                            info_hash: self.ctx.info_hash,
-                            downloaded,
-                            uploaded: self.ctx.uploaded.load(Ordering::SeqCst),
-                            left,
-                            recipient: otx,
-                        })
-                    .await;
+                        let _ = self.tracker_tx.send(
+                            TrackerMsg::Announce {
+                                event: Event::None,
+                                info_hash: self.ctx.info_hash,
+                                downloaded,
+                                uploaded: self.ctx.uploaded.load(Ordering::SeqCst),
+                                left,
+                                recipient: otx,
+                            })
+                        .await;
 
-                    let r = orx.await;
-                    info!("new stats {r:#?}");
+                        let r = orx.await;
+                        info!("new stats {r:#?}");
 
-                    // update our stats, received from the tracker
-                    if let Ok(Ok(r)) = r {
-                        let mut stats = self.ctx.stats.write().await;
-                        stats.interval = r.interval;
-                        stats.seeders = r.seeders;
-                        stats.leechers = r.leechers;
-                        announce_interval = interval(Duration::from_secs(r.interval as u64));
+                        // update our stats, received from the tracker
+                        if let Ok(Ok(r)) = r {
+                            let mut stats = self.ctx.stats.write().await;
+                            stats.interval = r.interval;
+                            stats.seeders = r.seeders;
+                            stats.leechers = r.leechers;
+                            announce_interval = interval(Duration::from_secs(r.interval as u64));
+                        }
                     }
+                    drop(info);
                 }
                 // interval used to send stats to the UI, and to check if the torrent has
                 // been fully downloaded
                 _ = tick_interval.tick() => {
-                    // downloaded blocks
-                    let downloaded = self.ctx.downloaded_blocks.read().await;
+                    let downloaded = self.ctx.downloaded.load(Ordering::SeqCst);
                     let info = self.ctx.info.read().await;
-                    let blocks_len = info.blocks_len();
+                    let torrent_size = info.get_size();
+                    drop(info);
 
-                    if (downloaded.len() as u32) >= blocks_len && downloaded.len() > 0 && blocks_len > 0 {
+                    if downloaded >= torrent_size {
                         info!("torrent downloaded fully");
-
-                        // downloaded bytes
-                        let downloaded = info.get_size();
 
                         // announce to tracker that we have fully downloaded this torrent
                         let (otx, orx) = oneshot::channel();
@@ -374,7 +378,9 @@ impl Torrent {
                             let (otx, orx) = oneshot::channel();
                             let db = self.ctx.downloaded_blocks.read().await;
                             let downloaded = db.iter().fold(0, |acc, x| acc + x.len as u64);
+                            let info = self.ctx.info.read().await;
                             let left = downloaded - info.get_size();
+                            drop(info);
 
                             let _ = self.tracker_tx.send(
                                 TrackerMsg::Announce {
