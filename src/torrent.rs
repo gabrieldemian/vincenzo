@@ -1,44 +1,47 @@
-use crate::bitfield::Bitfield;
-use crate::cli::Args;
-use crate::disk::DiskMsg;
-use crate::error::Error;
-use crate::magnet_parser::get_info_hash;
-use crate::metainfo::Info;
-use crate::peer::Direction;
-use crate::peer::Peer;
 use crate::tcp_wire::lib::BlockInfo;
 use crate::tcp_wire::messages::HandshakeCodec;
-use crate::tracker::tracker::Tracker;
-use crate::tracker::tracker::TrackerCtx;
+use crate::{
+    bitfield::Bitfield,
+    cli::Args,
+    disk::DiskMsg,
+    error::Error,
+    magnet_parser::get_info_hash,
+    metainfo::Info,
+    peer::{Direction, Peer, PeerCtx, PeerMsg},
+    tracker::{
+        event::Event,
+        tracker::{Tracker, TrackerCtx, TrackerMsg},
+    },
+};
 use clap::Parser;
+use core::sync::atomic::{AtomicU64, Ordering};
 use magnet_url::Magnet;
-use tokio::net::TcpListener;
-use tokio::net::TcpStream;
-use tokio::time::interval_at;
-use tokio::time::Instant;
+use std::{
+    collections::{HashMap, VecDeque},
+    sync::Arc,
+    time::Duration,
+};
+use tokio::{
+    net::{TcpListener, TcpStream},
+    select, spawn,
+    sync::{mpsc, oneshot, RwLock},
+    time::{interval, interval_at, Instant},
+};
 use tokio_util::codec::Framed;
-use tracing::warn;
-
-use std::collections::HashMap;
-use std::collections::VecDeque;
-use std::sync::Arc;
-use std::time::Duration;
-use tokio::select;
-use tokio::spawn;
-use tokio::sync::mpsc;
-use tokio::sync::RwLock;
-use tokio::time::interval;
-
-use tracing::debug;
-use tracing::info;
+use tracing::{info, warn};
 
 #[derive(Debug)]
 pub enum TorrentMsg {
-    // Torrent will start with a blank bitfield
-    // because it cannot know it from a magnet link
-    // once a peer send the first bitfield message,
-    // we will update the torrent bitfield
+    /// Message to update the torrent's Bitfield,
+    /// Torrent will start with a blank bitfield
+    /// because it cannot know it from a magnet link
+    /// once a peer send the first bitfield message,
+    /// we will update it.
     UpdateBitfield(usize),
+    /// Message when one of the peers have downloaded
+    /// an entire piece. We send Have messages to peers
+    /// that don't have it and update the UI with stats.
+    DownloadedPiece(usize),
 }
 
 /// This is the main entity responsible for the high-level management of
@@ -51,6 +54,8 @@ pub struct Torrent {
     pub disk_tx: mpsc::Sender<DiskMsg>,
     pub rx: mpsc::Receiver<TorrentMsg>,
     pub in_end_game: bool,
+    pub tracker_tx: mpsc::Sender<TrackerMsg>,
+    pub peer_ctxs: Vec<Arc<PeerCtx>>,
 }
 
 /// Information and methods shared with peer sessions in the torrent.
@@ -60,15 +65,28 @@ pub struct Torrent {
 #[derive(Debug)]
 pub struct TorrentCtx {
     pub magnet: Magnet,
+    pub info_hash: [u8; 20],
     pub pieces: RwLock<Bitfield>,
     pub requested_blocks: RwLock<VecDeque<BlockInfo>>,
     pub downloaded_blocks: RwLock<VecDeque<BlockInfo>>,
     pub info: RwLock<Info>,
-    // If using a Magnet link, the info will be downloaded in pieces
-    // and those pieces may come in different order,
-    // hence the HashMap (dictionary), and not a vec.
-    // After the dict is complete, it will be decoded into "info"
+    /// If using a Magnet link, the info will be downloaded in pieces
+    /// and those pieces may come in different order,
+    /// hence the HashMap (dictionary), and not a vec.
+    /// After the dict is complete, it will be decoded into [`info`]
     pub info_dict: RwLock<HashMap<u32, Vec<u8>>>,
+    /// Stats of the current Torrent, returned from tracker on announce requests.
+    pub stats: RwLock<Stats>,
+    /// How many bytes we have uploaded to other peers.
+    pub uploaded: AtomicU64,
+}
+
+// Status of the current Torrent, updated at every announce request.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct Stats {
+    pub interval: u32,
+    pub leechers: u32,
+    pub seeders: u32,
 }
 
 impl Torrent {
@@ -76,6 +94,7 @@ impl Torrent {
         tx: mpsc::Sender<TorrentMsg>,
         disk_tx: mpsc::Sender<DiskMsg>,
         rx: mpsc::Receiver<TorrentMsg>,
+        tracker_tx: mpsc::Sender<TrackerMsg>,
         magnet: Magnet,
     ) -> Self {
         let pieces = RwLock::new(Bitfield::default());
@@ -85,13 +104,19 @@ impl Torrent {
         let requested_blocks = RwLock::new(VecDeque::new());
         let downloaded_blocks = RwLock::new(VecDeque::new());
 
+        let xt = magnet.xt.clone().unwrap();
+        let info_hash = get_info_hash(&xt);
+
         let ctx = Arc::new(TorrentCtx {
+            stats: RwLock::new(Stats::default()),
+            info_hash,
             info_dict,
             pieces,
             requested_blocks,
             magnet,
             downloaded_blocks,
             info,
+            uploaded: AtomicU64::new(0),
         });
 
         Self {
@@ -100,71 +125,105 @@ impl Torrent {
             in_end_game: false,
             disk_tx,
             tx,
+            tracker_tx,
             rx,
+            peer_ctxs: Vec::new(),
         }
     }
 
-    #[tracing::instrument(name = "torrent::run", skip(self))]
-    pub async fn run(&mut self) -> Result<(), Error> {
-        let mut tick_interval = interval(Duration::new(1, 0));
-        loop {
-            select! {
-                _ = tick_interval.tick() => {
-                    let downloaded = self.ctx.downloaded_blocks.read().await;
-                    let downloaded = downloaded.len();
-                    let blocks_len = self.ctx.info.read().await.blocks_len();
+    /// Start the Torrent, by sending `connect` and `announce_exchange`
+    /// messages to one of the trackers, and returning a list of peers.
+    #[tracing::instrument(skip(self, tracker_rx), name = "torrent::start")]
+    pub async fn start(
+        &mut self,
+        tracker_rx: mpsc::Receiver<TrackerMsg>,
+    ) -> Result<Vec<Peer>, Error> {
+        let args = Args::parse();
+        let mut peers: Vec<Peer> = Vec::new();
+        let mut tracker = Tracker::default();
 
-                    if (downloaded as u32) >= blocks_len && downloaded > 0 && blocks_len > 0 {
-                        let args = Args::parse();
+        match args.seeds {
+            Some(seeds) => {
+                let peers_l: Vec<Peer> = seeds
+                    .into_iter()
+                    .map(|addr| {
+                        let (peer_tx, peer_rx) = mpsc::channel::<PeerMsg>(300);
+                        let torrent_ctx = self.ctx.clone();
+                        let tracker_ctx = self.tracker_ctx.clone();
+                        let disk_tx = self.disk_tx.clone();
 
-                        info!("torrent downloaded fully");
+                        let peer = Peer::new(peer_tx, Some(torrent_ctx), peer_rx)
+                            .addr(addr)
+                            .tracker_ctx(tracker_ctx)
+                            .disk_tx(disk_tx);
 
-                        if args.quit_after_complete {
-                            info!("exiting...");
-                            std::process::exit(exitcode::OK);
-                        }
+                        let peer_ctx = peer.ctx.clone();
+                        self.peer_ctxs.push(peer_ctx);
 
-                        tick_interval = interval_at(
-                            Instant::now() + Duration::new(9999999, 0), Duration::new(9999999, 0)
-                        );
-                    }
-                },
-                Some(msg) = self.rx.recv() => {
-                    // in the future, this event loop will
-                    // send messages to the frontend,
-                    // the terminal ui.
-                    match msg {
-                        TorrentMsg::UpdateBitfield(len) => {
-                            // create an empty bitfield with the same
-                            // len as the bitfield from the peer
-                            let ctx = Arc::clone(&self.ctx);
-                            let mut pieces = ctx.pieces.write().await;
+                        peer
+                    })
+                    .collect();
 
-                            info!("update bitfield len {:?}", len);
-
-                            // only create the bitfield if we don't have one
-                            // pieces.len() will start at 0
-                            if pieces.len() < len {
-                                let inner = vec![0_u8; len];
-                                *pieces = Bitfield::from(inner);
-                            }
-                        }
-                    }
-                }
+                peers_l.into_iter().for_each(|p| peers.push(p));
             }
-        }
+            None => {
+                let mut tracker_l = Tracker::connect(self.ctx.magnet.tr.clone()).await?;
+                let args = Args::parse();
+                let info_hash = self.ctx.clone().info_hash;
+                let (res, peers_l) = tracker_l.announce_exchange(info_hash, args.listen).await?;
+
+                let mut stats = self.ctx.stats.write().await;
+
+                *stats = Stats {
+                    interval: res.interval,
+                    seeders: res.seeders,
+                    leechers: res.leechers,
+                };
+                drop(stats);
+
+                let peers_l: Vec<Peer> = peers_l
+                    .into_iter()
+                    .map(|addr| {
+                        let (peer_tx, peer_rx) = mpsc::channel::<PeerMsg>(300);
+                        let torrent_ctx = self.ctx.clone();
+                        let tracker_ctx = self.tracker_ctx.clone();
+                        let disk_tx = self.disk_tx.clone();
+
+                        let peer = Peer::new(peer_tx, Some(torrent_ctx), peer_rx)
+                            .addr(addr)
+                            .tracker_ctx(tracker_ctx)
+                            .disk_tx(disk_tx);
+
+                        let peer_ctx = peer.ctx.clone();
+                        self.peer_ctxs.push(peer_ctx);
+
+                        peer
+                    })
+                    .collect();
+
+                tracker = tracker_l;
+                peers = peers_l;
+
+                info!("tracker.ctx peer {:?}", self.tracker_ctx.local_peer_addr);
+            }
+        };
+
+        self.tracker_ctx = tracker.ctx.clone().into();
+
+        spawn(async move {
+            let _ = tracker.run(tracker_rx).await;
+        });
+
+        self.spawn_inbound_peers().await?;
+
+        Ok(peers)
     }
 
     /// Spawn an event loop for each peer to listen/send messages.
     pub async fn spawn_outbound_peers(&self, peers: Vec<Peer>) -> Result<(), Error> {
         for mut peer in peers {
-            peer.torrent_ctx = Some(Arc::clone(&self.ctx));
-            peer.tracker_ctx = Arc::clone(&self.tracker_ctx);
-            peer.disk_tx = Some(self.disk_tx.clone());
-
-            let tx = self.tx.clone();
-
             info!("outbound peer {:?}", peer.addr);
+            let tx = self.tx.clone();
 
             // send connections too other peers
             spawn(async move {
@@ -208,12 +267,14 @@ impl Torrent {
 
                     info!("received inbound connection from {addr}");
 
+                    let torrent_ctx = torrent_ctx.clone();
                     let tx = tx.clone();
-                    let mut peer: Peer = addr.into();
+                    let (peer_tx, peer_rx) = mpsc::channel::<PeerMsg>(300);
 
-                    peer.torrent_ctx = torrent_ctx.clone();
-                    peer.tracker_ctx = tracker_ctx.clone();
-                    peer.disk_tx = Some(disk_tx.clone());
+                    let mut peer = Peer::new(peer_tx, torrent_ctx, peer_rx)
+                        .addr(addr)
+                        .tracker_ctx(tracker_ctx.clone())
+                        .disk_tx(disk_tx.clone());
 
                     spawn(async move {
                         peer.run(tx, Direction::Inbound, socket).await?;
@@ -225,46 +286,158 @@ impl Torrent {
         Ok(())
     }
 
-    /// Start the Torrent, by sending `connect` and `announce_exchange`
-    /// messages to one of the trackers, and returning a list of peers.
-    #[tracing::instrument(skip(self), name = "torrent::start")]
-    pub async fn start(&mut self) -> Result<Vec<Peer>, Error> {
-        debug!("{:#?}", self.ctx.magnet);
-        info!("received add_magnet call");
+    #[tracing::instrument(name = "torrent::run", skip(self))]
+    pub async fn run(&mut self) -> Result<(), Error> {
+        let mut tick_interval = interval(Duration::new(1, 0));
+        let stats = self.ctx.stats.read().await;
 
-        let xt = self.ctx.magnet.xt.clone().unwrap();
-        let info_hash = get_info_hash(&xt);
-
-        debug!("info_hash {:?}", info_hash);
-
-        let args = Args::parse();
-        let mut peers: Vec<Peer> = Vec::new();
-        let mut tracker = Tracker::default();
-
-        match args.seeds {
-            Some(seeds) => {
-                let peers_l: Vec<Peer> = seeds.into_iter().map(|p| p.into()).collect();
-                peers.extend_from_slice(&peers_l);
-            }
-            None => {
-                let mut tracker_l = Tracker::connect(self.ctx.magnet.tr.clone()).await?;
-                let args = Args::parse();
-                let peers_l = tracker_l.announce_exchange(info_hash, args.listen).await?;
-
-                tracker = tracker_l;
-                peers = peers_l;
-
-                info!("tracker.ctx peer {:?}", self.tracker_ctx.local_peer_addr);
-            }
-        };
-
-        self.tracker_ctx = tracker.ctx.clone().into();
-        info!(
-            "tracker.ctx peer ----- {:?}",
-            self.tracker_ctx.local_peer_addr
+        let mut announce_interval = interval_at(
+            Instant::now() + Duration::from_secs(stats.interval.into()),
+            Duration::from_secs(stats.interval as u64),
         );
-        self.spawn_inbound_peers().await?;
+        drop(stats);
 
-        Ok(peers)
+        loop {
+            select! {
+                // periodically announce to tracker, at the specified interval
+                // to update the tracker about the client's stats.
+                _ = announce_interval.tick() => {
+                    info!("sending periodic announce");
+
+                    let info = self.ctx.info.read().await;
+                    let db = self.ctx.downloaded_blocks.read().await;
+                    let downloaded = db.iter().fold(0, |acc, x| acc + x.len as u64);
+                    let left = downloaded - info.get_size();
+                    drop(db);
+                    let (otx, orx) = oneshot::channel();
+
+                    let _ = self.tracker_tx.send(
+                        TrackerMsg::Announce {
+                            event: Event::None,
+                            info_hash: self.ctx.info_hash,
+                            downloaded,
+                            uploaded: self.ctx.uploaded.load(Ordering::SeqCst),
+                            left,
+                            recipient: otx,
+                        })
+                    .await;
+
+                    let r = orx.await;
+                    info!("new stats {r:#?}");
+
+                    // update our stats, received from the tracker
+                    if let Ok(Ok(r)) = r {
+                        let mut stats = self.ctx.stats.write().await;
+                        stats.interval = r.interval;
+                        stats.seeders = r.seeders;
+                        stats.leechers = r.leechers;
+                        announce_interval = interval(Duration::from_secs(r.interval as u64));
+                    }
+                }
+                // interval used to send stats to the UI, and to check if the torrent has
+                // been fully downloaded
+                _ = tick_interval.tick() => {
+                    // downloaded blocks
+                    let downloaded = self.ctx.downloaded_blocks.read().await;
+                    let info = self.ctx.info.read().await;
+                    let blocks_len = info.blocks_len();
+
+                    if (downloaded.len() as u32) >= blocks_len && downloaded.len() > 0 && blocks_len > 0 {
+                        info!("torrent downloaded fully");
+
+                        // downloaded bytes
+                        let downloaded = info.get_size();
+
+                        // announce to tracker that we have fully downloaded this torrent
+                        let (otx, orx) = oneshot::channel();
+                        let _ = self.tracker_tx.send(
+                            TrackerMsg::Announce {
+                                event: Event::Completed,
+                                info_hash: self.ctx.info_hash,
+                                downloaded,
+                                uploaded: self.ctx.uploaded.load(Ordering::SeqCst),
+                                left: 0,
+                                recipient: otx,
+                            })
+                        .await;
+
+                        let r = orx.await;
+
+                        if let Ok(Ok(r)) = r {
+                            info!("announced completion with success {r:#?}");
+                        }
+
+                        // announce to tracker that we are stopping
+                        if Args::parse().quit_after_complete {
+                            info!("exiting...");
+
+                            let (otx, orx) = oneshot::channel();
+                            let db = self.ctx.downloaded_blocks.read().await;
+                            let downloaded = db.iter().fold(0, |acc, x| acc + x.len as u64);
+                            let left = downloaded - info.get_size();
+
+                            let _ = self.tracker_tx.send(
+                                TrackerMsg::Announce {
+                                    event: Event::Stopped,
+                                    info_hash: self.ctx.info_hash,
+                                    downloaded,
+                                    uploaded: self.ctx.uploaded.load(Ordering::SeqCst),
+                                    left,
+                                    recipient: otx,
+                                })
+                            .await;
+
+                            let r = orx.await;
+
+                            if let Ok(Ok(r)) = r {
+                                info!("announced stopped with success {r:#?}");
+                            }
+                            std::process::exit(exitcode::OK);
+                        }
+
+                        tick_interval = interval_at(
+                            Instant::now() + Duration::new(u32::MAX.into(), 0), Duration::new(u32::MAX.into(), 0)
+                        );
+                    }
+                },
+                Some(msg) = self.rx.recv() => {
+                    // in the future, this event loop will
+                    // send messages to the frontend,
+                    // the terminal ui.
+                    match msg {
+                        TorrentMsg::UpdateBitfield(len) => {
+                            // create an empty bitfield with the same
+                            // len as the bitfield from the peer
+                            let ctx = Arc::clone(&self.ctx);
+                            let mut pieces = ctx.pieces.write().await;
+
+                            info!("update bitfield len {:?}", len);
+
+                            // only create the bitfield if we don't have one
+                            // pieces.len() will start at 0
+                            if pieces.len() < len {
+                                let inner = vec![0_u8; len];
+                                *pieces = Bitfield::from(inner);
+                            }
+                        }
+                        // when a new piece is downloaded, torrent will find pieces that don't have
+                        // this piece, and command them to send a Have msg
+                        TorrentMsg::DownloadedPiece(piece) => {
+                            let peers = self.peer_ctxs.clone();
+                            for peer in peers {
+                                spawn(async move {
+                                    let pieces = peer.pieces.read().await;
+                                    if let Some(b) = pieces.get(piece) {
+                                        if b.index == 0 {
+                                            let _ = peer.peer_tx.send(PeerMsg::DownloadedPiece(piece)).await;
+                                        }
+                                    }
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }

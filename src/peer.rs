@@ -3,17 +3,20 @@ use bitlab::SingleBits;
 use futures::{stream::SplitSink, SinkExt, StreamExt};
 use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
-    sync::Arc,
+    sync::{atomic::Ordering, Arc},
     time::Duration,
 };
 use tokio::{
     select,
-    sync::{mpsc::Sender, oneshot},
+    sync::{
+        mpsc::{self, Receiver, Sender},
+        oneshot, RwLock,
+    },
     time::{interval_at, Instant},
 };
 use tokio_util::codec::{Framed, FramedParts};
 
-use tokio::{net::TcpStream};
+use tokio::net::TcpStream;
 use tracing::{debug, info, warn};
 
 use crate::{
@@ -22,7 +25,7 @@ use crate::{
     error::Error,
     extension::{Extension, Metadata},
     magnet_parser::get_info_hash,
-    metainfo::{Info},
+    metainfo::Info,
     tcp_wire::{
         lib::{Block, BLOCK_LEN},
         messages::{Handshake, HandshakeCodec, Message, PeerCodec},
@@ -41,7 +44,7 @@ pub enum Direction {
 }
 
 /// Data about the remote Peer that we are connected to
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Peer {
     /// if this client is choking this peer
     pub am_choking: bool,
@@ -54,7 +57,6 @@ pub struct Peer {
     /// a `Bitfield` with pieces that this peer
     /// has, and hasn't, containing 0s and 1s
     pub pieces: Bitfield,
-    // pub requested_pieces: Bitfield,
     /// TCP addr that this peer is listening on
     pub addr: SocketAddr,
     pub extension: Extension,
@@ -65,11 +67,38 @@ pub struct Peer {
     pub torrent_ctx: Option<Arc<TorrentCtx>>,
     pub tracker_ctx: Arc<TrackerCtx>,
     pub disk_tx: Option<Sender<DiskMsg>>,
+    pub rx: Receiver<PeerMsg>,
+    pub ctx: Arc<PeerCtx>,
 }
 
-impl Default for Peer {
-    fn default() -> Self {
-        Self {
+/// Messages that peers can send to each other.
+/// Only [Torrent] can send Peer messages.
+#[derive(Debug, Clone)]
+pub enum PeerMsg {
+    DownloadedPiece(usize),
+}
+
+/// Ctx that is shared with [Torrent];
+#[derive(Debug)]
+pub struct PeerCtx {
+    /// a `Bitfield` with pieces that this peer
+    /// has, and hasn't, containing 0s and 1s
+    pub pieces: RwLock<Bitfield>,
+    pub peer_tx: mpsc::Sender<PeerMsg>,
+}
+
+impl Peer {
+    pub fn new(
+        peer_tx: mpsc::Sender<PeerMsg>,
+        torrent_ctx: Option<Arc<TorrentCtx>>,
+        rx: Receiver<PeerMsg>,
+    ) -> Self {
+        let ctx = Arc::new(PeerCtx {
+            pieces: RwLock::new(Bitfield::new()),
+            peer_tx,
+        });
+
+        Peer {
             am_choking: true,
             am_interested: false,
             extension: Extension::default(),
@@ -78,30 +107,12 @@ impl Default for Peer {
             pieces: Bitfield::default(),
             addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
             id: None,
-            torrent_ctx: None,
+            torrent_ctx,
             disk_tx: None,
             tracker_ctx: Arc::new(TrackerCtx::default()),
             reserved: [0_u8; 8],
-        }
-    }
-}
-
-// create a Peer from a `SocketAddr`. Used after
-// an announce request with a tracker
-impl From<SocketAddr> for Peer {
-    fn from(addr: SocketAddr) -> Self {
-        Peer {
-            addr,
-            ..Default::default()
-        }
-    }
-}
-
-impl Peer {
-    pub fn new(torrent_ctx: Arc<TorrentCtx>) -> Self {
-        Peer {
-            torrent_ctx: Some(torrent_ctx),
-            ..Default::default()
+            ctx,
+            rx,
         }
     }
     pub fn addr(mut self, addr: SocketAddr) -> Self {
@@ -114,6 +125,14 @@ impl Peer {
     }
     pub fn id(mut self, id: [u8; 20]) -> Self {
         self.id = Some(id);
+        self
+    }
+    pub fn tracker_ctx(mut self, tracker_ctx: Arc<TrackerCtx>) -> Self {
+        self.tracker_ctx = tracker_ctx;
+        self
+    }
+    pub fn disk_tx(mut self, disk_tx: Sender<DiskMsg>) -> Self {
+        self.disk_tx = Some(disk_tx);
         self
     }
     /// Request a new piece that hasn't been requested before,
@@ -192,10 +211,10 @@ impl Peer {
         }
         Ok(())
     }
-    #[tracing::instrument(skip(self, tx, direction, socket), name = "peer::run", ret)]
+    #[tracing::instrument(skip(self, torrent_tx, direction, socket), name = "peer::run", ret)]
     pub async fn run(
         &mut self,
-        tx: Sender<TorrentMsg>,
+        torrent_tx: Sender<TorrentMsg>,
         direction: Direction,
         mut socket: Framed<TcpStream, HandshakeCodec>,
     ) -> Result<(), Error> {
@@ -261,6 +280,14 @@ impl Peer {
             }
         }
 
+        // send bitfield if we have downloaded at least 1 block
+        let downloaded = torrent_ctx.downloaded_blocks.read().await;
+        if downloaded.len() > 0 {
+            let bitfield = torrent_ctx.pieces.read().await;
+            sink.send(Message::Bitfield(bitfield.clone())).await?;
+        }
+        drop(downloaded);
+
         // Send Interested & Unchoke to peer
         sink.send(Message::Interested).await?;
         self.am_interested = true;
@@ -304,13 +331,20 @@ impl Peer {
                     } else {
                         info!("no more blocks to download.");
                         request_timer = interval_at(
-                            Instant::now() + Duration::from_secs(99999999),
-                            Duration::from_secs(99999999),
+                            Instant::now() + Duration::from_secs(u32::MAX.into()),
+                            Duration::from_secs(u64::MAX),
                         );
                     }
                 }
-                Some(msg) = stream.next() => {
-                    let msg = msg?;
+                Some(msg) = self.rx.recv() => {
+                    match msg {
+                        PeerMsg::DownloadedPiece(piece) => {
+                            info!("sending Have {piece} to peer {:?}", self.addr);
+                            sink.send(Message::Have(piece)).await?;
+                        }
+                    }
+                }
+                Some(Ok(msg)) = stream.next() => {
                     match msg {
                         Message::KeepAlive => {
                             info!("--------------------------------");
@@ -328,7 +362,7 @@ impl Peer {
                             // update the bitfield of the `Torrent`
                             // will create a new, empty bitfield, with
                             // the same len
-                            tx.send(TorrentMsg::UpdateBitfield(bitfield.len_bytes()))
+                            torrent_tx.send(TorrentMsg::UpdateBitfield(bitfield.len_bytes()))
                                 .await
                                 .unwrap();
 
@@ -435,11 +469,14 @@ impl Peer {
                                     let r = rx.await;
 
                                     // Hash of piece is valid
-                                    if let Ok(Ok(_r)) = r {
+                                    if let Ok(Ok(_)) = r {
                                         info!("hash of piece {:?} is valid", block.index);
                                         let mut tr_pieces = torrent_ctx.pieces.write().await;
                                         tr_pieces.set(block.index);
-                                        // todo: send Have msg to peers that dont have this piece
+
+                                        // send msg to Torrent, to send Have messages to peers that
+                                        // dont have this piece.
+                                        let _ = torrent_tx.send(TorrentMsg::DownloadedPiece(block.index)).await;
                                     } else {
                                         warn!("The hash of the piece {:?} is invalid", block.index);
                                     }
@@ -483,6 +520,7 @@ impl Peer {
                                     begin: block_info.begin,
                                     block: bytes,
                                 };
+                                torrent_ctx.uploaded.fetch_add(block.block.len() as u64, Ordering::SeqCst);
                                 let _ = sink.send(Message::Piece(block)).await;
                             }
                         }

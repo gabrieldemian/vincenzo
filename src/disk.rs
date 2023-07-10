@@ -302,6 +302,7 @@ mod tests {
         metainfo::{self, Info, MetaInfo},
         tcp_wire::lib::{Block, BLOCK_LEN},
         torrent::{Torrent, TorrentMsg},
+        tracker::tracker::TrackerMsg,
     };
 
     use super::*;
@@ -322,9 +323,18 @@ mod tests {
         let m = get_magnet(&args.magnet).unwrap();
 
         let (torrent_tx, torrent_rx) = mpsc::channel::<TorrentMsg>(3);
-        let (disk_tx, disk_rx) = mpsc::channel::<DiskMsg>(3);
 
-        let torrent = Torrent::new(torrent_tx.clone(), disk_tx.clone(), torrent_rx, m).await;
+        let (disk_tx, disk_rx) = mpsc::channel::<DiskMsg>(300);
+        let (tracker_tx, _) = mpsc::channel::<TrackerMsg>(300);
+
+        let torrent = Torrent::new(
+            torrent_tx.clone(),
+            disk_tx.clone(),
+            torrent_rx,
+            tracker_tx,
+            m,
+        )
+        .await;
         let torrent_ctx = torrent.ctx.clone();
 
         let mut disk = Disk::new(disk_rx, torrent_ctx.clone(), args);
@@ -419,7 +429,16 @@ mod tests {
         let (torrent_tx, torrent_rx) = mpsc::channel::<TorrentMsg>(3);
         let (disk_tx, disk_rx) = mpsc::channel::<DiskMsg>(3);
 
-        let torrent = Torrent::new(torrent_tx.clone(), disk_tx.clone(), torrent_rx, m).await;
+        let (tracker_tx, _) = mpsc::channel::<TrackerMsg>(300);
+
+        let torrent = Torrent::new(
+            torrent_tx.clone(),
+            disk_tx.clone(),
+            torrent_rx,
+            tracker_tx,
+            m,
+        )
+        .await;
         let torrent_ctx = torrent.ctx.clone();
 
         let mut info_ctx = torrent.ctx.info.write().await;
@@ -478,7 +497,16 @@ mod tests {
         let (torrent_tx, torrent_rx) = mpsc::channel::<TorrentMsg>(3);
         let (disk_tx, _) = mpsc::channel::<DiskMsg>(3);
 
-        let torrent = Torrent::new(torrent_tx, disk_tx, torrent_rx, m).await;
+        let (tracker_tx, _) = mpsc::channel::<TrackerMsg>(300);
+
+        let torrent = Torrent::new(
+            torrent_tx.clone(),
+            disk_tx.clone(),
+            torrent_rx,
+            tracker_tx,
+            m,
+        )
+        .await;
         let torrent_ctx = torrent.ctx.clone();
 
         let metainfo = include_bytes!("../book.torrent");
@@ -590,7 +618,16 @@ mod tests {
         let (torrent_tx, torrent_rx) = mpsc::channel::<TorrentMsg>(1);
         let (disk_tx, _) = mpsc::channel::<DiskMsg>(1);
 
-        let torrent = Torrent::new(torrent_tx, disk_tx, torrent_rx, m).await;
+        let (tracker_tx, _) = mpsc::channel::<TrackerMsg>(300);
+
+        let torrent = Torrent::new(
+            torrent_tx.clone(),
+            disk_tx.clone(),
+            torrent_rx,
+            tracker_tx,
+            m,
+        )
+        .await;
         let torrent_ctx = torrent.ctx.clone();
 
         let (tx, rx) = mpsc::channel(5);

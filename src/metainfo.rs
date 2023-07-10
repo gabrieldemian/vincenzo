@@ -22,9 +22,9 @@ pub struct MetaInfo {
 
 /// File related information (Single-file format)
 /// https://fileformats.fandom.com/wiki/Torrent_file
-// in a multi file format, `name` is name of the directory
-// `file_length` is specific to Single File format
-// in a multi file format, `file_length` is replaced to `files`
+/// in a multi file format, `name` is name of the directory
+/// `file_length` is specific to Single File format
+/// in a multi file format, `file_length` is replaced to `files`
 #[derive(Debug, PartialEq, Clone, Default)]
 pub struct Info {
     /// piece length - number of bytes in a piece
@@ -68,7 +68,7 @@ impl Info {
     /// Calculate how many blocks there are in the entire torrent.
     pub fn blocks_len(&self) -> u32 {
         let blocks_in_piece = self.blocks_per_piece();
-        
+
         blocks_in_piece * (self.pieces.len() as u32 / 20)
     }
     /// Calculate how many blocks there are per piece
@@ -104,6 +104,17 @@ impl Info {
             return Ok(infos);
         }
         Err(error::Error::FileOpenError)
+    }
+    /// Get the total size of the torrent, in bytes.
+    /// This fn panics if the info is not a valid single file torrent or multi file torrent.
+    pub fn get_size(&self) -> u64 {
+        // multi file torrent
+        if let Some(files) = &self.files {
+            return files.iter().fold(0, |acc, x| acc + x.length as u64);
+        }
+
+        // single file torrent
+        self.file_length.unwrap() as u64
     }
 }
 
@@ -401,7 +412,6 @@ impl FromBencode for Info {
 
 #[cfg(test)]
 mod tests {
-    
 
     use super::*;
 

@@ -29,13 +29,13 @@ pub fn get_magnet(str: &str) -> Result<Magnet, MagnetError> {
     Ok(m)
 }
 
-/// The infohash from the magnet link is already
+/// The info_hash from the magnet link is already
 /// encoded in SHA1
 pub fn get_info_hash(info: &str) -> [u8; 20] {
-    let infohash = hex::decode(info).unwrap();
+    let info_hash = hex::decode(info).unwrap();
     let mut x = [0u8; 20];
 
-    x[..20].copy_from_slice(&infohash[..20]);
+    x[..20].copy_from_slice(&info_hash[..20]);
 
     x
 }

@@ -48,4 +48,10 @@ pub enum Error {
     PieceInvalid,
     #[error("The peer took to long to respond")]
     Timeout,
+    #[error("Your magnet does not have a tracker. Currently, this client does not support DHT, you need to use a magnet that has a tracker.")]
+    MagnetNoTracker,
+    #[error(
+        "Your magnet does not have an info_hash, are you sure you copied the entire magnet link?"
+    )]
+    MagnetNoInfoHash,
 }

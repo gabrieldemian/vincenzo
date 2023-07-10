@@ -4,13 +4,15 @@ use std::{
     time::Duration,
 };
 
-use crate::{cli::Args, error::Error, peer::Peer};
-use clap::Parser;
+use crate::error::Error;
 use rand::Rng;
 use tokio::{
     net::{ToSocketAddrs, UdpSocket},
     spawn,
-    sync::mpsc::{self, Receiver},
+    sync::{
+        mpsc::{self, Receiver},
+        oneshot,
+    },
     time::timeout,
 };
 use tracing::{debug, info, warn};
@@ -61,12 +63,15 @@ impl Default for TrackerCtx {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum TrackerMsg {
-    Completed {
+    Announce {
+        event: Event,
         info_hash: [u8; 20],
         downloaded: u64,
         uploaded: u64,
+        left: u64,
+        recipient: oneshot::Sender<Result<announce::Response, Error>>,
     },
 }
 
@@ -170,12 +175,12 @@ impl Tracker {
     }
 
     /// Attempts to send an "announce_request" to the tracker
-    #[tracing::instrument(skip(self, infohash))]
+    #[tracing::instrument(skip(self, info_hash))]
     pub async fn announce_exchange(
         &mut self,
-        infohash: [u8; 20],
+        info_hash: [u8; 20],
         listen: Option<SocketAddr>,
-    ) -> Result<Vec<Peer>, Error> {
+    ) -> Result<(announce::Response, Vec<SocketAddr>), Error> {
         let socket = UdpSocket::bind(self.local_addr).await?;
         socket.connect(self.peer_addr).await?;
 
@@ -195,7 +200,7 @@ impl Tracker {
 
         let req = announce::Request::new(
             connection_id,
-            infohash,
+            info_hash,
             self.ctx.peer_id,
             // local_peer_socket.ip() as u32,
             0,
@@ -251,7 +256,7 @@ impl Tracker {
 
         let peers = Self::parse_compact_peer_list(payload, socket.peer_addr()?.is_ipv6())?;
 
-        Ok(peers)
+        Ok((res, peers))
     }
 
     /// Connect is the first step in getting the file
@@ -271,7 +276,7 @@ impl Tracker {
     }
 
     #[tracing::instrument(skip(buf, is_ipv6))]
-    fn parse_compact_peer_list(buf: &[u8], is_ipv6: bool) -> Result<Vec<Peer>, Error> {
+    fn parse_compact_peer_list(buf: &[u8], is_ipv6: bool) -> Result<Vec<SocketAddr>, Error> {
         let mut peer_list = Vec::<SocketAddr>::new();
 
         // in ipv4 the addresses come in packets of 6 bytes,
@@ -301,18 +306,21 @@ impl Tracker {
             peer_list.push((ip, port).into());
         }
 
-        info!("ips of peers {peer_list:#?}");
-        let peers: Vec<Peer> = peer_list.into_iter().map(|p| p.into()).collect();
+        info!("ips of peers addrs {peer_list:#?}");
+        let peers: Vec<SocketAddr> = peer_list.into_iter().map(|p| p.into()).collect();
 
         Ok(peers)
     }
     #[tracing::instrument(skip(self))]
-    pub async fn completed(
+    pub async fn announce_msg(
         &self,
+        event: Event,
         info_hash: [u8; 20],
         downloaded: u64,
         uploaded: u64,
+        left: u64,
     ) -> Result<announce::Response, Error> {
+        info!("announcing {event:#?} to tracker");
         let socket = UdpSocket::bind(self.local_addr).await?;
         socket.connect(self.peer_addr).await?;
 
@@ -320,28 +328,24 @@ impl Tracker {
             connection_id: self.ctx.connection_id.unwrap_or(0),
             action: Action::Announce.into(),
             transaction_id: rand::thread_rng().gen(),
-            infohash: info_hash,
+            info_hash,
             peer_id: self.ctx.peer_id,
             downloaded,
-            left: 0,
+            left,
             uploaded,
-            event: Event::Completed.try_into().unwrap_or(1),
+            event: event.into(),
             ip_address: 0,
             num_want: u32::MAX,
             port: self.local_addr.port(),
         };
-
-        println!("{req:#?}");
 
         let mut len = 0_usize;
         let mut res = [0u8; Self::ANNOUNCE_RES_BUF_LEN];
 
         // will try to connect up to 3 times
         // breaking if succesfull
-        for i in 0..=2 {
-            println!("announcing completed torrent {i}...");
+        for _ in 0..=2 {
             socket.send(&req.serialize()).await?;
-            println!("serialized");
             match timeout(Duration::new(3, 0), socket.recv(&mut res)).await {
                 Ok(Ok(lenn)) => {
                     len = lenn;
@@ -358,8 +362,6 @@ impl Tracker {
 
         let (res, _) = announce::Response::deserialize(res)?;
 
-        println!("deserialize res {res:#?}");
-
         Ok(res)
     }
 
@@ -367,12 +369,18 @@ impl Tracker {
     pub async fn run(&self, mut rx: Receiver<TrackerMsg>) -> Result<(), Error> {
         while let Some(msg) = rx.recv().await {
             match msg {
-                TrackerMsg::Completed {
+                TrackerMsg::Announce {
                     info_hash,
                     downloaded,
                     uploaded,
+                    recipient,
+                    event,
+                    left,
                 } => {
-                    self.completed(info_hash, downloaded, uploaded).await?;
+                    let r = self
+                        .announce_msg(event, info_hash, downloaded, uploaded, left)
+                        .await;
+                    let _ = recipient.send(r);
                 }
             }
         }
@@ -392,7 +400,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn can_send_completed_msg() -> Result<(), Error> {
+    async fn can_announce() -> Result<(), Error> {
         let magnet = "magnet:?xt=urn:btih:48aac768a865798307ddd4284be77644368dd2c7&dn=Kerkour%20S.%20Black%20Hat%20Rust...Rust%20programming%20language%202022&tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%2Fannounce&tr=udp%3A%2F%2F9.rarbg.to%3A2920%2Fannounce&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&tr=udp%3A%2F%2Ftracker.internetwarriors.net%3A1337%2Fannounce&tr=udp%3A%2F%2Ftracker.leechers-paradise.org%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.pirateparty.gr%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.cyberia.is%3A6969%2Fannounce".to_owned();
         let m = get_magnet(&magnet).unwrap();
 
@@ -410,11 +418,17 @@ mod tests {
             .iter()
             .fold(0, |acc, x| acc + x.length as u64);
 
-        let r = tracker.completed(info_hash, downloaded, 4092334).await?;
-
+        let r = tracker
+            .announce_msg(Event::Completed, info_hash, downloaded, 0, 100)
+            .await?;
         assert_eq!(r.action, Action::Announce.into());
-
         println!("r from completed announce {r:?}");
+
+        let r = tracker
+            .announce_msg(Event::Stopped, info_hash, downloaded, 0, 0)
+            .await?;
+        assert_eq!(r.action, Action::Announce.into());
+        println!("r from stopped announce {r:?}");
 
         Ok(())
     }

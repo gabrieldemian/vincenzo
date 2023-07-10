@@ -1,6 +1,4 @@
-use crate::error::Error;
-
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Event {
     None,
     Completed,
@@ -25,15 +23,14 @@ impl From<Event> for u64 {
     }
 }
 
-impl TryFrom<u64> for Event {
-    type Error = Error;
-    fn try_from(x: u64) -> Result<Self, Self::Error> {
+impl From<u64> for Event {
+    fn from(x: u64) -> Self {
         match x {
-            0 => Ok(Event::None),
-            1 => Ok(Event::Completed),
-            2 => Ok(Event::Started),
-            3 => Ok(Event::Stopped),
-            _ => Err(Error::TrackerEvent),
+            0 => Event::None,
+            1 => Event::Completed,
+            2 => Event::Started,
+            3 => Event::Stopped,
+            _ => Event::None,
         }
     }
 }
