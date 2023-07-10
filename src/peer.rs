@@ -162,7 +162,7 @@ impl Peer {
         let _ = disk_tx
             .send(DiskMsg::RequestBlocks {
                 recipient: otx,
-                qnt: 5,
+                qnt: 1,
                 pieces: self.pieces.clone(),
             })
             .await;

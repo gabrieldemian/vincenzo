@@ -1,5 +1,3 @@
-// use core::iter::Iterator;
-
 use bitlab::*;
 
 #[derive(Debug, Clone, Default, PartialEq)]

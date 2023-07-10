@@ -312,7 +312,7 @@ impl Torrent {
                         info!("sending periodic announce");
                         let db = self.ctx.downloaded_blocks.read().await;
                         let downloaded = db.iter().fold(0, |acc, x| acc + x.len as u64);
-                        let left = downloaded - info.get_size();
+                        let left = if downloaded < info.get_size() {info.get_size()} else { downloaded - info.get_size()};
                         drop(db);
                         let (otx, orx) = oneshot::channel();
 
@@ -437,6 +437,9 @@ impl Torrent {
                             for peer in peers {
                                 spawn(async move {
                                     let pieces = peer.pieces.read().await;
+                                    if pieces.len_bytes() == 0 {
+                                        let _ = peer.peer_tx.send(PeerMsg::DownloadedPiece(piece)).await;
+                                    }
                                     if let Some(b) = pieces.get(piece) {
                                         if b.bit == 0 {
                                             let _ = peer.peer_tx.send(PeerMsg::DownloadedPiece(piece)).await;
