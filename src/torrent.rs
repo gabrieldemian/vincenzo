@@ -445,16 +445,16 @@ impl Torrent {
                                     info!("peer has 0 pieces");
                                     let (tx, rx) = oneshot::channel();
                                     let _ = peer.peer_tx.send(PeerMsg::DownloadedPiece((piece, tx))).await;
-                                    // let _ = rx.await;
-                                    // info!("came back from send");
+                                    let _ = rx.await;
+                                    info!("came back from send");
                                 }
                                 else if let Some(b) = pieces.get(piece) {
                                     if b.bit == 0 {
                                         info!("peer has > 0 pieces, sending have");
                                         let (tx, rx) = oneshot::channel();
                                         let _ = peer.peer_tx.send(PeerMsg::DownloadedPiece((piece, tx))).await;
-                                        // let _ = rx.await;
-                                        // info!("came back from send");
+                                        let _ = rx.await;
+                                        info!("came back from send");
                                     }
                                 }
                             }

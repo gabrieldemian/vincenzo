@@ -12,12 +12,12 @@ use tokio::{
         mpsc::{self, Receiver, Sender},
         oneshot, RwLock,
     },
-    time::{interval_at, Instant}, spawn,
+    time::{interval_at, Instant},
 };
 use tokio_util::codec::{Framed, FramedParts};
 
 use tokio::net::TcpStream;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 use crate::{
     bitfield::Bitfield,
@@ -307,7 +307,7 @@ impl Peer {
                         PeerMsg::DownloadedPiece((piece, tx)) => {
                             info!("sending have {piece} to peer {:?}", self.addr);
                             let _ = sink.send(Message::Have(piece)).await;
-                            // let _ = tx.send(Ok(()));
+                            let _ = tx.send(Ok(()));
                         }
                     }
                 }
@@ -414,9 +414,9 @@ impl Peer {
                             // peer won't request blocks from us anymore
                         }
                         Message::Have(piece) => {
-                            debug!("-------------------------------");
-                            debug!("| {:?} Have  |", self.addr);
-                            debug!("-------------------------------");
+                            info!("-------------------------------");
+                            info!("| {:?} Have {piece}  |", self.addr);
+                            info!("-------------------------------");
                             // Have is usually sent when the peer has downloaded
                             // a new piece, however, some peers, after handshake,
                             // send an incomplete bitfield followed by a sequence of
@@ -425,6 +425,20 @@ impl Peer {
                             // Overwrite pieces on bitfield, if the peer has one
                             let mut pieces = self.ctx.pieces.write().await;
                             pieces.set(piece);
+                            drop(pieces);
+
+                            // maybe request the incoming piece
+                            if self.am_interested && !self.peer_choking {
+                                let tr_pieces = self.torrent_ctx.pieces.read().await;
+                                let bit_item = tr_pieces.get(piece);
+                                drop(tr_pieces);
+
+                                if let Some(a) = bit_item {
+                                    if a.bit == 0 {
+                                        self.request_next_piece(&mut sink).await?;
+                                    }
+                                }
+                            }
                         }
                         Message::Piece(block) => {
                             info!("-------------------------------");
