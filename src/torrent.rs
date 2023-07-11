@@ -433,19 +433,30 @@ impl Torrent {
                         // when a new piece is downloaded, torrent will find pieces that don't have
                         // this piece, and command them to send a Have msg
                         TorrentMsg::DownloadedPiece(piece) => {
+                            info!("downloaded_piece {piece}");
                             let peers = self.peer_ctxs.clone();
                             for peer in peers {
-                                spawn(async move {
-                                    let pieces = peer.pieces.read().await;
-                                    if pieces.len_bytes() == 0 {
-                                        let _ = peer.peer_tx.send(PeerMsg::DownloadedPiece(piece)).await;
+                                let pieces = peer.pieces.read().await;
+                                info!("peer.pieces {:?}", peer.pieces);
+                                let (tx, rx) = oneshot::channel();
+                                let _ = peer.peer_tx.send(PeerMsg::DownloadedPiece((piece, tx))).await;
+
+                                if pieces.len_bytes() == 0 {
+                                    info!("peer has 0 pieces");
+                                    let (tx, rx) = oneshot::channel();
+                                    let _ = peer.peer_tx.send(PeerMsg::DownloadedPiece((piece, tx))).await;
+                                    // let _ = rx.await;
+                                    // info!("came back from send");
+                                }
+                                else if let Some(b) = pieces.get(piece) {
+                                    if b.bit == 0 {
+                                        info!("peer has > 0 pieces, sending have");
+                                        let (tx, rx) = oneshot::channel();
+                                        let _ = peer.peer_tx.send(PeerMsg::DownloadedPiece((piece, tx))).await;
+                                        // let _ = rx.await;
+                                        // info!("came back from send");
                                     }
-                                    if let Some(b) = pieces.get(piece) {
-                                        if b.bit == 0 {
-                                            let _ = peer.peer_tx.send(PeerMsg::DownloadedPiece(piece)).await;
-                                        }
-                                    }
-                                });
+                                }
                             }
                         }
                     }

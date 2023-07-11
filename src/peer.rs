@@ -12,7 +12,7 @@ use tokio::{
         mpsc::{self, Receiver, Sender},
         oneshot, RwLock,
     },
-    time::{interval_at, Instant},
+    time::{interval_at, Instant}, spawn,
 };
 use tokio_util::codec::{Framed, FramedParts};
 
@@ -69,9 +69,9 @@ pub struct Peer {
 
 /// Messages that peers can send to each other.
 /// Only [Torrent] can send Peer messages.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum PeerMsg {
-    DownloadedPiece(usize),
+    DownloadedPiece((usize, oneshot::Sender<Result<(), Error>>)),
 }
 
 /// Ctx that is shared with [Torrent];
@@ -302,6 +302,15 @@ impl Peer {
 
         loop {
             select! {
+                Some(msg) = self.rx.recv() => {
+                    match msg {
+                        PeerMsg::DownloadedPiece((piece, tx)) => {
+                            info!("sending have {piece} to peer {:?}", self.addr);
+                            let _ = sink.send(Message::Have(piece)).await;
+                            // let _ = tx.send(Ok(()));
+                        }
+                    }
+                }
                 _ = keep_alive_timer.tick() => {
                     // send Keepalive every 2 minutes
                     sink.send(Message::KeepAlive).await?;
@@ -340,14 +349,6 @@ impl Peer {
                         }
                     }
                     drop(info);
-                }
-                Some(msg) = self.rx.recv() => {
-                    match msg {
-                        PeerMsg::DownloadedPiece(piece) => {
-                            info!("sending Have {piece} to peer {:?}", self.addr);
-                            sink.send(Message::Have(piece)).await?;
-                        }
-                    }
                 }
                 Some(Ok(msg)) = stream.next() => {
                     match msg {
