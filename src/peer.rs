@@ -53,14 +53,13 @@ pub struct Peer {
     pub peer_choking: bool,
     /// if this peer is interested in the client
     pub peer_interested: bool,
-    /// TCP addr that this peer is listening on
-    pub addr: SocketAddr,
     pub extension: Extension,
     /// Updated when the peer sends us its peer
     /// id, in the handshake.
     pub id: Option<[u8; 20]>,
     pub reserved: [u8; 8],
     pub torrent_ctx: Arc<TorrentCtx>,
+    pub torrent_tx: mpsc::Sender<TorrentMsg>,
     pub tracker_ctx: Arc<TrackerCtx>,
     pub disk_tx: Option<Sender<DiskMsg>>,
     pub rx: Receiver<PeerMsg>,
@@ -68,6 +67,8 @@ pub struct Peer {
     /// has, and hasn't, containing 0s and 1s
     pub pieces: Bitfield,
     pub ctx: PeerCtx,
+    /// TCP addr that this peer is listening on
+    pub addr: SocketAddr,
 }
 
 /// Messages that peers can send to each other.
@@ -81,17 +82,24 @@ pub enum PeerMsg {
 #[derive(Debug, Clone)]
 pub struct PeerCtx {
     pub peer_tx: mpsc::Sender<PeerMsg>,
+    /// TCP addr that this peer is listening on
+    pub addr: String,
 }
 
 impl Peer {
     pub fn new(
-        peer_tx: mpsc::Sender<PeerMsg>,
+        peer_tx: Sender<PeerMsg>,
+        torrent_tx: Sender<TorrentMsg>,
         torrent_ctx: Arc<TorrentCtx>,
         rx: Receiver<PeerMsg>,
     ) -> Self {
-        let ctx = PeerCtx { peer_tx };
+        let ctx = PeerCtx {
+            peer_tx,
+            addr: "".to_owned(),
+        };
 
         Peer {
+            torrent_tx,
             pieces: Bitfield::new(),
             am_choking: true,
             am_interested: false,
@@ -110,6 +118,7 @@ impl Peer {
     }
     pub fn addr(mut self, addr: SocketAddr) -> Self {
         self.addr = addr;
+        self.ctx.addr = self.addr.to_string();
         self
     }
     pub fn torrent_ctx(mut self, ctx: Arc<TorrentCtx>) -> Self {
@@ -156,7 +165,7 @@ impl Peer {
         let _ = disk_tx
             .send(DiskMsg::RequestBlocks {
                 recipient: otx,
-                qnt: 5,
+                qnt: 1,
                 pieces: self.pieces.clone(),
             })
             .await;
@@ -164,6 +173,7 @@ impl Peer {
         let r = orx.await.unwrap();
 
         for info in r {
+            info!("requesting block of index {:?}", info.index);
             sink.send(Message::Request(info)).await?;
         }
 
@@ -204,10 +214,9 @@ impl Peer {
         }
         Ok(())
     }
-    #[tracing::instrument(skip(self, torrent_tx, direction, socket), name = "peer::run", ret)]
+    #[tracing::instrument(skip(self, direction, socket), name = "peer::run", ret)]
     pub async fn run(
         &mut self,
-        torrent_tx: Sender<TorrentMsg>,
         direction: Direction,
         mut socket: Framed<TcpStream, HandshakeCodec>,
     ) -> Result<(), Error> {
@@ -309,7 +318,6 @@ impl Peer {
                 // At every 5 seconds, check for blocks that were requested,
                 // but not downloaded, and request them again.
                 _ = request_timer.tick() => {
-                    info!("request_timer tick");
                     let info = torrent_ctx.info.read().await;
                     // we know if the info is downloaded if the piece_length is > 0
                     if info.piece_length > 0 {
@@ -357,7 +365,7 @@ impl Peer {
                             // update the bitfield of the `Torrent`
                             // will create a new, empty bitfield, with
                             // the same len
-                            let _ = torrent_tx.send(TorrentMsg::UpdateBitfield(bitfield.len_bytes()))
+                            let _ = self.torrent_tx.send(TorrentMsg::UpdateBitfield(bitfield.len_bytes()))
                                 .await;
 
                             info!("pieces after bitfield {:?}", self.pieces);
@@ -428,7 +436,7 @@ impl Peer {
                         }
                         Message::Piece(block) => {
                             info!("-------------------------------");
-                            info!("| {:?} Piece  |", self.addr);
+                            info!("| {:?} Piece {}  |", self.addr, block.index);
                             info!("-------------------------------");
                             info!("index: {:?}", block.index);
                             info!("begin: {:?}", block.begin);
@@ -478,6 +486,7 @@ impl Peer {
 
                                     // Hash of piece is valid
                                     if let Ok(Ok(_)) = r {
+                                        let _ = self.torrent_tx.send(TorrentMsg::DownloadedPiece(block.index)).await;
                                         info!("hash of piece {:?} is valid", block.index);
 
                                         let mut tr_pieces = torrent_ctx.pieces.write().await;
@@ -496,11 +505,20 @@ impl Peer {
                                 warn!("invalid block from Piece, ignoring...");
                             }
 
-                            info!("---------------------------------\n");
+                            let info = torrent_ctx.info.read().await;
+                            let is_last_block = torrent_ctx.downloaded.load(Ordering::SeqCst) >= info.get_size();
+                            drop(info);
 
-                            if self.am_interested && !self.peer_choking {
+                            if self.am_interested && !self.peer_choking && !is_last_block {
                                 self.request_next_piece(&mut sink).await?;
                             }
+
+                            if is_last_block {
+                                info!("this was the last block!!!");
+                                let _ = self.torrent_tx.send(TorrentMsg::DownloadComplete).await;
+                            }
+
+                            info!("---------------------------------\n");
                         }
                         Message::Cancel(block_info) => {
                             info!("------------------------------");
@@ -620,7 +638,7 @@ impl Peer {
 
                                             let info_dict = torrent_ctx.info_dict.write().await;
                                             let have_all_pieces = info_dict.keys().count() as u32 >= pieces;
-                                            info!("have_all_pieces? {have_all_pieces:?}");
+                                            // info!("have_all_pieces? {have_all_pieces:?}");
 
                                             // if this is the last piece
                                             if have_all_pieces {
@@ -676,13 +694,19 @@ impl Peer {
                 Some(msg) = self.rx.recv() => {
                     match msg {
                         PeerMsg::DownloadedPiece(piece) => {
+                            info!("received peer {:?} downloaded piece {piece}", self.addr);
                             if let Some(b) = self.pieces.get(piece) {
-                                info!("received peer {:?} downloaded piece {piece}", self.addr);
+
                                 // send Have to this peer if he doesnt have this piece
                                 if b.bit == 0 {
                                     info!("sending have {piece} to peer {:?}", self.addr);
                                     let _ = sink.send(Message::Have(piece)).await;
                                 }
+                            }
+                            else if self.pieces.len_bytes() == 0 {
+                                info!("received peer {:?} does not sent bitfield {piece}", self.addr);
+                                // send also if the peer did not sent a bitfield
+                                let _ = sink.send(Message::Have(piece)).await;
                             }
                         }
                     }
