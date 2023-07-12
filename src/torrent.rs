@@ -55,7 +55,7 @@ pub struct Torrent {
     pub rx: mpsc::Receiver<TorrentMsg>,
     pub in_end_game: bool,
     pub tracker_tx: mpsc::Sender<TrackerMsg>,
-    pub peer_ctxs: Vec<Arc<PeerCtx>>,
+    pub peer_ctxs: Vec<PeerCtx>,
 }
 
 /// Information and methods shared with peer sessions in the torrent.
@@ -302,6 +302,35 @@ impl Torrent {
 
         loop {
             select! {
+                Some(msg) = self.rx.recv() => {
+                    // in the future, this event loop will
+                    // send messages to the frontend,
+                    // the terminal ui.
+                    match msg {
+                        TorrentMsg::UpdateBitfield(len) => {
+                            // create an empty bitfield with the same
+                            // len as the bitfield from the peer
+                            let ctx = Arc::clone(&self.ctx);
+                            let mut pieces = ctx.pieces.write().await;
+
+                            info!("update bitfield len {:?}", len);
+
+                            // only create the bitfield if we don't have one
+                            // pieces.len() will start at 0
+                            if pieces.len() < len {
+                                let inner = vec![0_u8; len];
+                                *pieces = Bitfield::from(inner);
+                            }
+                        }
+                        TorrentMsg::DownloadedPiece(piece) => {
+                            info!("received torrent downloaded piece {piece}");
+                            // send Have messages to peers that dont have our pieces
+                            for peer in &self.peer_ctxs {
+                                let _ = peer.peer_tx.send(PeerMsg::DownloadedPiece(piece)).await;
+                            }
+                        }
+                    }
+                }
                 // periodically announce to tracker, at the specified interval
                 // to update the tracker about the client's stats.
                 // let have_info = self.ctx.info_dict;
@@ -345,6 +374,7 @@ impl Torrent {
                 // been fully downloaded
                 _ = tick_interval.tick() => {
                     let info = self.ctx.info.read().await;
+
                     if info.piece_length > 0 {
                         let downloaded = self.ctx.downloaded.load(Ordering::SeqCst);
                         let info = self.ctx.info.read().await;
@@ -410,57 +440,6 @@ impl Torrent {
                     }
                     drop(info);
                 },
-                Some(msg) = self.rx.recv() => {
-                    // in the future, this event loop will
-                    // send messages to the frontend,
-                    // the terminal ui.
-                    match msg {
-                        TorrentMsg::UpdateBitfield(len) => {
-                            // create an empty bitfield with the same
-                            // len as the bitfield from the peer
-                            let ctx = Arc::clone(&self.ctx);
-                            let mut pieces = ctx.pieces.write().await;
-
-                            info!("update bitfield len {:?}", len);
-
-                            // only create the bitfield if we don't have one
-                            // pieces.len() will start at 0
-                            if pieces.len() < len {
-                                let inner = vec![0_u8; len];
-                                *pieces = Bitfield::from(inner);
-                            }
-                        }
-                        // when a new piece is downloaded, torrent will find pieces that don't have
-                        // this piece, and command them to send a Have msg
-                        TorrentMsg::DownloadedPiece(piece) => {
-                            info!("downloaded_piece {piece}");
-                            let peers = self.peer_ctxs.clone();
-                            for peer in peers {
-                                let pieces = peer.pieces.read().await;
-                                info!("peer.pieces {:?}", peer.pieces);
-                                let (tx, rx) = oneshot::channel();
-                                let _ = peer.peer_tx.send(PeerMsg::DownloadedPiece((piece, tx))).await;
-
-                                if pieces.len_bytes() == 0 {
-                                    info!("peer has 0 pieces");
-                                    let (tx, rx) = oneshot::channel();
-                                    let _ = peer.peer_tx.send(PeerMsg::DownloadedPiece((piece, tx))).await;
-                                    let _ = rx.await;
-                                    info!("came back from send");
-                                }
-                                else if let Some(b) = pieces.get(piece) {
-                                    if b.bit == 0 {
-                                        info!("peer has > 0 pieces, sending have");
-                                        let (tx, rx) = oneshot::channel();
-                                        let _ = peer.peer_tx.send(PeerMsg::DownloadedPiece((piece, tx))).await;
-                                        let _ = rx.await;
-                                        info!("came back from send");
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
             }
         }
     }
