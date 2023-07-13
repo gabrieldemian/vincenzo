@@ -182,25 +182,51 @@ impl Disk {
 
         let hash_from_info = info.pieces[b..e].to_owned();
 
-        let (mut file_info, _) = self.get_file_from_index(index as u32, 0).await?;
+        let (mut file_info, meta_file) = self.get_file_from_index(index as u32, 0).await?;
+        let pieces_count = info.pieces.len() / 20;
+        let is_last_piece = index == pieces_count - 1;
 
         let piece_len = info.piece_length;
+        println!("piece_len {piece_len:?}");
+
         let piece_len_capacity = info.blocks_per_piece() * BLOCK_LEN;
+        let last_block_len = meta_file.length % BLOCK_LEN;
+
+        println!("piece_len_capacity {piece_len_capacity:?}");
+        println!("last_block_len {last_block_len:?}");
+
         let last_block_modulus = piece_len_capacity % piece_len;
+        println!("last_block_modulus {last_block_modulus:?}");
+
         let remainder = if last_block_modulus == 0 {
             0
         } else {
             BLOCK_LEN - last_block_modulus
         };
+        println!("remainder {remainder:?}");
+
         let total = piece_len_capacity - remainder;
+        let total = if is_last_piece {
+            let mut n = total;
+            n -= BLOCK_LEN;
+            n += last_block_len;
+            n
+        } else {
+            total
+        };
+        // let total = 12718;
 
         let mut buf = vec![0u8; total as usize];
+        println!("total {total:?}");
         file_info.read_exact(&mut buf).await?;
 
         let mut hash = sha1_smol::Sha1::new();
         hash.update(&buf);
 
         let hash = hash.digest().bytes();
+
+        // println!("hash {hash:?}");
+        // println!("hash_from_info {hash_from_info:?}");
 
         if hash_from_info == hash {
             return Ok(());
@@ -422,23 +448,13 @@ mod tests {
     async fn validate_piece() {
         let mut args = Args::default();
         args.magnet = "magnet:?xt=urn:btih:48aac768a865798307ddd4284be77644368dd2c7&dn=Kerkour%20S.%20Black%20Hat%20Rust...Rust%20programming%20language%202022&tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%2Fannounce&tr=udp%3A%2F%2F9.rarbg.to%3A2920%2Fannounce&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&tr=udp%3A%2F%2Ftracker.internetwarriors.net%3A1337%2Fannounce&tr=udp%3A%2F%2Ftracker.leechers-paradise.org%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.pirateparty.gr%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.cyberia.is%3A6969%2Fannounce".to_owned();
-        args.download_dir = "/tmp/bittorrent-rust/".to_owned();
+        // path must end with "/"
+        args.download_dir = "/tmp/btr/".to_owned();
 
         let m = get_magnet(&args.magnet).unwrap();
-
-        let info = Info {
-            file_length: None,
-            name: "arch".to_owned(),
-            piece_length: 6,
-            pieces: vec![
-                218, 57, 163, 238, 94, 107, 75, 13, 50, 85, 191, 239, 149, 96, 24, 144, 175, 216,
-                7, 9,
-            ],
-            files: Some(vec![metainfo::File {
-                length: 12,
-                path: vec!["foo.txt".to_owned()],
-            }]),
-        };
+        let metainfo = include_bytes!("../book.torrent");
+        let metainfo = MetaInfo::from_bencode(metainfo).unwrap();
+        let info = metainfo.info;
 
         let (torrent_tx, torrent_rx) = mpsc::channel::<TorrentMsg>(3);
         let (disk_tx, disk_rx) = mpsc::channel::<DiskMsg>(3);
@@ -459,45 +475,23 @@ mod tests {
         *info_ctx = info.clone();
 
         let mut disk = Disk::new(disk_rx, torrent_ctx.clone(), args);
+        disk.ctx.info = info.clone();
 
-        spawn(async move {
-            disk.run().await.unwrap();
-        });
+        println!("---- piece 0 ----");
+        let r = disk.validate_piece(2).await;
+        assert!(r.is_ok());
 
-        disk_tx.send(DiskMsg::NewTorrent(info)).await.unwrap();
+        println!("---- piece 1 ----");
+        let r = disk.validate_piece(2).await;
+        assert!(r.is_ok());
 
-        let block = Block {
-            index: 0,
-            begin: 0,
-            block: vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
-        };
+        println!("---- piece 2 ----");
+        let r = disk.validate_piece(2).await;
+        assert!(r.is_ok());
 
-        let (tx_oneshot, rx_oneshot) = oneshot::channel();
-        disk_tx
-            .send(DiskMsg::WriteBlock((block.clone(), tx_oneshot)))
-            .await
-            .unwrap();
-        let result = rx_oneshot.await.unwrap();
-        assert!(result.is_ok());
-
-        let block_zero = BlockInfo {
-            index: 0,
-            begin: 0,
-            len: 12,
-        };
-
-        let mut downloaded_blocks = torrent_ctx.downloaded_blocks.write().await;
-        downloaded_blocks.push_front(block_zero);
-
-        let (otx, orx) = oneshot::channel();
-        disk_tx
-            .send(DiskMsg::ValidatePiece((0, otx)))
-            .await
-            .unwrap();
-
-        let r = orx.await;
-
-        assert!(r.unwrap().is_ok());
+        println!("---- piece 249 ----");
+        let r = disk.validate_piece(249).await;
+        assert!(r.is_ok());
     }
 
     #[tokio::test]

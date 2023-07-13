@@ -65,6 +65,29 @@ impl From<Info> for VecDeque<BlockInfo> {
 }
 
 impl Info {
+    pub fn get_last_blocks_len(&self) -> Vec<u32> {
+        let mut b = vec![];
+
+        // multi file torrent
+        if let Some(files) = &self.files {
+            for file in files {
+                let r = file.length % BLOCK_LEN;
+                if r != 0 {
+                    b.push(file.length % BLOCK_LEN);
+                }
+            }
+        }
+
+        // single file torrent
+        if let Some(length) = self.file_length {
+            let r = length % BLOCK_LEN;
+            if r != 0 {
+                b.push(length % BLOCK_LEN);
+            }
+        }
+
+        b
+    }
     /// Calculate how many blocks there are in the entire torrent.
     pub fn blocks_len(&self) -> u32 {
         let blocks_in_piece = self.blocks_per_piece();
@@ -147,11 +170,6 @@ impl File {
         // todo: get this on argument,
         // let file_length = pieces as u32 * piece_length;
         let pieces = pieces as u32;
-
-        // println!("{:?} self.length", self.length);
-        // println!("{piece_length} piece_len");
-        // println!("{pieces} pieces");
-        // println!("{torrent_len:?} torrent_len\n");
 
         let mut index = 0_u32;
 

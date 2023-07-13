@@ -472,11 +472,15 @@ impl Peer {
                                     Err(e) => warn!("could not write piece to disk {e:#?}")
                                 }
 
-                                let info = torrent_ctx.info.read().await;
+                                let info = self.torrent_ctx.info.read().await;
+                                let piece_length = info.piece_length;
+                                let block_len = block.block.len() as u32 + block.begin;
+                                let last_blocks_len = info.get_last_blocks_len();
+                                info!("last_blocks_len {last_blocks_len:#?}");
+                                info!("block_len {:?}", block.block.len());
 
-                                // if this is the last block of a piece
-                                if block.begin + block.block.len() as u32 >= info.piece_length {
-                                    drop(info);
+                                // if this is the last block of a piece, or last block of a file
+                                if block_len == piece_length || last_blocks_len.iter().find(|x| **x == block.block.len() as u32).is_some() {
                                     let (tx, rx) = oneshot::channel();
                                     let disk_tx = self.disk_tx.as_ref().unwrap();
 
@@ -667,10 +671,18 @@ impl Peer {
 
                                                 if hash == m_info {
                                                     info!("the hash of the downloaded info matches the hash of the magnet link");
+
                                                     // update our info on torrent.info
                                                     let mut info_t = torrent_ctx.info.write().await;
                                                     *info_t = info.clone();
+
+                                                    // update the vec of last blocks len
+                                                    let mut lbl = torrent_ctx.last_blocks_len.write().await;
+                                                    info!("the list of last block len is {lbl:#?}");
+
+                                                    *lbl = info_t.get_last_blocks_len();
                                                     drop(info_t);
+                                                    drop(lbl);
 
                                                     let _ = self.disk_tx.as_ref().unwrap().send(DiskMsg::NewTorrent(info)).await;
                                                     if self.am_interested && !self.peer_choking {
