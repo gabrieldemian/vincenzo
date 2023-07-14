@@ -187,23 +187,23 @@ impl Disk {
         let is_last_piece = index == pieces_count - 1;
 
         let piece_len = info.piece_length;
-        println!("piece_len {piece_len:?}");
+        // println!("piece_len {piece_len:?}");
 
         let piece_len_capacity = info.blocks_per_piece() * BLOCK_LEN;
         let last_block_len = meta_file.length % BLOCK_LEN;
 
-        println!("piece_len_capacity {piece_len_capacity:?}");
-        println!("last_block_len {last_block_len:?}");
+        // println!("piece_len_capacity {piece_len_capacity:?}");
+        // println!("last_block_len {last_block_len:?}");
 
         let last_block_modulus = piece_len_capacity % piece_len;
-        println!("last_block_modulus {last_block_modulus:?}");
+        // println!("last_block_modulus {last_block_modulus:?}");
 
         let remainder = if last_block_modulus == 0 {
             0
         } else {
             BLOCK_LEN - last_block_modulus
         };
-        println!("remainder {remainder:?}");
+        // println!("remainder {remainder:?}");
 
         let total = piece_len_capacity - remainder;
         let total = if is_last_piece {
@@ -217,7 +217,7 @@ impl Disk {
         // let total = 12718;
 
         let mut buf = vec![0u8; total as usize];
-        println!("total {total:?}");
+        // println!("total {total:?}");
         file_info.read_exact(&mut buf).await?;
 
         let mut hash = sha1_smol::Sha1::new();
@@ -357,8 +357,8 @@ mod tests {
     async fn can_create_file_tree() {
         let mut args = Args::default();
         args.magnet = "magnet:?xt=urn:btih:48aac768a865798307ddd4284be77644368dd2c7&dn=Kerkour%20S.%20Black%20Hat%20Rust...Rust%20programming%20language%202022&tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%2Fannounce&tr=udp%3A%2F%2F9.rarbg.to%3A2920%2Fannounce&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&tr=udp%3A%2F%2Ftracker.internetwarriors.net%3A1337%2Fannounce&tr=udp%3A%2F%2Ftracker.leechers-paradise.org%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.pirateparty.gr%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.cyberia.is%3A6969%2Fannounce".to_owned();
-        let base_path = "/tmp/bittorrent-rust/".to_owned();
-        args.download_dir = "/tmp/bittorrent-rust/".to_owned();
+        let base_path = "/tmp/btr/".to_owned();
+        args.download_dir = "/tmp/btr/".to_owned();
 
         let m = get_magnet(&args.magnet).unwrap();
 
@@ -445,7 +445,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn validate_piece() {
+    async fn validate_piece_simple_multi() {
         let mut args = Args::default();
         args.magnet = "magnet:?xt=urn:btih:48aac768a865798307ddd4284be77644368dd2c7&dn=Kerkour%20S.%20Black%20Hat%20Rust...Rust%20programming%20language%202022&tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%2Fannounce&tr=udp%3A%2F%2F9.rarbg.to%3A2920%2Fannounce&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&tr=udp%3A%2F%2Ftracker.internetwarriors.net%3A1337%2Fannounce&tr=udp%3A%2F%2Ftracker.leechers-paradise.org%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.pirateparty.gr%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.cyberia.is%3A6969%2Fannounce".to_owned();
         // path must end with "/"
@@ -493,12 +493,30 @@ mod tests {
         let r = disk.validate_piece(249).await;
         assert!(r.is_ok());
     }
+    #[tokio::test]
+    async fn request_blocks_complex_multi() {
+        //
+        // Complex multi file torrent, 60 blocks per piece
+        //
+        let mut args = Args::default();
+        args.magnet = "magnet:?xt=urn:btih:9281EF9099967ED8413E87589EFD38F9B9E484B0&amp;dn=The%20Doors%20%20(Complete%20Studio%20Discography%20-%20MP3%20%40%20320kbps)&amp;tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.openbittorrent.com%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.bittor.pw%3A1337%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&amp;tr=udp%3A%2F%2Fbt.xxx-tracker.com%3A2710%2Fannounce&amp;tr=udp%3A%2F%2Fpublic.popcorn-tracker.org%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Feddie4.nl%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451%2Fannounce&amp;tr=udp%3A%2F%2Fp4p.arenabg.com%3A1337%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.tiny-vps.com%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Fopen.stealth.si%3A80%2Fannounce".to_string();
+        args.download_dir = "/tmp/btr/".to_owned();
+
+        let metainfo = include_bytes!("../music.torrent");
+        let metainfo = MetaInfo::from_bencode(metainfo).unwrap();
+        let info = metainfo.info;
+
+        println!("{:#?}", info.files.unwrap());
+    }
 
     #[tokio::test]
-    async fn request_blocks() {
+    async fn request_blocks_simple_multi() {
+        //
+        // Simple multi file torrent, 1 block per piece
+        //
         let mut args = Args::default();
         args.magnet = "magnet:?xt=urn:btih:48aac768a865798307ddd4284be77644368dd2c7&dn=Kerkour%20S.%20Black%20Hat%20Rust...Rust%20programming%20language%202022&tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%2Fannounce&tr=udp%3A%2F%2F9.rarbg.to%3A2920%2Fannounce&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&tr=udp%3A%2F%2Ftracker.internetwarriors.net%3A1337%2Fannounce&tr=udp%3A%2F%2Ftracker.leechers-paradise.org%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.pirateparty.gr%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.cyberia.is%3A6969%2Fannounce".to_owned();
-        args.download_dir = "/tmp/bittorrent-rust/".to_owned();
+        args.download_dir = "/tmp/btr/".to_owned();
 
         let m = get_magnet(&args.magnet).unwrap();
 
@@ -647,7 +665,7 @@ mod tests {
     async fn multi_file_write_read_block() {
         let mut args = Args::default();
         args.magnet = "magnet:?xt=urn:btih:48aac768a865798307ddd4284be77644368dd2c7&dn=Kerkour%20S.%20Black%20Hat%20Rust...Rust%20programming%20language%202022&tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%2Fannounce&tr=udp%3A%2F%2F9.rarbg.to%3A2920%2Fannounce&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&tr=udp%3A%2F%2Ftracker.internetwarriors.net%3A1337%2Fannounce&tr=udp%3A%2F%2Ftracker.leechers-paradise.org%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.pirateparty.gr%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.cyberia.is%3A6969%2Fannounce".to_owned();
-        args.download_dir = "/tmp/bittorrent-rust/".to_owned();
+        args.download_dir = "/tmp/btr/".to_owned();
 
         let m = get_magnet(&args.magnet).unwrap();
 

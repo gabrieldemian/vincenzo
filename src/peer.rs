@@ -165,7 +165,7 @@ impl Peer {
         let _ = disk_tx
             .send(DiskMsg::RequestBlocks {
                 recipient: otx,
-                qnt: 1,
+                qnt: 5,
                 pieces: self.pieces.clone(),
             })
             .await;
@@ -201,13 +201,15 @@ impl Peer {
                 let t = self.extension.metadata_size.unwrap();
                 let pieces = t as f32 / BLOCK_LEN as f32;
                 let pieces = pieces.ceil() as u32;
+                info!("this info has {pieces} pieces");
 
                 for i in 0..pieces {
-                    let h = Metadata::request(i)
-                        .to_bencode()
-                        .map_err(|_| Error::BencodeError)?;
+                    let h = Metadata::request(i);
 
-                    info!("sending request msg with ut_metadata {ut_metadata:?}");
+                    info!("requesting info piece {i}");
+                    info!("request {h:?}");
+
+                    let h = h.to_bencode().map_err(|_| Error::BencodeError)?;
                     sink.send(Message::Extended((ut_metadata, h))).await?;
                 }
             }
@@ -476,10 +478,11 @@ impl Peer {
                                 let piece_length = info.piece_length;
                                 let block_len = block.block.len() as u32 + block.begin;
                                 let last_blocks_len = info.get_last_blocks_len();
-                                info!("last_blocks_len {last_blocks_len:#?}");
-                                info!("block_len {:?}", block.block.len());
+                                // info!("last_blocks_len {last_blocks_len:#?}");
+                                // info!("block_len {:?}", block.block.len());
 
-                                // if this is the last block of a piece, or last block of a file
+                                // if this is the last block of a piece
+                                // if block_len >= piece_length {
                                 if block_len == piece_length || last_blocks_len.iter().find(|x| **x == block.block.len() as u32).is_some() {
                                     let (tx, rx) = oneshot::channel();
                                     let disk_tx = self.disk_tx.as_ref().unwrap();
@@ -510,15 +513,15 @@ impl Peer {
                             }
 
                             let info = torrent_ctx.info.read().await;
-                            let is_last_block = torrent_ctx.downloaded.load(Ordering::SeqCst) >= info.get_size();
+                            let is_download_complete = torrent_ctx.downloaded.load(Ordering::SeqCst) >= info.get_size();
                             drop(info);
 
-                            if self.am_interested && !self.peer_choking && !is_last_block {
+                            if self.am_interested && !self.peer_choking && !is_download_complete {
                                 self.request_next_piece(&mut sink).await?;
                             }
 
-                            if is_last_block {
-                                info!("this was the last block!!!");
+                            if is_download_complete {
+                                info!("download completed!! won't request more blocks");
                                 let _ = self.torrent_tx.send(TorrentMsg::DownloadComplete).await;
                             }
 
@@ -554,14 +557,16 @@ impl Peer {
                             }
                         }
                         Message::Extended((ext_id, payload)) => {
-                            info!("ext_id {ext_id}");
-                            info!("self ut_metadata {:?}", self.extension.m.ut_metadata);
-                            info!("payload len {:?}", payload.len());
 
+                            // receive extended handshake, send our extended handshake
+                            // and maybe request info pieces if we don't have
                             if ext_id == 0 {
                                 info!("--------------------------------------------");
                                 info!("| {:?} Extended Handshake  |", self.addr);
                                 info!("--------------------------------------------");
+                                info!("ext_id {ext_id}");
+                                info!("self ut_metadata {:?}", self.extension.m.ut_metadata);
+                                info!("payload len {:?}", payload.len());
 
                                 if let Ok(extension) = Extension::from_bencode(&payload) {
                                     self.extension = extension;
@@ -593,13 +598,7 @@ impl Peer {
                                 // if inbound, i send the data with the ext_id of THE PEER
                                 Some(ut_metadata) if ext_id == 3 => {
                                     let t = self.extension.metadata_size.unwrap();
-                                    let info_begin =
-                                        if payload.len() < t as usize
-                                            { payload.len() }
-                                        else { payload.len() - t as usize };
-
-                                    let (metadata, info) = Metadata::extract(payload, info_begin)?;
-                                    info!("metadata {metadata:?}");
+                                    let (metadata, info) = Metadata::extract(payload.clone())?;
 
                                     match metadata.msg_type {
                                         // if peer is requesting, send or reject
@@ -607,6 +606,9 @@ impl Peer {
                                             info!("-------------------------------------");
                                             info!("| {:?} Metadata Req  |", self.addr);
                                             info!("-------------------------------------");
+                                            info!("ext_id {ext_id}");
+                                            info!("self ut_metadata {:?}", self.extension.m.ut_metadata);
+                                            info!("payload len {:?}", payload.len());
                                             let info_dict = torrent_ctx.info_dict.read().await;
                                             let info_slice = info_dict.get(&(metadata.msg_type as u32));
 
@@ -630,32 +632,46 @@ impl Peer {
                                         }
                                         1 => {
                                             info!("-------------------------------------");
-                                            info!("| {:?} Metadata Res  |", self.addr);
+                                            info!("| {:?} Metadata Res {}  |", self.addr, metadata.piece);
                                             info!("-------------------------------------");
-                                            let pieces = t as f32 / BLOCK_LEN as f32;
-                                            let pieces = pieces.ceil() as u32 ;
+                                            info!("ext_id {ext_id}");
+                                            info!("self ut_metadata {:?}", self.extension.m.ut_metadata);
+                                            info!("t {:?}", t);
+                                            info!("payload len {:?}", payload.len());
+                                            info!("info len {:?}", info.len());
+                                            info!("info {:?}", String::from_utf8_lossy(&info[0..50]));
+                                            info!("{metadata:?}");
 
                                             let mut info_dict = torrent_ctx.info_dict.write().await;
 
                                             info_dict.insert(metadata.piece, info);
+
+                                            let info_len = info_dict.values().fold(0, |acc, b| {
+                                                acc + b.len()
+                                            });
                                             drop(info_dict);
 
-                                            let info_dict = torrent_ctx.info_dict.write().await;
-                                            let have_all_pieces = info_dict.keys().count() as u32 >= pieces;
-                                            // info!("have_all_pieces? {have_all_pieces:?}");
+                                            let have_all_pieces = info_len as u32 >= t;
+
+                                            info!("downloaded info bytes {:?}", info_len);
+                                            info!("do we have full info downloaded? {have_all_pieces:?}");
 
                                             // if this is the last piece
                                             if have_all_pieces {
+                                                // info has a valid bencode format
+                                                let info_dict = torrent_ctx.info_dict.read().await;
                                                 let info_bytes = info_dict.values().fold(Vec::new(), |mut acc, b| {
                                                     acc.extend_from_slice(b);
                                                     acc
                                                 });
-
                                                 drop(info_dict);
-
-                                                // info has a valid bencode format
+                                                info!("info_bytes len {:?}", info_bytes.len());
                                                 let info = Info::from_bencode(&info_bytes).map_err(|_| Error::BencodeError)?;
                                                 info!("downloaded full Info from peer {:?}", self.addr);
+
+                                                info!("piece len in bytes {:?}", info.piece_length);
+                                                info!("blocks per piece {:?}", info.blocks_per_piece());
+                                                info!("pieces {:?}", info.pieces.len() / 20);
 
                                                 let m_info = torrent_ctx.magnet.xt.clone().unwrap();
 
@@ -668,8 +684,9 @@ impl Peer {
                                                 // against the hash of the magnet link
                                                 let hash = hex::encode(hash);
                                                 info!("hash hex: {hash:?}");
+                                                info!("hash metainfo: {m_info:?}");
 
-                                                if hash == m_info {
+                                                if hash.to_uppercase() == m_info.to_uppercase() {
                                                     info!("the hash of the downloaded info matches the hash of the magnet link");
 
                                                     // update our info on torrent.info

@@ -97,12 +97,19 @@ impl Metadata {
     ///
     /// This function will return an error if the buffer is not a valid Data type of the metadata
     /// extension protocol
-    pub fn extract(mut buf: Vec<u8>, info_begin: usize) -> Result<(Self, Vec<u8>), error::Error> {
-        let info_buf: Vec<u8> = buf.drain(info_begin..).collect();
+    pub fn extract(mut buf: Vec<u8>) -> Result<(Self, Vec<u8>), error::Error> {
+        // let mut info_buf = Vec::new();
+        let mut metadata_buf = Vec::new();
 
-        let metadata = Metadata::from_bencode(&buf).map_err(|_| error::Error::BencodeError)?;
+        // find end of info dict, which is always the first "ee"
+        if let Some(i) = buf.windows(2).position(|w| w == b"ee") {
+            metadata_buf = buf.drain(..i + 2).collect();
+        }
 
-        Ok((metadata, info_buf))
+        let metadata =
+            Metadata::from_bencode(&metadata_buf).map_err(|_| error::Error::BencodeError)?;
+
+        Ok((metadata, buf))
     }
 }
 
@@ -680,10 +687,10 @@ mod tests {
         ]
         .to_vec();
 
-        let info_begin = 5249 - 5205;
-        let (metadata_msg, info) = Metadata::extract(buf, info_begin).unwrap();
+        let (metadata_msg, info) = Metadata::extract(buf).unwrap();
 
-        println!("info {info:#?}");
+        assert_eq!(info.len(), 5205);
+
         println!("metadata_msg {metadata_msg:#?}");
     }
 }

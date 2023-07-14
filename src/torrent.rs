@@ -16,11 +16,8 @@ use crate::{
 use clap::Parser;
 use core::sync::atomic::{AtomicU64, Ordering};
 use magnet_url::Magnet;
-use std::{
-    collections::{HashMap, VecDeque},
-    sync::Arc,
-    time::Duration,
-};
+use std::collections::BTreeMap;
+use std::{collections::VecDeque, sync::Arc, time::Duration};
 use tokio::{
     net::{TcpListener, TcpStream},
     select, spawn,
@@ -76,7 +73,8 @@ pub struct TorrentCtx {
     /// and those pieces may come in different order,
     /// hence the HashMap (dictionary), and not a vec.
     /// After the dict is complete, it will be decoded into [`info`]
-    pub info_dict: RwLock<HashMap<u32, Vec<u8>>>,
+    // pub info_dict: RwLock<HashMap<u32, Vec<u8>>>,
+    pub info_dict: RwLock<BTreeMap<u32, Vec<u8>>>,
     /// Stats of the current Torrent, returned from tracker on announce requests.
     pub stats: RwLock<Stats>,
     /// How many bytes we have uploaded to other peers.
@@ -104,7 +102,7 @@ impl Torrent {
     ) -> Self {
         let pieces = RwLock::new(Bitfield::default());
         let info = RwLock::new(Info::default());
-        let info_dict = RwLock::new(HashMap::<u32, Vec<u8>>::new());
+        let info_dict = RwLock::new(BTreeMap::<u32, Vec<u8>>::new());
         let tracker_ctx = Arc::new(TrackerCtx::default());
         let requested_blocks = RwLock::new(VecDeque::new());
         let downloaded_blocks = RwLock::new(VecDeque::new());
