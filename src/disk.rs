@@ -187,23 +187,17 @@ impl Disk {
         let is_last_piece = index == pieces_count - 1;
 
         let piece_len = info.piece_length;
-        // println!("piece_len {piece_len:?}");
 
         let piece_len_capacity = info.blocks_per_piece() * BLOCK_LEN;
         let last_block_len = meta_file.length % BLOCK_LEN;
 
-        // println!("piece_len_capacity {piece_len_capacity:?}");
-        // println!("last_block_len {last_block_len:?}");
-
         let last_block_modulus = piece_len_capacity % piece_len;
-        // println!("last_block_modulus {last_block_modulus:?}");
 
         let remainder = if last_block_modulus == 0 {
             0
         } else {
             BLOCK_LEN - last_block_modulus
         };
-        // println!("remainder {remainder:?}");
 
         let total = piece_len_capacity - remainder;
         let total = if is_last_piece {
@@ -214,19 +208,14 @@ impl Disk {
         } else {
             total
         };
-        // let total = 12718;
 
         let mut buf = vec![0u8; total as usize];
-        // println!("total {total:?}");
         file_info.read_exact(&mut buf).await?;
 
         let mut hash = sha1_smol::Sha1::new();
         hash.update(&buf);
 
         let hash = hash.digest().bytes();
-
-        // println!("hash {hash:?}");
-        // println!("hash_from_info {hash_from_info:?}");
 
         if hash_from_info == hash {
             return Ok(());
@@ -273,25 +262,28 @@ impl Disk {
     ) -> Result<(File, metainfo::File), Error> {
         // find a file on a list of files,
         // given a piece_index and a piece_len
-        let piece_begin = piece * self.ctx.info.piece_length;
         let info = &self.ctx.info;
+        let piece_begin = piece * info.piece_length;
+        let piece_end = piece_begin + info.piece_length;
 
         // multi file torrent
         if let Some(files) = &info.files {
-            let file_info = files
-                .iter()
-                .enumerate()
-                .find(|(i, f)| piece_begin < f.length * (*i as u32 + 1))
-                .map(|a| a.1);
+            // pointer to the last byte of the file,
+            // relative to the order of the files in Info.
+            let mut file_end: u32 = 0;
+
+            let file_info = files.iter().find(|f| {
+                let file_start = file_end;
+                file_end += f.length;
+                file_end >= piece_begin && file_start <= piece_end
+            });
 
             if let Some(file_info) = file_info {
                 let path = file_info.path.join("/");
-
                 let mut file = self.open_file(&path).await?;
 
                 file.seek(SeekFrom::Start(piece_begin as u64 + begin as u64))
-                    .await
-                    .unwrap();
+                    .await?;
 
                 return Ok((file, file_info.clone()));
             }
@@ -445,7 +437,136 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn get_file_from_index() {
+        //
+        // Complex multi file torrent, 64 blocks per piece
+        //
+        let metainfo = include_bytes!("../music.torrent");
+        let metainfo = MetaInfo::from_bencode(metainfo).unwrap();
+        let info = metainfo.info;
+        let files = info.files.clone().unwrap();
+
+        let mut args = Args::default();
+        args.magnet = "magnet:?xt=urn:btih:9281EF9099967ED8413E87589EFD38F9B9E484B0&amp;dn=The%20Doors%20%20(Complete%20Studio%20Discography%20-%20MP3%20%40%20320kbps)&amp;tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.openbittorrent.com%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.bittor.pw%3A1337%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&amp;tr=udp%3A%2F%2Fbt.xxx-tracker.com%3A2710%2Fannounce&amp;tr=udp%3A%2F%2Fpublic.popcorn-tracker.org%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Feddie4.nl%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451%2Fannounce&amp;tr=udp%3A%2F%2Fp4p.arenabg.com%3A1337%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.tiny-vps.com%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Fopen.stealth.si%3A80%2Fannounce ".to_owned();
+        let m = get_magnet(&args.magnet).unwrap();
+        args.download_dir = "/tmp/btr/".to_owned();
+
+        let (torrent_tx, torrent_rx) = mpsc::channel::<TorrentMsg>(3);
+        let (disk_tx, disk_rx) = mpsc::channel::<DiskMsg>(3);
+
+        let (tracker_tx, _) = mpsc::channel::<TrackerMsg>(300);
+
+        let torrent = Torrent::new(
+            torrent_tx.clone(),
+            disk_tx.clone(),
+            torrent_rx,
+            tracker_tx,
+            m,
+        )
+        .await;
+        let torrent_ctx = torrent.ctx.clone();
+
+        let mut info_ctx = torrent.ctx.info.write().await;
+        *info_ctx = info.clone();
+
+        let mut disk = Disk::new(disk_rx, torrent_ctx.clone(), args);
+        disk.ctx.info = info.clone();
+
+        println!("--- file 0 ---");
+        println!("{:#?}", files[0]);
+        println!("--- file 1 ---");
+        println!("{:#?}", files[1]);
+        println!("--- file 2 ---");
+        println!("{:#?}", files[2]);
+        let begin = 0;
+        let end = files[0].length;
+        println!("begin {begin}");
+        println!("end {end}");
+        //
+        // pieces_qnt = 26
+        // last_block_len = 5920
+        // first_piece_len = 1048576
+        // last_piece_len = 169760
+        //
+        // println!("--- file 0 ---");
+        // File {
+        //     length: 26384160,
+        //     path: [
+        //         "1967 - Strange Days",
+        //         "The Doors - When The Music's Over.MP3",
+        //     ],
+        // };
+
+        // println!("--- file 1 ---");
+        // File {
+        //     length: 8281625,
+        //     path: [
+        //         "1967 - Strange Days",
+        //         "The Doors - I Can't See Your Face In My Mind.MP3",
+        //     ],
+        // };
+        //
+        // println!("--- file 2 ---");
+        // File {
+        //     length: 7878255,
+        //     path: ["1967 - Strange Days", "The Doors - Love Me Two Times.MP3"],
+        // };
+
+        let (_, meta_file) = disk.get_file_from_index(0, 0).await.unwrap();
+        assert_eq!(
+            meta_file,
+            metainfo::File {
+                length: 26384160,
+                path: vec![
+                    "1967 - Strange Days".to_string(),
+                    "The Doors - When The Music's Over.MP3".to_string(),
+                ],
+            }
+        );
+
+        // last of first file
+        let (_, meta_file) = disk.get_file_from_index(25, 0).await.unwrap();
+        assert_eq!(
+            meta_file,
+            metainfo::File {
+                length: 26384160,
+                path: vec![
+                    "1967 - Strange Days".to_string(),
+                    "The Doors - When The Music's Over.MP3".to_string(),
+                ],
+            }
+        );
+
+        // 8 pieces in file 1
+        let (_, meta_file) = disk.get_file_from_index(26, 0).await.unwrap();
+        assert_eq!(
+            meta_file,
+            metainfo::File {
+                length: 8281625,
+                path: vec![
+                    "1967 - Strange Days".to_string(),
+                    "The Doors - I Can't See Your Face In My Mind.MP3".to_string(),
+                ],
+            }
+        );
+        let (_, meta_file) = disk.get_file_from_index(34, 0).await.unwrap();
+        assert_eq!(
+            meta_file,
+            metainfo::File {
+                length: 7878255,
+                path: vec![
+                    "1967 - Strange Days".to_string(),
+                    "The Doors - Love Me Two Times.MP3".to_string(),
+                ],
+            }
+        );
+    }
+
+    #[tokio::test]
     async fn validate_piece_simple_multi() {
+        //
+        // Simple multi file torrent, 1 block per piece
+        //
         let mut args = Args::default();
         args.magnet = "magnet:?xt=urn:btih:48aac768a865798307ddd4284be77644368dd2c7&dn=Kerkour%20S.%20Black%20Hat%20Rust...Rust%20programming%20language%202022&tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%2Fannounce&tr=udp%3A%2F%2F9.rarbg.to%3A2920%2Fannounce&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&tr=udp%3A%2F%2Ftracker.internetwarriors.net%3A1337%2Fannounce&tr=udp%3A%2F%2Ftracker.leechers-paradise.org%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.pirateparty.gr%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.cyberia.is%3A6969%2Fannounce".to_owned();
         // path must end with "/"
@@ -493,10 +614,11 @@ mod tests {
         let r = disk.validate_piece(249).await;
         assert!(r.is_ok());
     }
+
     #[tokio::test]
     async fn request_blocks_complex_multi() {
         //
-        // Complex multi file torrent, 60 blocks per piece
+        // Complex multi file torrent, 64 blocks per piece
         //
         let mut args = Args::default();
         args.magnet = "magnet:?xt=urn:btih:9281EF9099967ED8413E87589EFD38F9B9E484B0&amp;dn=The%20Doors%20%20(Complete%20Studio%20Discography%20-%20MP3%20%40%20320kbps)&amp;tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.openbittorrent.com%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.bittor.pw%3A1337%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&amp;tr=udp%3A%2F%2Fbt.xxx-tracker.com%3A2710%2Fannounce&amp;tr=udp%3A%2F%2Fpublic.popcorn-tracker.org%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Feddie4.nl%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451%2Fannounce&amp;tr=udp%3A%2F%2Fp4p.arenabg.com%3A1337%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.tiny-vps.com%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Fopen.stealth.si%3A80%2Fannounce".to_string();

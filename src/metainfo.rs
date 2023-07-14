@@ -153,6 +153,7 @@ pub struct File {
 }
 
 impl File {
+    /// Get the len of the given piece in the file, in bytes..
     pub fn get_piece_len(&self, piece: u32, piece_length: u32) -> u32 {
         let b = (piece * piece_length) + piece_length;
         if b <= self.length {
@@ -167,7 +168,6 @@ impl File {
         let pieces = pieces.ceil();
 
         let pieces = pieces as u32;
-        println!("pieces in file {pieces}");
 
         let mut index = 0_u32;
 
@@ -177,26 +177,19 @@ impl File {
         } else {
             self.length % BLOCK_LEN
         };
-        println!("last_block_len {last_block_len}");
 
         for piece in 0..pieces {
             let piece_len = self.get_piece_len(piece, piece_length);
-            println!("piece_len {piece_len} {piece}");
 
             let is_last_piece = pieces == piece + 1;
             let blocks_per_piece = piece_len as f32 / BLOCK_LEN as f32;
             let blocks_per_piece = blocks_per_piece.ceil() as u32;
-            println!("bpp {blocks_per_piece} {piece}");
 
             for block in 0..blocks_per_piece {
                 let is_last_block = blocks_per_piece == block + 1;
 
                 let begin = block * BLOCK_LEN;
 
-                if pieces == piece + 1 && is_last_block {
-                    let len = BLOCK_LEN % (begin + BLOCK_LEN);
-                    println!("last block len {len}");
-                }
                 let len = BLOCK_LEN % (begin + BLOCK_LEN);
 
                 // if the bytes to be written are larger than the
@@ -442,7 +435,7 @@ mod tests {
     #[tokio::test]
     async fn utility_functions_complex_multi() -> Result<(), Error> {
         //
-        // Complex multi file torrent, 60 blocks per piece
+        // Complex multi file torrent, 64 blocks per piece
         //
         let metainfo = include_bytes!("../music.torrent");
         let metainfo = MetaInfo::from_bencode(metainfo).unwrap();
