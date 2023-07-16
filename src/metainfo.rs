@@ -38,32 +38,6 @@ pub struct Info {
     pub files: Option<Vec<File>>,
 }
 
-impl From<Info> for VecDeque<BlockInfo> {
-    fn from(val: Info) -> Self {
-        let mut v = VecDeque::new();
-
-        // get block_infos for a Multi File Info
-        if let Some(files) = &val.files {
-            for file in files {
-                let mut block_infos = file.get_block_infos(val.piece_length);
-                v.append(&mut block_infos);
-            }
-        }
-
-        // get block_infos for a Single File Info
-        if let Some(file_length) = val.file_length {
-            let file = File {
-                length: file_length,
-                path: vec![val.name.clone()],
-            };
-            let mut block_infos = file.get_block_infos(val.piece_length);
-            v.append(&mut block_infos);
-        }
-
-        v
-    }
-}
-
 impl Info {
     /// Calculate how many pieces there are.
     pub fn pieces(&self) -> u32 {
@@ -110,9 +84,11 @@ impl Info {
         // multi file torrent
         if let Some(files) = &self.files {
             let mut infos_r = VecDeque::new();
+            let mut starting_index = 0;
 
             for file in files {
-                let infos = file.get_block_infos(self.piece_length);
+                let infos = file.get_block_infos(self.piece_length, starting_index);
+                starting_index = infos.back().unwrap().index + 1;
                 infos_r.extend(infos.into_iter());
             }
 
@@ -125,7 +101,7 @@ impl Info {
                 length,
                 path: vec![self.name.to_owned()],
             };
-            let infos = file.get_block_infos(self.piece_length);
+            let infos = file.get_block_infos(self.piece_length, 0);
             return Ok(infos);
         }
         Err(error::Error::FileOpenError)
@@ -162,14 +138,14 @@ impl File {
             self.length % piece_length
         }
     }
-    pub fn get_block_infos(&self, piece_length: u32) -> VecDeque<BlockInfo> {
+    pub fn get_block_infos(&self, piece_length: u32, starting_index: u32) -> VecDeque<BlockInfo> {
         let mut infos: VecDeque<BlockInfo> = VecDeque::new();
         let pieces = self.length as f32 / piece_length as f32;
         let pieces = pieces.ceil();
 
         let pieces = pieces as u32;
 
-        let mut index = 0_u32;
+        let mut index = starting_index;
 
         // last block len of the last piece
         let last_block_len = if self.length % BLOCK_LEN == 0 {
@@ -446,14 +422,34 @@ mod tests {
         let per_piece = info.blocks_per_piece();
         let pieces = info.pieces();
 
-        let files = info.files.unwrap();
-        let files_bytes = files.iter().fold(0, |acc, x| acc + x.length);
+        let info_bytes = bi.iter().fold(0, |acc, x| acc + x.len);
+        println!("--- info ---");
+        println!("size {size}");
+        println!("per_piece {per_piece}");
+        println!("pieces {pieces}");
 
+        // validations on the entire info
+        assert_eq!(info_bytes as u64, size);
+        assert_eq!(info_bytes as u64, 863104781);
+        assert_eq!(863104781, size);
+        assert_eq!(64, per_piece);
+        assert_eq!(824, pieces);
+
+        let files = info.files.clone().unwrap();
         let file = &files[0];
+        let file_infos = file.get_block_infos(info.piece_length, 0);
+        let file_bytes = file_infos.iter().fold(0, |acc, x| acc + x.len);
         let pieces_file = file.length as f32 / info.piece_length as f32;
         let pieces_file = pieces_file.ceil() as u32;
         let blocks_file = pieces_file * per_piece;
 
+        // validations on file[0]
+        assert_eq!(1664, blocks_file);
+        assert_eq!(26, pieces_file);
+        assert_eq!(26384160, file_bytes);
+        assert_eq!(26384160, file.length);
+
+        // file0 has 25 pieces (0 idx based) with 1611 blocks
         println!("--- file[0] ---");
         println!("{:#?}", files[0]);
         println!("blocks_file {blocks_file:#?}");
@@ -514,18 +510,53 @@ mod tests {
             }
         );
 
-        // get total size of file from block_infos
-        let total_bis = bi.iter().fold(0, |acc, x| acc + x.len);
+        let file = &files[1];
+        println!("--- file[1] ---");
+        println!("{file:#?}");
 
-        println!("total_bis {total_bis}");
-        println!("info.size {size:?}");
+        let file_infos = file.get_block_infos(info.piece_length, 26);
+        println!("infos_file {:#?}", file_infos.len());
 
-        assert_eq!(total_bis, 863104781);
-        assert_eq!(bi.len(), 52732);
-        assert_eq!(size, 863104781);
-        assert_eq!(files_bytes, 863104781);
-        assert_eq!(per_piece, 64);
-        assert_eq!(pieces, 824);
+        let pieces_file = file.length as f32 / info.piece_length as f32;
+        let pieces_file = pieces_file.ceil() as u32;
+        let blocks_file = pieces_file * per_piece;
+        let file_bytes = file_infos.iter().fold(0, |acc, x| acc + x.len);
+
+        println!("blocks_file {blocks_file:#?}");
+        println!("piece_len {:#?}", info.piece_length);
+        println!("pieces in file {pieces_file:#?}");
+
+        // validations on file[1]
+        assert_eq!(512, blocks_file);
+        assert_eq!(8, pieces_file);
+        assert_eq!(8281625, file_bytes);
+        assert_eq!(8281625, file.length);
+
+        let block = bi.get(1611).unwrap();
+        println!("--- piece 26, block 1611 (first) ---");
+        println!("{block:#?}");
+
+        assert_eq!(
+            *block,
+            BlockInfo {
+                index: 26,
+                begin: 0,
+                len: BLOCK_LEN,
+            }
+        );
+
+        let block = bi.get(2116).unwrap();
+        println!("--- piece 33, block 2116 (last) ---");
+        println!("{block:#?}");
+
+        assert_eq!(
+            *block,
+            BlockInfo {
+                index: 33,
+                begin: 933888,
+                len: 7705,
+            }
+        );
 
         Ok(())
     }

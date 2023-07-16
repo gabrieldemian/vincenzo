@@ -22,7 +22,7 @@ use tokio::{
     net::{TcpListener, TcpStream},
     select, spawn,
     sync::{mpsc, oneshot, RwLock},
-    time::{interval, interval_at, Instant},
+    time::{interval_at, Instant},
 };
 use tokio_util::codec::Framed;
 use tracing::{info, warn};
@@ -297,7 +297,7 @@ impl Torrent {
 
     #[tracing::instrument(name = "torrent::run", skip(self))]
     pub async fn run(&mut self) -> Result<(), Error> {
-        let mut tick_interval = interval(Duration::new(1, 0));
+        // let mut tick_interval = interval(Duration::new(1, 0));
         let stats = self.ctx.stats.read().await;
 
         let mut announce_interval = interval_at(
@@ -403,7 +403,7 @@ impl Torrent {
                     let info = self.ctx.info.read().await;
                     // we know if the info is downloaded if the piece_length is > 0
                     if info.piece_length > 0 {
-                        info!("sending periodic announce");
+                        info!("sending periodic announce, interval {announce_interval:?}");
                         let db = self.ctx.downloaded_blocks.read().await;
                         let downloaded = db.iter().fold(0, |acc, x| acc + x.len as u64);
                         let left = if downloaded < info.get_size() {info.get_size()} else { downloaded - info.get_size()};
@@ -430,14 +430,18 @@ impl Torrent {
                             stats.interval = r.interval;
                             stats.seeders = r.seeders;
                             stats.leechers = r.leechers;
-                            announce_interval = interval(Duration::from_secs(r.interval as u64));
+                            // announce_interval = interval(Duration::from_secs(r.interval as u64));
+                            announce_interval = interval_at(
+                                Instant::now() + Duration::from_secs(r.interval as u64),
+                                Duration::from_secs(r.interval as u64),
+                            );
                         }
                     }
                     drop(info);
                 }
                 // interval used to send stats to the UI
-                _ = tick_interval.tick() => {
-                },
+                // _ = tick_interval.tick() => {
+                // },
             }
         }
     }

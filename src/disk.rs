@@ -5,7 +5,7 @@ use tokio::{
     io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
     sync::{mpsc::Receiver, oneshot::Sender},
 };
-use tracing::debug;
+use tracing::{debug, info};
 
 use crate::{
     bitfield::Bitfield,
@@ -45,6 +45,7 @@ pub struct Disk {
 pub struct DiskCtx {
     pub info: Info,
     pub block_infos: VecDeque<BlockInfo>,
+    // pub block_infos: RwLock<VecDeque<BlockInfo>>,
     pub args: Args,
 }
 
@@ -61,13 +62,14 @@ impl Disk {
         }
     }
 
-    #[tracing::instrument]
+    #[tracing::instrument(skip(self))]
     pub async fn run(&mut self) -> Result<(), Error> {
         debug!("running Disk event loop");
 
         while let Some(msg) = self.rx.recv().await {
             match msg {
                 DiskMsg::NewTorrent(info) => {
+                    // self.ctx.block_infos = RwLock::new(info.get_block_infos().await?);
                     self.ctx.block_infos = info.get_block_infos().await?;
                     self.ctx.info = info;
 
@@ -123,7 +125,7 @@ impl Disk {
                     let mut infos: VecDeque<BlockInfo> = VecDeque::new();
                     let mut idxs = VecDeque::new();
 
-                    for (i, info) in self.ctx.block_infos.iter_mut().enumerate() {
+                    for (i, info) in self.ctx.block_infos.iter().enumerate() {
                         if infos.len() >= qnt {
                             break;
                         }
@@ -224,6 +226,7 @@ impl Disk {
         Err(Error::PieceInvalid)
     }
 
+    #[tracing::instrument(skip(self))]
     pub async fn read_block(&self, block_info: BlockInfo) -> Result<Vec<u8>, Error> {
         let mut file = self
             .get_file_from_index(block_info.index, block_info.begin)
@@ -237,12 +240,19 @@ impl Disk {
         Ok(buf)
     }
 
+    #[tracing::instrument(skip(self, block))]
     pub async fn write_block(&self, block: Block) -> Result<(), Error> {
-        let mut file = self
+        let (mut fs_file, meta_file) = self
             .get_file_from_index(block.index as u32, block.begin)
             .await?;
 
-        file.0.write_all(&block.block).await?;
+        info!("index {:#?}", block.index);
+        info!("begin {:#?}", block.begin);
+        info!("len {:#?}", block.block.len());
+        info!("std::file {:#?}", fs_file);
+        info!("metainfo::file {:#?}", meta_file);
+
+        fs_file.write_all(&block.block).await?;
 
         Ok(())
     }
@@ -524,8 +534,41 @@ mod tests {
             }
         );
 
+        // first block of the last piece
+        let block = BlockInfo {
+            index: 25,
+            begin: 0,
+            len: 16384,
+        };
+
+        let (_, meta_file) = disk
+            .get_file_from_index(block.index, block.begin)
+            .await
+            .unwrap();
+        assert_eq!(
+            meta_file,
+            metainfo::File {
+                length: 26384160,
+                path: vec![
+                    "1967 - Strange Days".to_string(),
+                    "The Doors - When The Music's Over.MP3".to_string(),
+                ],
+            }
+        );
+
+        // when the peer sends the last block of the last piece of file[0]
+        let last_block = BlockInfo {
+            index: 25,
+            begin: 163840,
+            len: 5920,
+        };
+
         // last of first file
-        let (_, meta_file) = disk.get_file_from_index(25, 0).await.unwrap();
+        let (_, meta_file) = disk
+            .get_file_from_index(last_block.index, last_block.begin)
+            .await
+            .unwrap();
+
         assert_eq!(
             meta_file,
             metainfo::File {
@@ -539,6 +582,17 @@ mod tests {
 
         // 8 pieces in file 1
         let (_, meta_file) = disk.get_file_from_index(26, 0).await.unwrap();
+        assert_eq!(
+            meta_file,
+            metainfo::File {
+                length: 8281625,
+                path: vec![
+                    "1967 - Strange Days".to_string(),
+                    "The Doors - I Can't See Your Face In My Mind.MP3".to_string(),
+                ],
+            }
+        );
+        let (_, meta_file) = disk.get_file_from_index(33, 0).await.unwrap();
         assert_eq!(
             meta_file,
             metainfo::File {
@@ -618,17 +672,68 @@ mod tests {
     #[tokio::test]
     async fn request_blocks_complex_multi() {
         //
-        // Complex multi file torrent, 64 blocks per piece
+        // Complex multi file torrent, 64 block per piece
         //
-        let mut args = Args::default();
-        args.magnet = "magnet:?xt=urn:btih:9281EF9099967ED8413E87589EFD38F9B9E484B0&amp;dn=The%20Doors%20%20(Complete%20Studio%20Discography%20-%20MP3%20%40%20320kbps)&amp;tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.openbittorrent.com%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.bittor.pw%3A1337%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&amp;tr=udp%3A%2F%2Fbt.xxx-tracker.com%3A2710%2Fannounce&amp;tr=udp%3A%2F%2Fpublic.popcorn-tracker.org%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Feddie4.nl%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451%2Fannounce&amp;tr=udp%3A%2F%2Fp4p.arenabg.com%3A1337%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.tiny-vps.com%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Fopen.stealth.si%3A80%2Fannounce".to_string();
-        args.download_dir = "/tmp/btr/".to_owned();
-
         let metainfo = include_bytes!("../music.torrent");
         let metainfo = MetaInfo::from_bencode(metainfo).unwrap();
         let info = metainfo.info;
+        let mut args = Args::default();
+        args.magnet = "magnet:?xt=urn:btih:9281EF9099967ED8413E87589EFD38F9B9E484B0&amp;dn=The%20Doors%20%20(Complete%20Studio%20Discography%20-%20MP3%20%40%20320kbps)&amp;tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.openbittorrent.com%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.bittor.pw%3A1337%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&amp;tr=udp%3A%2F%2Fbt.xxx-tracker.com%3A2710%2Fannounce&amp;tr=udp%3A%2F%2Fpublic.popcorn-tracker.org%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Feddie4.nl%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451%2Fannounce&amp;tr=udp%3A%2F%2Fp4p.arenabg.com%3A1337%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.tiny-vps.com%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Fopen.stealth.si%3A80%2Fannounce ".to_owned();
+        args.download_dir = "/tmp/btr/".to_owned();
+        let m = get_magnet(&args.magnet).unwrap();
 
-        println!("{:#?}", info.files.unwrap());
+        let (torrent_tx, torrent_rx) = mpsc::channel::<TorrentMsg>(3);
+        let (disk_tx, _) = mpsc::channel::<DiskMsg>(3);
+
+        let (tracker_tx, _) = mpsc::channel::<TrackerMsg>(300);
+
+        let torrent = Torrent::new(
+            torrent_tx.clone(),
+            disk_tx.clone(),
+            torrent_rx,
+            tracker_tx,
+            m,
+        )
+        .await;
+        let torrent_ctx = torrent.ctx.clone();
+
+        let mut info_ctx = torrent.ctx.info.write().await;
+        *info_ctx = info.clone();
+
+        let (tx, rx) = mpsc::channel(5);
+        let mut disk = Disk::new(rx, torrent_ctx, args);
+
+        spawn(async move {
+            disk.run().await.unwrap();
+        });
+
+        tx.send(DiskMsg::NewTorrent(info)).await.unwrap();
+
+        let (tx_oneshot, rx_oneshot) = oneshot::channel();
+
+        tx.send(DiskMsg::RequestBlocks {
+            qnt: 2,
+            recipient: tx_oneshot,
+            pieces: Bitfield::from(vec![255u8; 999]),
+        })
+        .await
+        .unwrap();
+
+        let expected = VecDeque::from([
+            BlockInfo {
+                index: 0,
+                begin: 0,
+                len: BLOCK_LEN,
+            },
+            BlockInfo {
+                index: 0,
+                begin: BLOCK_LEN,
+                len: BLOCK_LEN,
+            },
+        ]);
+
+        let result = rx_oneshot.await.unwrap();
+        assert_eq!(result, expected);
     }
 
     #[tokio::test]

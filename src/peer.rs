@@ -173,7 +173,7 @@ impl Peer {
         let r = orx.await.unwrap();
 
         for info in r {
-            info!("requesting block of index {:?}", info.index);
+            info!("requesting to {:?} {info:#?}", self.addr);
             sink.send(Message::Request(info)).await?;
         }
 
@@ -304,8 +304,8 @@ impl Peer {
             Duration::from_secs(120),
         );
         let mut request_timer = interval_at(
-            Instant::now() + Duration::from_secs(5),
-            Duration::from_secs(5),
+            Instant::now() + Duration::from_secs(10),
+            Duration::from_secs(10),
         );
 
         loop {
@@ -320,34 +320,45 @@ impl Peer {
                 // At every 5 seconds, check for blocks that were requested,
                 // but not downloaded, and request them again.
                 _ = request_timer.tick() => {
-                    let info = torrent_ctx.info.read().await;
-                    // we know if the info is downloaded if the piece_length is > 0
-                    if info.piece_length > 0 {
-                        // check if there is requested blocks that hasnt been downloaded
-                        let downloaded_blocks = torrent_ctx.downloaded_blocks.read().await;
-                        let requested = torrent_ctx.requested_blocks.read().await;
+                    let requested = torrent_ctx.requested_blocks.read().await;
+                    let front = requested.front();
+                    println!("front requested bi {front:#?}");
+                    drop(requested);
 
-                        let downloaded = torrent_ctx.downloaded.load(Ordering::SeqCst);
-                        let info = torrent_ctx.info.read().await;
-                        let torrent_size = info.get_size();
+                    let downloaded = torrent_ctx.downloaded_blocks.read().await;
+                    let front = downloaded.front();
+                    println!("front downloaded bi {front:#?}");
+                    drop(downloaded);
 
-                        // if our torrent has not been completely downloaded
-                        if downloaded < torrent_size {
-                            for req in &*requested {
-                                let f = downloaded_blocks.iter().find(|down| **down == *req);
-                                if f.is_none() {
-                                    let _ = sink.send(Message::Request(req.clone())).await;
-                                }
-                            }
-                        } else {
-                            info!("no more blocks to download.");
-                            request_timer = interval_at(
-                                Instant::now() + Duration::from_secs(u32::MAX.into()),
-                                Duration::from_secs(u64::MAX),
-                            );
-                        }
-                    }
-                    drop(info);
+                    // let info = torrent_ctx.info.read().await;
+                    // // we know if the info is downloaded if the piece_length is > 0
+                    // if info.piece_length > 0 {
+                    //     // check if there is requested blocks that hasnt been downloaded
+                    //     let downloaded_blocks = torrent_ctx.downloaded_blocks.read().await;
+                    //     let requested = torrent_ctx.requested_blocks.read().await;
+                    //
+                    //     let downloaded = torrent_ctx.downloaded.load(Ordering::SeqCst);
+                    //     let info = torrent_ctx.info.read().await;
+                    //     let torrent_size = info.get_size();
+                    //
+                    //     // if our torrent has not been completely downloaded
+                    //     if downloaded < torrent_size {
+                    //         for req in &*requested {
+                    //             let f = downloaded_blocks.iter().find(|down| **down == *req);
+                    //             if f.is_none() {
+                    //                 info!("request block but not received {req:#?}");
+                    //                 let _ = sink.send(Message::Request(req.clone())).await;
+                    //             }
+                    //         }
+                    //     } else {
+                    //         info!("no more blocks to download.");
+                    //         request_timer = interval_at(
+                    //             Instant::now() + Duration::from_secs(u32::MAX.into()),
+                    //             Duration::from_secs(u64::MAX),
+                    //         );
+                    //     }
+                    // }
+                    // drop(info);
                 }
                 Some(Ok(msg)) = stream.next() => {
                     match msg {
@@ -442,9 +453,8 @@ impl Peer {
                             info!("-------------------------------");
                             info!("index: {:?}", block.index);
                             info!("begin: {:?}", block.begin);
-                            info!("block size: {:?} bytes", block.block.len());
-                            info!("block size: {:?} KiB", block.block.len() / 1000);
-                            info!("is valid? {:?}", block.is_valid());
+                            info!("len: {:?}", block.block.len());
+                            info!("--");
 
                             let bd = torrent_ctx.downloaded_blocks.read().await;
                             let was_downloaded = bd.iter().any(|b| *b == block.clone().into() );
@@ -478,8 +488,6 @@ impl Peer {
                                 let piece_length = info.piece_length;
                                 let block_len = block.block.len() as u32 + block.begin;
                                 let last_blocks_len = info.get_last_blocks_len();
-                                // info!("last_blocks_len {last_blocks_len:#?}");
-                                // info!("block_len {:?}", block.block.len());
 
                                 // if this is the last block of a piece
                                 // if block_len >= piece_length {
@@ -667,8 +675,6 @@ impl Peer {
                                                 drop(info_dict);
                                                 info!("info_bytes len {:?}", info_bytes.len());
                                                 let info = Info::from_bencode(&info_bytes).map_err(|_| Error::BencodeError)?;
-                                                info!("downloaded full Info from peer {:?}", self.addr);
-
                                                 info!("piece len in bytes {:?}", info.piece_length);
                                                 info!("blocks per piece {:?}", info.blocks_per_piece());
                                                 info!("pieces {:?}", info.pieces.len() / 20);
