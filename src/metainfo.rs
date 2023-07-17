@@ -70,9 +70,7 @@ impl Info {
     }
     /// Calculate how many blocks there are in the entire torrent.
     pub fn blocks_len(&self) -> u32 {
-        let blocks_in_piece = self.blocks_per_piece();
-
-        blocks_in_piece * (self.pieces.len() as u32 / 20)
+        self.blocks_per_piece() * (self.pieces.len() as u32 / 20)
     }
     /// Calculate how many blocks there are per piece
     pub fn blocks_per_piece(&self) -> u32 {
@@ -83,14 +81,13 @@ impl Info {
     pub async fn get_block_infos(&self) -> Result<VecDeque<BlockInfo>, error::Error> {
         // multi file torrent
         if let Some(files) = &self.files {
-            // let mut infos_r = VecDeque::new();
-            let infos_r = files[0].get_block_infos(self.piece_length, None);
+            let mut infos_r = VecDeque::new();
 
-            // for file in files {
-            //     let infos = file.get_block_infos(self.piece_length, infos_r.back());
-            //     infos_r.extend(infos.into_iter());
-            // }
-            // println!("infos file 0 {infos_r:#?}");
+            for file in files {
+                let last_block_prev_file = infos_r.back();
+                let infos = file.get_block_infos(self.piece_length, last_block_prev_file);
+                infos_r.extend(infos.into_iter());
+            }
 
             return Ok(infos_r);
         }
@@ -151,7 +148,7 @@ impl File {
     pub fn get_block_infos(
         &self,
         piece_length: u32,
-        prev_block: Option<&BlockInfo>,
+        prev_block_file: Option<&BlockInfo>,
     ) -> VecDeque<BlockInfo> {
         fn partition(
             file: &File,
@@ -166,6 +163,7 @@ impl File {
                     // file.length + (pvf.index * piece_length)
                     //     - ((if prev.len != BLOCK_LEN { 1 } else { prev.len }))
                     // file.length + (pvf.index * piece_length)
+                    // println!("prev_block_file {pvf:#?}");
                     file.length + 8281625
                 } else {
                     file.length
@@ -178,22 +176,15 @@ impl File {
                 if cursor >= file_length {
                     return std::mem::take(infos);
                 }
-                // let len = cursor + BLOCK_LEN;
-                // let len = if len % file_length == len || len % file_length == 0 {
-                //     BLOCK_LEN
-                // } else {
-                //     len % file_length
-                // };
+
                 let len = cursor + BLOCK_LEN;
-                let remainder = if len % file_length == len || len % file_length == 0 {
+                // println!("len {len:#?}");
+                // println!("file_length {file_length:#?}");
+                // println!("moded {:#?}", len % file_length);
+                let len = if len % file_length == len || len % file_length == 0 {
                     BLOCK_LEN
                 } else {
-                    len % file_length
-                };
-                let len = if remainder > 0 {
-                    BLOCK_LEN - remainder
-                } else {
-                    BLOCK_LEN
+                    BLOCK_LEN - (len % file_length)
                 };
 
                 // block to be added
@@ -209,16 +200,6 @@ impl File {
                         prev.begin + prev.len
                     },
                     len,
-                };
-
-                if block
-                    == (BlockInfo {
-                        index: 25,
-                        begin: 163840,
-                        len: 16384,
-                    })
-                {
-                    println!("cursor: {cursor}");
                 };
 
                 infos.push_back(block);
@@ -245,12 +226,11 @@ impl File {
                     }
                 };
                 infos.push_back(b.clone());
-                return partition(file, piece_length, infos, Some(&b));
+                return partition(file, piece_length, infos, prev_block_file);
             }
         }
         let mut infos = VecDeque::new();
-        println!("info begin {infos:#?}");
-        partition(&self, piece_length, &mut infos, prev_block)
+        partition(&self, piece_length, &mut infos, prev_block_file)
     }
 }
 
@@ -477,20 +457,19 @@ mod tests {
         let info = metainfo.info;
 
         let bi = info.get_block_infos().await.unwrap();
-        // let size = info.get_size();
-        // let per_piece = info.blocks_per_piece();
-        // let pieces = info.pieces();
-        //
-        // let info_bytes = bi.iter().fold(0, |acc, x| acc + x.len);
+        let size = info.get_size();
+        let per_piece = info.blocks_per_piece();
+        let pieces = info.pieces();
+        let info_bytes = bi.iter().fold(0, |acc, x| acc + x.len);
         // println!("--- info ---");
         // println!("size {size}");
         println!("piece_len {}", info.piece_length);
         // println!("per_piece {per_piece}");
         // println!("pieces {pieces}");
         //
-        // // validations on the entire info
-        // // assert_eq!(info_bytes as u64, 863104781);
-        // // assert_eq!(863104781, size);
+        // validations on the entire info
+        // assert_eq!(info_bytes as u64, 863104781);
+        // assert_eq!(863104781, size);
         // assert_eq!(64, per_piece);
         // assert_eq!(824, pieces);
         //
@@ -511,75 +490,80 @@ mod tests {
         // // file0 has 25 pieces (0 idx based) with 1611 blocks
         println!("--- file[0] ---");
         println!("{:#?}", files[0]);
-        // println!("blocks_file {blocks_file:#?}");
         println!("piece_len {:#?}", info.piece_length);
-        // println!("pieces in file {pieces_file:#?}");
-        //
         let block = bi.get(0).unwrap();
-        println!("--- piece 0, block 0 (first) ---");
-        println!("{block:#?}");
+        // println!("--- piece 0, block 0 (first) ---");
+        assert_eq!(
+            *block,
+            BlockInfo {
+                index: 0,
+                begin: 0,
+                len: BLOCK_LEN,
+            }
+        );
 
         let block = bi.get(1).unwrap();
-        println!("--- piece 0, block 1 (second) ---");
-        println!("{block:#?}");
+        // println!("--- piece 0, block 1 (second) ---");
+        assert_eq!(
+            *block,
+            BlockInfo {
+                index: 0,
+                begin: BLOCK_LEN,
+                len: BLOCK_LEN,
+            }
+        );
 
         let block = bi.get(2).unwrap();
-        println!("--- piece 0, block 2 (third) ---");
-        println!("{block:#?}");
+        // println!("--- piece 0, block 2 (third) ---");
+        assert_eq!(
+            *block,
+            BlockInfo {
+                index: 0,
+                begin: BLOCK_LEN * 2,
+                len: BLOCK_LEN,
+            }
+        );
 
-        let block = bi.get(63).unwrap();
-        println!("--- piece 0, block 63 ---");
-        println!("{block:#?}");
+        // let block = bi.get(63).unwrap();
+        // println!("--- piece 0, block 63 ---");
+        // println!("{block:#?}");
 
         let block = bi.get(64).unwrap();
-        println!("--- piece 0, block 64 ---");
-        println!("{block:#?}");
-        //
-        // assert_eq!(
-        //     *block,
-        //     BlockInfo {
-        //         index: 0,
-        //         begin: 1032192,
-        //         len: 16384,
-        //     }
-        // );
-        //
-        // let block = bi.get(64).unwrap();
-        // println!("--- piece 1, block 64 (first) ---");
+        // println!("--- piece 0, block 64 ---");
         // println!("{block:#?}");
-        //
-        // assert_eq!(
-        //     *block,
-        //     BlockInfo {
-        //         index: 1,
-        //         begin: 0,
-        //         len: 16384,
-        //     }
-        // );
-        //
-        // // 10 blocks on the last piece of this file
+        assert_eq!(
+            *block,
+            BlockInfo {
+                index: 1,
+                begin: 0,
+                len: 16384,
+            }
+        );
+        let block = bi.get(1608).unwrap();
+        println!("--- piece 25, block 1608 before before last ---");
+        println!("{block:#?}");
+        // 10 blocks on the last piece of this file
         let block = bi.get(1609).unwrap();
         println!("--- piece 25, block 1609 before last ---");
         println!("{block:#?}");
-        //
-        // assert_eq!(
-        //     *block,
-        //     BlockInfo {
-        //         index: 25,
-        //         begin: 0,
-        //         len: 16384,
-        //     }
-        // );
-        //
-        // // last block of the last piece of this file
+        assert_eq!(
+            *block,
+            BlockInfo {
+                index: 25,
+                begin: 147456,
+                len: 16384,
+            }
+        );
+        // last block of the last piece of this file
         let block = bi.get(1610).unwrap();
         println!("--- piece 25, block 1610 (last) ---");
         println!("{block:#?}");
-        //
+
         let bytes_so_far = bi.iter().take(1610).fold(0, |acc, x| acc + x.len);
         assert_eq!(bytes_so_far, 26378240);
         assert_eq!(bytes_so_far + 5920, file.length);
         // missing 5920
+
         assert_eq!(
             *block,
             BlockInfo {
@@ -589,14 +573,6 @@ mod tests {
             }
         );
 
-        // let block = bi.get(1611).unwrap();
-        // println!("--- piece 25, block 1611 file 2 ---");
-        // println!("{block:#?}");
-        //
-        // let file = &files[1];
-        // println!("--- file[1] ---");
-        // println!("{file:#?}");
-        //
         // let file_infos = file.get_block_infos(info.piece_length, None);
         // println!("infos_file {:#?}", file_infos.len());
         //
@@ -609,46 +585,54 @@ mod tests {
         // println!("piece_len {:#?}", info.piece_length);
         // println!("pieces in file {pieces_file:#?}");
         //
-        // // validations on file[1]
+        // validations on file[1]
         // assert_eq!(512, blocks_file);
         // assert_eq!(8, pieces_file);
         // assert_eq!(8281625, file_bytes);
         // assert_eq!(8281625, file.length);
 
-        // let block = bi.get(1611).unwrap();
-        // println!("--- piece 26, block 1611 (first) ---");
+        let bytes_so_far = bi.iter().take(1611).fold(0, |acc, x| acc + x.len);
+        assert_eq!(bytes_so_far, 26384160);
+        assert_eq!(bytes_so_far + 0, file.length);
+        // missing 0
+        // file0 ended /\
+
+        let file = &files[1];
+        // file1 has 8 pieces (0 idx based)
+        println!("--- file[1] ---");
+        println!("{file:#?}");
+
+        let block = bi.get(1611).unwrap();
+        println!("--- file1 piece 26, block 1611 (first) ---");
+        println!("{block:#?}");
+        assert_eq!(
+            *block,
+            BlockInfo {
+                index: 25,
+                begin: 163840 + 5920,
+                len: 5920,
+            }
+        );
+
+        let block = bi.get(1612).unwrap();
+        println!("--- file1 piece 26, block 1612 (second) ---");
+        println!("{block:#?}");
+        assert_eq!(
+            *block,
+            BlockInfo {
+                index: 25,
+                begin: 175680,
+                len: BLOCK_LEN,
+            }
+        );
+
+        // let block = bi.get(1613).unwrap();
+        // println!("--- file1 piece 26, block 1613 (third) ---");
         // println!("{block:#?}");
-        //
         // assert_eq!(
         //     *block,
         //     BlockInfo {
         //         index: 25,
-        //         begin: 163840 + 5920,
-        //         len: 10464,
-        //     }
-        // );
-        //
-        // let block = bi.get(1612).unwrap();
-        // println!("--- piece 26, block 1612 (second) ---");
-        // println!("{block:#?}");
-        //
-        // assert_eq!(
-        //     *block,
-        //     BlockInfo {
-        //         index: 26,
-        //         begin: 0,
-        //         len: BLOCK_LEN,
-        //     }
-        // );
-        //
-        // let block = bi.get(2116).unwrap();
-        // println!("--- piece 33, block 2116 (last) ---");
-        // println!("{block:#?}");
-        //
-        // assert_eq!(
-        //     *block,
-        //     BlockInfo {
-        //         index: 33,
         //         begin: 933888,
         //         len: 7705,
         //     }
