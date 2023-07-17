@@ -70,7 +70,7 @@ impl Disk {
             match msg {
                 DiskMsg::NewTorrent(info) => {
                     // self.ctx.block_infos = RwLock::new(info.get_block_infos().await?);
-                    self.ctx.block_infos = info.get_block_infos().await?;
+                    self.ctx.block_infos = info.get_block_infos()?;
                     self.ctx.info = info;
 
                     // create the skeleton of the torrent tree,
