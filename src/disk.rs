@@ -5,7 +5,7 @@ use tokio::{
     io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
     sync::{mpsc::Receiver, oneshot::Sender},
 };
-use tracing::{debug, info};
+use tracing::debug;
 
 use crate::{
     bitfield::Bitfield,
@@ -184,9 +184,9 @@ impl Disk {
 
         let hash_from_info = info.pieces[b..e].to_owned();
 
-        let (mut file_info, meta_file) = self.get_file_from_index(index as u32, 0).await?;
-        let pieces_count = info.pieces.len() / 20;
-        let is_last_piece = index == pieces_count - 1;
+        let (mut file_info, meta_file) = self.get_file_from_index(index).await?;
+        println!("found file {meta_file:#?}");
+        let is_last_piece = index + 1 == info.pieces() as usize;
 
         let piece_len = info.piece_length;
 
@@ -228,9 +228,7 @@ impl Disk {
 
     #[tracing::instrument(skip(self))]
     pub async fn read_block(&self, block_info: BlockInfo) -> Result<Vec<u8>, Error> {
-        let mut file = self
-            .get_file_from_index(block_info.index, block_info.begin)
-            .await?;
+        let mut file = self.get_file_from_block_info(&block_info).await?;
 
         // how many bytes to read, after offset (begin)
         let mut buf = vec![0; block_info.len as usize];
@@ -242,17 +240,10 @@ impl Disk {
 
     #[tracing::instrument(skip(self, block))]
     pub async fn write_block(&self, block: Block) -> Result<(), Error> {
-        let (mut fs_file, meta_file) = self
-            .get_file_from_index(block.index as u32, block.begin)
-            .await?;
+        let len = block.block.clone();
+        let (mut fs_file, _) = self.get_file_from_block_info(&block.into()).await?;
 
-        info!("index {:#?}", block.index);
-        info!("begin {:#?}", block.begin);
-        info!("len {:#?}", block.block.len());
-        info!("std::file {:#?}", fs_file);
-        info!("metainfo::file {:#?}", meta_file);
-
-        fs_file.write_all(&block.block).await?;
+        fs_file.write_all(&len).await?;
 
         Ok(())
     }
@@ -265,35 +256,38 @@ impl Disk {
     /// to first get the corresponding file and advance the corresponding bytes
     /// of the `piece` and `begin` variables. After that, we can get the correct Block
     /// on the returned File.
-    pub async fn get_file_from_index(
+    pub async fn get_file_from_block_info(
         &self,
-        piece: u32,
-        begin: u32,
+        block_info: &BlockInfo,
     ) -> Result<(File, metainfo::File), Error> {
         // find a file on a list of files,
         // given a piece_index and a piece_len
         let info = &self.ctx.info;
-        let piece_begin = piece * info.piece_length;
-        let piece_end = piece_begin + info.piece_length;
+        let piece_begin = block_info.index * info.piece_length;
 
         // multi file torrent
         if let Some(files) = &info.files {
-            // pointer to the last byte of the file,
-            // relative to the order of the files in Info.
-            let mut file_end: u32 = 0;
+            let mut file_begin: u64 = 0;
+            let mut file_end: u64 = 0;
+
+            // position of the block in the file, in bytes
+            let block_cursor = piece_begin + block_info.begin + block_info.len;
 
             let file_info = files.iter().find(|f| {
-                let file_start = file_end;
-                file_end += f.length;
-                file_end >= piece_begin && file_start <= piece_end
+                file_end += f.length as u64;
+                let r = block_cursor as u64 >= file_begin && block_cursor as u64 <= file_end;
+                file_begin += file_end;
+                r
             });
 
             if let Some(file_info) = file_info {
                 let path = file_info.path.join("/");
                 let mut file = self.open_file(&path).await?;
 
-                file.seek(SeekFrom::Start(piece_begin as u64 + begin as u64))
-                    .await?;
+                file.seek(SeekFrom::Start(
+                    piece_begin as u64 + block_info.begin as u64,
+                ))
+                .await?;
 
                 return Ok((file, file_info.clone()));
             }
@@ -303,9 +297,11 @@ impl Disk {
 
         // single file torrent
         let mut file = self.open_file(&info.name).await?;
-        file.seek(SeekFrom::Start(piece_begin as u64 + begin as u64))
-            .await
-            .unwrap();
+        file.seek(SeekFrom::Start(
+            piece_begin as u64 + block_info.begin as u64,
+        ))
+        .await
+        .unwrap();
 
         let file_info = metainfo::File {
             path: vec![info.name.to_owned()],
@@ -314,10 +310,56 @@ impl Disk {
 
         Ok((file, file_info))
     }
+    pub async fn get_file_from_index(&self, index: usize) -> Result<(File, metainfo::File), Error> {
+        // find a file on a list of files,
+        // given a piece_index and a piece_len
+        let info = &self.ctx.info;
+
+        // single file torrent
+        if info.file_length.is_some() {
+            let mut file = self.open_file(&info.name).await?;
+            let file_info = metainfo::File {
+                path: vec![info.name.to_owned()],
+                length: info.file_length.unwrap(),
+            };
+
+            let offset: u64 = index as u64 * info.piece_length as u64;
+
+            file.seek(SeekFrom::Start(offset)).await?;
+
+            return Ok((file, file_info));
+        }
+
+        // multi file torrent
+        if let Some(files) = &info.files {
+            let piece_begin = index as u32 * info.piece_length;
+            let mut file_begin: u64 = 0;
+            let mut file_end: u64 = 0;
+
+            let file_info = files.iter().find(|f| {
+                file_end += f.length as u64;
+                let r = piece_begin as u64 >= file_begin && piece_begin as u64 <= file_end;
+                file_begin += file_end;
+                r
+            });
+
+            if let Some(file_info) = file_info {
+                let path = file_info.path.join("/");
+                let mut file = self.open_file(&path).await?;
+
+                let offset: u64 = index as u64 * info.piece_length as u64;
+
+                println!("offset {offset}");
+                file.seek(SeekFrom::Start(offset)).await?;
+
+                return Ok((file, file_info.clone()));
+            }
+        }
+        return Err(Error::FileOpenError);
+    }
+
     pub async fn get_block_from_block_info(&self, block_info: &BlockInfo) -> Result<Block, Error> {
-        let mut file = self
-            .get_file_from_index(block_info.index, block_info.begin)
-            .await?;
+        let mut file = self.get_file_from_block_info(&block_info).await?;
 
         let mut buf = vec![0; block_info.len as usize];
 
@@ -447,14 +489,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn get_file_from_index() {
+    async fn get_file_from_block_info() {
         //
         // Complex multi file torrent, 64 blocks per piece
         //
         let metainfo = include_bytes!("../music.torrent");
         let metainfo = MetaInfo::from_bencode(metainfo).unwrap();
         let info = metainfo.info;
-        let files = info.files.clone().unwrap();
 
         let mut args = Args::default();
         args.magnet = "magnet:?xt=urn:btih:9281EF9099967ED8413E87589EFD38F9B9E484B0&amp;dn=The%20Doors%20%20(Complete%20Studio%20Discography%20-%20MP3%20%40%20320kbps)&amp;tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.openbittorrent.com%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.bittor.pw%3A1337%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&amp;tr=udp%3A%2F%2Fbt.xxx-tracker.com%3A2710%2Fannounce&amp;tr=udp%3A%2F%2Fpublic.popcorn-tracker.org%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Feddie4.nl%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451%2Fannounce&amp;tr=udp%3A%2F%2Fp4p.arenabg.com%3A1337%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.tiny-vps.com%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Fopen.stealth.si%3A80%2Fannounce ".to_owned();
@@ -482,22 +523,6 @@ mod tests {
         let mut disk = Disk::new(disk_rx, torrent_ctx.clone(), args);
         disk.ctx.info = info.clone();
 
-        println!("--- file 0 ---");
-        println!("{:#?}", files[0]);
-        println!("--- file 1 ---");
-        println!("{:#?}", files[1]);
-        println!("--- file 2 ---");
-        println!("{:#?}", files[2]);
-        let begin = 0;
-        let end = files[0].length;
-        println!("begin {begin}");
-        println!("end {end}");
-        //
-        // pieces_qnt = 26
-        // last_block_len = 5920
-        // first_piece_len = 1048576
-        // last_piece_len = 169760
-        //
         // println!("--- file 0 ---");
         // File {
         //     length: 26384160,
@@ -522,7 +547,15 @@ mod tests {
         //     path: ["1967 - Strange Days", "The Doors - Love Me Two Times.MP3"],
         // };
 
-        let (_, meta_file) = disk.get_file_from_index(0, 0).await.unwrap();
+        let (_, meta_file) = disk
+            .get_file_from_block_info(&BlockInfo {
+                index: 0,
+                begin: 0,
+                len: BLOCK_LEN,
+            })
+            .await
+            .unwrap();
+
         assert_eq!(
             meta_file,
             metainfo::File {
@@ -541,10 +574,8 @@ mod tests {
             len: 16384,
         };
 
-        let (_, meta_file) = disk
-            .get_file_from_index(block.index, block.begin)
-            .await
-            .unwrap();
+        let (_, meta_file) = disk.get_file_from_block_info(&block).await.unwrap();
+
         assert_eq!(
             meta_file,
             metainfo::File {
@@ -557,6 +588,7 @@ mod tests {
         );
 
         // when the peer sends the last block of the last piece of file[0]
+        // block 1610 (0 idx)
         let last_block = BlockInfo {
             index: 25,
             begin: 163840,
@@ -564,10 +596,7 @@ mod tests {
         };
 
         // last of first file
-        let (_, meta_file) = disk
-            .get_file_from_index(last_block.index, last_block.begin)
-            .await
-            .unwrap();
+        let (_, meta_file) = disk.get_file_from_block_info(&last_block).await.unwrap();
 
         assert_eq!(
             meta_file,
@@ -580,8 +609,16 @@ mod tests {
             }
         );
 
-        // 8 pieces in file 1
-        let (_, meta_file) = disk.get_file_from_index(26, 0).await.unwrap();
+        // first block of second file
+        let last_block = BlockInfo {
+            index: 25,
+            begin: 169760,
+            len: BLOCK_LEN,
+        };
+
+        // first of second file
+        let (_, meta_file) = disk.get_file_from_block_info(&last_block).await.unwrap();
+
         assert_eq!(
             meta_file,
             metainfo::File {
@@ -589,28 +626,6 @@ mod tests {
                 path: vec![
                     "1967 - Strange Days".to_string(),
                     "The Doors - I Can't See Your Face In My Mind.MP3".to_string(),
-                ],
-            }
-        );
-        let (_, meta_file) = disk.get_file_from_index(33, 0).await.unwrap();
-        assert_eq!(
-            meta_file,
-            metainfo::File {
-                length: 8281625,
-                path: vec![
-                    "1967 - Strange Days".to_string(),
-                    "The Doors - I Can't See Your Face In My Mind.MP3".to_string(),
-                ],
-            }
-        );
-        let (_, meta_file) = disk.get_file_from_index(34, 0).await.unwrap();
-        assert_eq!(
-            meta_file,
-            metainfo::File {
-                length: 7878255,
-                path: vec![
-                    "1967 - Strange Days".to_string(),
-                    "The Doors - Love Me Two Times.MP3".to_string(),
                 ],
             }
         );
@@ -653,11 +668,11 @@ mod tests {
         disk.ctx.info = info.clone();
 
         println!("---- piece 0 ----");
-        let r = disk.validate_piece(2).await;
+        let r = disk.validate_piece(0).await;
         assert!(r.is_ok());
 
         println!("---- piece 1 ----");
-        let r = disk.validate_piece(2).await;
+        let r = disk.validate_piece(1).await;
         assert!(r.is_ok());
 
         println!("---- piece 2 ----");

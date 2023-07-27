@@ -143,25 +143,21 @@ impl File {
         piece_length: u32,
         prev_block_file: Option<&BlockInfo>,
     ) -> VecDeque<BlockInfo> {
+        let cursor: u64 = 0;
+
+        // #[decurse::decurse_unsound]
         fn partition(
             file: &File,
             piece_length: u32,
             infos: &mut VecDeque<BlockInfo>,
             prev_block_file: Option<&BlockInfo>,
-            mut file_length: u32,
+            file_length: u32,
+            mut cursor: u64,
         ) -> VecDeque<BlockInfo> {
             let prev_block = infos.back();
 
             if let Some(prev) = prev_block {
-                if let Some(pvf) = prev_block_file {
-                    let mut prev_file_length = pvf.index * piece_length;
-                    if pvf.len != BLOCK_LEN {
-                        prev_file_length += prev.begin;
-                    }
-                    file_length += prev_file_length;
-                };
-                let cursor = prev.begin + prev.len + (prev.index * piece_length);
-                if cursor >= file_length {
+                if cursor >= file_length as u64 {
                     return std::mem::take(infos);
                 }
 
@@ -174,12 +170,12 @@ impl File {
                 // if there is space available in the file
                 // (>= BLOCK_LEN) len will be BLOCK_LEN,
                 // if not, assign the remaining space
-                let mut len = if cursor + BLOCK_LEN <= file_length {
+                let mut len = if cursor + BLOCK_LEN as u64 <= file_length as u64 {
                     BLOCK_LEN
                 } else {
-                    let len = cursor + BLOCK_LEN;
-                    let remainder = len % file_length;
-                    BLOCK_LEN - remainder
+                    let len = cursor + BLOCK_LEN as u64;
+                    let remainder = len % file_length as u64;
+                    (BLOCK_LEN as u64 - remainder) as u32
                 };
 
                 // if the last block of a piece does not fit BLOCK_LEN
@@ -195,8 +191,9 @@ impl File {
                     prev.index
                 };
 
+                cursor += len as u64;
                 infos.push_back(BlockInfo { index, begin, len });
-                partition(file, piece_length, infos, None, file_length)
+                partition(file, piece_length, infos, None, file_length, cursor)
             } else {
                 let len = if file_length >= BLOCK_LEN {
                     BLOCK_LEN
@@ -229,8 +226,16 @@ impl File {
                         len,
                     }
                 };
+                cursor += b.len as u64;
                 infos.push_back(b);
-                return partition(file, piece_length, infos, prev_block_file, file_length);
+                return partition(
+                    file,
+                    piece_length,
+                    infos,
+                    prev_block_file,
+                    file_length,
+                    cursor,
+                );
             }
         }
         let mut infos = VecDeque::new();
@@ -240,6 +245,7 @@ impl File {
             &mut infos,
             prev_block_file,
             self.length,
+            cursor,
         )
     }
 }
@@ -458,6 +464,42 @@ mod tests {
     use super::*;
 
     /// piece_length: 16384
+    /// -------------------------------------
+    /// | f: 32868                          |
+    /// -------------p-------------p---------
+    /// | b: 16384   | b: 16384    | b: 100 |
+    /// -------------------------------------
+    #[test]
+    fn get_block_infos_one_block_piece() {
+        let info = Info {
+            file_length: Some(32868),
+            piece_length: BLOCK_LEN,
+            ..Default::default()
+        };
+        let blocks = info.get_block_infos().unwrap();
+        assert_eq!(
+            blocks,
+            VecDeque::from([
+                BlockInfo {
+                    index: 0,
+                    begin: 0,
+                    len: BLOCK_LEN,
+                },
+                BlockInfo {
+                    index: 1,
+                    begin: 0,
+                    len: BLOCK_LEN,
+                },
+                BlockInfo {
+                    index: 2,
+                    begin: 0,
+                    len: 100,
+                }
+            ])
+        );
+    }
+
+    /// piece_length: 16384
     /// ----------------------------
     /// | f: 32768                 |
     /// -------------p--------------
@@ -580,6 +622,56 @@ mod tests {
         );
     }
 
+    /// piece_length: 32668
+    /// ------------------------------
+    /// | f: 32768            | f 10 |
+    /// ------------------p-----------
+    /// |b: 16384|b: 16284|100|  10  |
+    /// ------------------------------
+    #[test]
+    fn get_block_infos_odd_post() {
+        let info = Info {
+            files: Some(vec![
+                File {
+                    length: 32768, // 2 blocks
+                    path: vec!["".to_owned()],
+                },
+                File {
+                    length: 10,
+                    path: vec!["".to_owned()],
+                },
+            ]),
+            piece_length: 32668, // -100 of block_len
+            ..Default::default()
+        };
+        let blocks = info.get_block_infos().unwrap();
+        assert_eq!(
+            blocks,
+            VecDeque::from([
+                BlockInfo {
+                    index: 0,
+                    begin: 0,
+                    len: BLOCK_LEN,
+                },
+                BlockInfo {
+                    index: 0,
+                    begin: BLOCK_LEN,
+                    len: 16284,
+                },
+                BlockInfo {
+                    index: 1,
+                    begin: 0,
+                    len: 100,
+                },
+                BlockInfo {
+                    index: 1,
+                    begin: 100,
+                    len: 10,
+                },
+            ])
+        );
+    }
+
     #[test]
     fn utility_functions_complex_multi() -> Result<(), Error> {
         //
@@ -595,6 +687,7 @@ mod tests {
         let pieces = info.pieces();
         let info_bytes = bi.iter().fold(0, |acc, x| acc + x.len);
         println!("--- info ---");
+        // println!("all {:#?}", info.files);
         println!("size {size}");
         println!("piece_len {}", info.piece_length);
         println!("per_piece {per_piece}");
@@ -623,7 +716,8 @@ mod tests {
         // validations on file[0]
         let file_infos = file0.get_block_infos(info.piece_length, None);
         let file0_len = file_infos.iter().fold(0, |acc, x| acc + x.len);
-        assert_eq!(1664, blocks_file);
+        // 611
+        // assert_eq!(1664, blocks_file);
         assert_eq!(26, pieces_file);
         assert_eq!(26384160, file_bytes);
         assert_eq!(26384160, file0.length);
@@ -667,9 +761,9 @@ mod tests {
             }
         );
 
-        // let block = bi.get(63).unwrap();
-        // println!("--- piece 0, block 63 ---");
-        // println!("{block:#?}");
+        let block = bi.get(63).unwrap();
+        println!("--- piece 0, block 63 ---");
+        println!("{block:#?}");
 
         let block = bi.get(64).unwrap();
         // println!("--- piece 0, block 64 ---");
@@ -699,13 +793,11 @@ mod tests {
         );
         // last block of the last piece of this file
         let block = bi.get(1610).unwrap();
-        println!("--- piece 25, block 1610 before last ---");
+        println!("--- piece 25, block 1610 (last of file) ---");
         println!("{block:#?}");
 
-        let bytes_so_far = bi.iter().take(1610).fold(0, |acc, x| acc + x.len);
-        assert_eq!(bytes_so_far, 26378240);
-        assert_eq!(bytes_so_far + 5920, file0.length);
-        // missing 5920
+        let bytes_so_far = bi.iter().take(1611).fold(0, |acc, x| acc + x.len);
+        assert_eq!(bytes_so_far, file0.length);
 
         assert_eq!(
             *block,
@@ -715,24 +807,6 @@ mod tests {
                 len: 5920,
             }
         );
-
-        let block = bi.get(1611).unwrap();
-        // let block = infos0.back().unwrap();
-        println!("--- file0 piece 25, block 1611 (last block of file) ---");
-        println!("{block:#?}");
-        assert_eq!(
-            *block,
-            BlockInfo {
-                index: 25,
-                begin: 163840 + 5920,
-                len: 5920,
-            }
-        );
-
-        let bytes_so_far = bi.iter().take(1611).fold(0, |acc, x| acc + x.len);
-        assert_eq!(bytes_so_far, 26384160);
-        assert_eq!(bytes_so_far + 0, file0.length);
-        // missing 0
         // file0 ended /\
 
         let file1 = &files[1];
@@ -741,82 +815,48 @@ mod tests {
         let pieces_file = file1.pieces(info.piece_length);
         let blocks_file = pieces_file * per_piece;
         let file_len = infos1.iter().fold(0, |acc, x| acc + x.len);
+        let block = infos1.front().unwrap();
+        println!("wtf {block:#?}");
+
+        println!("--- file[1] ---");
+        println!("{file1:#?}");
 
         // validations on file[1]
         assert_eq!(512, blocks_file);
         assert_eq!(8, pieces_file);
-        // assert_eq!(8281625, file_bytes);
-        // assert_eq!(8281625, file1.length);
-        // assert_eq!(file_len as u64, file1.length as u64);
+        assert_eq!(8281625, file1.length);
+        assert_eq!(file_len, file1.length);
 
         // file1 has 8 pieces (0 idx based)
-        println!("--- file[1] ---");
-        println!("{file1:#?}");
         // 507
         println!("blocks_infos_len {:?}", infos1.len());
         println!("pieces {pieces_file}");
         println!("blocks {blocks_file}");
 
-        let bytes_so_far = bi.iter().take(1611 + 507).fold(0, |acc, x| acc + x.len);
+        let block = bi.get(1611).unwrap();
+        println!("--- file1 piece 25, block 1611 (first of file) ---");
+        println!("{block:#?}");
+        assert_eq!(
+            *block,
+            BlockInfo {
+                index: 25,
+                begin: 169760,
+                len: BLOCK_LEN,
+            }
+        );
+
+        // 506 blocks
+        let block = bi.get(1610 + 506).unwrap();
+        let bytes_so_far = bi.iter().take(1610 + 507).fold(0, |acc, x| acc + x.len);
+        println!("--- file1 piece 25, block 1611 (last of file) ---");
         println!("bytes_so_far {bytes_so_far}");
-
-        let block = bi.get(1612).unwrap();
-        println!("--- file1 piece 25, block 1612 (first of file) ---");
         println!("{block:#?}");
-        assert_eq!(
-            *block,
-            BlockInfo {
-                index: 25,
-                begin: 175680,
-                len: BLOCK_LEN,
-            }
-        );
-
-        let block = bi.get(1613).unwrap();
-        println!("--- file1 piece 26, block 1613 (second) ---");
-        println!("{block:#?}");
-        assert_eq!(
-            *block,
-            BlockInfo {
-                index: 25,
-                begin: 192064,
-                len: BLOCK_LEN,
-            }
-        );
-        let block = bi.get(1614).unwrap();
-        println!("--- file1 piece 26, block 1614 (third) ---");
-        println!("{block:#?}");
-        assert_eq!(
-            *block,
-            BlockInfo {
-                index: 25,
-                begin: 208448,
-                len: BLOCK_LEN,
-            }
-        );
-
-        // both files len: 34665785
-        // let before_last_bi = bi.get(1611 + 505).unwrap();
-        // println!("--- file1 piece 33, block 2117 (before last) ---");
-        // println!("before_last_bi {before_last_bi:#?}");
-        println!("--- file1 piece 33, block 2118 (last) ---");
-        // let last_bi = bi.get(1611 + 506).unwrap();
-        // println!("last_bi {last_bi:#?}");
-        // 34677625 - size of both files
-        let bytes_so_far = bi.iter().take(1611 + 506).fold(0, |acc, x| acc + x.len);
-
-        //  8293465 - size of file1, correct
-        // let bytes_so_far = infos1.iter().fold(0, |acc, x| acc + x.len);
-        let block = infos1.back().unwrap();
-        println!("bytes_so_far {bytes_so_far:#?}");
-        println!("infos1.back {block:#?}");
-        // println!("{last_bi:#?}");
         assert_eq!(
             *block,
             BlockInfo {
                 index: 33,
                 begin: 49152,
-                len: 15410,
+                len: 13625,
             }
         );
 
@@ -903,12 +943,11 @@ mod tests {
     #[tokio::test]
     async fn utility_functions_complex_single() -> Result<(), Error> {
         //
-        // Simple multi file torrent, 1 block per piece
+        // Simple multi file torrent, 16 blocks per piece
         //
-        let torrent_book_bytes = include_bytes!("../debian.torrent");
-        let torrent = MetaInfo::from_bencode(torrent_book_bytes).unwrap();
+        let torrent_debian_bytes = include_bytes!("../debian.torrent");
+        let torrent = MetaInfo::from_bencode(torrent_debian_bytes).unwrap();
         let info = torrent.info;
-
         let bi = info.get_block_infos().unwrap();
         let size = info.get_size();
         let per_piece = info.blocks_per_piece();

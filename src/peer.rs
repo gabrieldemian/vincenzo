@@ -222,6 +222,7 @@ impl Peer {
         direction: Direction,
         mut socket: Framed<TcpStream, HandshakeCodec>,
     ) -> Result<(), Error> {
+        info!("entered run fn");
         let torrent_ctx = self.torrent_ctx.clone();
         let tracker_ctx = self.tracker_ctx.clone();
 
@@ -320,15 +321,15 @@ impl Peer {
                 // At every 5 seconds, check for blocks that were requested,
                 // but not downloaded, and request them again.
                 _ = request_timer.tick() => {
-                    let requested = torrent_ctx.requested_blocks.read().await;
-                    let front = requested.front();
-                    println!("front requested bi {front:#?}");
-                    drop(requested);
+                    // let requested = torrent_ctx.requested_blocks.read().await;
+                    // let front = requested.front();
+                    // println!("front requested bi {front:#?}");
+                    // drop(requested);
 
-                    let downloaded = torrent_ctx.downloaded_blocks.read().await;
-                    let front = downloaded.front();
-                    println!("front downloaded bi {front:#?}");
-                    drop(downloaded);
+                    // let downloaded = torrent_ctx.downloaded_blocks.read().await;
+                    // let front = downloaded.front();
+                    // println!("front downloaded bi {front:#?}");
+                    // drop(downloaded);
 
                     // let info = torrent_ctx.info.read().await;
                     // // we know if the info is downloaded if the piece_length is > 0

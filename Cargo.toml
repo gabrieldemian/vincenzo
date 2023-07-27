@@ -12,6 +12,7 @@ bytes = "1.4.0"
 clap = {version = "4.3.4", features = ["derive"]}
 console-subscriber = "0.1.9"
 crossterm = "0.26.1"
+decurse = "0.0.4"
 exitcode = "1.1.2"
 futures = "0.3.28"
 hex = "0.4.3"
