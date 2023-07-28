@@ -185,7 +185,6 @@ impl Disk {
         let hash_from_info = info.pieces[b..e].to_owned();
 
         let (mut file_info, meta_file) = self.get_file_from_index(index).await?;
-        println!("found file {meta_file:#?}");
         let is_last_piece = index + 1 == info.pieces() as usize;
 
         let piece_len = info.piece_length;
@@ -276,7 +275,9 @@ impl Disk {
             let file_info = files.iter().find(|f| {
                 file_end += f.length as u64;
                 let r = block_cursor as u64 >= file_begin && block_cursor as u64 <= file_end;
-                file_begin += file_end;
+                if !r {
+                    file_begin += file_end;
+                }
                 r
             });
 
@@ -284,10 +285,16 @@ impl Disk {
                 let path = file_info.path.join("/");
                 let mut file = self.open_file(&path).await?;
 
-                file.seek(SeekFrom::Start(
-                    piece_begin as u64 + block_info.begin as u64,
-                ))
-                .await?;
+                let is_first_file = file_begin == 0;
+
+                let offset = if is_first_file {
+                    piece_begin as u64 + block_info.begin as u64
+                } else {
+                    let a = file_end - file_info.length as u64;
+                    block_cursor as u64 - a - block_info.len as u64
+                };
+
+                file.seek(SeekFrom::Start(offset)).await?;
 
                 return Ok((file, file_info.clone()));
             }
@@ -349,7 +356,7 @@ impl Disk {
 
                 let offset: u64 = index as u64 * info.piece_length as u64;
 
-                println!("offset {offset}");
+                // println!("offset {offset}");
                 file.seek(SeekFrom::Start(offset)).await?;
 
                 return Ok((file, file_info.clone()));
@@ -500,7 +507,7 @@ mod tests {
         let mut args = Args::default();
         args.magnet = "magnet:?xt=urn:btih:9281EF9099967ED8413E87589EFD38F9B9E484B0&amp;dn=The%20Doors%20%20(Complete%20Studio%20Discography%20-%20MP3%20%40%20320kbps)&amp;tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.openbittorrent.com%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.bittor.pw%3A1337%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&amp;tr=udp%3A%2F%2Fbt.xxx-tracker.com%3A2710%2Fannounce&amp;tr=udp%3A%2F%2Fpublic.popcorn-tracker.org%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Feddie4.nl%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451%2Fannounce&amp;tr=udp%3A%2F%2Fp4p.arenabg.com%3A1337%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.tiny-vps.com%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Fopen.stealth.si%3A80%2Fannounce ".to_owned();
         let m = get_magnet(&args.magnet).unwrap();
-        args.download_dir = "/tmp/btr/".to_owned();
+        args.download_dir = "btr/".to_owned();
 
         let (torrent_tx, torrent_rx) = mpsc::channel::<TorrentMsg>(3);
         let (disk_tx, disk_rx) = mpsc::channel::<DiskMsg>(3);
@@ -610,14 +617,53 @@ mod tests {
         );
 
         // first block of second file
-        let last_block = BlockInfo {
+        let block = BlockInfo {
             index: 25,
             begin: 169760,
             len: BLOCK_LEN,
         };
 
-        // first of second file
-        let (_, meta_file) = disk.get_file_from_block_info(&last_block).await.unwrap();
+        let (_, meta_file) = disk.get_file_from_block_info(&block).await.unwrap();
+
+        assert_eq!(
+            meta_file,
+            metainfo::File {
+                length: 8281625,
+                path: vec![
+                    "1967 - Strange Days".to_string(),
+                    "The Doors - I Can't See Your Face In My Mind.MP3".to_string(),
+                ],
+            }
+        );
+
+        // second block of second file
+        let block = BlockInfo {
+            index: 25,
+            begin: 169760 + BLOCK_LEN,
+            len: BLOCK_LEN,
+        };
+
+        let (_, meta_file) = disk.get_file_from_block_info(&block).await.unwrap();
+
+        assert_eq!(
+            meta_file,
+            metainfo::File {
+                length: 8281625,
+                path: vec![
+                    "1967 - Strange Days".to_string(),
+                    "The Doors - I Can't See Your Face In My Mind.MP3".to_string(),
+                ],
+            }
+        );
+
+        // last of second file
+        let block = BlockInfo {
+            index: 33,
+            begin: 0,
+            len: 13625,
+        };
+
+        let (_, meta_file) = disk.get_file_from_block_info(&block).await.unwrap();
 
         assert_eq!(
             meta_file,
