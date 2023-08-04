@@ -270,11 +270,15 @@ impl Disk {
             let mut file_end: u64 = 0;
 
             // position of the block in the file, in bytes
-            let block_cursor = piece_begin + block_info.begin + block_info.len;
+            let block_cursor = if block_info.begin == 0 {
+                block_info.index * info.piece_length
+            } else {
+                (block_info.index * info.piece_length) + block_info.begin
+            };
 
             let file_info = files.iter().find(|f| {
                 file_end += f.length as u64;
-                let r = block_cursor as u64 >= file_begin && block_cursor as u64 <= file_end;
+                let r = block_cursor as u64 + 1 <= file_end;
                 if !r {
                     file_begin += file_end;
                 }
@@ -291,7 +295,7 @@ impl Disk {
                     piece_begin as u64 + block_info.begin as u64
                 } else {
                     let a = file_end - file_info.length as u64;
-                    block_cursor as u64 - a - block_info.len as u64
+                    block_cursor as u64 - a
                 };
 
                 file.seek(SeekFrom::Start(offset)).await?;
@@ -408,8 +412,8 @@ mod tests {
     async fn can_create_file_tree() {
         let mut args = Args::default();
         args.magnet = "magnet:?xt=urn:btih:48aac768a865798307ddd4284be77644368dd2c7&dn=Kerkour%20S.%20Black%20Hat%20Rust...Rust%20programming%20language%202022&tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%2Fannounce&tr=udp%3A%2F%2F9.rarbg.to%3A2920%2Fannounce&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&tr=udp%3A%2F%2Ftracker.internetwarriors.net%3A1337%2Fannounce&tr=udp%3A%2F%2Ftracker.leechers-paradise.org%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.pirateparty.gr%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.cyberia.is%3A6969%2Fannounce".to_owned();
-        let base_path = "/tmp/btr/".to_owned();
-        args.download_dir = "/tmp/btr/".to_owned();
+        let base_path = "btr/".to_owned();
+        args.download_dir = "btr/".to_owned();
 
         let m = get_magnet(&args.magnet).unwrap();
 
@@ -685,7 +689,7 @@ mod tests {
         let mut args = Args::default();
         args.magnet = "magnet:?xt=urn:btih:48aac768a865798307ddd4284be77644368dd2c7&dn=Kerkour%20S.%20Black%20Hat%20Rust...Rust%20programming%20language%202022&tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%2Fannounce&tr=udp%3A%2F%2F9.rarbg.to%3A2920%2Fannounce&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&tr=udp%3A%2F%2Ftracker.internetwarriors.net%3A1337%2Fannounce&tr=udp%3A%2F%2Ftracker.leechers-paradise.org%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.pirateparty.gr%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.cyberia.is%3A6969%2Fannounce".to_owned();
         // path must end with "/"
-        args.download_dir = "/tmp/btr/".to_owned();
+        args.download_dir = "btr/".to_owned();
 
         let m = get_magnet(&args.magnet).unwrap();
         let metainfo = include_bytes!("../book.torrent");
@@ -740,7 +744,7 @@ mod tests {
         let info = metainfo.info;
         let mut args = Args::default();
         args.magnet = "magnet:?xt=urn:btih:9281EF9099967ED8413E87589EFD38F9B9E484B0&amp;dn=The%20Doors%20%20(Complete%20Studio%20Discography%20-%20MP3%20%40%20320kbps)&amp;tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.openbittorrent.com%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.bittor.pw%3A1337%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&amp;tr=udp%3A%2F%2Fbt.xxx-tracker.com%3A2710%2Fannounce&amp;tr=udp%3A%2F%2Fpublic.popcorn-tracker.org%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Feddie4.nl%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451%2Fannounce&amp;tr=udp%3A%2F%2Fp4p.arenabg.com%3A1337%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.tiny-vps.com%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Fopen.stealth.si%3A80%2Fannounce ".to_owned();
-        args.download_dir = "/tmp/btr/".to_owned();
+        args.download_dir = "btr/".to_owned();
         let m = get_magnet(&args.magnet).unwrap();
 
         let (torrent_tx, torrent_rx) = mpsc::channel::<TorrentMsg>(3);
@@ -804,7 +808,7 @@ mod tests {
         //
         let mut args = Args::default();
         args.magnet = "magnet:?xt=urn:btih:48aac768a865798307ddd4284be77644368dd2c7&dn=Kerkour%20S.%20Black%20Hat%20Rust...Rust%20programming%20language%202022&tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%2Fannounce&tr=udp%3A%2F%2F9.rarbg.to%3A2920%2Fannounce&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&tr=udp%3A%2F%2Ftracker.internetwarriors.net%3A1337%2Fannounce&tr=udp%3A%2F%2Ftracker.leechers-paradise.org%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.pirateparty.gr%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.cyberia.is%3A6969%2Fannounce".to_owned();
-        args.download_dir = "/tmp/btr/".to_owned();
+        args.download_dir = "btr/".to_owned();
 
         let m = get_magnet(&args.magnet).unwrap();
 
@@ -953,7 +957,7 @@ mod tests {
     async fn multi_file_write_read_block() {
         let mut args = Args::default();
         args.magnet = "magnet:?xt=urn:btih:48aac768a865798307ddd4284be77644368dd2c7&dn=Kerkour%20S.%20Black%20Hat%20Rust...Rust%20programming%20language%202022&tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%2Fannounce&tr=udp%3A%2F%2F9.rarbg.to%3A2920%2Fannounce&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&tr=udp%3A%2F%2Ftracker.internetwarriors.net%3A1337%2Fannounce&tr=udp%3A%2F%2Ftracker.leechers-paradise.org%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.pirateparty.gr%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.cyberia.is%3A6969%2Fannounce".to_owned();
-        args.download_dir = "/tmp/btr/".to_owned();
+        args.download_dir = "btr/".to_owned();
 
         let m = get_magnet(&args.magnet).unwrap();
 
@@ -1007,7 +1011,7 @@ mod tests {
         //
 
         // write a block before reading it
-        // write entire first file
+        // write entire first file (foo.txt)
         let block = Block {
             index: 0,
             begin: 0,
@@ -1035,7 +1039,7 @@ mod tests {
         assert_eq!(result.unwrap(), block.block);
 
         // write a block before reading it
-        // write entire second file
+        // write entire second file (/bar/baz.txt)
         let block = Block {
             index: 2,
             begin: 0,
@@ -1063,7 +1067,7 @@ mod tests {
         assert_eq!(result.unwrap(), block.block);
 
         // write a block before reading it
-        // write entire third file
+        // write entire third file (/bar/buzz/bee.txt)
         let block = Block {
             index: 4,
             begin: 0,
@@ -1091,22 +1095,8 @@ mod tests {
         assert_eq!(result.unwrap(), block.block);
 
         //
-        //  READ BLOCKS
+        //  READ BLOCKS with offsets
         //
-
-        let block_info = BlockInfo {
-            index: 1,
-            begin: 0,
-            len: 3,
-        };
-
-        // read piece 0 block from first file
-        let (tx_oneshot, rx_oneshot) = oneshot::channel();
-        tx.send(DiskMsg::ReadBlock((block_info, tx_oneshot)))
-            .await
-            .unwrap();
-        let result = rx_oneshot.await.unwrap();
-        assert_eq!(result.unwrap(), vec![7, 8, 9]);
 
         let block_info = BlockInfo {
             index: 0,
@@ -1123,8 +1113,23 @@ mod tests {
         assert_eq!(result.unwrap(), vec![2, 3, 4]);
 
         let block_info = BlockInfo {
+            index: 1,
+            begin: 1,
+            len: 3,
+        };
+
+        // read piece 0 block from first file
+        let (tx_oneshot, rx_oneshot) = oneshot::channel();
+        tx.send(DiskMsg::ReadBlock((block_info, tx_oneshot)))
+            .await
+            .unwrap();
+        let result = rx_oneshot.await.unwrap();
+        assert_eq!(result.unwrap(), vec![8, 9, 10]);
+
+        // last thre bytes of file
+        let block_info = BlockInfo {
             index: 2,
-            begin: 0,
+            begin: 9,
             len: 3,
         };
 
@@ -1134,7 +1139,7 @@ mod tests {
             .await
             .unwrap();
         let result = rx_oneshot.await.unwrap();
-        assert_eq!(result.unwrap(), vec![13, 14, 15]);
+        assert_eq!(result.unwrap(), vec![22, 23, 24]);
 
         let block_info = BlockInfo {
             index: 2,
