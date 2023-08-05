@@ -81,7 +81,6 @@ pub struct TorrentCtx {
     pub uploaded: AtomicU64,
     /// How many bytes we have downloaded from other peers.
     pub downloaded: AtomicU64,
-    pub last_blocks_len: RwLock<Vec<u32>>,
 }
 
 // Status of the current Torrent, updated at every announce request.
@@ -111,7 +110,6 @@ impl Torrent {
         let info_hash = get_info_hash(&xt);
 
         let ctx = Arc::new(TorrentCtx {
-            last_blocks_len: RwLock::new(vec![]),
             stats: RwLock::new(Stats::default()),
             info_hash,
             info_dict,

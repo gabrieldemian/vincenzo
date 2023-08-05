@@ -50,7 +50,7 @@ async fn main() -> Result<(), Error> {
         .with_env_filter("tokio=trace,runtime=trace")
         .with_max_level(tracing::Level::INFO)
         .with_target(false)
-        .with_writer(file)
+        // .with_writer(file)
         .compact()
         .with_file(false)
         .without_time()

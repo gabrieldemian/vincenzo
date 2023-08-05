@@ -462,7 +462,7 @@ impl Peer {
                             drop(bd);
 
                             if was_downloaded {
-                                info!("this block is already downloaded, ignoring");
+                                info!("this block was already downloaded, ignoring");
                             }
 
                             if block.is_valid() && !was_downloaded {
@@ -480,19 +480,16 @@ impl Peer {
                                         bd.push_front(block.clone().into());
                                         drop(bd);
 
-                                        info!("wrote piece with success on disk");
+                                        info!("wrote block with success on disk");
                                     }
-                                    Err(e) => warn!("could not write piece to disk {e:#?}")
+                                    Err(e) => warn!("could not write block to disk {e:#?}")
                                 }
 
                                 let info = self.torrent_ctx.info.read().await;
-                                let piece_length = info.piece_length;
-                                let block_len = block.block.len() as u32 + block.begin;
-                                let last_blocks_len = info.get_last_blocks_len();
 
-                                // if this is the last block of a piece
-                                // if block_len >= piece_length {
-                                if block_len == piece_length || last_blocks_len.iter().find(|x| **x == block.block.len() as u32).is_some() {
+                                // if this is the last block of a piece,
+                                // validate the hash
+                                if block.begin + block.block.len() as u32 >= info.piece_length {
                                     let (tx, rx) = oneshot::channel();
                                     let disk_tx = self.disk_tx.as_ref().unwrap();
 
@@ -508,7 +505,6 @@ impl Peer {
                                         let mut tr_pieces = torrent_ctx.pieces.write().await;
 
                                         tr_pieces.set(block.index);
-                                        drop(tr_pieces);
                                     } else {
                                         warn!("The hash of the piece {:?} is invalid", block.index);
                                     }
@@ -700,13 +696,7 @@ impl Peer {
                                                     let mut info_t = torrent_ctx.info.write().await;
                                                     *info_t = info.clone();
 
-                                                    // update the vec of last blocks len
-                                                    let mut lbl = torrent_ctx.last_blocks_len.write().await;
-                                                    info!("the list of last block len is {lbl:#?}");
-
-                                                    *lbl = info_t.get_last_blocks_len();
                                                     drop(info_t);
-                                                    drop(lbl);
 
                                                     let _ = self.disk_tx.as_ref().unwrap().send(DiskMsg::NewTorrent(info)).await;
                                                     if self.am_interested && !self.peer_choking {
