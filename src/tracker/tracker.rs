@@ -9,10 +9,7 @@ use rand::Rng;
 use tokio::{
     net::{ToSocketAddrs, UdpSocket},
     spawn,
-    sync::{
-        mpsc::{self, Receiver},
-        oneshot,
-    },
+    sync::{mpsc, oneshot},
     time::timeout,
 };
 use tracing::{debug, info, warn};
@@ -28,11 +25,16 @@ pub struct Tracker {
     pub local_addr: SocketAddr,
     pub peer_addr: SocketAddr,
     pub ctx: TrackerCtx,
+    pub tx: mpsc::Sender<TrackerMsg>,
+    pub rx: mpsc::Receiver<TrackerMsg>,
 }
 
 impl Default for Tracker {
     fn default() -> Self {
+        let (tx, rx) = mpsc::channel::<TrackerMsg>(300);
         Self {
+            tx,
+            rx,
             local_addr: "0.0.0.0:0".parse().unwrap(),
             peer_addr: "0.0.0.0:0".parse().unwrap(),
             ctx: TrackerCtx::default(),
@@ -80,7 +82,7 @@ impl Tracker {
 
     /// Bind UDP socket and send a connect handshake,
     /// to one of the trackers.
-    // todo: return only tracker woth the most seeders?
+    // todo: get a new tracker if download is stale
     #[tracing::instrument(skip(trackers))]
     pub async fn connect<A>(trackers: Vec<A>) -> Result<Self, Error>
     where
@@ -105,12 +107,15 @@ impl Tracker {
                         return Ok::<(), Error>(());
                     }
                 };
+                let (tracker_tx, tracker_rx) = mpsc::channel::<TrackerMsg>(300);
                 let mut tracker = Tracker {
                     ctx: TrackerCtx {
                         peer_id: rand::random(),
                         tracker_addr: tracker_addr.to_string(),
                         ..Default::default()
                     },
+                    tx: tracker_tx,
+                    rx: tracker_rx,
                     local_addr: socket.local_addr().unwrap(),
                     peer_addr: socket.peer_addr().unwrap(),
                 };
@@ -365,9 +370,9 @@ impl Tracker {
         Ok(res)
     }
 
-    #[tracing::instrument(skip(self, rx))]
-    pub async fn run(&self, mut rx: Receiver<TrackerMsg>) -> Result<(), Error> {
-        while let Some(msg) = rx.recv().await {
+    #[tracing::instrument(skip(self))]
+    pub async fn run(&mut self) -> Result<(), Error> {
+        while let Some(msg) = self.rx.recv().await {
             match msg {
                 TrackerMsg::Announce {
                     info_hash,

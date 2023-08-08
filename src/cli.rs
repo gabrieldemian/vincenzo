@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 use clap::Parser;
 
 #[derive(Parser, Debug, Default)]
-#[clap(name = "Bittorrent CLI in Rust")]
+#[clap(name = "Bittorrent CLI in Rust", author = "Gabriel Lombardo")]
 #[command(author, version, about, long_about = None)]
 pub struct Args {
     /// The path of the folder where to download file. Must be wrapped in quotes and end with '/'.
@@ -12,16 +12,16 @@ pub struct Args {
 
     /// The magnet link of the torrent, wrapped in quotes.
     #[clap(short, long)]
-    pub magnet: String,
+    pub magnet: Option<String>,
 
     /// A comma separated list of <ip>:<port> pairs of the seeds.
-    #[structopt(short, long)]
-    pub seeds: Option<Vec<SocketAddr>>,
+    // #[clap(short, long)]
+    // pub seeds: Option<Vec<SocketAddr>>,
 
     /// The socket address on which to listen for new connections.
-    #[structopt(short, long)]
+    #[clap(short, long)]
     pub listen: Option<SocketAddr>,
 
-    #[structopt(short, long)]
+    #[clap(short, long)]
     pub quit_after_complete: bool,
 }

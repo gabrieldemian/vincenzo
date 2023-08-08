@@ -46,6 +46,10 @@ pub enum Error {
     TorrentComplete,
     #[error("The piece downloaded does not have a valid hash")]
     PieceInvalid,
+    #[error("The peer ID does not exist on this torrent")]
+    PeerIdInvalid,
+    #[error("Disk does not have the provided info_hash")]
+    InfoHashInvalid,
     #[error("The peer took to long to respond")]
     Timeout,
     #[error("Your magnet does not have a tracker. Currently, this client does not support DHT, you need to use a magnet that has a tracker.")]
