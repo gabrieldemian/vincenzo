@@ -1,3 +1,5 @@
+pub mod torrent_list;
+
 use std::{io, time::Duration};
 use tracing::info;
 
@@ -12,7 +14,7 @@ use tui::{
     Terminal,
 };
 
-use crate::torrent_list::TorrentList;
+use torrent_list::TorrentList;
 
 #[derive(Clone)]
 pub struct AppStyle {
