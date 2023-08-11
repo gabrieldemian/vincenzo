@@ -1,5 +1,5 @@
 # Vicenzo
-! Work in progress. <br />
+!⚠️ Work in progress. !⚠️ <br />
 A minimalistic, terminal based, BitTorrent client with vim keybindings. Torrents can be downloaded using the CLI or UI. Still a work in progress, however, it is already usable.
 
 ## Features
