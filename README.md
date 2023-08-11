@@ -31,7 +31,7 @@ vcz -d "/tmp/btr" -m "<insert magnet link here>" -q
 
 ## Roadmap
 In order of priority. <br />
-⏳ - Initial version of UI <br />
+⏳ - Initial version of UI. <br />
 ⏳ - Use a buffered I/O strategy to reduce the number of writes on disk. <br />
 ⏳ - Upgrade the download algorithm to use the maximum bitrate. <br />
 ⏳ - Resume torrent download. <br />
