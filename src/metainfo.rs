@@ -39,6 +39,10 @@ pub struct Info {
 }
 
 impl Info {
+    pub fn name(mut self, name: String) -> Self {
+        self.name = name;
+        self
+    }
     /// Calculate how many pieces there are.
     pub fn pieces(&self) -> u32 {
         self.pieces.len() as u32 / 20
@@ -87,7 +91,7 @@ impl Info {
             return f as u64;
         }
 
-        return u64::MAX;
+        return 0;
     }
 }
 
