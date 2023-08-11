@@ -29,7 +29,7 @@ use crate::{
         lib::{Block, BlockInfo, BLOCK_LEN},
         messages::{Handshake, HandshakeCodec, Message, PeerCodec},
     },
-    torrent::{TorrentCtx, TorrentMsg},
+    torrent::{TorrentCtx, TorrentMsg, TorrentStatus},
     tracker::tracker::TrackerCtx,
 };
 
@@ -322,9 +322,8 @@ impl Peer {
                     sink.send(Message::KeepAlive).await?;
                 }
                 // Sometimes that blocks requested are never sent to us,
-                // this can happen for a lot of reasons, and is normal and expected.
                 // The algorithm to re-request those blocks is simple:
-                // At every 5 seconds, check for blocks that were requested,
+                // At every 10 seconds, check for blocks that were requested,
                 // but not downloaded, and request them again.
                 _ = request_timer.tick() => {
                 }
@@ -447,16 +446,17 @@ impl Peer {
                                 .await
                                 .unwrap();
 
-                                let r = rx.await.unwrap();
-
-                                match r {
+                                match rx.await.unwrap() {
                                     Ok(_) => {
                                         let mut bd = torrent_ctx.downloaded_blocks.write().await;
                                         bd.push_front(info);
                                         drop(bd);
-
+                                        
                                         info!("wrote block with success on disk");
                                         torrent_ctx.downloaded.fetch_add(len as u64, Ordering::SeqCst);
+                                        
+                                        let d = torrent_ctx.downloaded.load(Ordering::Relaxed);
+                                        info!("yy__downloaded {:?}", d);
                                     }
                                     Err(e) => warn!("could not write block to disk {e:#?}")
                                 }
@@ -492,11 +492,17 @@ impl Peer {
                             }
 
                             let info = torrent_ctx.info.read().await;
-                            let is_download_complete = torrent_ctx.downloaded.load(Ordering::SeqCst) >= info.get_size();
+                            let downloaded = torrent_ctx.downloaded.load(Ordering::SeqCst);
+                            let is_download_complete = downloaded >= info.get_size();
                             drop(info);
 
                             if is_download_complete {
                                 info!("download completed!! won't request more blocks");
+
+                                let mut status = torrent_ctx.status.write().await;
+                                *status = TorrentStatus::Seeding;
+                                drop(status);
+
                                 let _ = self.torrent_tx.send(TorrentMsg::DownloadComplete).await;
                             }
 
@@ -713,7 +719,6 @@ impl Peer {
                             let pieces = self.ctx.pieces.read().await;
 
                             if let Some(b) = pieces.get(piece) {
-
                                 // send Have to this peer if he doesnt have this piece
                                 if b.bit == 0 {
                                     info!("sending have {piece} to peer {:?}", self.addr);

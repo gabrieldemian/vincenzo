@@ -46,6 +46,51 @@ pub enum TorrentMsg {
     DownloadComplete,
 }
 
+#[derive(Debug, Default, Clone)]
+pub enum TorrentStatus {
+    #[default]
+    Connecting,
+    Downloading,
+    Seeding,
+    Error,
+}
+
+impl<'a> Into<&'a str> for TorrentStatus {
+    fn into(self) -> &'a str {
+        use TorrentStatus::*;
+        match self {
+            Connecting => "Connecting",
+            Downloading => "Downloading",
+            Seeding => "Seeding",
+            Error => "Error",
+        }
+    }
+}
+
+impl Into<String> for TorrentStatus {
+    fn into(self) -> String {
+        use TorrentStatus::*;
+        match self {
+            Connecting => "Connecting".to_owned(),
+            Downloading => "Downloading".to_owned(),
+            Seeding => "Seeding".to_owned(),
+            Error => "Error".to_owned(),
+        }
+    }
+}
+
+impl From<&str> for TorrentStatus {
+    fn from(value: &str) -> Self {
+        use TorrentStatus::*;
+        match value {
+            "Connecting" => Connecting,
+            "Downloading" => Downloading,
+            "Seeding" => Seeding,
+            "Error" | _ => Error,
+        }
+    }
+}
+
 /// This is the main entity responsible for the high-level management of
 /// a torrent download or upload.
 #[derive(Debug)]
@@ -62,6 +107,7 @@ pub struct Torrent {
 
 #[derive(Debug)]
 pub struct TorrentCtx {
+    pub tracker_tx: RwLock<Option<mpsc::Sender<TrackerMsg>>>,
     pub magnet: Magnet,
     pub info_hash: [u8; 20],
     pub pieces: RwLock<Bitfield>,
@@ -85,9 +131,10 @@ pub struct TorrentCtx {
     /// Stats of the current Torrent, returned from tracker on announce requests.
     pub stats: RwLock<Stats>,
     /// How many bytes we have uploaded to other peers.
-    pub uploaded: AtomicU64,
+    pub uploaded: Arc<AtomicU64>,
     /// How many bytes we have downloaded from other peers.
-    pub downloaded: AtomicU64,
+    pub downloaded: Arc<AtomicU64>,
+    pub status: RwLock<TorrentStatus>,
 }
 
 // Status of the current Torrent, updated at every announce request.
@@ -110,19 +157,23 @@ impl Torrent {
             std::process::exit(exitcode::USAGE)
         }
 
-        let (tx, rx) = mpsc::channel::<TorrentMsg>(300);
+        let xt = magnet.xt.clone().unwrap();
+        let dn = magnet.dn.clone().unwrap_or("Unknown".to_string());
+
         let pieces = RwLock::new(Bitfield::default());
-        let info = RwLock::new(Info::default());
+        let info = RwLock::new(Info::default().name(dn));
         let info_dict = RwLock::new(BTreeMap::<u32, Vec<u8>>::new());
         let tracker_ctx = Arc::new(TrackerCtx::default());
         let requested_blocks = RwLock::new(VecDeque::new());
         let downloaded_blocks = RwLock::new(VecDeque::new());
         let block_infos = RwLock::new(VecDeque::new());
 
-        let xt = magnet.xt.clone().unwrap();
         let info_hash = get_info_hash(&xt);
+        let (tx, rx) = mpsc::channel::<TorrentMsg>(300);
 
         let ctx = Arc::new(TorrentCtx {
+            status: RwLock::new(TorrentStatus::default()),
+            tracker_tx: RwLock::new(None),
             stats: RwLock::new(Stats::default()),
             info_hash,
             info_dict,
@@ -132,8 +183,8 @@ impl Torrent {
             magnet,
             downloaded_blocks,
             info,
-            uploaded: AtomicU64::new(0),
-            downloaded: AtomicU64::new(0),
+            uploaded: Arc::new(AtomicU64::new(0)),
+            downloaded: Arc::new(AtomicU64::new(0)),
         });
 
         Self {
@@ -163,6 +214,11 @@ impl Torrent {
             seeders: res.seeders,
             leechers: res.leechers,
         };
+        let mut status = self.ctx.status.write().await;
+        *status = TorrentStatus::Downloading;
+        drop(status);
+
+        info!("new stats {stats:#?}");
         drop(stats);
 
         let peers: Vec<Peer> = peers
@@ -185,9 +241,15 @@ impl Torrent {
 
         self.tracker_ctx = tracker.ctx.clone().into();
         self.tracker_tx = Some(tracker.tx.clone());
+        let mut ctx_tracker_tx = self.ctx.tracker_tx.write().await;
+        *ctx_tracker_tx = Some(tracker.tx.clone());
+        drop(ctx_tracker_tx);
+
+        self.tracker_tx = Some(tracker.tx.clone());
 
         spawn(async move {
-            let _ = tracker.run().await;
+            let _ = tracker.run().await?;
+            Ok::<(), Error>(())
         });
 
         Ok(peers)
@@ -329,7 +391,7 @@ impl Torrent {
                                     downloaded,
                                     uploaded: self.ctx.uploaded.load(Ordering::SeqCst),
                                     left: 0,
-                                    recipient: otx,
+                                    recipient: Some(otx),
                                 })
                             .await;
 
@@ -352,7 +414,7 @@ impl Torrent {
                                         downloaded,
                                         uploaded: self.ctx.uploaded.load(Ordering::SeqCst),
                                         left,
-                                        recipient: otx,
+                                        recipient: Some(otx),
                                     })
                                 .await;
 
@@ -385,7 +447,7 @@ impl Torrent {
                                 downloaded,
                                 uploaded: self.ctx.uploaded.load(Ordering::SeqCst),
                                 left,
-                                recipient: otx,
+                                recipient: Some(otx),
                             })
                         .await;
 

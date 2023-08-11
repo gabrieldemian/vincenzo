@@ -8,7 +8,7 @@ use crate::error::Error;
 use rand::Rng;
 use tokio::{
     net::{ToSocketAddrs, UdpSocket},
-    spawn,
+    select, spawn,
     sync::{mpsc, oneshot},
     time::timeout,
 };
@@ -73,12 +73,16 @@ pub enum TrackerMsg {
         downloaded: u64,
         uploaded: u64,
         left: u64,
-        recipient: oneshot::Sender<Result<announce::Response, Error>>,
+        recipient: Option<oneshot::Sender<Result<announce::Response, Error>>>,
     },
 }
 
 impl Tracker {
     const ANNOUNCE_RES_BUF_LEN: usize = 8192;
+
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     /// Bind UDP socket and send a connect handshake,
     /// to one of the trackers.
@@ -372,24 +376,32 @@ impl Tracker {
 
     #[tracing::instrument(skip(self))]
     pub async fn run(&mut self) -> Result<(), Error> {
-        while let Some(msg) = self.rx.recv().await {
-            match msg {
-                TrackerMsg::Announce {
-                    info_hash,
-                    downloaded,
-                    uploaded,
-                    recipient,
-                    event,
-                    left,
-                } => {
-                    let r = self
-                        .announce_msg(event, info_hash, downloaded, uploaded, left)
-                        .await;
-                    let _ = recipient.send(r);
+        info!("running tracker");
+        loop {
+            select! {
+                Some(msg) = self.rx.recv() => {
+                    match msg {
+                        TrackerMsg::Announce {
+                            info_hash,
+                            downloaded,
+                            uploaded,
+                            recipient,
+                            event,
+                            left,
+                        } => {
+                            info!("announce_msg on run");
+                            println!("announce_msg on run");
+                            let r = self
+                                .announce_msg(event, info_hash, downloaded, uploaded, left)
+                                .await;
+                            if let Some(recipient) = recipient {
+                                let _ = recipient.send(r);
+                            }
+                        }
+                    }
                 }
             }
         }
-        Ok(())
     }
 }
 

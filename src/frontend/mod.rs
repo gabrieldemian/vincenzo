@@ -1,12 +1,23 @@
 pub mod torrent_list;
+use futures::{FutureExt, StreamExt};
 
-use std::{io, time::Duration};
-use tracing::info;
+use clap::Parser;
+use std::{
+    io::{self, Stdout},
+    sync::{atomic::Ordering, Arc},
+    time::Duration,
+};
+use tokio::{
+    select, spawn,
+    sync::{mpsc, RwLock},
+    time::interval,
+};
 
 use crossterm::{
-    event::DisableMouseCapture,
+    self,
+    event::{DisableMouseCapture, EnableMouseCapture, EventStream},
     execute,
-    terminal::{disable_raw_mode, LeaveAlternateScreen},
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use tui::{
     backend::CrosstermBackend,
@@ -16,7 +27,14 @@ use tui::{
 
 use torrent_list::TorrentList;
 
-#[derive(Clone)]
+use crate::{
+    cli::Args,
+    disk::DiskMsg,
+    torrent::{Torrent, TorrentCtx},
+    tracker::{event::Event, tracker::TrackerMsg},
+};
+
+#[derive(Clone, Debug)]
 pub struct AppStyle {
     pub base_style: Style,
     pub selected_style: Style,
@@ -39,79 +57,141 @@ impl AppStyle {
     }
 }
 
-pub enum FrontendMessage {
+#[derive(Debug, Clone)]
+pub enum FrMsg {
     Quit,
+    AddTorrent(Arc<TorrentCtx>),
 }
 
-// actor
-#[derive(Clone)]
-pub struct Frontend {
+pub struct Frontend<'a> {
     pub style: AppStyle,
-    // pub recipient: Recipient<BackendMessage>,
+    pub ctx: Arc<FrontendCtx>,
+    torrent_ctxs: RwLock<Vec<Arc<TorrentCtx>>>,
+    disk_tx: mpsc::Sender<DiskMsg>,
+    torrent_list: TorrentList<'a>,
 }
 
-impl Frontend {
-    pub fn new() -> Result<Frontend, std::io::Error> {
-        // setup terminal
+pub struct FrontendCtx {
+    pub terminal: RwLock<Terminal<CrosstermBackend<Stdout>>>,
+    pub fr_tx: mpsc::Sender<FrMsg>,
+}
 
-        // enable_raw_mode()?;
-        // let mut stdout = io::stdout();
-        // execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+impl<'a> Frontend<'a> {
+    pub fn new(fr_tx: mpsc::Sender<FrMsg>, disk_tx: mpsc::Sender<DiskMsg>) -> Self {
+        let stdout = io::stdout();
         let style = AppStyle::new();
+        let backend = CrosstermBackend::new(stdout);
+        let terminal = RwLock::new(Terminal::new(backend).unwrap());
 
-        Ok(Frontend {
-            // recipient,
+        let ctx = Arc::new(FrontendCtx { terminal, fr_tx });
+        let torrent_list = TorrentList::new(ctx.clone());
+
+        Frontend {
+            torrent_list,
+            ctx,
+            disk_tx,
             style,
-        })
+            torrent_ctxs: RwLock::new(Vec::new()),
+        }
     }
 
-    fn _stop(&mut self) -> Result<(), std::io::Error> {
+    /// Run the UI event loop
+    pub async fn run(&mut self, mut fr_rx: mpsc::Receiver<FrMsg>) -> Result<(), std::io::Error> {
+        let mut reader = EventStream::new();
+
+        // setup terminal
+        let mut stdout = io::stdout();
+        enable_raw_mode()?;
+        execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+
+        let mut tick_interval = interval(Duration::from_secs(1));
+
+        loop {
+            let event = reader.next().fuse();
+
+            select! {
+                // Update UI every 1 second
+                _ = tick_interval.tick() => {
+                    self.torrent_list.rerender(&self.torrent_ctxs.read().await.clone()).await;
+                }
+                event = event => {
+                    match event {
+                        Some(Ok(event)) => {
+                            if let crossterm::event::Event::Key(k) = event {
+                                self.torrent_list.keybindings(k.code).await;
+                            }
+                        }
+                        _ => break
+                    }
+                }
+                Some(msg) = fr_rx.recv() => {
+                    match msg {
+                        FrMsg::Quit => {
+                            let _ = self.stop().await;
+                        }
+                        FrMsg::AddTorrent(torrent_ctx) => self.add_torrent(torrent_ctx).await,
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn stop(&self) {
         let stdout = io::stdout();
         let backend = CrosstermBackend::new(stdout);
         let mut terminal = Terminal::new(backend).unwrap();
         disable_raw_mode().unwrap();
+        terminal.show_cursor().unwrap();
         execute!(
             terminal.backend_mut(),
             LeaveAlternateScreen,
             DisableMouseCapture
         )
         .unwrap();
-        terminal.show_cursor().unwrap();
-        // self.recipient.do_send(BackendMessage::Quit);
-        Ok(())
-    }
 
-    fn _handle(&mut self, msg: FrontendMessage) {
-        match msg {
-            FrontendMessage::Quit => {
-                info!("backend called quit on frontend!");
-            }
+        // announce to all trackers of all torrents that we are shutting down
+        let v = self.torrent_ctxs.read().await;
+        for lock in v.clone().into_iter() {
+            let tx = lock.tracker_tx.read().await.clone().unwrap();
+            let downloaded = lock.downloaded.load(Ordering::Relaxed);
+            let uploaded = lock.uploaded.load(Ordering::Relaxed);
+            let info_hash = lock.info_hash;
+            spawn(async move {
+                let _ = tx
+                    .send(TrackerMsg::Announce {
+                        event: Event::Completed,
+                        info_hash,
+                        downloaded,
+                        uploaded,
+                        left: 0,
+                        recipient: None,
+                    })
+                    .await;
+            });
         }
+
+        std::process::exit(exitcode::OK);
     }
 
-    fn _run(&mut self) -> Result<(), std::io::Error> {
-        let stdout = io::stdout();
-        let _tick_rate = Duration::from_millis(100);
-        let backend = CrosstermBackend::new(stdout);
-        let _terminal = Terminal::new(backend)?;
-        let _page = TorrentList::new();
+    /// Add a torrent that is already initialized, this is called when the user
+    /// uses the magnet flag on the CLI, the Torrent is created on main.rs.
+    async fn add_torrent(&mut self, torrent_ctx: Arc<TorrentCtx>) {
+        let mut v = self.torrent_ctxs.write().await;
+        v.push(torrent_ctx.clone());
+        self.torrent_list.add_row(torrent_ctx).await;
+    }
 
-        // self.recipient_async.do_send(AddMagnetMessage{link:
-        //     "magnet:?xt=urn:btih:48AAC768A865798307DDD4284BE77644368DD2C7&amp;dn=Kerkour%20S.%20Black%20Hat%20Rust...Rust%20programming%20language%202022&amp;tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.openbittorrent.com%3A6969%2Fannounce&amp;tr=udp%3A%2F%2F9.rarbg.to%3A2710%2Fannounce&amp;tr=udp%3A%2F%2F9.rarbg.me%3A2780%2Fannounce&amp;tr=udp%3A%2F%2F9.rarbg.to%3A2730%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&amp;tr=http%3A%2F%2Fp4p.arenabg.com%3A1337%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.tiny-vps.com%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Fopen.stealth.si%3A80%2Fannounce".to_owned()
-        // });
-        //
-        // ctx.run_interval(tick_rate, move |act, ctx| {
-        //     // dont draw for now
-        //     // terminal.draw(|f| page.draw(f)).unwrap();
-        //
-        //     if crossterm::event::poll(tick_rate).unwrap() {
-        //         let k = event::read().unwrap();
-        //         if let Event::Key(k) = k {
-        //             page.keybindings(k.code, ctx, act);
-        //         }
-        //     }
-        // });
+    /// Create a Torrent, and then Add it. This will be called when the user
+    /// adds a torrent using the UI.
+    async fn _new_torrent(&mut self, magnet: &str) {
+        let args = Args::parse();
+        let mut torrent = Torrent::new(self.disk_tx.clone(), magnet, &args.download_dir);
+        let _ = self.add_torrent(torrent.ctx.clone()).await;
 
-        Ok(())
+        spawn(async move {
+            torrent.start_and_run(args.listen).await.unwrap();
+        });
     }
 }
