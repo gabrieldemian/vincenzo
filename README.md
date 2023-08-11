@@ -14,6 +14,11 @@ An example on how to download a torrent using the CLI. Please use the "--help" f
 
 ```bash
 cargo run -- -d "/tmp/btr" -m "<insert magnet link here>" -q
+```
+
+Or
+
+```bash
 vcz -d "/tmp/btr" -m "<insert magnet link here>" -q
 ```
 
