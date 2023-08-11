@@ -3,7 +3,10 @@ use bitlab::SingleBits;
 use futures::{stream::SplitSink, SinkExt, StreamExt};
 use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
-    sync::{atomic::Ordering, Arc},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
     time::Duration,
 };
 use tokio::{
@@ -45,14 +48,6 @@ pub enum Direction {
 /// Data about the remote Peer that we are connected to
 #[derive(Debug)]
 pub struct Peer {
-    /// if this client is choking this peer
-    pub am_choking: bool,
-    /// if this client is interested in this peer
-    pub am_interested: bool,
-    /// if this peer is choking the client
-    pub peer_choking: bool,
-    /// if this peer is interested in the client
-    pub peer_interested: bool,
     pub extension: Extension,
     pub reserved: [u8; 8],
     pub torrent_ctx: Arc<TorrentCtx>,
@@ -71,6 +66,11 @@ pub struct Peer {
 #[derive(Debug)]
 pub enum PeerMsg {
     DownloadedPiece(usize),
+    /// Request again a block that has been requested but not sent
+    RequestInfo(BlockInfo),
+    /// Tell this peer that we are not interested,
+    /// update the local state and send a message to the peer
+    NotInterested,
 }
 
 /// Ctx that is shared with Torrent and Disk;
@@ -84,6 +84,14 @@ pub struct PeerCtx {
     /// Updated when the peer sends us its peer
     /// id, in the handshake.
     pub id: RwLock<Option<[u8; 20]>>,
+    /// if this client is choking this peer
+    pub am_choking: Arc<AtomicBool>,
+    /// if this client is interested in this peer
+    pub am_interested: Arc<AtomicBool>,
+    /// if this peer is choking the client
+    pub peer_choking: Arc<AtomicBool>,
+    /// if this peer is interested in the client
+    pub peer_interested: Arc<AtomicBool>,
 }
 
 impl Peer {
@@ -97,16 +105,16 @@ impl Peer {
             pieces: RwLock::new(Bitfield::new()),
             id: RwLock::new(None),
             peer_tx,
+            am_choking: Arc::new(AtomicBool::new(true)),
+            am_interested: Arc::new(AtomicBool::new(false)),
+            peer_choking: Arc::new(AtomicBool::new(true)),
+            peer_interested: Arc::new(AtomicBool::new(false)),
         });
 
         Peer {
             have_info: false,
             torrent_tx,
-            am_choking: true,
-            am_interested: false,
             extension: Extension::default(),
-            peer_choking: true,
-            peer_interested: false,
             addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
             torrent_ctx,
             disk_tx: None,
@@ -214,7 +222,11 @@ impl Peer {
     }
     /// If we can request new blocks
     pub fn can_request(&self) -> bool {
-        self.am_interested && !self.am_choking && self.have_info
+        let am_interested = self.ctx.am_interested.load(Ordering::Relaxed);
+        let am_choking = self.ctx.am_choking.load(Ordering::Relaxed);
+        // let downloaded = self.torrent_ctx.downloaded.load(Ordering::Relaxed);
+        // let is_download_complete = downloaded >= info.get_size();
+        am_interested && !am_choking && self.have_info
     }
     #[tracing::instrument(skip(self, socket), name = "peer::run", ret)]
     pub async fn run(
@@ -301,18 +313,14 @@ impl Peer {
         drop(downloaded);
 
         // Send Interested & Unchoke to peer
+        self.ctx.am_interested.swap(true, Ordering::Relaxed);
         sink.send(Message::Interested).await?;
-        self.am_interested = true;
+        self.ctx.am_choking.swap(false, Ordering::Relaxed);
         sink.send(Message::Unchoke).await?;
-        self.am_choking = false;
 
         let mut keep_alive_timer = interval_at(
             Instant::now() + Duration::from_secs(120),
             Duration::from_secs(120),
-        );
-        let mut request_timer = interval_at(
-            Instant::now() + Duration::from_secs(10),
-            Duration::from_secs(10),
         );
 
         loop {
@@ -320,12 +328,6 @@ impl Peer {
                 // send Keepalive every 2 minutes
                 _ = keep_alive_timer.tick() => {
                     sink.send(Message::KeepAlive).await?;
-                }
-                // Sometimes that blocks requested are never sent to us,
-                // The algorithm to re-request those blocks is simple:
-                // At every 10 seconds, check for blocks that were requested,
-                // but not downloaded, and request them again.
-                _ = request_timer.tick() => {
                 }
                 Some(Ok(msg)) = stream.next() => {
                     match msg {
@@ -354,7 +356,7 @@ impl Peer {
                             info!("------------------------------\n");
                         }
                         Message::Unchoke => {
-                            self.peer_choking = false;
+                            self.ctx.peer_choking.swap(false, Ordering::Relaxed);
                             info!("---------------------------------");
                             info!("| {:?} Unchoke  |", self.addr);
                             info!("---------------------------------");
@@ -371,7 +373,7 @@ impl Peer {
                             info!("---------------------------------\n");
                         }
                         Message::Choke => {
-                            self.peer_choking = true;
+                            self.ctx.peer_choking.swap(true, Ordering::Relaxed);
                             info!("--------------------------------");
                             info!("| {:?} Choke  |", self.addr);
                             info!("---------------------------------");
@@ -380,14 +382,14 @@ impl Peer {
                             info!("------------------------------");
                             info!("| {:?} Interested  |", self.addr);
                             info!("-------------------------------");
-                            self.peer_interested = true;
+                            self.ctx.peer_interested.swap(true, Ordering::Relaxed);
                             // peer will start to request blocks from us soon
                         }
                         Message::NotInterested => {
                             info!("------------------------------");
                             info!("| {:?} NotInterested  |", self.addr);
                             info!("-------------------------------");
-                            self.peer_interested = false;
+                            self.ctx.peer_interested.swap(false, Ordering::Relaxed);
                             // peer won't request blocks from us anymore
                         }
                         Message::Have(piece) => {
@@ -427,12 +429,43 @@ impl Peer {
                             info!("len: {:?}", block.block.len());
                             info!("--");
 
-                            let info: BlockInfo = block.clone().into();
                             let index = block.index;
                             let begin = block.begin;
                             let len = block.block.len();
 
-                            if block.is_valid() {
+                            let block_info = BlockInfo {
+                                index: index as u32,
+                                begin,
+                                len: len as u32
+                            };
+
+                            let downloaded = torrent_ctx.downloaded_blocks.read().await;
+                            let not_downloaded = downloaded.iter().find(|b| **b == block_info).is_none();
+                            drop(downloaded);
+                            let is_valid = block.is_valid();
+
+                            if is_valid && not_downloaded {
+                                info!("block not downloaded");
+
+                                torrent_ctx.downloaded.fetch_add(len as u64, Ordering::SeqCst);
+
+                                let info = torrent_ctx.info.read().await;
+                                let downloaded = torrent_ctx.downloaded.load(Ordering::Relaxed);
+                                let is_download_complete = downloaded >= info.get_size();
+                                drop(info);
+
+                                info!("yy__downloaded {:?}", downloaded);
+
+                                if is_download_complete {
+                                    info!("download completed!! won't request more blocks");
+
+                                    let mut status = torrent_ctx.status.write().await;
+                                    *status = TorrentStatus::Seeding;
+                                    drop(status);
+
+                                    let _ = self.torrent_tx.send(TorrentMsg::DownloadComplete).await;
+                                }
+
                                 let (tx, rx) = oneshot::channel();
                                 let disk_tx = self.disk_tx.as_ref().unwrap();
 
@@ -448,15 +481,10 @@ impl Peer {
 
                                 match rx.await.unwrap() {
                                     Ok(_) => {
-                                        let mut bd = torrent_ctx.downloaded_blocks.write().await;
-                                        bd.push_front(info);
-                                        drop(bd);
-                                        
                                         info!("wrote block with success on disk");
-                                        torrent_ctx.downloaded.fetch_add(len as u64, Ordering::SeqCst);
-                                        
-                                        let d = torrent_ctx.downloaded.load(Ordering::Relaxed);
-                                        info!("yy__downloaded {:?}", d);
+                                        let mut bd = torrent_ctx.downloaded_blocks.write().await;
+                                        bd.push_front(block_info);
+                                        drop(bd);
                                     }
                                     Err(e) => warn!("could not write block to disk {e:#?}")
                                 }
@@ -485,28 +513,15 @@ impl Peer {
                                         warn!("The hash of the piece {index:?} is invalid");
                                     }
                                 }
-                            } else {
+                                drop(info);
+                            }
+                            if !is_valid {
                                 // block not valid nor requested,
                                 // todo: remove it from requested blocks
                                 warn!("invalid block from Piece, ignoring...");
                             }
 
-                            let info = torrent_ctx.info.read().await;
-                            let downloaded = torrent_ctx.downloaded.load(Ordering::SeqCst);
-                            let is_download_complete = downloaded >= info.get_size();
-                            drop(info);
-
-                            if is_download_complete {
-                                info!("download completed!! won't request more blocks");
-
-                                let mut status = torrent_ctx.status.write().await;
-                                *status = TorrentStatus::Seeding;
-                                drop(status);
-
-                                let _ = self.torrent_tx.send(TorrentMsg::DownloadComplete).await;
-                            }
-
-                            if self.am_interested && !self.peer_choking && !is_download_complete {
+                            if self.can_request() {
                                 self.request_next_piece(&mut sink).await?;
                             }
 
@@ -631,7 +646,6 @@ impl Peer {
                                             info!("t {:?}", t);
                                             info!("payload len {:?}", payload.len());
                                             info!("info len {:?}", info.len());
-                                            info!("info {:?}", String::from_utf8_lossy(&info[0..50]));
                                             info!("{metadata:?}");
 
                                             let mut info_dict = torrent_ctx.info_dict.write().await;
@@ -693,7 +707,10 @@ impl Peer {
                                                     let disk_tx = self.disk_tx.clone().unwrap();
                                                     let _ = disk_tx.send(DiskMsg::NewTorrent(torrent_ctx.clone())).await;
 
-                                                    if self.am_interested && !self.peer_choking {
+                                                    let am_interested = self.ctx.am_interested.load(Ordering::Relaxed);
+                                                    let peer_choking = self.ctx.peer_choking.load(Ordering::Relaxed);
+
+                                                    if am_interested && !peer_choking {
                                                         self.request_next_piece(&mut sink).await?;
                                                     }
                                                 } else {
@@ -731,6 +748,14 @@ impl Peer {
                                 let _ = sink.send(Message::Have(piece)).await;
                             }
                             drop(pieces);
+                        }
+                        PeerMsg::RequestInfo(info) => {
+                            info!("{:?} re-requesting block {info:#?}", self.addr);
+                            sink.send(Message::Request(info)).await?;
+                        }
+                        PeerMsg::NotInterested => {
+                            self.ctx.am_interested.swap(false, Ordering::Relaxed);
+                            sink.send(Message::NotInterested).await?;
                         }
                     }
                 }

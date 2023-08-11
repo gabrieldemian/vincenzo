@@ -352,6 +352,11 @@ impl Torrent {
         );
         drop(stats);
 
+        let mut request_interval = interval_at(
+            Instant::now() + Duration::from_secs(10),
+            Duration::from_secs(10),
+        );
+
         loop {
             select! {
                 Some(msg) = self.rx.recv() => {
@@ -382,14 +387,15 @@ impl Torrent {
                         TorrentMsg::DownloadComplete => {
                             info!("received msg download complete");
                             let (otx, orx) = oneshot::channel();
-                            let downloaded = self.ctx.downloaded.load(Ordering::SeqCst);
+                            let downloaded = self.ctx.downloaded.load(Ordering::Relaxed);
+                            let uploaded = self.ctx.uploaded.load(Ordering::Relaxed);
 
                             let _ = tracker_tx.send(
                                 TrackerMsg::Announce {
                                     event: Event::Completed,
                                     info_hash: self.ctx.info_hash,
                                     downloaded,
-                                    uploaded: self.ctx.uploaded.load(Ordering::SeqCst),
+                                    uploaded,
                                     left: 0,
                                     recipient: Some(otx),
                                 })
@@ -397,6 +403,12 @@ impl Torrent {
 
                             if let Ok(Ok(r)) = orx.await {
                                 info!("announced completion with success {r:#?}");
+                            }
+
+                            // tell all peers that we are not interested,
+                            // we wont request blocks from them anymore
+                            for peer in &self.peer_ctxs {
+                                let _ = peer.peer_tx.send(PeerMsg::NotInterested).await;
                             }
 
                             // announce to tracker that we are stopping
@@ -412,7 +424,7 @@ impl Torrent {
                                         event: Event::Stopped,
                                         info_hash: self.ctx.info_hash,
                                         downloaded,
-                                        uploaded: self.ctx.uploaded.load(Ordering::SeqCst),
+                                        uploaded,
                                         left,
                                         recipient: Some(otx),
                                     })
@@ -421,10 +433,48 @@ impl Torrent {
                                 if let Ok(Ok(r)) = orx.await {
                                     info!("announced stopped with success {r:#?}");
                                 }
-                                std::process::exit(exitcode::OK);
+
+                                // let _ = self.front_tx.send();
+                                // std::process::exit(exitcode::OK);
                             }
                         }
                     }
+                }
+                // Sometimes that blocks requested are never sent to us,
+                // The algorithm to re-request those blocks is simple:
+                // At every 10 seconds, check for blocks that were requested,
+                // but not downloaded, and request them again.
+                _ = request_interval.tick() => {
+                    let requested = self.ctx.requested_blocks.read().await;
+                    let downloaded = self.ctx.downloaded_blocks.read().await;
+
+                    'outer: for req in requested.iter() {
+                        let not_downloaded = !downloaded.iter().any(|b| *b == *req);
+                        // get a block that was requested but not downloaded
+                        if not_downloaded {
+                            // get the first peer that has this piece
+                            for peer in &self.peer_ctxs {
+                                let pieces = peer.pieces.read().await;
+                                let bit_item = pieces.get(req.index as usize);
+                                let am_interested = peer.am_interested.load(Ordering::Relaxed);
+                                let peer_choking = peer.peer_choking.load(Ordering::Relaxed);
+
+                                // and we are interested and not choked
+                                match bit_item {
+                                    Some(bit_item) if bit_item.bit == 1 && am_interested && !peer_choking => {
+                                        let _ = peer.peer_tx.send(PeerMsg::RequestInfo(req.clone())).await;
+                                        // continue to the next requested block,
+                                        // we only want to send one unique block
+                                        // to each peer
+                                        continue 'outer;
+                                    }
+                                    _ => {},
+                                }
+                            }
+                        }
+                    }
+                    drop(requested);
+                    drop(downloaded);
                 }
                 // periodically announce to tracker, at the specified interval
                 // to update the tracker about the client's stats.
@@ -469,9 +519,6 @@ impl Torrent {
                     }
                     drop(info);
                 }
-                // interval used to send stats to the UI
-                // _ = tick_interval.tick() => {
-                // },
             }
         }
     }

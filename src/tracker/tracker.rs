@@ -390,7 +390,6 @@ impl Tracker {
                             left,
                         } => {
                             info!("announce_msg on run");
-                            println!("announce_msg on run");
                             let r = self
                                 .announce_msg(event, info_hash, downloaded, uploaded, left)
                                 .await;
