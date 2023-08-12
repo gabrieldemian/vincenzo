@@ -3,7 +3,10 @@ use std::net::SocketAddr;
 use clap::Parser;
 
 #[derive(Parser, Debug, Default)]
-#[clap(name = "Bittorrent CLI in Rust", author = "Gabriel Lombardo")]
+#[clap(
+    name = "Vincenzo, a BitTorrent client for your terminal",
+    author = "Gabriel Lombardo"
+)]
 #[command(author, version, about, long_about = None)]
 pub struct Args {
     /// The path of the folder where to download file. Must be wrapped in quotes and end with '/'.

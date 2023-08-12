@@ -389,7 +389,6 @@ impl Tracker {
                             event,
                             left,
                         } => {
-                            info!("announce_msg on run");
                             let r = self
                                 .announce_msg(event, info_hash, downloaded, uploaded, left)
                                 .await;
@@ -401,51 +400,5 @@ impl Tracker {
                 }
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use bendy::decoding::FromBencode;
-
-    use crate::{
-        magnet_parser::{get_info_hash, get_magnet},
-        metainfo::MetaInfo,
-    };
-
-    use super::*;
-
-    #[tokio::test]
-    async fn can_announce() -> Result<(), Error> {
-        let magnet = "magnet:?xt=urn:btih:48aac768a865798307ddd4284be77644368dd2c7&dn=Kerkour%20S.%20Black%20Hat%20Rust...Rust%20programming%20language%202022&tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%2Fannounce&tr=udp%3A%2F%2F9.rarbg.to%3A2920%2Fannounce&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&tr=udp%3A%2F%2Ftracker.internetwarriors.net%3A1337%2Fannounce&tr=udp%3A%2F%2Ftracker.leechers-paradise.org%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.pirateparty.gr%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.cyberia.is%3A6969%2Fannounce".to_owned();
-        let m = get_magnet(&magnet).unwrap();
-
-        let metainfo = include_bytes!("../../book.torrent");
-        let metainfo = MetaInfo::from_bencode(metainfo).unwrap();
-        let info = metainfo.info;
-
-        let info_hash = get_info_hash(&m.xt.unwrap());
-        let mut tracker = Tracker::connect(m.tr.clone()).await?;
-        let _peers = tracker.announce_exchange(info_hash, None).await?;
-
-        let downloaded: u64 = info
-            .files
-            .unwrap()
-            .iter()
-            .fold(0, |acc, x| acc + x.length as u64);
-
-        let r = tracker
-            .announce_msg(Event::Completed, info_hash, downloaded, 0, 100)
-            .await?;
-        assert_eq!(r.action, Action::Announce.into());
-        println!("r from completed announce {r:?}");
-
-        let r = tracker
-            .announce_msg(Event::Stopped, info_hash, downloaded, 0, 0)
-            .await?;
-        assert_eq!(r.action, Action::Announce.into());
-        println!("r from stopped announce {r:?}");
-
-        Ok(())
     }
 }

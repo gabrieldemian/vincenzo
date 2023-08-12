@@ -1,11 +1,11 @@
 use std::{collections::HashMap, sync::Arc};
 
 use crossterm::event::KeyCode;
-use tracing::info;
-use tui::{
+use ratatui::{
     layout::Constraint,
     widgets::{Block, Borders, Cell, Row, Table, TableState},
 };
+use tracing::info;
 
 use crate::{frontend::AppStyle, to_human_readable, torrent::TorrentCtx};
 

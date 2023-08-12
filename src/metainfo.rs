@@ -654,27 +654,20 @@ mod tests {
         //
         // Complex multi file torrent, 64 blocks per piece
         //
-        let metainfo = include_bytes!("../music.torrent");
+        let metainfo = include_bytes!("../btr/music.torrent");
         let metainfo = MetaInfo::from_bencode(metainfo).unwrap();
         let info = metainfo.info;
+        println!("passou");
 
         let bi = info.get_block_infos().unwrap();
         let mut x = info.get_block_infos().unwrap();
         x.pop_back();
-        println!("penultimo {:#?}", x.pop_back());
 
-        println!("last {:#?}", bi.back());
         let size = info.get_size();
         let per_piece = info.blocks_per_piece();
         let pieces = info.pieces();
-        let info_bytes = bi.iter().fold(0, |acc, x| {
-            if x.len + x.begin > info.piece_length {
-                println!("deu merda agui {x:#?}");
-            }
-            acc + x.len
-        });
+        let info_bytes = bi.iter().fold(0, |acc, x| acc + x.len);
         println!("--- info ---");
-        // println!("all {:#?}", info.files);
         println!("size {size}");
         println!("piece_len {}", info.piece_length);
         println!("per_piece {per_piece}");
@@ -852,7 +845,7 @@ mod tests {
         //
         // Simple multi file torrent, 1 block per piece
         //
-        let metainfo = include_bytes!("../book.torrent");
+        let metainfo = include_bytes!("../btr/book.torrent");
         let metainfo = MetaInfo::from_bencode(metainfo).unwrap();
         let info = metainfo.info;
 
@@ -929,7 +922,7 @@ mod tests {
         //
         // Simple multi file torrent, 16 blocks per piece
         //
-        let torrent_debian_bytes = include_bytes!("../debian.torrent");
+        let torrent_debian_bytes = include_bytes!("../btr/debian.torrent");
         let torrent = MetaInfo::from_bencode(torrent_debian_bytes).unwrap();
         let info = torrent.info;
         let bi = info.get_block_infos().unwrap();
@@ -1011,7 +1004,7 @@ mod tests {
 
     #[test]
     fn should_encode_multi_file_torrent() -> Result<(), encoding::Error> {
-        let torrent_book_bytes = include_bytes!("../book.torrent");
+        let torrent_book_bytes = include_bytes!("../btr/book.torrent");
 
         let torrent = MetaInfo::from_bencode(torrent_book_bytes).unwrap();
         let torrent_bytes = torrent.to_bencode().unwrap();
@@ -1024,7 +1017,7 @@ mod tests {
 
     #[test]
     fn should_decode_multi_file_torrent() -> Result<(), decoding::Error> {
-        let torrent = include_bytes!("../book.torrent");
+        let torrent = include_bytes!("../btr/book.torrent");
         let torrent = MetaInfo::from_bencode(torrent)?;
 
         assert_eq!(torrent, {
@@ -1071,13 +1064,10 @@ mod tests {
                 info: Info {
                     piece_length: 16_384,
                     pieces: torrent.info.pieces.clone(),
-                    name: "Kerkour S. Black Hat Rust...Rust programming language 2022".to_owned(),
+                    name: "book".to_owned(),
                     files: Some(vec![File {
                         length: 4092334,
-                        path: vec![
-                            "Kerkour S. Black Hat Rust...Rust programming language 2022.pdf"
-                                .to_owned(),
-                        ],
+                        path: vec!["book.pdf".to_owned()],
                     }]),
                     file_length: None,
                 },
@@ -1089,7 +1079,7 @@ mod tests {
 
     #[test]
     fn should_decode_single_file_torrent() -> Result<(), decoding::Error> {
-        let torrent = include_bytes!("../debian.torrent");
+        let torrent = include_bytes!("../btr/debian.torrent");
         let torrent = MetaInfo::from_bencode(torrent)?;
 
         assert_eq!(torrent, {
@@ -1104,7 +1094,7 @@ mod tests {
                 ]),
                 info: Info {
                     piece_length: 262_144,
-                    pieces: include_bytes!("../pieces.iso").to_vec(),
+                    pieces: include_bytes!("../btr/pieces.iso").to_vec(),
                     name: "debian-9.4.0-amd64-netinst.iso".to_owned(),
                     files: None,
                     file_length: Some(305_135_616),
@@ -1124,7 +1114,7 @@ mod tests {
 
     #[test]
     fn should_encode_single_file_torrent() -> Result<(), encoding::Error> {
-        let torrent_disk = include_bytes!("../debian.torrent");
+        let torrent_disk = include_bytes!("../btr/debian.torrent");
 
         let torrent = MetaInfo {
             announce: "http://bttracker.debian.org:6969/announce".to_owned(),
@@ -1137,7 +1127,7 @@ mod tests {
             ]),
             info: Info {
                 piece_length: 262_144,
-                pieces: include_bytes!("../pieces.iso").to_vec(),
+                pieces: include_bytes!("../btr/pieces.iso").to_vec(),
                 name: "debian-9.4.0-amd64-netinst.iso".to_owned(),
                 files: None,
                 file_length: Some(305_135_616),

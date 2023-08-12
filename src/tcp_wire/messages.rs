@@ -260,11 +260,6 @@ impl Decoder for PeerCodec {
                 let mut payload = vec![0u8; msg_len - 2];
                 buf.copy_to_slice(&mut payload);
 
-                // debug!("payload is {payload:?}");
-                // debug!("decoding payload {:?}", String::from_utf8_lossy(&payload));
-
-                // d8:msg_typei1e5:piecei0e10:total_sizei5205eed5:filesld6:lengthi4092334e4:pathl62:Kerkour S. Black Hat Rust...Rust programming language 2022.pdfeee4:name58:Kerkour S. Black Hat Rust...Rust programming language 202212:piece lengthi16384e6:pieces5000:7\u{1a}ǚ\
-
                 Message::Extended((ext_id, payload))
             }
         };

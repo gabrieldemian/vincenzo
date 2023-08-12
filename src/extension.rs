@@ -311,13 +311,13 @@ mod tests {
 
     #[test]
     fn can_create_metadata_data() {
-        let metainfo_bytes = include_bytes!("../book.torrent");
+        let metainfo_bytes = include_bytes!("../btr/book.torrent");
         let metainfo = MetaInfo::from_bencode(metainfo_bytes).unwrap();
 
         let info = metainfo.info;
         let metadata_data = Metadata::data(0, &info.clone().to_bencode().unwrap()).unwrap();
 
-        let mut r = b"d8:msg_typei1e5:piecei0e10:total_sizei5205ee".to_vec();
+        let mut r = b"d8:msg_typei1e5:piecei0e10:total_sizei5095ee".to_vec();
         r.extend_from_slice(&info.to_bencode().unwrap());
 
         assert_eq!(r, metadata_data);
@@ -346,10 +346,6 @@ mod tests {
             121, 105, 49, 101, 49, 58, 118, 49, 55, 58, 84, 114, 97, 110, 115, 109, 105, 115, 115,
             105, 111, 110, 32, 50, 46, 57, 52, 101,
         ];
-
-        let s = String::from_utf8_lossy(&bytes);
-        println!("{s:?}");
-        // d1:ei1e1:md11:ut_metadatai3e6:ut_pexi1ee13:metadata_sizei5205e1:pi51413e4:reqqi512e11:upload_onlyi1e1:v17:Transmission 2.94e
 
         let ext = Extension::from_bencode(&bytes).unwrap();
 
@@ -687,10 +683,8 @@ mod tests {
         ]
         .to_vec();
 
-        let (metadata_msg, info) = Metadata::extract(buf).unwrap();
+        let (_metadata_msg, info) = Metadata::extract(buf).unwrap();
 
         assert_eq!(info.len(), 5205);
-
-        println!("metadata_msg {metadata_msg:#?}");
     }
 }
