@@ -134,6 +134,10 @@ pub struct TorrentCtx {
     pub uploaded: Arc<AtomicU64>,
     /// How many bytes we have downloaded from other peers.
     pub downloaded: Arc<AtomicU64>,
+    /// The downloaded bytes of the previous second,
+    /// used to get the download rate in seconds.
+    /// this will be mutated on the frontend event loop.
+    pub last_second_downloaded: Arc<AtomicU64>,
     pub status: RwLock<TorrentStatus>,
 }
 
@@ -185,6 +189,7 @@ impl Torrent {
             info,
             uploaded: Arc::new(AtomicU64::new(0)),
             downloaded: Arc::new(AtomicU64::new(0)),
+            last_second_downloaded: Arc::new(AtomicU64::new(0)),
         });
 
         Self {

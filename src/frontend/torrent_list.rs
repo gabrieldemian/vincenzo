@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, ops::Add, sync::Arc};
 
 use crossterm::event::KeyCode;
 use ratatui::{
@@ -135,6 +135,25 @@ impl<'a> TorrentList<'a> {
             let stats = ctx.stats.read().await;
             let status = ctx.status.read().await;
             let downloaded = ctx.downloaded.load(std::sync::atomic::Ordering::Relaxed);
+            let last_second_downloaded = ctx
+                .last_second_downloaded
+                .load(std::sync::atomic::Ordering::Relaxed);
+
+            info!("downloaded {downloaded}");
+            info!("last_second_downloaded {last_second_downloaded}");
+
+            let diff = if downloaded > last_second_downloaded {
+                downloaded - last_second_downloaded
+            } else {
+                0
+            };
+            info!("diff {diff}");
+            ctx.last_second_downloaded
+                .fetch_add(diff, std::sync::atomic::Ordering::SeqCst);
+
+            let download_rate = to_human_readable(diff as f64);
+            let download_rate = format!("{download_rate}/s");
+            info!("download_rate {download_rate}");
 
             let mut cells = Vec::new();
             cells.push(info.name.clone());

@@ -1,6 +1,6 @@
 # Vincenzo
 !⚠️ Work in progress. !⚠️ <br />
-Vincenzo is a minimalistic, terminal based, BitTorrent client with vim-like keybindings. Torrents can be downloaded using the CLI or UI. Still a work in progress, however, it is already usable.
+Vincenzo is a BitTorrent client with vim-like keybindings and a terminal based UI. Torrents can be downloaded using the CLI or UI. Still a work in progress, however, it is already usable.
 
 ## Features
 - Terminal based UI <br />
