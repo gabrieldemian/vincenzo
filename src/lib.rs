@@ -1,5 +1,7 @@
+pub mod avg;
 pub mod bitfield;
 pub mod cli;
+pub mod counter;
 pub mod disk;
 pub mod error;
 pub mod extension;

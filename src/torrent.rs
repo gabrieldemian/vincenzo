@@ -1,4 +1,5 @@
 use crate::magnet_parser::get_magnet;
+use crate::peer::session::ConnectionState;
 use crate::tcp_wire::lib::BlockInfo;
 use crate::tcp_wire::messages::HandshakeCodec;
 use crate::{
@@ -16,8 +17,8 @@ use crate::{
 };
 use clap::Parser;
 use core::sync::atomic::{AtomicU64, Ordering};
+use hashbrown::{HashMap, HashSet};
 use magnet_url::Magnet;
-use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::{collections::VecDeque, sync::Arc, time::Duration};
@@ -42,53 +43,21 @@ pub enum TorrentMsg {
     /// an entire piece. We send Have messages to peers
     /// that don't have it and update the UI with stats.
     DownloadedPiece(usize),
-    PeerConnected(Arc<PeerCtx>),
+    PeerConnected([u8; 20], Arc<PeerCtx>),
     DownloadComplete,
-}
-
-#[derive(Debug, Default, Clone)]
-pub enum TorrentStatus {
-    #[default]
-    Connecting,
-    Downloading,
-    Seeding,
-    Error,
-}
-
-impl<'a> Into<&'a str> for TorrentStatus {
-    fn into(self) -> &'a str {
-        use TorrentStatus::*;
-        match self {
-            Connecting => "Connecting",
-            Downloading => "Downloading",
-            Seeding => "Seeding",
-            Error => "Error",
-        }
-    }
-}
-
-impl Into<String> for TorrentStatus {
-    fn into(self) -> String {
-        use TorrentStatus::*;
-        match self {
-            Connecting => "Connecting".to_owned(),
-            Downloading => "Downloading".to_owned(),
-            Seeding => "Seeding".to_owned(),
-            Error => "Error".to_owned(),
-        }
-    }
-}
-
-impl From<&str> for TorrentStatus {
-    fn from(value: &str) -> Self {
-        use TorrentStatus::*;
-        match value {
-            "Connecting" => Connecting,
-            "Downloading" => Downloading,
-            "Seeding" => Seeding,
-            "Error" | _ => Error,
-        }
-    }
+    /// When in endgame mode, the first peer that receives this info,
+    /// sends this message to send Cancel's to all other peers.
+    SendCancel {
+        from: [u8; 20],
+        block_info: BlockInfo,
+    },
+    /// When a peer is Choked, or receives an error and must close the connection,
+    /// the outgoing/pending blocks of this peer must be appended back
+    /// to the list of available block_infos.
+    ReturnBlockInfo(BlockInfo),
+    StartEndgame([u8; 20], BlockInfo),
+    /// When torrent is being gracefully shutdown
+    Quit,
 }
 
 /// This is the main entity responsible for the high-level management of
@@ -97,16 +66,15 @@ impl From<&str> for TorrentStatus {
 pub struct Torrent {
     pub ctx: Arc<TorrentCtx>,
     pub tracker_ctx: Arc<TrackerCtx>,
-    pub tx: mpsc::Sender<TorrentMsg>,
     pub disk_tx: mpsc::Sender<DiskMsg>,
     pub rx: mpsc::Receiver<TorrentMsg>,
-    pub in_end_game: bool,
-    pub peer_ctxs: Vec<Arc<PeerCtx>>,
+    pub peer_ctxs: HashMap<[u8; 20], Arc<PeerCtx>>,
     pub tracker_tx: Option<mpsc::Sender<TrackerMsg>>,
 }
 
 #[derive(Debug)]
 pub struct TorrentCtx {
+    pub tx: mpsc::Sender<TorrentMsg>,
     pub tracker_tx: RwLock<Option<mpsc::Sender<TrackerMsg>>>,
     pub magnet: Magnet,
     pub info_hash: [u8; 20],
@@ -115,12 +83,7 @@ pub struct TorrentCtx {
     /// when a block info is downloaded, it is moved from this Vec,
     /// to [`downloaded_blocks`].
     pub block_infos: RwLock<VecDeque<BlockInfo>>,
-    /// Blocks that were requested, but not downloaded,
-    /// when those are downloaded, they are NOT removed from this Vec.
-    /// but copied to [`downloaded_blocks`].
-    pub requested_blocks: RwLock<VecDeque<BlockInfo>>,
-    /// Downloaded blocks that were previously requested.
-    pub downloaded_blocks: RwLock<VecDeque<BlockInfo>>,
+    pub downloaded_blocks: RwLock<HashSet<BlockInfo>>,
     pub info: RwLock<Info>,
     /// If using a Magnet link, the info will be downloaded in pieces
     /// and those pieces may come in different order,
@@ -168,21 +131,20 @@ impl Torrent {
         let info = RwLock::new(Info::default().name(dn));
         let info_dict = RwLock::new(BTreeMap::<u32, Vec<u8>>::new());
         let tracker_ctx = Arc::new(TrackerCtx::default());
-        let requested_blocks = RwLock::new(VecDeque::new());
-        let downloaded_blocks = RwLock::new(VecDeque::new());
+        let downloaded_blocks = RwLock::new(HashSet::new());
         let block_infos = RwLock::new(VecDeque::new());
 
         let info_hash = get_info_hash(&xt);
         let (tx, rx) = mpsc::channel::<TorrentMsg>(300);
 
         let ctx = Arc::new(TorrentCtx {
+            tx: tx.clone(),
             status: RwLock::new(TorrentStatus::default()),
             tracker_tx: RwLock::new(None),
             stats: RwLock::new(Stats::default()),
             info_hash,
             info_dict,
             pieces,
-            requested_blocks,
             block_infos,
             magnet,
             downloaded_blocks,
@@ -196,11 +158,9 @@ impl Torrent {
             tracker_ctx,
             tracker_tx: None,
             ctx,
-            in_end_game: false,
             disk_tx,
-            tx,
             rx,
-            peer_ctxs: Vec::new(),
+            peer_ctxs: HashMap::new(),
         }
     }
 
@@ -231,14 +191,10 @@ impl Torrent {
             .map(|addr| {
                 let (peer_tx, peer_rx) = mpsc::channel::<PeerMsg>(300);
                 let torrent_ctx = self.ctx.clone();
-                let torrent_tx = self.tx.clone();
                 let tracker_ctx = self.tracker_ctx.clone();
                 let disk_tx = self.disk_tx.clone();
 
-                Peer::new(peer_tx, torrent_tx, torrent_ctx, peer_rx)
-                    .addr(addr)
-                    .tracker_ctx(tracker_ctx)
-                    .disk_tx(disk_tx)
+                Peer::new(addr, peer_tx, torrent_ctx, peer_rx, disk_tx, tracker_ctx)
             })
             .collect();
 
@@ -275,7 +231,7 @@ impl Torrent {
     pub async fn spawn_outbound_peers(&mut self, peers: Vec<Peer>) -> Result<(), Error> {
         for mut peer in peers {
             info!("outbound peer {:?}", peer.addr);
-            let torrent_tx = self.tx.clone();
+            peer.session.state.connection = ConnectionState::Connecting;
 
             // send connections too other peers
             spawn(async move {
@@ -284,16 +240,25 @@ impl Torrent {
                         info!("we connected with {:?}", peer.addr);
 
                         let socket = Framed::new(socket, HandshakeCodec);
+                        let socket = peer.start(Direction::Outbound, socket).await?;
+                        let r = peer.run(Direction::Outbound, socket).await;
 
-                        let _ = torrent_tx
-                            .send(TorrentMsg::PeerConnected(peer.ctx.clone()))
-                            .await;
-                        let _ = peer.run(Direction::Outbound, socket).await;
+                        if let Err(r) = r {
+                            warn!("Peer session stopped due to an error: {}", r);
+                        }
                     }
                     Err(e) => {
                         warn!("error with peer: {:?} {e:#?}", peer.addr);
                     }
                 }
+                // if we are gracefully shutting down, we do nothing with the pending
+                // blocks, Rust will drop them when their scope ends naturally.
+                // otherwise, we send the blocks back to the torrent
+                // so that other peers can download them. In this case, the peer
+                // might be shutting down due to an error or this is malicious peer
+                // that we wish to end the connection.
+                peer.free_pending_blocks().await;
+                Ok::<(), Error>(())
             });
         }
         Ok(())
@@ -309,10 +274,9 @@ impl Torrent {
 
         let local_peer_socket = TcpListener::bind(self.tracker_ctx.local_peer_addr).await?;
 
-        let disk_tx = self.disk_tx.clone();
         let torrent_ctx = Arc::clone(&self.ctx);
-        let tracker_ctx = Arc::clone(&self.tracker_ctx);
-        let torrent_tx = self.tx.clone();
+        let tracker_ctx = self.tracker_ctx.clone();
+        let disk_tx = self.disk_tx.clone();
 
         // accept connections from other peers
         spawn(async move {
@@ -324,20 +288,37 @@ impl Torrent {
 
                     info!("received inbound connection from {addr}");
 
-                    let torrent_ctx = torrent_ctx.clone();
                     let (peer_tx, peer_rx) = mpsc::channel::<PeerMsg>(300);
 
-                    let mut peer = Peer::new(peer_tx, torrent_tx.clone(), torrent_ctx, peer_rx)
-                        .addr(addr)
-                        .tracker_ctx(tracker_ctx.clone())
-                        .disk_tx(disk_tx.clone());
-
-                    let _ = torrent_tx
-                        .send(TorrentMsg::PeerConnected(peer.ctx.clone()))
-                        .await;
+                    let mut peer = Peer::new(
+                        addr,
+                        peer_tx,
+                        torrent_ctx.clone(),
+                        peer_rx,
+                        disk_tx.clone(),
+                        tracker_ctx.clone(),
+                    );
 
                     spawn(async move {
-                        peer.run(Direction::Inbound, socket).await?;
+                        peer.session.state.connection = ConnectionState::Connecting;
+                        let socket = peer.start(Direction::Inbound, socket).await?;
+
+                        let r = peer.run(Direction::Inbound, socket).await;
+
+                        if let Err(r) = r {
+                            warn!("Peer session stopped due to an error: {}", r);
+                        }
+
+                        // if we are gracefully shutting down, we do nothing with the pending
+                        // blocks, Rust will drop them when their scope ends naturally.
+                        // otherwise, we send the blocks back to the torrent
+                        // so that other peers can download them. In this case, the peer
+                        // might be shutting down due to an error or this is malicious peer
+                        // that we wish to end the connection.
+                        if peer.session.state.connection != ConnectionState::Quitting {
+                            peer.free_pending_blocks().await;
+                        }
+
                         Ok::<(), Error>(())
                     });
                 }
@@ -355,12 +336,8 @@ impl Torrent {
             Instant::now() + Duration::from_secs(stats.interval.max(500).into()),
             Duration::from_secs((stats.interval as u64).max(500)),
         );
-        drop(stats);
 
-        let mut request_interval = interval_at(
-            Instant::now() + Duration::from_secs(10),
-            Duration::from_secs(10),
-        );
+        drop(stats);
 
         loop {
             select! {
@@ -381,13 +358,13 @@ impl Torrent {
                         }
                         TorrentMsg::DownloadedPiece(piece) => {
                             // send Have messages to peers that dont have our pieces
-                            for peer in &self.peer_ctxs {
-                                let _ = peer.peer_tx.send(PeerMsg::DownloadedPiece(piece)).await;
+                            for peer in self.peer_ctxs.values() {
+                                let _ = peer.tx.send(PeerMsg::DownloadedPiece(piece)).await;
                             }
                         }
-                        TorrentMsg::PeerConnected(ctx) => {
+                        TorrentMsg::PeerConnected(id, ctx) => {
                             info!("connected with new peer");
-                            self.peer_ctxs.push(ctx);
+                            self.peer_ctxs.insert(id, ctx);
                         }
                         TorrentMsg::DownloadComplete => {
                             info!("received msg download complete");
@@ -412,74 +389,70 @@ impl Torrent {
 
                             // tell all peers that we are not interested,
                             // we wont request blocks from them anymore
-                            for peer in &self.peer_ctxs {
-                                let _ = peer.peer_tx.send(PeerMsg::NotInterested).await;
+                            for peer in self.peer_ctxs.values() {
+                                let _ = peer.tx.send(PeerMsg::NotInterested).await;
                             }
 
+                            //
                             // announce to tracker that we are stopping
                             if Args::parse().quit_after_complete {
-                                info!("exiting...");
-
-                                let (otx, orx) = oneshot::channel();
-                                let info = self.ctx.info.read().await;
-                                let left = downloaded - info.get_size();
-
-                                let _ = tracker_tx.send(
-                                    TrackerMsg::Announce {
-                                        event: Event::Stopped,
-                                        info_hash: self.ctx.info_hash,
-                                        downloaded,
-                                        uploaded,
-                                        left,
-                                        recipient: Some(otx),
-                                    })
-                                .await;
-
-                                if let Ok(Ok(r)) = orx.await {
-                                    info!("announced stopped with success {r:#?}");
-                                }
-
-                                // let _ = self.front_tx.send();
-                                // std::process::exit(exitcode::OK);
+                                let _ = self.ctx.tx.send(TorrentMsg::Quit).await;
                             }
                         }
-                    }
-                }
-                // Sometimes that blocks requested are never sent to us,
-                // The algorithm to re-request those blocks is simple:
-                // At every 10 seconds, check for blocks that were requested,
-                // but not downloaded, and request them again.
-                _ = request_interval.tick() => {
-                    let requested = self.ctx.requested_blocks.read().await;
-                    let downloaded = self.ctx.downloaded_blocks.read().await;
-
-                    'outer: for req in requested.iter() {
-                        let not_downloaded = !downloaded.iter().any(|b| *b == *req);
-                        // get a block that was requested but not downloaded
-                        if not_downloaded {
-                            // get the first peer that has this piece
-                            for peer in &self.peer_ctxs {
-                                let pieces = peer.pieces.read().await;
-                                let bit_item = pieces.get(req.index as usize);
-                                let am_interested = peer.am_interested.load(Ordering::Relaxed);
-                                let peer_choking = peer.peer_choking.load(Ordering::Relaxed);
-
-                                // and we are interested and not choked
-                                match bit_item {
-                                    Some(bit_item) if bit_item.bit == 1 && am_interested && !peer_choking => {
-                                        let _ = peer.peer_tx.send(PeerMsg::RequestInfo(req.clone())).await;
-                                        // continue to the next requested block,
-                                        // we only want to send one unique block
-                                        // to each peer
-                                        continue 'outer;
-                                    }
-                                    _ => {},
-                                }
+                        // The peer "from" was the first one to receive the "info".
+                        // Send Cancel messages to everyone else.
+                        TorrentMsg::SendCancel { from, block_info } => {
+                            for (k, peer) in self.peer_ctxs.iter() {
+                                if *k == from { continue };
+                                let _ = peer.tx.send(PeerMsg::Cancel(block_info.clone())).await;
                             }
                         }
+                        TorrentMsg::ReturnBlockInfo(block_info) => {
+                            let mut blocks = self.ctx.block_infos.write().await;
+                            blocks.push_front(block_info);
+                        }
+                        TorrentMsg::StartEndgame(peer_id, block_info) => {
+                            let peer = self.peer_ctxs.get(&peer_id);
+                            if let Some(peer) = peer {
+                                let _ = peer.tx.send(PeerMsg::RequestBlockInfo(block_info)).await;
+                            }
+                        }
+                        TorrentMsg::Quit => {
+                            info!("torrent is quitting");
+                            let (otx, orx) = oneshot::channel();
+                            let downloaded = self.ctx.downloaded.load(Ordering::Relaxed);
+                            let uploaded = self.ctx.uploaded.load(Ordering::Relaxed);
+                            let info = self.ctx.info.read().await;
+                            let left =
+                                if downloaded > info.get_size()
+                                    { downloaded - info.get_size() }
+                                else { 0 };
+
+                            let _ = tracker_tx.send(
+                                TrackerMsg::Announce {
+                                    event: Event::Stopped,
+                                    info_hash: self.ctx.info_hash,
+                                    downloaded,
+                                    uploaded,
+                                    left,
+                                    recipient: Some(otx),
+                                })
+                            .await;
+
+                            for peer in self.peer_ctxs.values() {
+                                let tx = peer.tx.clone();
+                                spawn(async move {
+                                    let _ = tx.send(PeerMsg::Quit).await;
+                                });
+                            }
+
+                            if let Ok(Ok(r)) = orx.await {
+                                info!("announced stopped with success {r:#?}");
+                            }
+
+                            return Ok(());
+                        }
                     }
-                    drop(requested);
-                    drop(downloaded);
                 }
                 // periodically announce to tracker, at the specified interval
                 // to update the tracker about the client's stats.
@@ -515,7 +488,6 @@ impl Torrent {
                             stats.interval = r.interval;
                             stats.seeders = r.seeders;
                             stats.leechers = r.leechers;
-                            // announce_interval = interval(Duration::from_secs(r.interval as u64));
                             announce_interval = interval_at(
                                 Instant::now() + Duration::from_secs(r.interval as u64),
                                 Duration::from_secs(r.interval as u64),
@@ -525,6 +497,51 @@ impl Torrent {
                     drop(info);
                 }
             }
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone)]
+pub enum TorrentStatus {
+    #[default]
+    Connecting,
+    Downloading,
+    Seeding,
+    Error,
+}
+
+impl<'a> Into<&'a str> for TorrentStatus {
+    fn into(self) -> &'a str {
+        use TorrentStatus::*;
+        match self {
+            Connecting => "Connecting",
+            Downloading => "Downloading",
+            Seeding => "Seeding",
+            Error => "Error",
+        }
+    }
+}
+
+impl Into<String> for TorrentStatus {
+    fn into(self) -> String {
+        use TorrentStatus::*;
+        match self {
+            Connecting => "Connecting".to_owned(),
+            Downloading => "Downloading".to_owned(),
+            Seeding => "Seeding".to_owned(),
+            Error => "Error".to_owned(),
+        }
+    }
+}
+
+impl From<&str> for TorrentStatus {
+    fn from(value: &str) -> Self {
+        use TorrentStatus::*;
+        match value {
+            "Connecting" => Connecting,
+            "Downloading" => Downloading,
+            "Seeding" => Seeding,
+            "Error" | _ => Error,
         }
     }
 }

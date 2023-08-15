@@ -31,14 +31,17 @@ vcz -d "/tmp/btr" -m "<insert magnet link here>" -q
 - [BEP 0023](http://www.bittorrent.org/beps/bep_0023.html) - Tracker Returns Compact Peer Lists
 
 ## Roadmap
-In order of priority. <br />
-⏳ - Initial version of UI. <br />
+✅ - Initial version of UI. <br />
+✅ - Download pipelining. <br />
+✅ - Endgame mode. <br />
 ⏳ - Use a buffered I/O strategy to reduce the number of writes on disk. <br />
-⏳ - Upgrade the download algorithm to use the maximum bitrate. <br />
+⏳ - Choking algorithm. <br />
+⏳ - Anti-snubbing. <br />
 ⏳ - Resume torrent download. <br />
-⏳ - Change piece download strategy. <br />
+⏳ - Change piece selection strategy. <br />
 ⏳ - Select files to download. <br />
 ⏳ - Support streaming of videos/music on MPV. <br />
+⏳ - ... <br />
 
 ## Tests
 This program is well-tested and I'm always improving the tests.

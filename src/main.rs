@@ -49,6 +49,7 @@ async fn main() -> Result<(), Error> {
     // Start and run the terminal UI
     let (fr_tx, fr_rx) = mpsc::channel::<FrMsg>(100);
     let mut fr = Frontend::new(fr_tx.clone(), disk_tx.clone());
+
     spawn(async move {
         fr.run(fr_rx).await.unwrap();
     });
@@ -66,6 +67,7 @@ async fn main() -> Result<(), Error> {
 
         spawn(async move {
             torrent.start_and_run(args.listen).await?;
+            torrent.disk_tx.send(DiskMsg::Quit).await.unwrap();
             Ok::<_, Error>(())
         });
     }

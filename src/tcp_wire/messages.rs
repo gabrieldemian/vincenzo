@@ -279,6 +279,7 @@ pub const PROTOCOL_STRING: &str = "BitTorrent protocol";
 /// receiving and sending a handshake the codec should be switched to
 /// [`PeerCodec`], but care should be taken not to discard the underlying
 /// receive and send buffers.
+#[derive(Debug)]
 pub struct HandshakeCodec;
 
 impl Encoder<Handshake> for HandshakeCodec {

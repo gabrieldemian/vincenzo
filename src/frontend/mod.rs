@@ -4,7 +4,7 @@ use futures::{FutureExt, StreamExt};
 use clap::Parser;
 use std::{
     io::{self, Stdout},
-    sync::{atomic::Ordering, Arc},
+    sync::Arc,
     time::Duration,
 };
 use tokio::{
@@ -30,8 +30,7 @@ use torrent_list::TorrentList;
 use crate::{
     cli::Args,
     disk::DiskMsg,
-    torrent::{Torrent, TorrentCtx},
-    tracker::{event::Event, tracker::TrackerMsg},
+    torrent::{Torrent, TorrentCtx, TorrentMsg},
 };
 
 #[derive(Clone, Debug)]
@@ -128,6 +127,7 @@ impl<'a> Frontend<'a> {
                     match msg {
                         FrMsg::Quit => {
                             let _ = self.stop().await;
+                            return Ok(());
                         }
                         FrMsg::AddTorrent(torrent_ctx) => self.add_torrent(torrent_ctx).await,
                     }
@@ -142,6 +142,7 @@ impl<'a> Frontend<'a> {
         let stdout = io::stdout();
         let backend = CrosstermBackend::new(stdout);
         let mut terminal = Terminal::new(backend).unwrap();
+
         disable_raw_mode().unwrap();
         terminal.show_cursor().unwrap();
         execute!(
@@ -151,28 +152,23 @@ impl<'a> Frontend<'a> {
         )
         .unwrap();
 
-        // announce to all trackers of all torrents that we are shutting down
-        let v = self.torrent_ctxs.read().await;
-        for lock in v.clone().into_iter() {
-            let tx = lock.tracker_tx.read().await.clone().unwrap();
-            let downloaded = lock.downloaded.load(Ordering::Relaxed);
-            let uploaded = lock.uploaded.load(Ordering::Relaxed);
-            let info_hash = lock.info_hash;
+        let torrent_ctxs = self.torrent_ctxs.read().await;
+
+        // tell all torrents that we are gracefully shutting down,
+        // each torrent will kill their peers tasks, and their tracker task
+        for torrent_ctx in torrent_ctxs.iter() {
+            let torrent_tx = torrent_ctx.tx.clone();
+
             spawn(async move {
-                let _ = tx
-                    .send(TrackerMsg::Announce {
-                        event: Event::Completed,
-                        info_hash,
-                        downloaded,
-                        uploaded,
-                        left: 0,
-                        recipient: None,
-                    })
-                    .await;
+                let _ = torrent_tx.send(TorrentMsg::Quit).await;
             });
         }
 
-        std::process::exit(exitcode::OK);
+        let torrent_ctxs = self.torrent_ctxs.read().await;
+
+        if torrent_ctxs.is_empty() {
+            self.disk_tx.send(DiskMsg::Quit).await.unwrap();
+        }
     }
 
     /// Add a torrent that is already initialized, this is called when the user

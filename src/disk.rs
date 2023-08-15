@@ -9,13 +9,14 @@ use tokio::{
     io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
     sync::{mpsc::Receiver, oneshot::Sender},
 };
+use tracing::info;
 
 use crate::{
     error::Error,
     metainfo,
-    peer::PeerCtx,
+    peer::{PeerCtx, PeerMsg},
     tcp_wire::lib::{Block, BlockInfo},
-    torrent::TorrentCtx,
+    torrent::{TorrentCtx, TorrentMsg},
 };
 
 #[derive(Debug)]
@@ -52,6 +53,7 @@ pub enum DiskMsg {
         info_hash: [u8; 20],
         peer_id: [u8; 20],
     },
+    Quit,
 }
 
 /// The Disk struct responsabilities:
@@ -62,7 +64,9 @@ pub enum DiskMsg {
 #[derive(Debug)]
 pub struct Disk {
     rx: Receiver<DiskMsg>,
+    /// k: info_hash
     pub torrent_ctxs: HashMap<[u8; 20], Arc<TorrentCtx>>,
+    /// k: peer_id
     pub peer_ctxs: HashMap<[u8; 20], Arc<PeerCtx>>,
 }
 
@@ -136,21 +140,14 @@ impl Disk {
         let mut infos: VecDeque<BlockInfo> = VecDeque::new();
         let mut idxs = VecDeque::new();
 
-        let block_infos = torrent_ctx.block_infos.read().await;
-        let requested = torrent_ctx.requested_blocks.read().await;
+        let mut block_infos = torrent_ctx.block_infos.write().await;
 
         for (i, info) in block_infos.iter().enumerate() {
             if infos.len() >= qnt {
                 break;
             }
 
-            let was_requested = requested.iter().any(|i| i == info);
-            if was_requested {
-                continue;
-            };
-
             // only request blocks that the peer has
-            // let peer = torrent_ctx.pieces.read().await;
             let peer = self.peer_ctxs.get(&peer_id).ok_or(Error::PeerIdInvalid)?;
             let pieces = peer.pieces.read().await;
             if let Some(r) = pieces.get(info.index as usize) {
@@ -160,19 +157,11 @@ impl Disk {
                 }
             }
         }
-        drop(block_infos);
-        drop(requested);
-        let mut block_infos = torrent_ctx.block_infos.write().await;
         // remove the requested infos from block_infos
         for i in idxs {
             block_infos.remove(i);
         }
-        drop(block_infos);
-        let mut requested = torrent_ctx.requested_blocks.write().await;
-        for info in &infos {
-            requested.push_back(info.clone());
-        }
-        drop(requested);
+
         Ok(infos)
     }
 
@@ -202,6 +191,7 @@ impl Disk {
                 } => {
                     let result = self.write_block(b, download_dir, info_hash).await;
                     let _ = recipient.send(result);
+                    // let _ = recipient.send(Ok(()));
                 }
                 DiskMsg::OpenFile(path, tx, name) => {
                     let file = self.open_file(&path, download_dir, &name).await?;
@@ -222,6 +212,9 @@ impl Disk {
                 }
                 DiskMsg::NewPeer(peer) => {
                     self.new_peer(peer).await?;
+                }
+                DiskMsg::Quit => {
+                    return Ok(());
                 }
             }
         }
@@ -441,7 +434,7 @@ mod tests {
         let magnet = "magnet:?xt=urn:btih:48aac768a865798307ddd4284be77644368dd2c7&dn=book&tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%2Fannounce&tr=udp%3A%2F%2F9.rarbg.to%3A2920%2Fannounce&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&tr=udp%3A%2F%2Ftracker.internetwarriors.net%3A1337%2Fannounce&tr=udp%3A%2F%2Ftracker.leechers-paradise.org%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.pirateparty.gr%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.cyberia.is%3A6969%2Fannounce".to_owned();
         let download_dir = "btr/".to_owned();
 
-        let (disk_tx, disk_rx) = mpsc::channel::<DiskMsg>(300);
+        let (disk_tx, disk_rx) = mpsc::channel::<DiskMsg>(1000);
 
         let torrent = Torrent::new(disk_tx.clone(), &magnet, &download_dir);
         let torrent_ctx = torrent.ctx.clone();

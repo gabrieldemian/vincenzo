@@ -657,7 +657,6 @@ mod tests {
         let metainfo = include_bytes!("../btr/music.torrent");
         let metainfo = MetaInfo::from_bencode(metainfo).unwrap();
         let info = metainfo.info;
-        println!("passou");
 
         let bi = info.get_block_infos().unwrap();
         let mut x = info.get_block_infos().unwrap();

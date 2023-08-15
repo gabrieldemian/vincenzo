@@ -390,10 +390,15 @@ impl Tracker {
                             left,
                         } => {
                             let r = self
-                                .announce_msg(event, info_hash, downloaded, uploaded, left)
+                                .announce_msg(event.clone(), info_hash, downloaded, uploaded, left)
                                 .await;
+
                             if let Some(recipient) = recipient {
                                 let _ = recipient.send(r);
+                            }
+
+                            if event == Event::Stopped {
+                                return Ok(());
                             }
                         }
                     }
