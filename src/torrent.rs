@@ -19,6 +19,7 @@ use clap::Parser;
 use core::sync::atomic::{AtomicU64, Ordering};
 use hashbrown::{HashMap, HashSet};
 use magnet_url::Magnet;
+use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::{collections::VecDeque, sync::Arc, time::Duration};
@@ -257,7 +258,9 @@ impl Torrent {
                 // so that other peers can download them. In this case, the peer
                 // might be shutting down due to an error or this is malicious peer
                 // that we wish to end the connection.
-                peer.free_pending_blocks().await;
+                if peer.session.state.connection != ConnectionState::Quitting {
+                    peer.free_pending_blocks().await;
+                }
                 Ok::<(), Error>(())
             });
         }
@@ -371,6 +374,10 @@ impl Torrent {
                             let (otx, orx) = oneshot::channel();
                             let downloaded = self.ctx.downloaded.load(Ordering::Relaxed);
                             let uploaded = self.ctx.uploaded.load(Ordering::Relaxed);
+
+                            let mut status = self.ctx.status.write().await;
+                            *status = TorrentStatus::Seeding;
+                            drop(status);
 
                             let _ = tracker_tx.send(
                                 TrackerMsg::Announce {

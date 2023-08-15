@@ -9,14 +9,13 @@ use tokio::{
     io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
     sync::{mpsc::Receiver, oneshot::Sender},
 };
-use tracing::info;
 
 use crate::{
     error::Error,
     metainfo,
-    peer::{PeerCtx, PeerMsg},
+    peer::PeerCtx,
     tcp_wire::lib::{Block, BlockInfo},
-    torrent::{TorrentCtx, TorrentMsg},
+    torrent::TorrentCtx,
 };
 
 #[derive(Debug)]

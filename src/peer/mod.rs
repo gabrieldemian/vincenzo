@@ -19,7 +19,7 @@ use tokio::{
 use tokio_util::codec::{Framed, FramedParts};
 
 use tokio::net::TcpStream;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 use crate::{
     bitfield::Bitfield,
@@ -32,7 +32,7 @@ use crate::{
         lib::{Block, BlockInfo, BLOCK_LEN},
         messages::{Handshake, HandshakeCodec, Message, MessageId, PeerCodec},
     },
-    torrent::{TorrentCtx, TorrentMsg, TorrentStatus},
+    torrent::{TorrentCtx, TorrentMsg},
     tracker::tracker::TrackerCtx,
 };
 
@@ -412,6 +412,7 @@ impl Peer {
 
                             if was_downloaded {
                                 info!("already downloaded, ignoring");
+                                self.session.record_waste(block_info.len);
                             }
 
                             drop(downloaded);
@@ -435,10 +436,6 @@ impl Peer {
 
                                 if is_download_complete {
                                     info!("download completed!! wont request more blocks");
-
-                                    let mut status = self.torrent_ctx.status.write().await;
-                                    *status = TorrentStatus::Seeding;
-                                    drop(status);
 
                                     let _ = torrent_tx.send(TorrentMsg::DownloadComplete).await;
                                 }
@@ -769,6 +766,11 @@ impl Peer {
     where
         T: SinkExt<Message> + Sized + std::marker::Unpin,
     {
+        info!(
+            "{:?} pending blocksss {}",
+            self.addr,
+            self.outgoing_requests.len()
+        );
         // resent requests if we have pending requests and more time has elapsed
         // since the last request than the current timeout value
         if !self.outgoing_requests.is_empty() {
@@ -804,7 +806,7 @@ impl Peer {
 
             let request_timeout = self.session.request_timeout();
 
-            debug!(
+            info!(
                 "{:?} checking request timeout \
                 (last {} ms ago, timeout: {} ms)",
                 self.addr,
@@ -885,9 +887,8 @@ impl Peer {
             request_len = available_len;
         }
 
-        info!("max of blocks to request {target_request_queue_len}");
         info!("ongoing {}", self.outgoing_requests.len());
-        info!("available to request {target_request_queue_len}");
+        info!("max to request {target_request_queue_len}");
         info!("requesting {request_len} blocks");
 
         if request_len > 0 {
@@ -906,8 +907,10 @@ impl Peer {
 
             let r = orx.await.unwrap();
 
+            self.session.last_outgoing_request_time = Some(std::time::Instant::now());
+
             for info in r {
-                info!("requesting to {:?} {info:#?}", self.addr);
+                info!("{:?} requesting {info:#?}", self.addr);
                 self.outgoing_requests.insert(info.clone());
 
                 let _ = sink.send(Message::Request(info)).await;
@@ -927,7 +930,7 @@ impl Peer {
         debug_assert!(id.is_some());
 
         if let Some(id) = *id {
-            for req in self.outgoing_requests.drain() {
+            for req in self.outgoing_requests.iter() {
                 info!("requesting for endgame {req:#?}");
                 let _ = self
                     .torrent_ctx

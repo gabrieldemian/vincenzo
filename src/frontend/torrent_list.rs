@@ -27,16 +27,9 @@ impl<'a> TorrentList<'a> {
 
         state.select(Some(0));
 
-        let header_cells = [
-            "Name",
-            "Downloaded",
-            "Size",
-            "Seeders",
-            "Leechers",
-            "Status",
-        ]
-        .into_iter()
-        .map(|h| Cell::from(h).style(style.normal_style));
+        let header_cells = ["Name", "Downloaded", "Size", "Seeds", "Leechs", "Status"]
+            .into_iter()
+            .map(|h| Cell::from(h).style(style.normal_style));
 
         let header = Row::new(header_cells)
             .style(style.normal_style)
@@ -80,11 +73,11 @@ impl<'a> TorrentList<'a> {
             .highlight_style(self.style.selected_style)
             .style(self.style.base_style)
             .widths(&[
-                Constraint::Percentage(40), // name
-                Constraint::Length(10),     // downloaded
+                Constraint::Percentage(35), // name
+                Constraint::Percentage(25),     // downloaded - download_rate
                 Constraint::Length(10),     // size
-                Constraint::Length(10),     // seeders
-                Constraint::Length(10),     // leechers
+                Constraint::Length(5),      // seeders
+                Constraint::Length(5),      // leechers
                 Constraint::Length(10),     // status
             ]);
 
@@ -102,10 +95,26 @@ impl<'a> TorrentList<'a> {
         let stats = ctx.stats.read().await;
         let status = ctx.status.read().await;
         let downloaded = ctx.downloaded.load(std::sync::atomic::Ordering::Relaxed);
+        let last_second_downloaded = ctx
+            .last_second_downloaded
+            .load(std::sync::atomic::Ordering::Relaxed);
+
+        let diff = if downloaded > last_second_downloaded {
+            downloaded - last_second_downloaded
+        } else {
+            0
+        };
+        ctx.last_second_downloaded
+            .fetch_add(diff, std::sync::atomic::Ordering::SeqCst);
+
+        let download_rate = to_human_readable(diff as f64);
+        let download_rate = format!("{download_rate}/s");
+
+        let downloaded = format!("{} {download_rate}", to_human_readable(downloaded as f64));
 
         let mut item: Vec<String> = Vec::new();
         item.push(info.name.clone());
-        item.push(to_human_readable(downloaded as f64));
+        item.push(downloaded);
         item.push(to_human_readable(info.get_size() as f64));
         item.push(stats.seeders.to_string());
         item.push(stats.leechers.to_string());
@@ -147,7 +156,6 @@ impl<'a> TorrentList<'a> {
             } else {
                 0
             };
-            info!("diff {diff}");
             ctx.last_second_downloaded
                 .fetch_add(diff, std::sync::atomic::Ordering::SeqCst);
 
@@ -155,9 +163,11 @@ impl<'a> TorrentList<'a> {
             let download_rate = format!("{download_rate}/s");
             info!("download_rate {download_rate}");
 
+            let downloaded = format!("{} {download_rate}", to_human_readable(downloaded as f64));
+
             let mut cells = Vec::new();
             cells.push(info.name.clone());
-            cells.push(to_human_readable(downloaded as f64));
+            cells.push(downloaded);
             cells.push(to_human_readable(info.get_size() as f64));
             cells.push(stats.seeders.to_string());
             cells.push(stats.leechers.to_string());
