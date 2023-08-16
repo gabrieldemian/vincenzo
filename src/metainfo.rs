@@ -64,7 +64,7 @@ impl Info {
             for (_, file) in files.iter().enumerate() {
                 let back = infos.back();
                 let r = file.get_block_infos(self.piece_length, back);
-                infos.extend(r.into_iter());
+                infos.extend(r);
             }
             return Ok(infos);
         }
@@ -91,7 +91,7 @@ impl Info {
             return f as u64;
         }
 
-        return 0;
+        0
     }
 }
 
@@ -218,7 +218,7 @@ impl File {
         }
         let mut infos = VecDeque::new();
         partition(
-            &self,
+            self,
             piece_length,
             &mut infos,
             prev_block_file,

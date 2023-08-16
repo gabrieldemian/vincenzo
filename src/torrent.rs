@@ -210,7 +210,7 @@ impl Torrent {
         self.tracker_tx = Some(tracker.tx.clone());
 
         spawn(async move {
-            let _ = tracker.run().await?;
+            tracker.run().await?;
             Ok::<(), Error>(())
         });
 
@@ -508,7 +508,7 @@ impl Torrent {
     }
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq)]
 pub enum TorrentStatus {
     #[default]
     Connecting,
@@ -517,10 +517,10 @@ pub enum TorrentStatus {
     Error,
 }
 
-impl<'a> Into<&'a str> for TorrentStatus {
-    fn into(self) -> &'a str {
+impl<'a> From<TorrentStatus> for &'a str {
+    fn from(val: TorrentStatus) -> Self {
         use TorrentStatus::*;
-        match self {
+        match val {
             Connecting => "Connecting",
             Downloading => "Downloading",
             Seeding => "Seeding",
@@ -529,10 +529,10 @@ impl<'a> Into<&'a str> for TorrentStatus {
     }
 }
 
-impl Into<String> for TorrentStatus {
-    fn into(self) -> String {
+impl From<TorrentStatus> for String {
+    fn from(val: TorrentStatus) -> Self {
         use TorrentStatus::*;
-        match self {
+        match val {
             Connecting => "Connecting".to_owned(),
             Downloading => "Downloading".to_owned(),
             Seeding => "Seeding".to_owned(),

@@ -316,7 +316,7 @@ impl Tracker {
         }
 
         info!("ips of peers addrs {peer_list:#?}");
-        let peers: Vec<SocketAddr> = peer_list.into_iter().map(|p| p.into()).collect();
+        let peers: Vec<SocketAddr> = peer_list.into_iter().collect();
 
         Ok(peers)
     }

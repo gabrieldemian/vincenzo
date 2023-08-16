@@ -20,12 +20,12 @@ pub fn to_human_readable(mut n: f64) -> String {
         return format!("{} {}", n, "B");
     }
     let mut u: i32 = 0;
-    let r = (10 * 1) as f64;
+    let r = 10_f64;
     while (n * r).round() / r >= delimiter && u < (units.len() as i32) - 1 {
         n /= delimiter;
         u += 1;
     }
-    return format!("{:.2} {}", n, units[u as usize]);
+    format!("{:.2} {}", n, units[u as usize])
 }
 
 #[cfg(test)]

@@ -184,13 +184,13 @@ impl Disk {
                     let _ = recipient.send(result);
                 }
                 DiskMsg::WriteBlock {
-                    b,
+                    b: _,
                     recipient,
-                    info_hash,
+                    info_hash: _,
                 } => {
-                    let result = self.write_block(b, download_dir, info_hash).await;
-                    let _ = recipient.send(result);
-                    // let _ = recipient.send(Ok(()));
+                    // let result = self.write_block(b, download_dir, info_hash).await;
+                    // let _ = recipient.send(result);
+                    let _ = recipient.send(Ok(()));
                 }
                 DiskMsg::OpenFile(path, tx, name) => {
                     let file = self.open_file(&path, download_dir, &name).await?;
@@ -338,7 +338,7 @@ impl Disk {
             let mut file_begin: u64 = 0;
             let mut file_end: u64 = 0;
 
-            let file_info = files.into_iter().enumerate().find(|(_, f)| {
+            let file_info = files.iter().enumerate().find(|(_, f)| {
                 file_end += f.length as u64;
 
                 let r = (cursor as u64 + 1) <= file_end;
@@ -393,7 +393,7 @@ impl Disk {
         info_hash: [u8; 20],
     ) -> Result<Block, Error> {
         let mut file = self
-            .get_file_from_block_info(&block_info, download_dir, info_hash)
+            .get_file_from_block_info(block_info, download_dir, info_hash)
             .await?;
 
         let mut buf = vec![0; block_info.len as usize];
@@ -462,7 +462,7 @@ mod tests {
         };
 
         disk.torrent_ctxs
-            .insert(torrent_ctx.info_hash.clone(), torrent_ctx.clone());
+            .insert(torrent_ctx.info_hash, torrent_ctx.clone());
 
         let mut info_ctx = torrent.ctx.info.write().await;
         *info_ctx = info.clone();
@@ -508,7 +508,7 @@ mod tests {
         let info_hash: [u8; 20] = torrent_ctx.info_hash;
         let mut disk = Disk::new(disk_rx);
         disk.torrent_ctxs
-            .insert(torrent_ctx.info_hash.clone(), torrent_ctx.clone());
+            .insert(torrent_ctx.info_hash, torrent_ctx.clone());
 
         let mut info_ctx = torrent.ctx.info.write().await;
         *info_ctx = info.clone();
@@ -700,7 +700,7 @@ mod tests {
         let torrent_ctx = torrent.ctx.clone();
 
         disk.torrent_ctxs
-            .insert(torrent_ctx.info_hash.clone(), torrent_ctx.clone());
+            .insert(torrent_ctx.info_hash, torrent_ctx.clone());
 
         let mut info_ctx = torrent.ctx.info.write().await;
         *info_ctx = info.clone();
@@ -742,7 +742,7 @@ mod tests {
         let torrent_ctx = torrent.ctx.clone();
 
         disk.torrent_ctxs
-            .insert(torrent_ctx.info_hash.clone(), torrent_ctx.clone());
+            .insert(torrent_ctx.info_hash, torrent_ctx.clone());
 
         let mut info_ctx = torrent.ctx.info.write().await;
         *info_ctx = info.clone();

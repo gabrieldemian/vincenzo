@@ -1,145 +1,90 @@
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 use crossterm::event::KeyCode;
 use ratatui::{
     layout::Constraint,
-    widgets::{Block, Borders, Cell, Row, Table, TableState},
+    prelude::{Backend, Direction, Layout},
+    style::{Color, Style, Stylize},
+    text::{Line, Span},
+    widgets::{Block, Borders, List, ListItem, ListState},
+    Terminal,
 };
-use tracing::info;
 
-use crate::{frontend::AppStyle, to_human_readable, torrent::TorrentCtx};
+use crate::{
+    frontend::AppStyle,
+    to_human_readable,
+    torrent::{TorrentCtx, TorrentStatus},
+};
 
 use super::{FrMsg, FrontendCtx};
 
 #[derive(Clone)]
 pub struct TorrentList<'a> {
-    pub state: TableState,
+    pub state: ListState,
+    rows: Vec<ListItem<'a>>,
     ctx: Arc<FrontendCtx>,
-    rows: HashMap<[u8; 20], Row<'a>>,
-    header: Row<'a>,
     style: AppStyle,
+    pub torrent_ctxs: Vec<Arc<TorrentCtx>>,
 }
 
 impl<'a> TorrentList<'a> {
     pub fn new(ctx: Arc<FrontendCtx>) -> Self {
         let style = AppStyle::new();
-        let mut state = TableState::default();
+        let state = ListState::default();
+        let rows = vec![];
+        // state.select(Some(0));
 
-        state.select(Some(0));
-
-        let header_cells = ["Name", "Downloaded", "Size", "Seeds", "Leechs", "Status"]
-            .into_iter()
-            .map(|h| Cell::from(h).style(style.normal_style));
-
-        let header = Row::new(header_cells)
-            .style(style.normal_style)
-            .height(1)
-            .bottom_margin(1);
-
-        let rows = HashMap::new();
+        // let mut rows: Vec<ListItem> = Vec::new();
+        // let line = Line::from("--------");
+        // let name = Line::from("Arch linux iso");
+        // let download_and_rate = Line::from("3MiB of 10 MiB 2.1MiB/s");
+        // let sl = Line::from("Seeders 5 Leechers 2");
+        // let status = Span::styled("Downloading", Style::default().fg(Color::LightBlue)).into();
+        // rows.push(ListItem::new(vec![
+        //     line.clone(),
+        //     name,
+        //     download_and_rate,
+        //     sl,
+        //     status,
+        //     line,
+        // ]));
 
         Self {
+            torrent_ctxs: vec![],
             ctx,
             style,
-            header,
-            rows,
             state,
+            rows,
         }
     }
 
-    pub async fn keybindings(&mut self, k: KeyCode) {
+    pub async fn keybindings<T: Backend>(&mut self, k: KeyCode, terminal: &mut Terminal<T>) {
         match k {
             KeyCode::Char('q') | KeyCode::Esc => {
                 self.ctx.fr_tx.send(FrMsg::Quit).await.unwrap();
             }
             KeyCode::Down | KeyCode::Char('j') => {
                 self.next();
-                self.draw().await;
+                self.draw(terminal).await;
             }
             KeyCode::Up | KeyCode::Char('k') => {
                 self.previous();
-                self.draw().await;
+                self.draw(terminal).await;
+            }
+            KeyCode::Char('t') => {
+                // self.previous();
+                self.draw(terminal).await;
             }
             KeyCode::Enter => {}
             _ => {}
         }
     }
 
-    pub async fn draw(&mut self) {
-        let items: Vec<Row> = self.rows.clone().into_values().collect();
-        let t = Table::new(items)
-            .header(self.header.clone())
-            .block(Block::default().borders(Borders::ALL).title("Torrents"))
-            .highlight_style(self.style.selected_style)
-            .style(self.style.base_style)
-            .widths(&[
-                Constraint::Percentage(35), // name
-                Constraint::Percentage(25),     // downloaded - download_rate
-                Constraint::Length(10),     // size
-                Constraint::Length(5),      // seeders
-                Constraint::Length(5),      // leechers
-                Constraint::Length(10),     // status
-            ]);
+    pub async fn draw<T: Backend>(&mut self, terminal: &mut Terminal<T>) {
+        let selected = self.state.selected();
+        let mut rows: Vec<ListItem> = Vec::new();
 
-        let mut terminal = self.ctx.terminal.write().await;
-
-        terminal
-            .draw(|f| {
-                f.render_stateful_widget(t, f.size(), &mut self.state);
-            })
-            .unwrap();
-    }
-
-    pub async fn add_row(&mut self, ctx: Arc<TorrentCtx>) {
-        let info = ctx.info.read().await;
-        let stats = ctx.stats.read().await;
-        let status = ctx.status.read().await;
-        let downloaded = ctx.downloaded.load(std::sync::atomic::Ordering::Relaxed);
-        let last_second_downloaded = ctx
-            .last_second_downloaded
-            .load(std::sync::atomic::Ordering::Relaxed);
-
-        let diff = if downloaded > last_second_downloaded {
-            downloaded - last_second_downloaded
-        } else {
-            0
-        };
-        ctx.last_second_downloaded
-            .fetch_add(diff, std::sync::atomic::Ordering::SeqCst);
-
-        let download_rate = to_human_readable(diff as f64);
-        let download_rate = format!("{download_rate}/s");
-
-        let downloaded = format!("{} {download_rate}", to_human_readable(downloaded as f64));
-
-        let mut item: Vec<String> = Vec::new();
-        item.push(info.name.clone());
-        item.push(downloaded);
-        item.push(to_human_readable(info.get_size() as f64));
-        item.push(stats.seeders.to_string());
-        item.push(stats.leechers.to_string());
-        item.push(status.clone().into());
-        info!("added row on UI {item:#?}");
-
-        let height = item
-            .iter()
-            .map(|content| content.chars().filter(|c| *c == '\n').count())
-            .max()
-            .unwrap_or(0)
-            + 1;
-
-        let cells = item.into_iter().map(|c| Cell::from(c));
-        let row = Row::new(cells).height(height as u16);
-
-        self.rows.insert(ctx.info_hash, row);
-
-        self.draw().await;
-    }
-
-    /// Generate all the rows and rerender the entire UI
-    pub async fn rerender(&mut self, ctxs: &Vec<Arc<TorrentCtx>>) {
-        let mut rows = HashMap::new();
-        for ctx in ctxs {
+        for (i, ctx) in self.torrent_ctxs.iter().enumerate() {
             let info = ctx.info.read().await;
             let stats = ctx.stats.read().await;
             let status = ctx.status.read().await;
@@ -148,63 +93,105 @@ impl<'a> TorrentList<'a> {
                 .last_second_downloaded
                 .load(std::sync::atomic::Ordering::Relaxed);
 
-            info!("downloaded {downloaded}");
-            info!("last_second_downloaded {last_second_downloaded}");
-
             let diff = if downloaded > last_second_downloaded {
                 downloaded - last_second_downloaded
             } else {
                 0
             };
+
             ctx.last_second_downloaded
                 .fetch_add(diff, std::sync::atomic::Ordering::SeqCst);
 
-            let download_rate = to_human_readable(diff as f64);
-            let download_rate = format!("{download_rate}/s");
-            info!("download_rate {download_rate}");
+            let mut download_rate = to_human_readable(diff as f64);
+            download_rate.push_str("/s");
 
-            let downloaded = format!("{} {download_rate}", to_human_readable(downloaded as f64));
+            let name = Span::from(info.name.clone()).bold();
 
-            let mut cells = Vec::new();
-            cells.push(info.name.clone());
-            cells.push(downloaded);
-            cells.push(to_human_readable(info.get_size() as f64));
-            cells.push(stats.seeders.to_string());
-            cells.push(stats.leechers.to_string());
-            cells.push(status.clone().into());
+            let status_style = match *status {
+                TorrentStatus::Seeding => Style::default().fg(Color::LightGreen),
+                TorrentStatus::Error => Style::default().fg(Color::Red),
+                _ => Style::default().fg(Color::LightBlue),
+            };
 
-            let height = cells
-                .iter()
-                .map(|content| content.chars().filter(|c| *c == '\n').count())
-                .max()
-                .unwrap_or(0)
-                + 1;
+            let status_txt: &str = status.clone().into();
+            let mut status_txt = vec![Span::styled(status_txt, status_style)];
 
-            let row = Row::new(cells).height(height as u16);
+            if *status == TorrentStatus::Downloading {
+                let download_and_rate =
+                    format!(" {} - {download_rate}", to_human_readable(downloaded as f64)).into();
+                status_txt.push(download_and_rate);
+            }
 
-            rows.insert(ctx.info_hash, row);
+            let s = stats.seeders.to_string();
+            let l = stats.leechers.to_string();
+            let sl = format!("Seeders {s} Leechers {l}").into();
+
+            let mut line_top = Line::from("-".repeat(terminal.size().unwrap().width as usize));
+            let mut line_bottom = line_top.clone();
+
+            if self.state.selected() == Some(i) {
+                line_top.patch_style(Style::default().fg(Color::LightBlue));
+                line_bottom.patch_style(Style::default().fg(Color::LightBlue));
+            }
+
+            let mut items = vec![
+                line_top,
+                name.into(),
+                to_human_readable(info.get_size() as f64).into(),
+                sl,
+                status_txt.into(),
+                line_bottom,
+            ];
+
+            if Some(i) != selected && selected > Some(0) {
+                items.remove(0);
+            }
+
+            rows.push(ListItem::new(items));
         }
 
-        self.rows = rows;
-        self.draw().await;
+        let torrent_list =
+            List::new(rows).block(Block::default().borders(Borders::ALL).title("Torrents"));
+
+        terminal
+            .draw(|f| {
+                // Create two chunks, the body, and the footer
+                let chunks = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([Constraint::Percentage(100)].as_ref())
+                    .split(f.size());
+
+                f.render_stateful_widget(torrent_list, chunks[0], &mut self.state);
+            })
+            .unwrap();
+    }
+
+    pub async fn update_ctx(&mut self, ctx: Arc<TorrentCtx>) {
+        self.torrent_ctxs.push(ctx);
     }
 
     pub fn next(&mut self) {
-        if self.rows.len() > 0 {
-            let i =
-                self.state
-                    .selected()
-                    .map_or(0, |v| if v != self.rows.len() - 1 { v + 1 } else { 0 });
+        if !self.torrent_ctxs.is_empty() {
+            let i = self.state.selected().map_or(0, |v| {
+                if v != self.torrent_ctxs.len() - 1 {
+                    v + 1
+                } else {
+                    0
+                }
+            });
             self.state.select(Some(i));
         }
     }
 
     pub fn previous(&mut self) {
-        if self.rows.len() > 0 {
-            let i =
-                self.state
-                    .selected()
-                    .map_or(0, |v| if v == 0 { self.rows.len() - 1 } else { v - 1 });
+        if !self.torrent_ctxs.is_empty() {
+            let i = self.state.selected().map_or(0, |v| {
+                if v == 0 {
+                    self.torrent_ctxs.len() - 1
+                } else {
+                    v - 1
+                }
+            });
             self.state.select(Some(i));
         }
     }
