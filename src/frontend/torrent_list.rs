@@ -3,80 +3,115 @@ use std::sync::Arc;
 use crossterm::event::KeyCode;
 use ratatui::{
     layout::Constraint,
-    prelude::{Backend, Direction, Layout},
+    prelude::{Backend, Direction, Layout, Rect},
     style::{Color, Style, Stylize},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState},
+    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
     Terminal,
 };
 
 use crate::{
-    frontend::AppStyle,
     to_human_readable,
     torrent::{TorrentCtx, TorrentStatus},
 };
 
-use super::{FrMsg, FrontendCtx};
+use super::{AppStyle, FrMsg, FrontendCtx};
 
 #[derive(Clone)]
 pub struct TorrentList<'a> {
+    pub style: AppStyle,
     pub state: ListState,
-    rows: Vec<ListItem<'a>>,
-    ctx: Arc<FrontendCtx>,
-    style: AppStyle,
     pub torrent_ctxs: Vec<Arc<TorrentCtx>>,
+    ctx: Arc<FrontendCtx>,
+    show_popup: bool,
+    input: String,
+    cursor_position: usize,
+    footer: List<'a>,
 }
 
 impl<'a> TorrentList<'a> {
     pub fn new(ctx: Arc<FrontendCtx>) -> Self {
         let style = AppStyle::new();
         let state = ListState::default();
-        let rows = vec![];
-        // state.select(Some(0));
 
-        // let mut rows: Vec<ListItem> = Vec::new();
-        // let line = Line::from("--------");
-        // let name = Line::from("Arch linux iso");
-        // let download_and_rate = Line::from("3MiB of 10 MiB 2.1MiB/s");
-        // let sl = Line::from("Seeders 5 Leechers 2");
-        // let status = Span::styled("Downloading", Style::default().fg(Color::LightBlue)).into();
-        // rows.push(ListItem::new(vec![
-        //     line.clone(),
-        //     name,
-        //     download_and_rate,
-        //     sl,
-        //     status,
-        //     line,
-        // ]));
+        let k: Line = vec![
+            Span::styled("k".to_string(), style.highlight_fg),
+            " move up   ".into(),
+            Span::styled("j".to_string(), style.highlight_fg),
+            " move down   ".into(),
+            Span::styled("t".to_string(), style.highlight_fg),
+            " add torrent   ".into(),
+            Span::styled("q".to_string(), style.highlight_fg),
+            " quit".into(),
+        ]
+        .into();
+
+        let line: ListItem = ListItem::new(k);
+        let footer_list: Vec<ListItem> = vec![line].into();
+
+        let footer = List::new(footer_list)
+            .block(Block::default().borders(Borders::ALL).title("Keybindings"));
 
         Self {
-            torrent_ctxs: vec![],
-            ctx,
             style,
+            footer,
+            cursor_position: 0,
+            input: String::new(),
+            torrent_ctxs: vec![],
+            show_popup: false,
+            ctx,
             state,
-            rows,
         }
     }
 
     pub async fn keybindings<T: Backend>(&mut self, k: KeyCode, terminal: &mut Terminal<T>) {
         match k {
+            // KeyCode::Enter => {}
             KeyCode::Char('q') | KeyCode::Esc => {
-                self.ctx.fr_tx.send(FrMsg::Quit).await.unwrap();
+                self.reset_cursor();
+                self.input.clear();
+                self.quit(terminal).await;
             }
-            KeyCode::Down | KeyCode::Char('j') => {
-                self.next();
-                self.draw(terminal).await;
-            }
-            KeyCode::Up | KeyCode::Char('k') => {
-                self.previous();
-                self.draw(terminal).await;
-            }
-            KeyCode::Char('t') => {
-                // self.previous();
-                self.draw(terminal).await;
-            }
-            KeyCode::Enter => {}
-            _ => {}
+            k if self.show_popup => match k {
+                KeyCode::Enter => self.submit_magnet_link(terminal).await,
+                KeyCode::Char(to_insert) => {
+                    self.enter_char(to_insert);
+                    self.draw(terminal).await;
+                }
+                KeyCode::Backspace => {
+                    self.delete_char();
+                    self.draw(terminal).await;
+                }
+                KeyCode::Left => {
+                    self.move_cursor_left();
+                    self.draw(terminal).await;
+                }
+                KeyCode::Right => {
+                    self.move_cursor_right();
+                    self.draw(terminal).await;
+                }
+                KeyCode::Esc => {
+                    // self.input_mode = InputMode::Normal;
+                    self.quit(terminal).await;
+                    self.draw(terminal).await;
+                }
+                _ => {}
+            },
+            k => match k {
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.next();
+                    self.draw(terminal).await;
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.previous();
+                    self.draw(terminal).await;
+                }
+                KeyCode::Char('t') => {
+                    self.show_popup = true;
+                    self.draw(terminal).await;
+                }
+                _ => {}
+            },
         }
     }
 
@@ -108,17 +143,20 @@ impl<'a> TorrentList<'a> {
             let name = Span::from(info.name.clone()).bold();
 
             let status_style = match *status {
-                TorrentStatus::Seeding => Style::default().fg(Color::LightGreen),
-                TorrentStatus::Error => Style::default().fg(Color::Red),
-                _ => Style::default().fg(Color::LightBlue),
+                TorrentStatus::Seeding => self.style.success,
+                TorrentStatus::Error => self.style.error,
+                _ => self.style.highlight_fg,
             };
 
             let status_txt: &str = status.clone().into();
             let mut status_txt = vec![Span::styled(status_txt, status_style)];
 
             if *status == TorrentStatus::Downloading {
-                let download_and_rate =
-                    format!(" {} - {download_rate}", to_human_readable(downloaded as f64)).into();
+                let download_and_rate = format!(
+                    " {} - {download_rate}",
+                    to_human_readable(downloaded as f64)
+                )
+                .into();
                 status_txt.push(download_and_rate);
             }
 
@@ -130,8 +168,8 @@ impl<'a> TorrentList<'a> {
             let mut line_bottom = line_top.clone();
 
             if self.state.selected() == Some(i) {
-                line_top.patch_style(Style::default().fg(Color::LightBlue));
-                line_bottom.patch_style(Style::default().fg(Color::LightBlue));
+                line_top.patch_style(self.style.highlight_fg);
+                line_bottom.patch_style(self.style.highlight_fg);
             }
 
             let mut items = vec![
@@ -158,19 +196,35 @@ impl<'a> TorrentList<'a> {
                 // Create two chunks, the body, and the footer
                 let chunks = Layout::default()
                     .direction(Direction::Vertical)
-                    .constraints([Constraint::Percentage(100)].as_ref())
+                    .constraints([Constraint::Percentage(90), Constraint::Percentage(10)].as_ref())
                     .split(f.size());
 
-                f.render_stateful_widget(torrent_list, chunks[0], &mut self.state);
+                if self.show_popup {
+                    let area = self.centered_rect(60, 20, f.size());
+
+                    let input = Paragraph::new(self.input.as_str())
+                        .style(self.style.highlight_fg)
+                        .block(Block::default().borders(Borders::ALL).title("Add Torrent"));
+
+                    f.render_widget(Clear, area);
+                    f.render_widget(input, area);
+                    f.set_cursor(area.x + self.cursor_position as u16 + 1, area.y + 1);
+                } else {
+                    f.render_stateful_widget(torrent_list, chunks[0], &mut self.state);
+                    f.render_widget(self.footer.clone(), chunks[1]);
+                }
             })
             .unwrap();
     }
 
     pub async fn update_ctx(&mut self, ctx: Arc<TorrentCtx>) {
         self.torrent_ctxs.push(ctx);
+        if self.state.selected().is_none() {
+            self.state.select(Some(0));
+        }
     }
 
-    pub fn next(&mut self) {
+    fn next(&mut self) {
         if !self.torrent_ctxs.is_empty() {
             let i = self.state.selected().map_or(0, |v| {
                 if v != self.torrent_ctxs.len() - 1 {
@@ -183,7 +237,7 @@ impl<'a> TorrentList<'a> {
         }
     }
 
-    pub fn previous(&mut self) {
+    fn previous(&mut self) {
         if !self.torrent_ctxs.is_empty() {
             let i = self.state.selected().map_or(0, |v| {
                 if v == 0 {
@@ -194,5 +248,94 @@ impl<'a> TorrentList<'a> {
             });
             self.state.select(Some(i));
         }
+    }
+
+    async fn quit<T: Backend>(&mut self, terminal: &mut Terminal<T>) {
+        if self.show_popup {
+            self.show_popup = false;
+            self.draw(terminal).await;
+            self.reset_cursor();
+        } else {
+            self.ctx.fr_tx.send(FrMsg::Quit).await.unwrap();
+        }
+    }
+
+    fn centered_rect(&self, percent_x: u16, percent_y: u16, r: Rect) -> Rect {
+        let popup_layout = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints(
+                [
+                    Constraint::Percentage((100 - percent_y) / 2),
+                    Constraint::Percentage(percent_y),
+                    Constraint::Percentage((100 - percent_y) / 2),
+                ]
+                .as_ref(),
+            )
+            .split(r);
+
+        Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints(
+                [
+                    Constraint::Percentage((100 - percent_x) / 2),
+                    Constraint::Percentage(percent_x),
+                    Constraint::Percentage((100 - percent_x) / 2),
+                ]
+                .as_ref(),
+            )
+            .split(popup_layout[1])[1]
+    }
+    fn move_cursor_left(&mut self) {
+        let cursor_moved_left = self.cursor_position.saturating_sub(1);
+        self.cursor_position = self.clamp_cursor(cursor_moved_left);
+    }
+
+    fn move_cursor_right(&mut self) {
+        let cursor_moved_right = self.cursor_position.saturating_add(1);
+        self.cursor_position = self.clamp_cursor(cursor_moved_right);
+    }
+
+    fn enter_char(&mut self, new_char: char) {
+        self.input.insert(self.cursor_position, new_char);
+        self.move_cursor_right();
+    }
+
+    fn delete_char(&mut self) {
+        let is_not_cursor_leftmost = self.cursor_position != 0;
+        if is_not_cursor_leftmost {
+            // Method "remove" is not used on the saved text for deleting the selected char.
+            // Reason: Using remove on String works on bytes instead of the chars.
+            // Using remove would require special care because of char boundaries.
+
+            let current_index = self.cursor_position;
+            let from_left_to_current_index = current_index - 1;
+
+            // Getting all characters before the selected character.
+            let before_char_to_delete = self.input.chars().take(from_left_to_current_index);
+            // Getting all characters after selected character.
+            let after_char_to_delete = self.input.chars().skip(current_index);
+
+            // Put all characters together except the selected one.
+            // By leaving the selected one out, it is forgotten and therefore deleted.
+            self.input = before_char_to_delete.chain(after_char_to_delete).collect();
+            self.move_cursor_left();
+        }
+    }
+
+    fn clamp_cursor(&self, new_cursor_pos: usize) -> usize {
+        new_cursor_pos.clamp(0, self.input.len())
+    }
+
+    fn reset_cursor(&mut self) {
+        self.cursor_position = 0;
+    }
+
+    async fn submit_magnet_link<T: Backend>(&mut self, terminal: &mut Terminal<T>) {
+        let _ = self
+            .ctx
+            .fr_tx
+            .send(FrMsg::NewTorrent(std::mem::take(&mut self.input)))
+            .await;
+        self.quit(terminal).await;
     }
 }

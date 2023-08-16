@@ -10,7 +10,8 @@ use clap::Parser;
 #[command(author, version, about, long_about = None)]
 pub struct Args {
     /// The path of the folder where to download file. Must be wrapped in quotes and end with '/'.
-    #[clap(short, long, default_value = "~/Downloads")]
+    // #[clap(short, long, default_value = "~/Downloads/")]
+    #[clap(short, long, default_value = "/home/demian/Downloads/")]
     pub download_dir: String,
 
     /// The magnet link of the torrent, wrapped in quotes.

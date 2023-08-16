@@ -1,5 +1,7 @@
 pub mod torrent_list;
+use clap::Parser;
 use futures::{FutureExt, StreamExt};
+use tracing::info;
 
 use std::{
     io::{self, Stdout},
@@ -20,7 +22,6 @@ use crossterm::{
 };
 use ratatui::{
     backend::CrosstermBackend,
-    prelude::Backend,
     style::{Color, Style},
     Terminal,
 };
@@ -30,14 +31,16 @@ use torrent_list::TorrentList;
 use crate::{
     cli::Args,
     disk::DiskMsg,
-    torrent::{TorrentCtx, TorrentMsg},
+    torrent::{Torrent, TorrentCtx, TorrentMsg},
 };
 
 #[derive(Clone, Debug)]
 pub struct AppStyle {
     pub base_style: Style,
-    pub selected_style: Style,
-    pub normal_style: Style,
+    pub highlight_bg: Style,
+    pub highlight_fg: Style,
+    pub success: Style,
+    pub error: Style,
 }
 
 impl Default for AppStyle {
@@ -50,8 +53,10 @@ impl AppStyle {
     pub fn new() -> Self {
         AppStyle {
             base_style: Style::default().fg(Color::Gray),
-            selected_style: Style::default().bg(Color::LightBlue).fg(Color::DarkGray),
-            normal_style: Style::default().fg(Color::LightBlue),
+            highlight_bg: Style::default().bg(Color::LightBlue).fg(Color::DarkGray),
+            highlight_fg: Style::default().fg(Color::LightBlue),
+            success: Style::default().fg(Color::LightGreen),
+            error: Style::default().fg(Color::Red),
         }
     }
 }
@@ -60,6 +65,7 @@ impl AppStyle {
 pub enum FrMsg {
     Quit,
     AddTorrent(Arc<TorrentCtx>),
+    NewTorrent(String),
 }
 
 pub struct Frontend<'a> {
@@ -106,11 +112,18 @@ impl<'a> Frontend<'a> {
 
         let mut tick_interval = interval(Duration::from_secs(1));
 
+        let original_hook = std::panic::take_hook();
+
+        std::panic::set_hook(Box::new(move |panic| {
+            Self::reset_terminal();
+            original_hook(panic);
+        }));
+
         loop {
             let event = reader.next().fuse();
 
             select! {
-                // Update UI every 1 second
+                // Repaint UI every 1 second
                 _ = tick_interval.tick() => {
                     self.torrent_list.draw(&mut self.terminal).await;
                 }
@@ -129,11 +142,14 @@ impl<'a> Frontend<'a> {
                         FrMsg::Quit => {
                             let _ = self.stop().await;
                             return Ok(());
-                        }
+                        },
                         FrMsg::AddTorrent(torrent_ctx) => {
                             self.add_torrent(torrent_ctx).await;
                             self.torrent_list.draw(&mut self.terminal).await;
                         },
+                        FrMsg::NewTorrent(magnet) => {
+                            self.new_torrent(&magnet).await;
+                        }
                     }
                 }
             }
@@ -150,7 +166,7 @@ impl<'a> Frontend<'a> {
         self.torrent_list.update_ctx(torrent_ctx).await;
     }
 
-    async fn stop(&self) {
+    fn reset_terminal() {
         let stdout = io::stdout();
         let backend = CrosstermBackend::new(stdout);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -163,6 +179,10 @@ impl<'a> Frontend<'a> {
             DisableMouseCapture
         )
         .unwrap();
+    }
+
+    async fn stop(&self) {
+        Self::reset_terminal();
 
         let torrent_ctxs = self.torrent_ctxs.read().await;
 
@@ -185,13 +205,16 @@ impl<'a> Frontend<'a> {
 
     // Create a Torrent, and then Add it. This will be called when the user
     // adds a torrent using the UI.
-    // async fn _new_torrent(&mut self, magnet: &str) {
-    //     let args = Args::parse();
-    //     let mut torrent = Torrent::new(self.disk_tx.clone(), magnet, &args.download_dir);
-    //     let _ = self.add_torrent(torrent.ctx.clone()).await;
-    //
-    //     spawn(async move {
-    //         torrent.start_and_run(args.listen).await.unwrap();
-    //     });
-    // }
+    async fn new_torrent(&mut self, magnet: &str) {
+        let args = Args::parse();
+
+        info!("download_dir {}", args.download_dir);
+
+        let mut torrent = Torrent::new(self.disk_tx.clone(), magnet, &args.download_dir);
+        let _ = self.add_torrent(torrent.ctx.clone()).await;
+
+        spawn(async move {
+            torrent.start_and_run(args.listen).await.unwrap();
+        });
+    }
 }

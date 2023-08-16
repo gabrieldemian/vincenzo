@@ -12,7 +12,7 @@ use crate::{
     peer::{Direction, Peer, PeerCtx, PeerMsg},
     tracker::{
         event::Event,
-        tracker::{Tracker, TrackerCtx, TrackerMsg},
+        {Tracker, TrackerCtx, TrackerMsg},
     },
 };
 use clap::Parser;
@@ -219,7 +219,10 @@ impl Torrent {
 
     #[tracing::instrument(skip(self), name = "torrent::start_and_run")]
     pub async fn start_and_run(&mut self, listen: Option<SocketAddr>) -> Result<(), Error> {
-        let peers = self.start(listen).await?;
+        let peers = self
+            .start(listen)
+            .await
+            .expect("error trying to connect to tracker");
 
         self.spawn_outbound_peers(peers).await?;
         self.spawn_inbound_peers().await?;

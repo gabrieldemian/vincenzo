@@ -184,13 +184,13 @@ impl Disk {
                     let _ = recipient.send(result);
                 }
                 DiskMsg::WriteBlock {
-                    b: _,
+                    b,
                     recipient,
-                    info_hash: _,
+                    info_hash,
                 } => {
-                    // let result = self.write_block(b, download_dir, info_hash).await;
-                    // let _ = recipient.send(result);
-                    let _ = recipient.send(Ok(()));
+                    let result = self.write_block(b, download_dir, info_hash).await;
+                    let _ = recipient.send(result);
+                    // let _ = recipient.send(Ok(()));
                 }
                 DiskMsg::OpenFile(path, tx, name) => {
                     let file = self.open_file(&path, download_dir, &name).await?;

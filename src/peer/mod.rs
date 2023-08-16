@@ -33,7 +33,7 @@ use crate::{
         messages::{Handshake, HandshakeCodec, Message, MessageId, PeerCodec},
     },
     torrent::{TorrentCtx, TorrentMsg},
-    tracker::tracker::TrackerCtx,
+    tracker::TrackerCtx,
 };
 
 use self::session::Session;
