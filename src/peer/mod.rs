@@ -32,7 +32,7 @@ use crate::{
         lib::{Block, BlockInfo, BLOCK_LEN},
         messages::{Handshake, HandshakeCodec, Message, MessageId, PeerCodec},
     },
-    torrent::{TorrentCtx, TorrentMsg},
+    torrent::{TorrentCtx, TorrentMsg, TorrentStatus},
     tracker::TrackerCtx,
 };
 
@@ -242,6 +242,10 @@ impl Peer {
         // send Unchoke
         self.session.state.am_choking = false;
         socket.send(Message::Unchoke).await?;
+
+        let mut status = self.torrent_ctx.status.write().await;
+        *status = TorrentStatus::DownloadingMetainfo;
+        drop(status);
 
         Ok(socket)
     }
@@ -919,6 +923,12 @@ impl Peer {
                 self.session.counters.protocol.up += req_id;
             }
         }
+
+        let mut status = self.torrent_ctx.status.write().await;
+        if *status == TorrentStatus::DownloadingMetainfo {
+            *status = TorrentStatus::Downloading;
+        }
+        drop(status);
 
         Ok(())
     }

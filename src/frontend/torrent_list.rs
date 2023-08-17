@@ -66,7 +66,6 @@ impl<'a> TorrentList<'a> {
 
     pub async fn keybindings<T: Backend>(&mut self, k: KeyCode, terminal: &mut Terminal<T>) {
         match k {
-            // KeyCode::Enter => {}
             KeyCode::Char('q') | KeyCode::Esc => {
                 self.reset_cursor();
                 self.input.clear();
@@ -159,6 +158,7 @@ impl<'a> TorrentList<'a> {
                 .into();
                 status_txt.push(download_and_rate);
             }
+            drop(status);
 
             let s = stats.seeders.to_string();
             let l = stats.leechers.to_string();

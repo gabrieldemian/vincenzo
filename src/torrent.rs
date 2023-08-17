@@ -180,9 +180,6 @@ impl Torrent {
             seeders: res.seeders,
             leechers: res.leechers,
         };
-        let mut status = self.ctx.status.write().await;
-        *status = TorrentStatus::Downloading;
-        drop(status);
 
         info!("new stats {stats:#?}");
         drop(stats);
@@ -219,10 +216,7 @@ impl Torrent {
 
     #[tracing::instrument(skip(self), name = "torrent::start_and_run")]
     pub async fn start_and_run(&mut self, listen: Option<SocketAddr>) -> Result<(), Error> {
-        let peers = self
-            .start(listen)
-            .await
-            .expect("error trying to connect to tracker");
+        let peers = self.start(listen).await?;
 
         self.spawn_outbound_peers(peers).await?;
         self.spawn_inbound_peers().await?;
@@ -514,7 +508,8 @@ impl Torrent {
 #[derive(Debug, Default, Clone, PartialEq)]
 pub enum TorrentStatus {
     #[default]
-    Connecting,
+    ConnectingTrackers,
+    DownloadingMetainfo,
     Downloading,
     Seeding,
     Error,
@@ -524,7 +519,8 @@ impl<'a> From<TorrentStatus> for &'a str {
     fn from(val: TorrentStatus) -> Self {
         use TorrentStatus::*;
         match val {
-            Connecting => "Connecting",
+            ConnectingTrackers => "Connecting to trackers",
+            DownloadingMetainfo => "Downloading metainfo",
             Downloading => "Downloading",
             Seeding => "Seeding",
             Error => "Error",
@@ -536,7 +532,8 @@ impl From<TorrentStatus> for String {
     fn from(val: TorrentStatus) -> Self {
         use TorrentStatus::*;
         match val {
-            Connecting => "Connecting".to_owned(),
+            ConnectingTrackers => "Connecting to trackers".to_owned(),
+            DownloadingMetainfo => "Downloading metainfo".to_owned(),
             Downloading => "Downloading".to_owned(),
             Seeding => "Seeding".to_owned(),
             Error => "Error".to_owned(),
@@ -548,7 +545,8 @@ impl From<&str> for TorrentStatus {
     fn from(value: &str) -> Self {
         use TorrentStatus::*;
         match value {
-            "Connecting" => Connecting,
+            "Connecting to trackers" => ConnectingTrackers,
+            "Downloading metainfo" => DownloadingMetainfo,
             "Downloading" => Downloading,
             "Seeding" => Seeding,
             "Error" | _ => Error,
