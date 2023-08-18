@@ -3,7 +3,9 @@ use std::io;
 use thiserror::Error;
 use tokio::sync::{mpsc, oneshot};
 
-use crate::{disk::DiskMsg, frontend::FrMsg, peer::PeerMsg, tracker::TrackerMsg};
+use crate::{
+    disk::DiskMsg, frontend::FrMsg, peer::PeerMsg, torrent::TorrentMsg, tracker::TrackerMsg,
+};
 
 #[derive(Error, Debug)]
 pub enum Error {
@@ -47,6 +49,8 @@ pub enum Error {
     FileOpenError,
     #[error("This torrent is already downloaded fully")]
     TorrentComplete,
+    #[error("Could not find torrent for the given info_hash")]
+    TorrentDoesNotExist,
     #[error("The piece downloaded does not have a valid hash")]
     PieceInvalid,
     #[error("The peer ID does not exist on this torrent")]
@@ -71,4 +75,6 @@ pub enum Error {
     SendErrorTracker(#[from] mpsc::error::SendError<TrackerMsg>),
     #[error("Could not send message to Frontend")]
     SendErrorFr(#[from] mpsc::error::SendError<FrMsg>),
+    #[error("Could not send message to Torrent")]
+    SendErrorTorrent(#[from] mpsc::error::SendError<TorrentMsg>),
 }

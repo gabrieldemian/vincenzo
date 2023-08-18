@@ -4,6 +4,7 @@ use bitlab::SingleBits;
 use futures::{SinkExt, StreamExt};
 use hashbrown::HashSet;
 use std::{
+    collections::VecDeque,
     net::SocketAddr,
     sync::{atomic::Ordering, Arc},
     time::Duration,
@@ -26,7 +27,6 @@ use crate::{
     disk::DiskMsg,
     error::Error,
     extension::{Extension, Metadata},
-    metainfo::Info,
     peer::session::ConnectionState,
     tcp_wire::{
         lib::{Block, BlockInfo, BLOCK_LEN},
@@ -51,15 +51,22 @@ pub enum Direction {
 /// Only Torrent can send Peer messages.
 #[derive(Debug)]
 pub enum PeerMsg {
-    DownloadedPiece(usize),
-    /// Request again a block that has been requested but not sent
+    /// When we download a full piece, we need to send Have's
+    /// to peers that dont Have it.
+    HavePiece(usize),
+    /// Request again a block that has been requested but not sent to us
     RequestBlockInfo(BlockInfo),
     RequestBlockInfos(Vec<BlockInfo>),
     /// Tell this peer that we are not interested,
     /// update the local state and send a message to the peer
     NotInterested,
     Cancel(BlockInfo),
+    /// Sometimes a peer either takes too long to answer,
+    /// or simply does not answer at all. In both cases
+    /// we need to request the block again.
     ReRequest(BlockInfo),
+    /// Sent when the torrent has downloaded the entire info
+    HaveInfo,
     /// When the program is being gracefuly shutdown, we need to kill the tokio green thread
     /// of the peer.
     Quit,
@@ -80,7 +87,6 @@ pub struct Peer {
 
     /// TCP addr that this peer is listening on
     pub addr: SocketAddr,
-    pub have_info: bool,
 
     /// Most of the session's information and state is stored here, i.e. it's
     /// the "context" of the session, with information like: endgame mode, slow start,
@@ -99,6 +105,9 @@ pub struct Peer {
     /// or when the peer cancels it. If a peer sends a request and cancels it
     /// before the disk read is done, the read block is dropped.
     incoming_requests: HashSet<BlockInfo>,
+    /// This is a cache of Torrent::have_info,
+    /// to avoid using locks or atomics.
+    have_info: bool,
 }
 
 /// Ctx that is shared with Torrent and Disk;
@@ -224,13 +233,12 @@ impl Peer {
         }
 
         // send bitfield if we have downloaded at least 1 block
-        let downloaded = self.torrent_ctx.downloaded_blocks.read().await;
-        if downloaded.len() > 0 {
+        let downloaded = self.torrent_ctx.downloaded.load(Ordering::Relaxed);
+        if downloaded > 0 {
             let bitfield = self.torrent_ctx.pieces.read().await;
             socket.send(Message::Bitfield(bitfield.clone())).await?;
             info!("sent Bitfield");
         }
-        drop(downloaded);
 
         // todo: implement choke & interested algorithms
         // send Interested
@@ -248,7 +256,7 @@ impl Peer {
         Ok(socket)
     }
 
-    #[tracing::instrument(skip(self, socket, direction), name = "peer::run", ret)]
+    #[tracing::instrument(skip(self, socket, direction), name = "peer::run")]
     pub async fn run(
         &mut self,
         direction: Direction,
@@ -261,11 +269,6 @@ impl Peer {
             Duration::from_secs(120),
         );
         let (mut sink, mut stream) = socket.split();
-
-        let mut rerequest_timer = interval_at(
-            Instant::now() + Duration::from_secs(3),
-            Duration::from_secs(3),
-        );
 
         let torrent_tx = self.torrent_ctx.tx.clone();
 
@@ -280,11 +283,6 @@ impl Peer {
                 // send Keepalive every 2 minutes
                 _ = keep_alive_timer.tick(), if self.have_info => {
                     sink.send(Message::KeepAlive).await?;
-                }
-                // sometimes peers take too long to send requested block_infos,
-                // we check for timed out requests every 3 seconds and request them again.
-                _ = rerequest_timer.tick(), if self.have_info => {
-                    //
                 }
                 Some(Ok(msg)) = stream.next() => {
                     match msg {
@@ -444,7 +442,6 @@ impl Peer {
                             }
                         }
                         Message::Extended((ext_id, payload)) => {
-
                             // receive extended handshake, send our extended handshake
                             // and maybe request info pieces if we don't have
                             if ext_id == 0 {
@@ -493,16 +490,18 @@ impl Peer {
                                             info!("ext_id {ext_id}");
                                             info!("self ut_metadata {:?}", self.extension.m.ut_metadata);
                                             info!("payload len {:?}", payload.len());
-                                            let info_dict = self.torrent_ctx.info_dict.read().await;
-                                            let info_slice = info_dict.get(&(metadata.msg_type as u32));
 
-                                            match info_slice {
+                                            let (tx, rx) = oneshot::channel();
+                                            self.torrent_ctx.tx.send(TorrentMsg::RequestInfoPiece(metadata.piece, tx)).await?;
+
+                                            match rx.await? {
                                                 Some(info_slice) => {
                                                     info!("sending data with piece {:?}", metadata.piece);
-                                                    let r = Metadata::data(metadata.piece, info_slice)?;
+                                                    let r = Metadata::data(metadata.piece, &info_slice)?;
                                                     sink.send(
                                                         Message::Extended((ut_metadata, r))
-                                                    ).await?;
+                                                    )
+                                                    .await?;
                                                 }
                                                 None => {
                                                     info!("sending reject");
@@ -510,7 +509,8 @@ impl Peer {
                                                         .map_err(|_| Error::BencodeError)?;
                                                     sink.send(
                                                         Message::Extended((ut_metadata, r))
-                                                    ).await?;
+                                                    )
+                                                    .await?;
                                                 }
                                             }
                                         }
@@ -525,76 +525,7 @@ impl Peer {
                                             info!("info len {:?}", info.len());
                                             info!("{metadata:?}");
 
-                                            let mut info_dict = self.torrent_ctx.info_dict.write().await;
-
-                                            info_dict.insert(metadata.piece, info);
-
-                                            let info_len = info_dict.values().fold(0, |acc, b| {
-                                                acc + b.len()
-                                            });
-                                            drop(info_dict);
-
-                                            let have_all_pieces = info_len as u32 >= t;
-
-                                            info!("downloaded info bytes {:?}", info_len);
-                                            info!("do we have full info downloaded? {have_all_pieces:?}");
-
-                                            // if this is the last piece
-                                            if have_all_pieces {
-                                                // info has a valid bencode format
-                                                let info_dict = self.torrent_ctx.info_dict.read().await;
-                                                let info_bytes = info_dict.values().fold(Vec::new(), |mut acc, b| {
-                                                    acc.extend_from_slice(b);
-                                                    acc
-                                                });
-                                                drop(info_dict);
-                                                info!("info_bytes len {:?}", info_bytes.len());
-                                                let info = Info::from_bencode(&info_bytes).map_err(|_| Error::BencodeError)?;
-                                                info!("piece len in bytes {:?}", info.piece_length);
-                                                info!("blocks per piece {:?}", info.blocks_per_piece());
-                                                info!("pieces {:?}", info.pieces.len() / 20);
-
-                                                let m_info = self.torrent_ctx.magnet.xt.clone().unwrap();
-
-                                                let mut hash = sha1_smol::Sha1::new();
-                                                hash.update(&info_bytes);
-
-                                                let hash = hash.digest().bytes();
-
-                                                // validate the hash of the downloaded info
-                                                // against the hash of the magnet link
-                                                let hash = hex::encode(hash);
-                                                info!("hash hex: {hash:?}");
-                                                info!("hash metainfo: {m_info:?}");
-
-                                                if hash.to_uppercase() == m_info.to_uppercase() {
-                                                    info!("the hash of the downloaded info matches the hash of the magnet link");
-                                                    self.have_info = true;
-
-                                                    // update our info on torrent.info
-                                                    let mut info_t = self.torrent_ctx.info.write().await;
-                                                    let mut infos_t = self.torrent_ctx.block_infos.write().await;
-                                                    let infos = info.get_block_infos().expect("to get block infos");
-                                                    *info_t = info;
-                                                    *infos_t = infos;
-
-                                                    drop(info_t);
-                                                    drop(infos_t);
-
-                                                    let _ = self.disk_tx.send(DiskMsg::NewTorrent(self.torrent_ctx.clone())).await;
-
-                                                    let am_interested = self.session.state.am_interested;
-                                                    let peer_choking = self.session.state.peer_choking;
-
-                                                    if am_interested && !peer_choking {
-                                                        self.request_block_infos(&mut sink).await?;
-                                                    }
-                                                } else {
-                                                    warn!("the peer {:?} sent a valid Info, but the hash does not match the hash of the provided magnet link, panicking", self.addr);
-                                                    panic!();
-                                                }
-                                            }
-
+                                            self.torrent_ctx.tx.send(TorrentMsg::DownloadedInfoPiece(t, metadata.piece, info)).await?;
                                         }
                                         _ => {}
                                     }
@@ -616,8 +547,8 @@ impl Peer {
                                 }
                             }
                         }
-                        PeerMsg::DownloadedPiece(piece) => {
-                            info!("{:?} downloaded piece {piece}", self.addr);
+                        PeerMsg::HavePiece(piece) => {
+                            info!("{:?} has piece {piece}", self.addr);
 
                             let pieces = self.ctx.pieces.read().await;
 
@@ -629,8 +560,6 @@ impl Peer {
                                 }
                             }
                             else if pieces.len_bytes() == 0 {
-                                info!("received peer {:?} does not sent bitfield {piece}", self.addr);
-                                // send also if the peer did not sent a bitfield
                                 let _ = sink.send(Message::Have(piece)).await;
                             }
                             drop(pieces);
@@ -662,6 +591,15 @@ impl Peer {
                             info!("{:?} quitting", self.addr);
                             self.session.state.connection = ConnectionState::Quitting;
                             return Ok(());
+                        }
+                        PeerMsg::HaveInfo => {
+                            self.have_info = true;
+                            let am_interested = self.session.state.am_interested;
+                            let peer_choking = self.session.state.peer_choking;
+
+                            if am_interested && !peer_choking {
+                                self.request_block_infos(&mut sink).await?;
+                            }
                         }
                     }
                 }
@@ -695,81 +633,64 @@ impl Peer {
                 .await;
         }
 
-        let downloaded = self.torrent_ctx.downloaded_blocks.read().await;
-        let was_downloaded = downloaded.contains(&block_info);
-        drop(downloaded);
+        // increment downloaded count
+        self.torrent_ctx
+            .downloaded
+            .fetch_add(block_info.len as u64, Ordering::SeqCst);
 
-        // block was already downloaded, ignore it
-        if was_downloaded {
-            info!("already downloaded, ignoring");
-            self.session.record_waste(block_info.len);
-        } else {
-            info!("block not downloaded");
+        // check if this last the last block
+        // and that the torrent is fully downloaded
+        let info = self.torrent_ctx.info.read().await;
+        let downloaded = self.torrent_ctx.downloaded.load(Ordering::Relaxed);
+        let is_download_complete = downloaded >= info.get_size();
 
-            // increment downloaded count
-            self.torrent_ctx
-                .downloaded
-                .fetch_add(block_info.len as u64, Ordering::SeqCst);
+        drop(info);
+        info!("yy__downloaded {:?}", downloaded);
 
-            // check if this last the last block
-            // and that the torrent is fully downloaded
-            let info = self.torrent_ctx.info.read().await;
-            let downloaded = self.torrent_ctx.downloaded.load(Ordering::Relaxed);
-            let is_download_complete = downloaded >= info.get_size();
-            drop(info);
-            info!("yy__downloaded {:?}", downloaded);
-            if is_download_complete {
-                info!("download completed!! wont request more blocks");
-                let _ = self.torrent_ctx.tx.send(TorrentMsg::DownloadComplete).await;
-            }
+        if is_download_complete {
+            info!("download completed!! wont request more blocks");
+            let _ = self.torrent_ctx.tx.send(TorrentMsg::DownloadComplete).await;
+        }
 
+        let (tx, rx) = oneshot::channel();
+
+        self.disk_tx
+            .send(DiskMsg::WriteBlock {
+                b: block,
+                recipient: tx,
+                info_hash: self.torrent_ctx.info_hash,
+            })
+            .await?;
+
+        rx.await??;
+
+        // update stats
+        self.session.update_download_stats(len as u32);
+
+        let info = self.torrent_ctx.info.read().await;
+
+        // if this is the last block of a piece,
+        // validate the hash
+        if begin + len as u32 >= info.piece_length {
             let (tx, rx) = oneshot::channel();
 
-            self.disk_tx
-                .send(DiskMsg::WriteBlock {
-                    b: block,
-                    recipient: tx,
-                    info_hash: self.torrent_ctx.info_hash,
-                })
-                .await
-                .unwrap();
-
+            // Ask Disk to validate the bytes of all blocks of this piece
+            self.disk_tx.send(DiskMsg::ValidatePiece(index, tx)).await?;
             rx.await??;
 
-            info!("wrote block with success on disk");
-            let mut bd = self.torrent_ctx.downloaded_blocks.write().await;
-            bd.insert(block_info);
-            drop(bd);
+            let _ = self
+                .torrent_ctx
+                .tx
+                .send(TorrentMsg::DownloadedPiece(index))
+                .await;
 
-            let info = self.torrent_ctx.info.read().await;
+            info!("hash of piece {index:?} is valid");
 
-            // update stats
-            self.session.update_download_stats(len as u32);
-
-            // if this is the last block of a piece,
-            // validate the hash
-            if begin + len as u32 >= info.piece_length {
-                let (tx, rx) = oneshot::channel();
-
-                // Ask Disk to validate the bytes of all blocks of this piece
-                self.disk_tx.send(DiskMsg::ValidatePiece(index, tx)).await?;
-                rx.await??;
-
-                // Hash of piece is valid, we can write to disk
-                let _ = self
-                    .torrent_ctx
-                    .tx
-                    .send(TorrentMsg::DownloadedPiece(index))
-                    .await;
-
-                info!("hash of piece {index:?} is valid");
-
-                // update the bitfield of the torrent
-                let mut tr_pieces = self.torrent_ctx.pieces.write().await;
-                tr_pieces.set(index);
-            }
-            drop(info);
+            // update the bitfield of the torrent
+            let mut tr_pieces = self.torrent_ctx.pieces.write().await;
+            tr_pieces.set(index);
         }
+        drop(info);
 
         Ok(())
     }
@@ -842,19 +763,26 @@ impl Peer {
     /// Marks requested blocks as free in their respective downlaods so that
     /// other peer sessions may download them.
     pub async fn free_pending_blocks(&mut self) {
-        for block in self.outgoing_requests.drain() {
-            // The piece may no longer be present if it was completed by
-            // another peer in the meantime and torrent removed it from the
-            // shared download store. This is fine, in this case we don't have
-            // anything to do.
-            info!("{:?} freeing block {:?} for download", self.addr, block);
+        let blocks: VecDeque<BlockInfo> = self.outgoing_requests.drain().collect();
+        info!(
+            "{:?} freeing {:?} blocks for download",
+            self.addr,
+            blocks.len()
+        );
+        // The piece may no longer be present if it was completed by
+        // another peer in the meantime and torrent removed it from the
+        // shared download store. This is fine, in this case we don't have
+        // anything to do.
 
-            // send this block_info back to the vec of available block_infos,
-            // so that other peers can download it.
+        // send this block_info back to the vec of available block_infos,
+        // so that other peers can download it.
+        if !blocks.is_empty() {
             let _ = self
-                .torrent_ctx
-                .tx
-                .send(TorrentMsg::ReturnBlockInfo(block))
+                .disk_tx
+                .send(DiskMsg::ReturnBlockInfos(
+                    self.torrent_ctx.info_hash,
+                    blocks,
+                ))
                 .await;
         }
     }
@@ -864,39 +792,16 @@ impl Peer {
     where
         T: SinkExt<Message> + Sized + std::marker::Unpin,
     {
-        // todo: most of this logic could live on Disk, that would move a good amount
-        // of CPU work to the other thread, and, eliminate the need of 2 locks that happens
-        // all the time.
-        //
         // the max blocks pending allowed for this peer
         let target_request_queue_len =
             self.session.target_request_queue_len.unwrap_or_default() as usize;
 
         // the number of blocks we can request right now
-        let mut request_len = if self.outgoing_requests.len() >= target_request_queue_len {
+        let request_len = if self.outgoing_requests.len() >= target_request_queue_len {
             0
         } else {
             target_request_queue_len - self.outgoing_requests.len()
         };
-
-        let available = self.torrent_ctx.block_infos.read().await;
-        let available_len = available.len();
-        drop(available);
-
-        info!("available blocks {}", available_len);
-
-        if available_len == 0 && !self.session.in_endgame && self.outgoing_requests.len() <= 20 {
-            // self.start_endgame().await;
-        }
-
-        // prevent from requesting more blocks than what is available
-        if available_len < request_len {
-            request_len = available_len;
-        }
-
-        info!("ongoing {}", self.outgoing_requests.len());
-        info!("max to request {target_request_queue_len}");
-        info!("requesting {request_len} blocks");
 
         if request_len > 0 {
             // get a list of unique block_infos from the Disk,
@@ -912,7 +817,11 @@ impl Peer {
                 })
                 .await;
 
-            let r = orx.await.unwrap();
+            let r = orx.await?;
+
+            if r.is_empty() && !self.session.in_endgame && self.outgoing_requests.len() <= 20 {
+                // self.start_endgame().await;
+            }
 
             self.session.last_outgoing_request_time = Some(std::time::Instant::now());
 
@@ -970,10 +879,7 @@ impl Peer {
         T: SinkExt<Message> + Sized + std::marker::Unpin,
     {
         info!("called maybe_request_info");
-        let torrent_ctx = self.torrent_ctx.as_ref();
-        let info_dict = torrent_ctx.info_dict.read().await;
         info!("have info? {}", self.have_info);
-        drop(info_dict);
 
         // only request info if we dont have an Info
         // and the peer supports the metadata extension protocol

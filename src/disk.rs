@@ -1,19 +1,17 @@
-use std::{
-    collections::{HashMap, VecDeque},
-    io::SeekFrom,
-    sync::Arc,
-};
+use std::{collections::VecDeque, io::SeekFrom, sync::Arc};
 
+use hashbrown::HashMap;
 use tokio::{
     fs::{create_dir_all, File, OpenOptions},
     io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
     sync::{mpsc::Receiver, oneshot::Sender},
 };
+use tracing::info;
 
 use crate::{
     error::Error,
     metainfo,
-    peer::PeerCtx,
+    peer::{PeerCtx, PeerMsg},
     tcp_wire::lib::{Block, BlockInfo},
     torrent::TorrentCtx,
 };
@@ -52,13 +50,17 @@ pub enum DiskMsg {
         info_hash: [u8; 20],
         peer_id: [u8; 20],
     },
+    /// When a peer is Choked, or receives an error and must close the connection,
+    /// the outgoing/pending blocks of this peer must be appended back
+    /// to the list of available block_infos.
+    ReturnBlockInfos([u8; 20], VecDeque<BlockInfo>),
     Quit,
 }
 
 /// The Disk struct responsabilities:
 /// - Open and create files, create directories
-/// - Write blocks to files given a block
-/// - Read data of files given a block info
+/// - Read/Write blocks to files
+/// - Store block infos of all torrents
 /// - Validate hash of pieces
 #[derive(Debug)]
 pub struct Disk {
@@ -67,6 +69,12 @@ pub struct Disk {
     pub torrent_ctxs: HashMap<[u8; 20], Arc<TorrentCtx>>,
     /// k: peer_id
     pub peer_ctxs: HashMap<[u8; 20], Arc<PeerCtx>>,
+    /// The block infos of a torrent to be downloaded,
+    /// K: info_hash
+    block_infos: HashMap<[u8; 20], VecDeque<BlockInfo>>,
+    /// The block infos of a torrent that were downloaded,
+    /// K: info_hash
+    downloaded_infos: HashMap<[u8; 20], VecDeque<BlockInfo>>,
 }
 
 impl Disk {
@@ -75,6 +83,8 @@ impl Disk {
             rx,
             peer_ctxs: HashMap::new(),
             torrent_ctxs: HashMap::new(),
+            block_infos: HashMap::new(),
+            downloaded_infos: HashMap::new(),
         }
     }
 
@@ -84,6 +94,7 @@ impl Disk {
         download_dir: &str,
     ) -> Result<(), Error> {
         let info_hash = torrent_ctx.info_hash;
+        info!("info_hash beginning {info_hash:?}");
         self.torrent_ctxs.insert(info_hash, torrent_ctx);
 
         let torrent_ctx = self.torrent_ctxs.get(&info_hash).unwrap();
@@ -110,11 +121,14 @@ impl Disk {
             }
         }
 
-        // generate block_infos of the torrent
-        let mut infos = torrent_ctx.block_infos.write().await;
-        *infos = info.get_block_infos()?;
-        drop(infos);
+        // generate block_infos of the new torrent
+        self.block_infos.insert(info_hash, info.get_block_infos()?);
+        self.downloaded_infos.insert(info_hash, VecDeque::new());
         drop(info);
+
+        for peer in &self.peer_ctxs {
+            peer.1.tx.send(PeerMsg::HaveInfo).await?;
+        }
 
         Ok(())
     }
@@ -128,20 +142,35 @@ impl Disk {
     pub async fn request_blocks(
         &mut self,
         info_hash: [u8; 20],
-        qnt: usize,
+        mut qnt: usize,
         peer_id: [u8; 20],
     ) -> Result<VecDeque<BlockInfo>, Error> {
-        let torrent_ctx = self
-            .torrent_ctxs
-            .get(&info_hash)
-            .ok_or(Error::InfoHashInvalid)?;
-
         let mut infos: VecDeque<BlockInfo> = VecDeque::new();
         let mut idxs = VecDeque::new();
 
-        let mut block_infos = torrent_ctx.block_infos.write().await;
+        let available = self
+            .block_infos
+            .get(&info_hash)
+            .ok_or(Error::TorrentDoesNotExist)?
+            .len();
 
-        for (i, info) in block_infos.iter().enumerate() {
+        let block_infos = self
+            .block_infos
+            .get_mut(&info_hash)
+            .ok_or(Error::TorrentDoesNotExist)?;
+
+        // info!("available blocks {}", available_len);
+
+        // prevent from requesting more blocks than what is available
+        if available < qnt {
+            qnt = available;
+        }
+
+        // info!("ongoing {}", self.outgoing_requests.len());
+        // info!("max to request {target_request_queue_len}");
+        // info!("requesting {request_len} blocks");
+
+        for (i, info) in block_infos.into_iter().enumerate() {
             if infos.len() >= qnt {
                 break;
             }
@@ -149,6 +178,7 @@ impl Disk {
             // only request blocks that the peer has
             let peer = self.peer_ctxs.get(&peer_id).ok_or(Error::PeerIdInvalid)?;
             let pieces = peer.pieces.read().await;
+
             if let Some(r) = pieces.get(info.index as usize) {
                 if r.bit == 1 {
                     idxs.push_front(i);
@@ -188,6 +218,16 @@ impl Disk {
                     recipient,
                     info_hash,
                 } => {
+                    let downloaded_infos = self
+                        .downloaded_infos
+                        .get_mut(&info_hash)
+                        .ok_or(Error::TorrentDoesNotExist)?;
+
+                    downloaded_infos.push_back(BlockInfo {
+                        index: b.index as u32,
+                        begin: b.begin,
+                        len: b.block.len() as u32,
+                    });
                     // let result = self.write_block(b, download_dir, info_hash).await;
                     // let _ = recipient.send(result);
                     let _ = recipient.send(Ok(()));
@@ -211,6 +251,12 @@ impl Disk {
                 }
                 DiskMsg::NewPeer(peer) => {
                     self.new_peer(peer).await?;
+                }
+                DiskMsg::ReturnBlockInfos(info_hash, mut block_infos) => {
+                    self.block_infos
+                        .get_mut(&info_hash)
+                        .ok_or(Error::TorrentDoesNotExist)?
+                        .append(&mut block_infos);
                 }
                 DiskMsg::Quit => {
                     return Ok(());
@@ -297,6 +343,12 @@ impl Disk {
         download_dir: &str,
         info_hash: [u8; 20],
     ) -> Result<(), Error> {
+        info!("info_hash write_block {info_hash:?}");
+        if self.downloaded_infos.get(&info_hash).is_some() {
+            info!("already downloaded, ignoring");
+            return Ok(());
+        }
+
         let len = block.block.clone();
         let (mut fs_file, _) = self
             .get_file_from_block_info(&block.into(), download_dir, info_hash)
@@ -799,8 +851,8 @@ mod tests {
         disk.torrent_ctxs
             .insert(torrent.ctx.info_hash, torrent.ctx.clone());
         let mut info_t = torrent.ctx.info.write().await;
-        let mut infos = torrent.ctx.block_infos.write().await;
         let info_hash = torrent.ctx.info_hash;
+        let infos = disk.block_infos.get_mut(&info_hash).unwrap();
 
         let info = Info {
             file_length: None,
@@ -829,7 +881,6 @@ mod tests {
         *infos = info_t.get_block_infos().unwrap();
         drop(info);
         drop(info_t);
-        drop(infos);
         drop(p);
 
         //

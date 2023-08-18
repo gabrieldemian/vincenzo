@@ -15,14 +15,16 @@ use crate::{
         {Tracker, TrackerCtx, TrackerMsg},
     },
 };
+use bendy::decoding::FromBencode;
 use clap::Parser;
 use core::sync::atomic::{AtomicU64, Ordering};
-use hashbrown::{HashMap, HashSet};
+use hashbrown::HashMap;
 use magnet_url::Magnet;
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::Path;
-use std::{collections::VecDeque, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
+use tokio::time::interval;
 use tokio::{
     net::{TcpListener, TcpStream},
     select, spawn,
@@ -52,11 +54,15 @@ pub enum TorrentMsg {
         from: [u8; 20],
         block_info: BlockInfo,
     },
-    /// When a peer is Choked, or receives an error and must close the connection,
-    /// the outgoing/pending blocks of this peer must be appended back
-    /// to the list of available block_infos.
-    ReturnBlockInfo(BlockInfo),
     StartEndgame([u8; 20], Vec<BlockInfo>),
+    /// When a peer downloads an info piece,
+    /// we need to mutate `info_dict` and maybe
+    /// generate the entire info.
+    /// total, metadata.index, bytes
+    DownloadedInfoPiece(u32, u32, Vec<u8>),
+    /// When a peer request a piece of the info
+    /// index, recipient
+    RequestInfoPiece(u32, oneshot::Sender<Option<Vec<u8>>>),
     /// When torrent is being gracefully shutdown
     Quit,
 }
@@ -71,6 +77,12 @@ pub struct Torrent {
     pub rx: mpsc::Receiver<TorrentMsg>,
     pub peer_ctxs: HashMap<[u8; 20], Arc<PeerCtx>>,
     pub tracker_tx: Option<mpsc::Sender<TrackerMsg>>,
+    /// If using a Magnet link, the info will be downloaded in pieces
+    /// and those pieces may come in different order,
+    /// hence the HashMap (dictionary), and not a vec.
+    /// After the dict is complete, it will be decoded into [`info`]
+    pub info_dict: BTreeMap<u32, Vec<u8>>,
+    pub have_info: bool,
 }
 
 #[derive(Debug)]
@@ -80,18 +92,7 @@ pub struct TorrentCtx {
     pub magnet: Magnet,
     pub info_hash: [u8; 20],
     pub pieces: RwLock<Bitfield>,
-    /// The block infos of this torrent to be downloaded,
-    /// when a block info is downloaded, it is moved from this Vec,
-    /// to [`downloaded_blocks`].
-    pub block_infos: RwLock<VecDeque<BlockInfo>>,
-    pub downloaded_blocks: RwLock<HashSet<BlockInfo>>,
     pub info: RwLock<Info>,
-    /// If using a Magnet link, the info will be downloaded in pieces
-    /// and those pieces may come in different order,
-    /// hence the HashMap (dictionary), and not a vec.
-    /// After the dict is complete, it will be decoded into [`info`]
-    // pub info_dict: RwLock<HashMap<u32, Vec<u8>>>,
-    pub info_dict: RwLock<BTreeMap<u32, Vec<u8>>>,
     /// Stats of the current Torrent, returned from tracker on announce requests.
     pub stats: RwLock<Stats>,
     /// How many bytes we have uploaded to other peers.
@@ -103,7 +104,6 @@ pub struct TorrentCtx {
     /// this will be mutated on the frontend event loop.
     pub last_second_downloaded: Arc<AtomicU64>,
     pub status: RwLock<TorrentStatus>,
-    pub have_info: bool,
 }
 
 // Status of the current Torrent, updated at every announce request.
@@ -131,26 +131,20 @@ impl Torrent {
 
         let pieces = RwLock::new(Bitfield::default());
         let info = RwLock::new(Info::default().name(dn));
-        let info_dict = RwLock::new(BTreeMap::<u32, Vec<u8>>::new());
+        let info_dict = BTreeMap::new();
         let tracker_ctx = Arc::new(TrackerCtx::default());
-        let downloaded_blocks = RwLock::new(HashSet::new());
-        let block_infos = RwLock::new(VecDeque::new());
 
         let info_hash = get_info_hash(&xt);
         let (tx, rx) = mpsc::channel::<TorrentMsg>(300);
 
         let ctx = Arc::new(TorrentCtx {
-            have_info: false,
             tx: tx.clone(),
             status: RwLock::new(TorrentStatus::default()),
             tracker_tx: RwLock::new(None),
             stats: RwLock::new(Stats::default()),
             info_hash,
-            info_dict,
             pieces,
-            block_infos,
             magnet,
-            downloaded_blocks,
             info,
             uploaded: Arc::new(AtomicU64::new(0)),
             downloaded: Arc::new(AtomicU64::new(0)),
@@ -158,12 +152,14 @@ impl Torrent {
         });
 
         Self {
+            info_dict,
             tracker_ctx,
             tracker_tx: None,
             ctx,
             disk_tx,
             rx,
             peer_ctxs: HashMap::new(),
+            have_info: false,
         }
     }
 
@@ -257,7 +253,8 @@ impl Torrent {
                 // so that other peers can download them. In this case, the peer
                 // might be shutting down due to an error or this is malicious peer
                 // that we wish to end the connection.
-                if peer.session.state.connection != ConnectionState::Quitting {
+                if peer.session.state.connection != ConnectionState::Quitting && peer.can_request()
+                {
                     peer.free_pending_blocks().await;
                 }
                 Ok::<(), Error>(())
@@ -317,7 +314,9 @@ impl Torrent {
                         // so that other peers can download them. In this case, the peer
                         // might be shutting down due to an error or this is malicious peer
                         // that we wish to end the connection.
-                        if peer.session.state.connection != ConnectionState::Quitting {
+                        if peer.session.state.connection != ConnectionState::Quitting
+                            && peer.can_request()
+                        {
                             peer.free_pending_blocks().await;
                         }
 
@@ -361,7 +360,7 @@ impl Torrent {
                         TorrentMsg::DownloadedPiece(piece) => {
                             // send Have messages to peers that dont have our pieces
                             for peer in self.peer_ctxs.values() {
-                                let _ = peer.tx.send(PeerMsg::DownloadedPiece(piece)).await;
+                                let _ = peer.tx.send(PeerMsg::HavePiece(piece)).await;
                             }
                         }
                         TorrentMsg::PeerConnected(id, ctx) => {
@@ -399,7 +398,6 @@ impl Torrent {
                                 let _ = peer.tx.send(PeerMsg::NotInterested).await;
                             }
 
-                            //
                             // announce to tracker that we are stopping
                             if Args::parse().quit_after_complete {
                                 let _ = self.ctx.tx.send(TorrentMsg::Quit).await;
@@ -413,14 +411,58 @@ impl Torrent {
                                 let _ = peer.tx.send(PeerMsg::Cancel(block_info.clone())).await;
                             }
                         }
-                        TorrentMsg::ReturnBlockInfo(block_info) => {
-                            let mut blocks = self.ctx.block_infos.write().await;
-                            blocks.push_front(block_info);
-                        }
                         TorrentMsg::StartEndgame(_peer_id, block_infos) => {
                             for (_id, peer) in self.peer_ctxs.iter() {
                                 let _ = peer.tx.send(PeerMsg::RequestBlockInfos(block_infos.clone())).await;
                             }
+                        }
+                        TorrentMsg::DownloadedInfoPiece(total, index, bytes) => {
+                            self.info_dict.insert(index, bytes);
+
+                            let info_len = self.info_dict.values().fold(0, |acc, b| {
+                                acc + b.len()
+                            });
+
+                            let have_all_pieces = info_len as u32 >= total;
+
+                            if have_all_pieces {
+                                // info has a valid bencode format
+                                let info_bytes = self.info_dict.values().fold(Vec::new(), |mut acc, b| {
+                                    acc.extend_from_slice(b);
+                                    acc
+                                });
+                                let info = Info::from_bencode(&info_bytes).map_err(|_| Error::BencodeError)?;
+
+                                let m_info = self.ctx.magnet.xt.clone().unwrap();
+
+                                let mut hash = sha1_smol::Sha1::new();
+                                hash.update(&info_bytes);
+
+                                let hash = hash.digest().bytes();
+
+                                // validate the hash of the downloaded info
+                                // against the hash of the magnet link
+                                let hash = hex::encode(hash);
+
+                                if hash.to_uppercase() == m_info.to_uppercase() {
+                                    info!("the hash of the downloaded info matches the hash of the magnet link");
+
+                                    self.have_info = true;
+
+                                    let mut info_l = self.ctx.info.write().await;
+                                    *info_l = info;
+                                    drop(info_l);
+
+                                    self.disk_tx.send(DiskMsg::NewTorrent(self.ctx.clone())).await?;
+                                } else {
+                                    warn!("a peer sent a valid Info, but the hash does not match the hash of the provided magnet link, panicking");
+                                    return Err(Error::PieceInvalid);
+                                }
+                            }
+                        }
+                        TorrentMsg::RequestInfoPiece(index, recipient) => {
+                            let bytes = self.info_dict.get(&index).cloned();
+                            let _ = recipient.send(bytes);
                         }
                         TorrentMsg::Quit => {
                             info!("torrent is quitting");
@@ -464,13 +506,13 @@ impl Torrent {
                 // let have_info = self.ctx.info_dict;
                 _ = announce_interval.tick() => {
                     let info = self.ctx.info.read().await;
+
                     // we know if the info is downloaded if the piece_length is > 0
                     if info.piece_length > 0 {
                         info!("sending periodic announce, interval {announce_interval:?}");
-                        let db = self.ctx.downloaded_blocks.read().await;
-                        let downloaded = db.iter().fold(0, |acc, x| acc + x.len as u64);
-                        let left = if downloaded < info.get_size() {info.get_size()} else { downloaded - info.get_size()};
-                        drop(db);
+                        let downloaded = self.ctx.downloaded.load(Ordering::Relaxed);
+                        let left = if downloaded < info.get_size() { info.get_size() } else { downloaded - info.get_size() };
+
                         let (otx, orx) = oneshot::channel();
 
                         let _ = tracker_tx.send(
@@ -484,20 +526,18 @@ impl Torrent {
                             })
                         .await;
 
-                        let r = orx.await;
+                        let r = orx.await??;
                         info!("new stats {r:#?}");
 
                         // update our stats, received from the tracker
-                        if let Ok(Ok(r)) = r {
-                            let mut stats = self.ctx.stats.write().await;
-                            stats.interval = r.interval;
-                            stats.seeders = r.seeders;
-                            stats.leechers = r.leechers;
-                            announce_interval = interval_at(
-                                Instant::now() + Duration::from_secs(r.interval as u64),
-                                Duration::from_secs(r.interval as u64),
-                            );
-                        }
+                        let mut stats = self.ctx.stats.write().await;
+                        stats.interval = r.interval;
+                        stats.seeders = r.seeders;
+                        stats.leechers = r.leechers;
+
+                        announce_interval = interval(
+                            Duration::from_secs(r.interval as u64),
+                        );
                     }
                     drop(info);
                 }

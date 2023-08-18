@@ -1,5 +1,3 @@
-use std::time::Instant;
-
 use bytes::BufMut;
 use bytes::BytesMut;
 use tokio::io;
