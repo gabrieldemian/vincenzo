@@ -94,7 +94,7 @@ pub struct Session {
     // TODO: consider changing this to just usize starting at 0 and reset to
     // 0 once download finishes so that it's easier to deal with it (not having
     // to match on it all the time)
-    pub target_request_queue_len: Option<usize>,
+    pub target_request_queue_len: Option<u16>,
 
     /// The last time some requests were sent to the peer.
     pub last_outgoing_request_time: Option<Instant>,
@@ -127,7 +127,7 @@ impl Session {
 
     /// The target request queue size is set to this value once we are able to start
     /// downloading.
-    const START_REQUEST_QUEUE_LEN: usize = 4;
+    const START_REQUEST_QUEUE_LEN: u16 = 4;
 
     /// The smallest timeout value we can give a peer. Very fast peers will have
     /// an average round-trip-times, so a slight deviation would punish them
@@ -154,20 +154,20 @@ impl Session {
     }
 
     /// Prepares for requesting blocks.
-    ///
     /// This should be called after being unchoked and becoming interested.
-    pub fn prepare_for_download(&mut self) {
+    /// If the peer extension has a `reqq` field, we don't start slow_start.
+    /// And we'll use it this value as a maximum number of outstanding blocks.
+    pub fn prepare_for_download(&mut self, reqq: Option<u16>) {
         debug_assert!(self.state.am_interested);
         debug_assert!(!self.state.am_choking);
 
-        self.in_slow_start = true;
+        self.in_slow_start = reqq.is_none();
         // reset the target request queue size, which will be adjusted as the
         // download progresses
-        self.target_request_queue_len = Some(Self::START_REQUEST_QUEUE_LEN);
+        self.target_request_queue_len = Some(reqq.unwrap_or(Self::START_REQUEST_QUEUE_LEN));
     }
 
     /// Updates various statistics around a block download.
-    ///
     /// This should be called every time a block is received.
     pub fn update_download_stats(&mut self, block_len: u32) {
         let now = Instant::now();
@@ -218,7 +218,7 @@ impl Session {
     /// Updates various statistics and session state.
     ///
     /// This should be called every second.
-    pub fn tick(&mut self) {
+    pub fn slow_start_tick(&mut self) {
         self.maybe_exit_slow_start();
 
         // NOTE: This has to be *after* `maybe_exit_slow_start` and *before*
@@ -268,7 +268,7 @@ impl Session {
                 // overestimating the link capacity is cheaper than
                 // underestimating it
                 *target_request_queue_len =
-                    ((download_rate + (BLOCK_LEN - 1) as u64) / BLOCK_LEN as u64) as usize;
+                    ((download_rate + (BLOCK_LEN - 1) as u64) / BLOCK_LEN as u64) as u16;
             }
 
             // make sure the target doesn't go below 1
@@ -298,7 +298,7 @@ mod tests {
         s.state.am_interested = true;
         s.state.am_choking = false;
 
-        s.prepare_for_download();
+        s.prepare_for_download(None);
 
         assert!(s.target_request_queue_len > Some(0));
         assert!(s.in_slow_start);

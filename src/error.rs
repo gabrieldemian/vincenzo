@@ -1,6 +1,9 @@
 use std::io;
 
 use thiserror::Error;
+use tokio::sync::{mpsc, oneshot};
+
+use crate::{disk::DiskMsg, frontend::FrMsg, peer::PeerMsg, tracker::TrackerMsg};
 
 #[derive(Error, Debug)]
 pub enum Error {
@@ -58,4 +61,14 @@ pub enum Error {
         "Your magnet does not have an info_hash, are you sure you copied the entire magnet link?"
     )]
     MagnetNoInfoHash,
+    #[error("Could not send message to Disk")]
+    SendErrorDisk(#[from] mpsc::error::SendError<DiskMsg>),
+    #[error("Could not receive message from oneshot")]
+    ReceiveErrorOneshot(#[from] oneshot::error::RecvError),
+    #[error("Could not send message to Peer")]
+    SendErrorPeer(#[from] mpsc::error::SendError<PeerMsg>),
+    #[error("Could not send message to Tracker")]
+    SendErrorTracker(#[from] mpsc::error::SendError<TrackerMsg>),
+    #[error("Could not send message to Frontend")]
+    SendErrorFr(#[from] mpsc::error::SendError<FrMsg>),
 }

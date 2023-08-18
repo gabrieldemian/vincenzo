@@ -196,7 +196,7 @@ impl<'a> TorrentList<'a> {
                 // Create two chunks, the body, and the footer
                 let chunks = Layout::default()
                     .direction(Direction::Vertical)
-                    .constraints([Constraint::Percentage(90), Constraint::Min(3)].as_ref())
+                    .constraints([Constraint::Percentage(90), Constraint::Min(2)].as_ref())
                     .split(f.size());
 
                 if self.show_popup {

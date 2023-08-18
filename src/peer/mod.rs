@@ -9,7 +9,7 @@ use std::{
     time::Duration,
 };
 use tokio::{
-    select,
+    select, spawn,
     sync::{
         mpsc::{self, Receiver, Sender},
         oneshot, RwLock,
@@ -54,14 +54,12 @@ pub enum PeerMsg {
     DownloadedPiece(usize),
     /// Request again a block that has been requested but not sent
     RequestBlockInfo(BlockInfo),
+    RequestBlockInfos(Vec<BlockInfo>),
     /// Tell this peer that we are not interested,
     /// update the local state and send a message to the peer
     NotInterested,
     Cancel(BlockInfo),
-    /// Disk will send this message when the last blocks were requested
-    /// The peer will then a message to Torrent with all the pending blocks
-    /// The Torrent will send messages to all peers to request all pending blocks.
-    StartEndgame,
+    ReRequest(BlockInfo),
     /// When the program is being gracefuly shutdown, we need to kill the tokio green thread
     /// of the peer.
     Quit,
@@ -250,7 +248,7 @@ impl Peer {
         Ok(socket)
     }
 
-    #[tracing::instrument(skip(self, socket), name = "peer::run", ret)]
+    #[tracing::instrument(skip(self, socket, direction), name = "peer::run", ret)]
     pub async fn run(
         &mut self,
         direction: Direction,
@@ -264,6 +262,11 @@ impl Peer {
         );
         let (mut sink, mut stream) = socket.split();
 
+        let mut rerequest_timer = interval_at(
+            Instant::now() + Duration::from_secs(3),
+            Duration::from_secs(3),
+        );
+
         let torrent_tx = self.torrent_ctx.tx.clone();
 
         self.session.state.connection = ConnectionState::Connected;
@@ -271,12 +274,17 @@ impl Peer {
         loop {
             select! {
                 // update internal data every 1 second
-                _now = tick_timer.tick() => {
+                _ = tick_timer.tick(), if self.have_info => {
                     self.tick(&mut sink).await?;
                 }
                 // send Keepalive every 2 minutes
-                _ = keep_alive_timer.tick() => {
+                _ = keep_alive_timer.tick(), if self.have_info => {
                     sink.send(Message::KeepAlive).await?;
+                }
+                // sometimes peers take too long to send requested block_infos,
+                // we check for timed out requests every 3 seconds and request them again.
+                _ = rerequest_timer.tick(), if self.have_info => {
+                    //
                 }
                 Some(Ok(msg)) = stream.next() => {
                     match msg {
@@ -300,19 +308,16 @@ impl Peer {
                             // the same len
                             let _ = torrent_tx.send(TorrentMsg::UpdateBitfield(bitfield.len_bytes()))
                                 .await;
-
-                            info!("pieces after bitfield {:?}", self.ctx.pieces);
                             info!("------------------------------\n");
                         }
                         Message::Unchoke => {
-                            // self.session.peer_choking.swap(false, Ordering::Relaxed);
                             self.session.state.peer_choking = false;
                             info!("---------------------------------");
                             info!("| {:?} Unchoke  |", self.addr);
                             info!("---------------------------------");
 
                             if self.can_request() {
-                                self.session.prepare_for_download();
+                                self.session.prepare_for_download(self.extension.reqq);
                                 self.request_block_infos(&mut sink).await?;
                             }
                             info!("---------------------------------\n");
@@ -385,117 +390,7 @@ impl Peer {
                             info!("len: {:?}", block.block.len());
                             info!("--");
 
-                            // ---- handle block_msg -----
-
-                            let index = block.index;
-                            let begin = block.begin;
-                            let len = block.block.len();
-
-                            let block_info = BlockInfo {
-                                index: index as u32,
-                                begin,
-                                len: len as u32
-                            };
-
-                            // remove pending block request
-                            self.outgoing_requests.remove(&block_info);
-
-                            if self.session.in_endgame {
-                                let from = self.ctx.id.read().await.unwrap();
-                                let _ = torrent_tx.send(
-                                    TorrentMsg::SendCancel {
-                                        from,
-                                        block_info: block_info.clone()
-                                    }
-                                )
-                                .await;
-                            }
-
-                            let downloaded = self.torrent_ctx.downloaded_blocks.read().await;
-                            let was_downloaded = downloaded.contains(&block_info);
-
-                            if was_downloaded {
-                                info!("already downloaded, ignoring");
-                                self.session.record_waste(block_info.len);
-                            }
-
-                            drop(downloaded);
-                            let is_valid = block.is_valid();
-
-                            if is_valid && !was_downloaded {
-                                info!("block not downloaded");
-
-                                // update download stats
-                                self.session.update_download_stats(block_info.len);
-
-                                // increment downloaded count
-                                self.torrent_ctx.downloaded.fetch_add(len as u64, Ordering::SeqCst);
-
-                                let info = self.torrent_ctx.info.read().await;
-                                let downloaded = self.torrent_ctx.downloaded.load(Ordering::Relaxed);
-                                let is_download_complete = downloaded >= info.get_size();
-                                drop(info);
-
-                                info!("yy__downloaded {:?}", downloaded);
-
-                                if is_download_complete {
-                                    info!("download completed!! wont request more blocks");
-
-                                    let _ = torrent_tx.send(TorrentMsg::DownloadComplete).await;
-                                }
-
-                                let (tx, rx) = oneshot::channel();
-
-                                self.disk_tx.send(
-                                    DiskMsg::WriteBlock {
-                                        b: block,
-                                        recipient: tx,
-                                        info_hash: self.torrent_ctx.info_hash
-                                    }
-                                )
-                                .await
-                                .unwrap();
-
-                                match rx.await.unwrap() {
-                                    Ok(_) => {
-                                        info!("wrote block with success on disk");
-                                        let mut bd = self.torrent_ctx.downloaded_blocks.write().await;
-                                        bd.insert(block_info);
-                                        drop(bd);
-                                    }
-                                    Err(e) => warn!("could not write block to disk {e:#?}")
-                                }
-
-                                let info = self.torrent_ctx.info.read().await;
-
-                                // if this is the last block of a piece,
-                                // validate the hash
-                                if begin + len as u32 >= info.piece_length {
-                                    let (tx, rx) = oneshot::channel();
-
-                                    // Ask Disk to validate the bytes of all blocks of this piece
-                                    let _ = self.disk_tx.send(DiskMsg::ValidatePiece(index, tx)).await;
-                                    let r = rx.await;
-
-                                    // Hash of piece is valid
-                                    if let Ok(Ok(_)) = r {
-                                        let _ = torrent_tx.send(TorrentMsg::DownloadedPiece(index)).await;
-                                        info!("hash of piece {index:?} is valid");
-
-                                        let mut tr_pieces = self.torrent_ctx.pieces.write().await;
-
-                                        tr_pieces.set(index);
-                                    } else {
-                                        warn!("The hash of the piece {index:?} is invalid");
-                                    }
-                                }
-                                drop(info);
-                            }
-                            if !is_valid {
-                                // block not valid nor requested,
-                                // todo: remove it from requested blocks
-                                warn!("invalid block from Piece, ignoring...");
-                            }
+                            self.handle_piece_msg(block).await?;
 
                             if self.can_request() {
                                 self.request_block_infos(&mut sink).await?;
@@ -557,13 +452,10 @@ impl Peer {
                                 info!("| {:?} Extended Handshake  |", self.addr);
                                 info!("--------------------------------------------");
                                 info!("ext_id {ext_id}");
-                                info!("self ut_metadata {:?}", self.extension.m.ut_metadata);
-                                info!("payload len {:?}", payload.len());
 
                                 if let Ok(extension) = Extension::from_bencode(&payload) {
+                                    info!("extension of peer: {:?}", extension);
                                     self.extension = extension;
-                                    info!("self ut_metadata {:?}", self.extension.m.ut_metadata);
-                                    info!("{:?}", self.extension);
 
                                     if direction == Direction::Outbound {
                                         info!("outbound, sending extended handshake to {:?}", self.addr);
@@ -714,6 +606,16 @@ impl Peer {
                 }
                 Some(msg) = self.rx.recv() => {
                     match msg {
+                        PeerMsg::ReRequest(block_info) => {
+                            if self.outgoing_requests.get(&block_info).is_some() {
+                                if let Some(max) = self.session.target_request_queue_len {
+                                    if self.outgoing_requests.len() + 1 < max as usize {
+                                        info!("rerequesting block_info due to timeout {block_info:?}");
+                                        sink.send(Message::Request(block_info)).await?;
+                                    }
+                                }
+                            }
+                        }
                         PeerMsg::DownloadedPiece(piece) => {
                             info!("{:?} downloaded piece {piece}", self.addr);
 
@@ -735,7 +637,18 @@ impl Peer {
                         }
                         PeerMsg::RequestBlockInfo(info) => {
                             info!("{:?} RequestBlockInfo {info:#?}", self.addr);
-                            sink.send(Message::Request(info)).await?;
+                            if let Some(max) = self.session.target_request_queue_len {
+                                if self.outgoing_requests.len() + 1 < max as usize {
+                                    sink.send(Message::Request(info)).await?;
+                                }
+                            }
+                        }
+                        PeerMsg::RequestBlockInfos(infos) => {
+                            info!("{:?} RequestBlockInfos len {}", self.addr, infos.len());
+                            let max = self.session.target_request_queue_len.unwrap_or(0) as usize - self.outgoing_requests.len();
+                            for info in infos.into_iter().take(max) {
+                                sink.send(Message::Request(info)).await?;
+                            }
                         }
                         PeerMsg::NotInterested => {
                             self.session.state.am_interested = false;
@@ -744,17 +657,6 @@ impl Peer {
                         PeerMsg::Cancel(info) => {
                             info!("{:?} sending Cancel", self.addr);
                             sink.send(Message::Cancel(info)).await?;
-                        }
-                        PeerMsg::StartEndgame => {
-                            info!("{:?} received StartEndgame msg", self.addr);
-                            let id = self.ctx.id.read().await.unwrap();
-
-                            for block_info in self.outgoing_requests.drain() {
-                                let _ = torrent_tx.send(
-                                    TorrentMsg::StartEndgame(id, block_info)
-                                )
-                                .await;
-                            }
                         }
                         PeerMsg::Quit => {
                             info!("{:?} quitting", self.addr);
@@ -766,35 +668,123 @@ impl Peer {
             }
         }
     }
+    pub async fn handle_piece_msg(&mut self, block: Block) -> Result<(), Error> {
+        let index = block.index;
+        let begin = block.begin;
+        let len = block.block.len();
+
+        let block_info = BlockInfo {
+            index: index as u32,
+            begin,
+            len: len as u32,
+        };
+
+        // remove pending block request
+        self.outgoing_requests.remove(&block_info);
+
+        // if in endgame, send cancels to all other peers
+        if self.session.in_endgame {
+            let from = self.ctx.id.read().await.unwrap();
+            let _ = self
+                .torrent_ctx
+                .tx
+                .send(TorrentMsg::SendCancel {
+                    from,
+                    block_info: block_info.clone(),
+                })
+                .await;
+        }
+
+        let downloaded = self.torrent_ctx.downloaded_blocks.read().await;
+        let was_downloaded = downloaded.contains(&block_info);
+        drop(downloaded);
+
+        // block was already downloaded, ignore it
+        if was_downloaded {
+            info!("already downloaded, ignoring");
+            self.session.record_waste(block_info.len);
+        } else {
+            info!("block not downloaded");
+
+            // increment downloaded count
+            self.torrent_ctx
+                .downloaded
+                .fetch_add(block_info.len as u64, Ordering::SeqCst);
+
+            // check if this last the last block
+            // and that the torrent is fully downloaded
+            let info = self.torrent_ctx.info.read().await;
+            let downloaded = self.torrent_ctx.downloaded.load(Ordering::Relaxed);
+            let is_download_complete = downloaded >= info.get_size();
+            drop(info);
+            info!("yy__downloaded {:?}", downloaded);
+            if is_download_complete {
+                info!("download completed!! wont request more blocks");
+                let _ = self.torrent_ctx.tx.send(TorrentMsg::DownloadComplete).await;
+            }
+
+            let (tx, rx) = oneshot::channel();
+
+            self.disk_tx
+                .send(DiskMsg::WriteBlock {
+                    b: block,
+                    recipient: tx,
+                    info_hash: self.torrent_ctx.info_hash,
+                })
+                .await
+                .unwrap();
+
+            rx.await??;
+
+            info!("wrote block with success on disk");
+            let mut bd = self.torrent_ctx.downloaded_blocks.write().await;
+            bd.insert(block_info);
+            drop(bd);
+
+            let info = self.torrent_ctx.info.read().await;
+
+            // update stats
+            self.session.update_download_stats(len as u32);
+
+            // if this is the last block of a piece,
+            // validate the hash
+            if begin + len as u32 >= info.piece_length {
+                let (tx, rx) = oneshot::channel();
+
+                // Ask Disk to validate the bytes of all blocks of this piece
+                self.disk_tx.send(DiskMsg::ValidatePiece(index, tx)).await?;
+                rx.await??;
+
+                // Hash of piece is valid, we can write to disk
+                let _ = self
+                    .torrent_ctx
+                    .tx
+                    .send(TorrentMsg::DownloadedPiece(index))
+                    .await;
+
+                info!("hash of piece {index:?} is valid");
+
+                // update the bitfield of the torrent
+                let mut tr_pieces = self.torrent_ctx.pieces.write().await;
+                tr_pieces.set(index);
+            }
+            drop(info);
+        }
+
+        Ok(())
+    }
     pub async fn tick<T>(&mut self, sink: &mut T) -> Result<(), Error>
     where
         T: SinkExt<Message> + Sized + std::marker::Unpin,
     {
-        info!(
-            "{:?} pending blocksss {}",
-            self.addr,
-            self.outgoing_requests.len()
-        );
         // resent requests if we have pending requests and more time has elapsed
         // since the last request than the current timeout value
         if !self.outgoing_requests.is_empty() {
             self.check_request_timeout(sink).await?;
         }
 
-        // update session context
-        let prev_queue_len = self.session.target_request_queue_len;
-
-        self.session.tick();
-
-        if let (Some(prev_queue_len), Some(curr_queue_len)) =
-            (prev_queue_len, self.session.target_request_queue_len)
-        {
-            if prev_queue_len != curr_queue_len {
-                info!(
-                    "{:?} request queue changed from {} to {}",
-                    self.addr, prev_queue_len, curr_queue_len
-                );
-            }
+        if self.extension.reqq.is_none() {
+            self.session.slow_start_tick();
         }
 
         Ok(())
@@ -804,6 +794,11 @@ impl Peer {
     where
         T: SinkExt<Message> + Sized + std::marker::Unpin,
     {
+        info!(
+            "{:?} check_request_timeout outgoing_requests {}",
+            self.addr,
+            self.outgoing_requests.len()
+        );
         if let Some(last_outgoing_request_time) = self.session.last_outgoing_request_time {
             let elapsed_since_last_request =
                 std::time::Instant::now().saturating_duration_since(last_outgoing_request_time);
@@ -827,15 +822,18 @@ impl Peer {
                     self.session.timed_out_request_count + 1
                 );
 
-                // Cancel all requests and re-issue a single one (since we can
+                // If in slow_start,
+                // cancel all requests and re-issue a single one (since we can
                 // only request a single block now). Start by freeing up the
                 // blocks in their piece download.
                 // Note that we're not telling the peer that we timed out the
                 // request so that if it arrives some time later and is not
                 // requested by another peer, we can still collect it.
-                self.free_pending_blocks().await;
-                self.session.register_request_timeout();
-                self.request_block_infos(sink).await?;
+                if self.session.in_slow_start {
+                    self.free_pending_blocks().await;
+                    self.session.register_request_timeout();
+                    self.request_block_infos(sink).await?;
+                }
             }
         }
 
@@ -866,8 +864,13 @@ impl Peer {
     where
         T: SinkExt<Message> + Sized + std::marker::Unpin,
     {
+        // todo: most of this logic could live on Disk, that would move a good amount
+        // of CPU work to the other thread, and, eliminate the need of 2 locks that happens
+        // all the time.
+        //
         // the max blocks pending allowed for this peer
-        let target_request_queue_len = self.session.target_request_queue_len.unwrap_or_default();
+        let target_request_queue_len =
+            self.session.target_request_queue_len.unwrap_or_default() as usize;
 
         // the number of blocks we can request right now
         let mut request_len = if self.outgoing_requests.len() >= target_request_queue_len {
@@ -883,7 +886,7 @@ impl Peer {
         info!("available blocks {}", available_len);
 
         if available_len == 0 && !self.session.in_endgame && self.outgoing_requests.len() <= 20 {
-            self.start_endgame().await;
+            // self.start_endgame().await;
         }
 
         // prevent from requesting more blocks than what is available
@@ -917,10 +920,20 @@ impl Peer {
                 info!("{:?} requesting {info:#?}", self.addr);
                 self.outgoing_requests.insert(info.clone());
 
-                let _ = sink.send(Message::Request(info)).await;
+                let _ = sink.send(Message::Request(info.clone())).await;
                 let req_id: u64 = MessageId::Request as u64;
 
                 self.session.counters.protocol.up += req_id;
+
+                // after the timeout limit has passed,
+                // we check if the block_info is still ongoing,
+                // if it is we request it again
+                let timeout = self.session.request_timeout();
+                let tx = self.ctx.tx.clone();
+                spawn(async move {
+                    tokio::time::sleep(timeout).await;
+                    tx.send(PeerMsg::ReRequest(info)).await.unwrap();
+                });
             }
         }
 
@@ -935,19 +948,19 @@ impl Peer {
     #[tracing::instrument(skip(self))]
     pub async fn start_endgame(&mut self) {
         info!("{:?} started endgame mode", self.addr);
+
         self.session.in_endgame = true;
+
         let id = self.ctx.id.read().await;
         debug_assert!(id.is_some());
 
         if let Some(id) = *id {
-            for req in self.outgoing_requests.iter() {
-                info!("requesting for endgame {req:#?}");
-                let _ = self
-                    .torrent_ctx
-                    .tx
-                    .send(TorrentMsg::StartEndgame(id, req.clone()))
-                    .await;
-            }
+            let outgoing = self.outgoing_requests.drain().collect();
+            let _ = self
+                .torrent_ctx
+                .tx
+                .send(TorrentMsg::StartEndgame(id, outgoing))
+                .await;
         }
     }
 

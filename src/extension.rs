@@ -35,7 +35,7 @@ impl Extension {
         Self {
             m,
             p: None,
-            v: Some("btr 0.0.1".to_owned()),
+            v: Some("Vincenzo 0.0.1".to_owned()),
             reqq: Some(6),
             metadata_size,
         }

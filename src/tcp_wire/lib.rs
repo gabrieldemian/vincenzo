@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use bytes::BufMut;
 use bytes::BytesMut;
 use tokio::io;
@@ -70,6 +72,9 @@ impl BlockInfo {
         buf.put_u32(self.len);
         Ok(())
     }
+    pub fn is_valid(&self) -> bool {
+        self.len <= BLOCK_LEN && self.begin <= BLOCK_LEN && self.len > 0
+    }
 }
 
 /// Piece message will send this Block
@@ -101,6 +106,6 @@ impl Block {
     }
 
     pub fn is_valid(&self) -> bool {
-        self.block.len() <= BLOCK_LEN as usize
+        self.block.len() <= BLOCK_LEN as usize && self.begin > 0 && self.begin <= BLOCK_LEN
     }
 }

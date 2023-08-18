@@ -56,7 +56,7 @@ pub enum TorrentMsg {
     /// the outgoing/pending blocks of this peer must be appended back
     /// to the list of available block_infos.
     ReturnBlockInfo(BlockInfo),
-    StartEndgame([u8; 20], BlockInfo),
+    StartEndgame([u8; 20], Vec<BlockInfo>),
     /// When torrent is being gracefully shutdown
     Quit,
 }
@@ -103,6 +103,7 @@ pub struct TorrentCtx {
     /// this will be mutated on the frontend event loop.
     pub last_second_downloaded: Arc<AtomicU64>,
     pub status: RwLock<TorrentStatus>,
+    pub have_info: bool,
 }
 
 // Status of the current Torrent, updated at every announce request.
@@ -139,6 +140,7 @@ impl Torrent {
         let (tx, rx) = mpsc::channel::<TorrentMsg>(300);
 
         let ctx = Arc::new(TorrentCtx {
+            have_info: false,
             tx: tx.clone(),
             status: RwLock::new(TorrentStatus::default()),
             tracker_tx: RwLock::new(None),
@@ -415,10 +417,9 @@ impl Torrent {
                             let mut blocks = self.ctx.block_infos.write().await;
                             blocks.push_front(block_info);
                         }
-                        TorrentMsg::StartEndgame(peer_id, block_info) => {
-                            let peer = self.peer_ctxs.get(&peer_id);
-                            if let Some(peer) = peer {
-                                let _ = peer.tx.send(PeerMsg::RequestBlockInfo(block_info)).await;
+                        TorrentMsg::StartEndgame(_peer_id, block_infos) => {
+                            for (_id, peer) in self.peer_ctxs.iter() {
+                                let _ = peer.tx.send(PeerMsg::RequestBlockInfos(block_infos.clone())).await;
                             }
                         }
                         TorrentMsg::Quit => {
