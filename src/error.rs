@@ -45,8 +45,14 @@ pub enum Error {
     MessageTimeout,
     #[error("The handshake received is not valid")]
     HandshakeInvalid,
-    #[error("Could not open the file")]
-    FileOpenError,
+    #[error(
+        "Could not open the file `{0}`. Please make sure the program has permission to access it"
+    )]
+    FileOpenError(String),
+    #[error(
+        "Could not open the folder `{0}`. Please make sure the program has permission to open it and that the folder exist"
+    )]
+    FolderOpenError(String),
     #[error("This torrent is already downloaded fully")]
     TorrentComplete,
     #[error("Could not find torrent for the given info_hash")]
@@ -77,4 +83,10 @@ pub enum Error {
     SendErrorFr(#[from] mpsc::error::SendError<FrMsg>),
     #[error("Could not send message to Torrent")]
     SendErrorTorrent(#[from] mpsc::error::SendError<TorrentMsg>),
+    #[error("The `{0}` folder was not found, please edit the config file manually at `{1}")]
+    FolderNotFound(String, String),
+    #[error("Tried to load $HOME but could not find it. Please make sure you have a $HOME env and that this program has the permission to create dirs.")]
+    HomeInvalid,
+    #[error("The given PATH is invalid")]
+    PathInvalid,
 }

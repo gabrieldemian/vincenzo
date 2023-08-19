@@ -1,10 +1,16 @@
-use std::fs::OpenOptions;
+use std::path::Path;
+
+// use std::fs::OpenOptions;
+use tokio::{fs::OpenOptions, io::AsyncWriteExt};
 
 use clap::Parser;
-use tokio::{runtime::Runtime, spawn, sync::mpsc};
+use directories::{ProjectDirs, UserDirs};
+use tokio::{fs::create_dir, io::AsyncReadExt, runtime::Runtime, spawn, sync::mpsc};
+use tracing::info;
 use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt;
 use vincenzo::{
     cli::Args,
+    config::Config,
     disk::{Disk, DiskMsg},
     error::Error,
     frontend::{FrMsg, Frontend},
@@ -16,11 +22,13 @@ async fn main() -> Result<(), Error> {
     let console_layer = console_subscriber::spawn();
     let r = tracing_subscriber::registry();
     r.with(console_layer);
-    let file = OpenOptions::new()
+
+    let file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open("log.txt")
         .expect("Failed to open log file");
+
     tracing_subscriber::fmt()
         .with_env_filter("tokio=trace,runtime=trace")
         .with_max_level(tracing::Level::INFO)
@@ -30,25 +38,82 @@ async fn main() -> Result<(), Error> {
         .with_file(false)
         .without_time()
         .init();
-    let args = Args::parse();
 
-    let (disk_tx, disk_rx) = mpsc::channel::<DiskMsg>(300);
-    let mut disk = Disk::new(disk_rx);
+    // load the config file
+    let dotfile = ProjectDirs::from("", "", "vincenzo").ok_or(Error::HomeInvalid)?;
+    let mut config_path = dotfile.config_dir().to_path_buf();
+
+    if !config_path.exists() {
+        create_dir(&config_path).await.unwrap();
+    }
+
+    config_path.push("config.toml");
+
+    let mut file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(&config_path)
+        .await
+        .expect("Error while trying to open the project config folder, please make sure this program has the right permissions.");
+
+    let mut str = String::new();
+    file.read_to_string(&mut str).await.unwrap();
+    let mut config = toml::from_str::<Config>(&str);
+
+    // the user does not have the config file, write
+    // the default config
+    if config.is_err() {
+        let download_dir = UserDirs::new()
+            .ok_or(Error::FolderNotFound(
+                "home".into(),
+                config_path.to_str().unwrap().to_owned(),
+            ))?
+            .download_dir()
+            .ok_or(Error::FolderNotFound(
+                "download".into(),
+                config_path.to_str().unwrap().to_owned(),
+            ))?
+            .to_str()
+            .unwrap()
+            .into();
+
+        let config_local = Config {
+            download_dir,
+            listen: None,
+        };
+
+        let config_str = toml::to_string(&config_local).unwrap();
+
+        file.write_all(config_str.as_bytes()).await.unwrap();
+
+        config = Ok(config_local);
+    }
+
+    let config = config.unwrap();
 
     // create a new OS thread, to be used by Disk I/O.
     // with a Tokio runtime on it.
-    let d = args.download_dir.clone();
+    let args = Args::parse();
+    let d = args.download_dir.unwrap_or(config.download_dir.clone());
+
+    let (disk_tx, disk_rx) = mpsc::channel::<DiskMsg>(300);
+    let mut disk = Disk::new(disk_rx, d.clone());
+
+    if !Path::new(&d).exists() {
+        return Err(Error::FolderOpenError(d));
+    }
 
     let rt = Runtime::new().unwrap();
     let handle = std::thread::spawn(move || {
         rt.block_on(async {
-            disk.run(d).await.unwrap();
+            disk.run().await.unwrap();
         });
     });
 
     // Start and run the terminal UI
     let (fr_tx, fr_rx) = mpsc::channel::<FrMsg>(100);
-    let mut fr = Frontend::new(fr_tx.clone(), disk_tx.clone());
+    let mut fr = Frontend::new(fr_tx.clone(), disk_tx.clone(), config.clone());
 
     spawn(async move {
         fr.run(fr_rx).await.unwrap();
@@ -57,7 +122,7 @@ async fn main() -> Result<(), Error> {
     // If the user passed a magnet through the CLI,
     // start this torrent immediately
     if let Some(magnet) = &args.magnet {
-        let mut torrent = Torrent::new(disk_tx, magnet, &args.download_dir);
+        let mut torrent = Torrent::new(disk_tx, magnet, &config.download_dir);
 
         // Add this torrent to or UI
         fr_tx
@@ -65,8 +130,13 @@ async fn main() -> Result<(), Error> {
             .await
             .unwrap();
 
+        let mut listen = config.listen;
+        if args.listen.is_some() {
+            listen = args.listen;
+        }
+
         spawn(async move {
-            torrent.start_and_run(args.listen).await?;
+            torrent.start_and_run(listen).await?;
             torrent.disk_tx.send(DiskMsg::Quit).await.unwrap();
             Ok::<_, Error>(())
         });

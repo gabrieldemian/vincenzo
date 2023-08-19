@@ -538,11 +538,18 @@ impl Peer {
                 Some(msg) = self.rx.recv() => {
                     match msg {
                         PeerMsg::ReRequest(block_info) => {
-                            if self.outgoing_requests.get(&block_info).is_some() {
+                            if self.outgoing_requests.get(&block_info).is_some() && self.can_request() {
                                 if let Some(max) = self.session.target_request_queue_len {
                                     if self.outgoing_requests.len() + 1 < max as usize {
                                         info!("rerequesting block_info due to timeout {block_info:?}");
-                                        sink.send(Message::Request(block_info)).await?;
+                                        sink.send(Message::Request(block_info.clone())).await?;
+
+                                        let timeout = self.session.request_timeout();
+                                        let tx = self.ctx.tx.clone();
+                                        spawn(async move {
+                                            tokio::time::sleep(timeout).await;
+                                            let _ = tx.send(PeerMsg::ReRequest(block_info)).await;
+                                        });
                                     }
                                 }
                             }
@@ -567,7 +574,7 @@ impl Peer {
                         PeerMsg::RequestBlockInfo(info) => {
                             info!("{:?} RequestBlockInfo {info:#?}", self.addr);
                             if let Some(max) = self.session.target_request_queue_len {
-                                if self.outgoing_requests.len() + 1 < max as usize {
+                                if self.outgoing_requests.len() + 1 < max as usize && self.can_request() {
                                     sink.send(Message::Request(info)).await?;
                                 }
                             }
@@ -633,25 +640,6 @@ impl Peer {
                 .await;
         }
 
-        // increment downloaded count
-        self.torrent_ctx
-            .downloaded
-            .fetch_add(block_info.len as u64, Ordering::SeqCst);
-
-        // check if this last the last block
-        // and that the torrent is fully downloaded
-        let info = self.torrent_ctx.info.read().await;
-        let downloaded = self.torrent_ctx.downloaded.load(Ordering::Relaxed);
-        let is_download_complete = downloaded >= info.get_size();
-
-        drop(info);
-        info!("yy__downloaded {:?}", downloaded);
-
-        if is_download_complete {
-            info!("download completed!! wont request more blocks");
-            let _ = self.torrent_ctx.tx.send(TorrentMsg::DownloadComplete).await;
-        }
-
         let (tx, rx) = oneshot::channel();
 
         self.disk_tx
@@ -691,6 +679,21 @@ impl Peer {
             tr_pieces.set(index);
         }
         drop(info);
+
+        // check if this last the last block
+        // and that the torrent is fully downloaded
+        let info = self.torrent_ctx.info.read().await;
+        let downloaded = self.torrent_ctx.downloaded.load(Ordering::SeqCst);
+        let is_download_complete = downloaded >= info.get_size();
+
+        drop(info);
+        info!("yy__downloaded {:?}", downloaded);
+
+        if is_download_complete {
+            info!("download completed!! wont request more blocks");
+            let _ = self.torrent_ctx.tx.send(TorrentMsg::DownloadComplete).await;
+        }
+
 
         Ok(())
     }
@@ -820,7 +823,7 @@ impl Peer {
             let r = orx.await?;
 
             if r.is_empty() && !self.session.in_endgame && self.outgoing_requests.len() <= 20 {
-                // self.start_endgame().await;
+                self.start_endgame().await;
             }
 
             self.session.last_outgoing_request_time = Some(std::time::Instant::now());
@@ -839,6 +842,7 @@ impl Peer {
                 // if it is we request it again
                 let timeout = self.session.request_timeout();
                 let tx = self.ctx.tx.clone();
+
                 spawn(async move {
                     tokio::time::sleep(timeout).await;
                     tx.send(PeerMsg::ReRequest(info)).await.unwrap();
@@ -864,7 +868,7 @@ impl Peer {
         debug_assert!(id.is_some());
 
         if let Some(id) = *id {
-            let outgoing = self.outgoing_requests.drain().collect();
+            let outgoing: Vec<BlockInfo> = self.outgoing_requests.clone().into_iter().collect();
             let _ = self
                 .torrent_ctx
                 .tx

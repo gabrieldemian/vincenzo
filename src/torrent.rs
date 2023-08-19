@@ -253,8 +253,7 @@ impl Torrent {
                 // so that other peers can download them. In this case, the peer
                 // might be shutting down due to an error or this is malicious peer
                 // that we wish to end the connection.
-                if peer.session.state.connection != ConnectionState::Quitting && peer.can_request()
-                {
+                if peer.session.state.connection != ConnectionState::Quitting {
                     peer.free_pending_blocks().await;
                 }
                 Ok::<(), Error>(())
@@ -314,9 +313,7 @@ impl Torrent {
                         // so that other peers can download them. In this case, the peer
                         // might be shutting down due to an error or this is malicious peer
                         // that we wish to end the connection.
-                        if peer.session.state.connection != ConnectionState::Quitting
-                            && peer.can_request()
-                        {
+                        if peer.session.state.connection != ConnectionState::Quitting {
                             peer.free_pending_blocks().await;
                         }
 
@@ -450,6 +447,7 @@ impl Torrent {
                                     self.have_info = true;
 
                                     let mut info_l = self.ctx.info.write().await;
+                                    info!("new info files {:?}", info.files);
                                     *info_l = info;
                                     drop(info_l);
 
@@ -493,9 +491,7 @@ impl Torrent {
                                 });
                             }
 
-                            if let Ok(Ok(r)) = orx.await {
-                                info!("announced stopped with success {r:#?}");
-                            }
+                            orx.await??;
 
                             return Ok(());
                         }

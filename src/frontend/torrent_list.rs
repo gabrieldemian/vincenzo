@@ -4,7 +4,7 @@ use crossterm::event::KeyCode;
 use ratatui::{
     layout::Constraint,
     prelude::{Backend, Direction, Layout, Rect},
-    style::{Color, Style, Stylize},
+    style::{Stylize},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
     Terminal,
@@ -47,7 +47,7 @@ impl<'a> TorrentList<'a> {
         .into();
 
         let line: ListItem = ListItem::new(k);
-        let footer_list: Vec<ListItem> = vec![line].into();
+        let footer_list: Vec<ListItem> = vec![line];
 
         let footer = List::new(footer_list)
             .block(Block::default().borders(Borders::ALL).title("Keybindings"));

@@ -77,7 +77,7 @@ impl Info {
             };
             return Ok(file.get_block_infos(self.piece_length, None));
         }
-        Err(error::Error::FileOpenError)
+        Err(error::Error::FileOpenError("".to_owned()))
     }
     /// Get the total size of the torrent, in bytes.
     pub fn get_size(&self) -> u64 {

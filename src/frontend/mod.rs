@@ -30,6 +30,7 @@ use torrent_list::TorrentList;
 
 use crate::{
     cli::Args,
+    config::Config,
     disk::DiskMsg,
     torrent::{Torrent, TorrentCtx, TorrentMsg},
 };
@@ -75,6 +76,7 @@ pub struct Frontend<'a> {
     disk_tx: mpsc::Sender<DiskMsg>,
     terminal: Terminal<CrosstermBackend<Stdout>>,
     torrent_list: TorrentList<'a>,
+    config: Config,
 }
 
 pub struct FrontendCtx {
@@ -82,7 +84,7 @@ pub struct FrontendCtx {
 }
 
 impl<'a> Frontend<'a> {
-    pub fn new(fr_tx: mpsc::Sender<FrMsg>, disk_tx: mpsc::Sender<DiskMsg>) -> Self {
+    pub fn new(fr_tx: mpsc::Sender<FrMsg>, disk_tx: mpsc::Sender<DiskMsg>, config: Config) -> Self {
         let stdout = io::stdout();
         let style = AppStyle::new();
         let backend = CrosstermBackend::new(stdout);
@@ -92,6 +94,7 @@ impl<'a> Frontend<'a> {
         let torrent_list = TorrentList::new(ctx.clone());
 
         Frontend {
+            config,
             terminal,
             torrent_list,
             ctx,
@@ -206,15 +209,21 @@ impl<'a> Frontend<'a> {
     // Create a Torrent, and then Add it. This will be called when the user
     // adds a torrent using the UI.
     async fn new_torrent(&mut self, magnet: &str) {
-        let args = Args::parse();
+        info!("download_dir {}", self.config.download_dir);
 
-        info!("download_dir {}", args.download_dir);
-
-        let mut torrent = Torrent::new(self.disk_tx.clone(), magnet, &args.download_dir);
+        let mut torrent = Torrent::new(self.disk_tx.clone(), magnet, &self.config.download_dir);
         let _ = self.add_torrent(torrent.ctx.clone()).await;
 
+        let args = Args::parse();
+        let mut listen = self.config.listen;
+
+        if args.listen.is_some() {
+            listen = args.listen;
+        }
+
         spawn(async move {
-            torrent.start_and_run(args.listen).await.unwrap();
+            torrent.start_and_run(listen).await.unwrap();
+            torrent.disk_tx.send(DiskMsg::Quit).await.unwrap();
         });
     }
 }
