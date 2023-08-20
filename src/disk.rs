@@ -2,13 +2,14 @@ use std::{
     collections::VecDeque,
     io::SeekFrom,
     path::{Path, PathBuf},
-    sync::{atomic::Ordering, Arc},
+    sync::Arc,
 };
 
 use hashbrown::{HashMap, HashSet};
 use tokio::{
     fs::{create_dir_all, File, OpenOptions},
     io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
+    spawn,
     sync::{mpsc::Receiver, oneshot::Sender},
 };
 use tracing::info;
@@ -18,7 +19,7 @@ use crate::{
     metainfo,
     peer::{PeerCtx, PeerMsg},
     tcp_wire::lib::{Block, BlockInfo},
-    torrent::TorrentCtx,
+    torrent::{TorrentCtx, TorrentMsg},
 };
 
 #[derive(Debug)]
@@ -39,7 +40,7 @@ pub enum DiskMsg {
     /// this piece matches the hash on Info.pieces. If the hash is valid,
     /// the fn will send a Have msg to all peers that don't have this piece.
     /// and update the bitfield of the Torrent struct.
-    ValidatePiece(usize, Sender<Result<(), Error>>),
+    ValidatePiece(usize, [u8; 20], Sender<Result<(), Error>>),
     OpenFile(String, Sender<File>),
     /// Write the given block to disk, the Disk struct will get the seeked file
     /// automatically.
@@ -239,8 +240,8 @@ impl Disk {
                     let infos = self.request_blocks(info_hash, qnt, peer_id).await?;
                     let _ = recipient.send(infos);
                 }
-                DiskMsg::ValidatePiece(index, tx) => {
-                    let r = self.validate_piece(index).await;
+                DiskMsg::ValidatePiece(index, info_hash, tx) => {
+                    let r = self.validate_piece(info_hash, index).await;
                     let _ = tx.send(r);
                 }
                 DiskMsg::NewPeer(peer) => {
@@ -274,23 +275,29 @@ impl Disk {
     }
 
     #[tracing::instrument(skip(self))]
-    pub async fn validate_piece(&mut self, index: usize) -> Result<(), Error> {
-        // let info = &self.ctx.info;
+    pub async fn validate_piece(&mut self, info_hash: [u8; 20], index: usize) -> Result<(), Error> {
+        // let torrent_ctx = self
+        //     .torrent_ctxs
+        //     .get(&info_hash)
+        //     .ok_or(Error::TorrentDoesNotExist)?;
+        //
         // let b = index * 20;
         // let e = b + 20;
         //
-        // let hash_from_info = info.pieces[b..e].to_owned();
+        // let pieces = torrent_ctx.pieces.read().await;
+        // let hash_from_info = pieces[b..e].to_owned();
         //
         // let mut buf = Vec::new();
-        // let previous_blocks_len = index * info.blocks_per_piece() as usize;
-        // let downloaded_blocks = self
-        //     .torrent_ctx
+        // let previous_blocks_len = index * (*info.blocks_per_piece() as usize);
+        //
+        // let downloaded_blocks = torrent_ctx
         //     .requested_blocks
         //     .read()
         //     .await
         //     .iter()
         //     .skip(previous_blocks_len)
         //     .take(5);
+        //
         // for b in downloaded_blocks {
         //     buf.push(b.block)
         // }
@@ -300,10 +307,10 @@ impl Disk {
         //
         // let hash = hash.digest().bytes();
         //
-        // if hash_from_info == hash {
-        //     return Ok(());
+        // if hash_from_info != hash {
+        //     return Err(Error::PieceInvalid);
         // }
-        // Err(Error::PieceInvalid)
+
         Ok(())
     }
 
@@ -321,18 +328,30 @@ impl Disk {
 
         file.0.read_exact(&mut buf).await?;
 
+        let torrent_tx = &self
+            .torrent_ctxs
+            .get(&info_hash)
+            .ok_or(Error::TorrentDoesNotExist)?
+            .tx;
+
+        // increment uploaded count
+        torrent_tx
+            .send(TorrentMsg::IncrementUploaded(block_info.len as u64))
+            .await?;
+
         Ok(buf)
     }
 
     #[tracing::instrument(skip(self, block))]
     pub async fn write_block(&mut self, block: Block, info_hash: [u8; 20]) -> Result<(), Error> {
-        info!("info_hash write_block {info_hash:?}");
-
         let len = block.block.len() as u32;
+        let begin = block.begin;
+        let index = block.index;
+
         let block_info = BlockInfo {
-            index: block.index as u32,
+            index: index as u32,
             len,
-            begin: block.begin,
+            begin,
         };
 
         let torrent_downloaded_infos = self
@@ -353,16 +372,43 @@ impl Disk {
             .get_file_from_block_info(&block_info, info_hash)
             .await?;
 
-        info!("fs_file {:#?}", fs_file);
-
-        fs_file.write_all(&block.block).await?;
-
-        // increment downloaded count
-        self.torrent_ctxs
+        let torrent_ctx = self
+            .torrent_ctxs
             .get(&info_hash)
-            .unwrap()
-            .downloaded
-            .fetch_add(len as u64, Ordering::SeqCst);
+            .ok_or(Error::TorrentDoesNotExist)?;
+
+        let torrent_tx = torrent_ctx.tx.clone();
+
+        // the write operation is heavy, so we want to spawn a thread here,
+        // and only increment the downloaded count after writing,
+        // because otherwise the UI could say the torrent is complete
+        // while not every byte is written to disk.
+        spawn(async move {
+            fs_file.write_all(&block.block).await.unwrap();
+            let _ = torrent_tx
+                .send(TorrentMsg::IncrementDownloaded(len as u64))
+                .await;
+        });
+
+        let mut pieces = torrent_ctx.pieces.write().await;
+        let torrent_tx = &torrent_ctx.tx;
+
+        let info = torrent_ctx.info.read().await;
+
+        // if this is the last block of a piece,
+        // validate the hash
+        if begin + len as u32 >= info.piece_length {
+            // self.validate_piece(info_hash, index).await?;
+
+            torrent_tx.send(TorrentMsg::DownloadedPiece(index)).await?;
+
+            info!("hash of piece {index:?} is valid");
+
+            // update the bitfield of the torrent
+            pieces.set(index);
+        }
+
+        drop(info);
 
         Ok(())
     }
@@ -380,14 +426,12 @@ impl Disk {
         block_info: &BlockInfo,
         info_hash: [u8; 20],
     ) -> Result<(File, metainfo::File), Error> {
-        info!("calling get_file_from_block_info");
         let torrent = self
             .torrent_ctxs
             .get(&info_hash)
             .ok_or(Error::InfoHashInvalid)?;
 
         let info = torrent.info.read().await;
-        info!("got info with files {:?}", info.files);
 
         // find a file on a list of files,
         // given a piece_index and a piece_len
@@ -434,8 +478,6 @@ impl Disk {
 
             file.seek(SeekFrom::Start(offset)).await?;
 
-            info!("file {:#?}", file);
-            info!("file_info {:#?}", file_info);
             return Ok((file, file_info.clone()));
         }
 
@@ -485,9 +527,11 @@ mod tests {
     use std::path::Path;
 
     use bendy::decoding::FromBencode;
+    use rand::{distributions::Alphanumeric, Rng};
 
     use crate::{
         bitfield::Bitfield,
+        frontend::FrMsg,
         metainfo::{self, Info, MetaInfo},
         tcp_wire::lib::{Block, BLOCK_LEN},
         torrent::Torrent,
@@ -501,16 +545,14 @@ mod tests {
     #[tokio::test]
     async fn can_create_file_tree() {
         let magnet = "magnet:?xt=urn:btih:48aac768a865798307ddd4284be77644368dd2c7&dn=book&tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%2Fannounce&tr=udp%3A%2F%2F9.rarbg.to%3A2920%2Fannounce&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&tr=udp%3A%2F%2Ftracker.internetwarriors.net%3A1337%2Fannounce&tr=udp%3A%2F%2Ftracker.leechers-paradise.org%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.pirateparty.gr%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.cyberia.is%3A6969%2Fannounce".to_owned();
-        // todo: all those tests that need a folder name,
-        // must have a random name so that tests can run
-        // in paralel without conflict, and at the end
-        // of the test, delete the folder.
-        let download_dir = "btr".to_owned();
-
         let (disk_tx, disk_rx) = mpsc::channel::<DiskMsg>(1000);
 
-        let torrent = Torrent::new(disk_tx.clone(), &magnet, &download_dir);
+        let (fr_tx, _) = mpsc::channel::<FrMsg>(300);
+        let torrent = Torrent::new(disk_tx.clone(), fr_tx, &magnet);
         let torrent_ctx = torrent.ctx.clone();
+
+        let mut rng = rand::thread_rng();
+        let download_dir: String = (0..20).map(|_| rng.sample(Alphanumeric) as char).collect();
 
         let mut disk = Disk::new(disk_rx, download_dir.clone());
 
@@ -569,6 +611,8 @@ mod tests {
         assert!(Path::new(&format!("{download_dir}/arch/foo.txt")).is_file());
         assert!(Path::new(&format!("{download_dir}/arch/bar/baz.txt")).is_file());
         assert!(Path::new(&format!("{download_dir}/arch/bar/buzz/bee.txt")).is_file());
+
+        tokio::fs::remove_dir_all(download_dir).await.unwrap();
     }
 
     #[tokio::test]
@@ -585,7 +629,8 @@ mod tests {
 
         let (disk_tx, disk_rx) = mpsc::channel::<DiskMsg>(3);
 
-        let torrent = Torrent::new(disk_tx.clone(), &magnet, &download_dir);
+        let (fr_tx, _) = mpsc::channel::<FrMsg>(300);
+        let torrent = Torrent::new(disk_tx.clone(), fr_tx, &magnet);
         let torrent_ctx = torrent.ctx.clone();
         let info_hash: [u8; 20] = torrent_ctx.info_hash;
         let mut disk = Disk::new(disk_rx, download_dir);
@@ -761,113 +806,9 @@ mod tests {
         );
     }
 
+    // if we can write, read blocks, and then validate the hash of the pieces
     #[tokio::test]
-    async fn validate_piece_simple_multi() {
-        //
-        // Simple multi file torrent, 1 block per piece
-        //
-        let magnet = "magnet:?xt=urn:btih:48aac768a865798307ddd4284be77644368dd2c7&dn=book&tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%2Fannounce&tr=udp%3A%2F%2F9.rarbg.to%3A2920%2Fannounce&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&tr=udp%3A%2F%2Ftracker.internetwarriors.net%3A1337%2Fannounce&tr=udp%3A%2F%2Ftracker.leechers-paradise.org%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.pirateparty.gr%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.cyberia.is%3A6969%2Fannounce".to_owned();
-        // path must end with "/"
-        let download_dir = "btr".to_owned();
-
-        let metainfo = include_bytes!("../btr/book.torrent");
-        let metainfo = MetaInfo::from_bencode(metainfo).unwrap();
-        let info = metainfo.info;
-
-        let (disk_tx, disk_rx) = mpsc::channel::<DiskMsg>(3);
-        let mut disk = Disk::new(disk_rx, download_dir.clone());
-
-        let torrent = Torrent::new(disk_tx.clone(), &magnet, &download_dir);
-        let torrent_ctx = torrent.ctx.clone();
-
-        disk.torrent_ctxs
-            .insert(torrent_ctx.info_hash, torrent_ctx.clone());
-
-        let mut info_ctx = torrent.ctx.info.write().await;
-        *info_ctx = info.clone();
-        drop(info_ctx);
-
-        println!("---- piece 0 ----");
-        let r = disk.validate_piece(0).await;
-        assert!(r.is_ok());
-
-        println!("---- piece 1 ----");
-        let r = disk.validate_piece(1).await;
-        assert!(r.is_ok());
-
-        println!("---- piece 2 ----");
-        let r = disk.validate_piece(2).await;
-        assert!(r.is_ok());
-
-        println!("---- piece 249 ----");
-        let r = disk.validate_piece(249).await;
-        assert!(r.is_ok());
-    }
-
-    #[tokio::test]
-    async fn validate_piece_complex_multi() {
-        //
-        // Complex multi file torrent, 64 block per piece
-        //
-        let magnet = "magnet:?xt=urn:btih:9281EF9099967ED8413E87589EFD38F9B9E484B0&amp;dn=The%20Doors%20%20(Complete%20Studio%20Discography%20-%20MP3%20%40%20320kbps)&amp;tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.openbittorrent.com%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.bittor.pw%3A1337%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&amp;tr=udp%3A%2F%2Fbt.xxx-tracker.com%3A2710%2Fannounce&amp;tr=udp%3A%2F%2Fpublic.popcorn-tracker.org%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Feddie4.nl%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451%2Fannounce&amp;tr=udp%3A%2F%2Fp4p.arenabg.com%3A1337%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.tiny-vps.com%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Fopen.stealth.si%3A80%2Fannounce ".to_owned();
-        let download_dir = "btr".to_owned();
-
-        let metainfo = include_bytes!("../btr/music.torrent");
-        let metainfo = MetaInfo::from_bencode(metainfo).unwrap();
-        let info = metainfo.info;
-
-        let (disk_tx, disk_rx) = mpsc::channel::<DiskMsg>(3);
-        let mut disk = Disk::new(disk_rx, download_dir.clone());
-
-        let torrent = Torrent::new(disk_tx.clone(), &magnet, &download_dir);
-        let torrent_ctx = torrent.ctx.clone();
-
-        disk.torrent_ctxs
-            .insert(torrent_ctx.info_hash, torrent_ctx.clone());
-
-        let mut info_ctx = torrent.ctx.info.write().await;
-        *info_ctx = info.clone();
-        drop(info_ctx);
-
-        println!("---- piece 0 ----");
-        let r = disk.validate_piece(0).await;
-        assert!(r.is_ok());
-
-        println!("---- piece 1 ----");
-        let r = disk.validate_piece(1).await;
-        assert!(r.is_ok());
-
-        println!("---- piece 2 ----");
-        let r = disk.validate_piece(2).await;
-        assert!(r.is_ok());
-
-        println!("---- piece 20 ----");
-        let r = disk.validate_piece(20).await;
-        assert!(r.is_ok());
-
-        println!("---- piece 21 ----");
-        let r = disk.validate_piece(21).await;
-        assert!(r.is_ok());
-
-        println!("---- piece 22 ----");
-        let r = disk.validate_piece(22).await;
-        assert!(r.is_ok());
-
-        println!("---- piece 24 ----");
-        let r = disk.validate_piece(24).await;
-        assert!(r.is_ok());
-
-        println!("---- piece 25 ----");
-        let r = disk.validate_piece(25).await;
-        assert!(r.is_ok());
-    }
-
-    // given a `BlockInfo`, we must be to read the right file,
-    // at the right offset.
-    // when we seed to other peers, this is how it will work.
-    // when we get the bytes, it's easy to just create a Block from a BlockInfo.
-    #[tokio::test]
-    async fn multi_file_write_read_block() {
+    async fn read_write_blocks_and_validate_pieces() {
         let info = Info {
             file_length: None,
             name: "arch".to_owned(),
@@ -890,14 +831,16 @@ mod tests {
         };
 
         let magnet = "magnet:?xt=urn:btih:9281EF9099967ED8413E87589EFD38F9B9E484B0&amp;dn=The%20Doors%20%20(Complete%20Studio%20Discography%20-%20MP3%20%40%20320kbps)&amp;tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.openbittorrent.com%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.bittor.pw%3A1337%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&amp;tr=udp%3A%2F%2Fbt.xxx-tracker.com%3A2710%2Fannounce&amp;tr=udp%3A%2F%2Fpublic.popcorn-tracker.org%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Feddie4.nl%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451%2Fannounce&amp;tr=udp%3A%2F%2Fp4p.arenabg.com%3A1337%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.tiny-vps.com%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Fopen.stealth.si%3A80%2Fannounce ".to_owned();
-        let download_dir = "btr".to_owned();
+        let mut rng = rand::thread_rng();
+        let download_dir: String = (0..20).map(|_| rng.sample(Alphanumeric) as char).collect();
 
         let (disk_tx, _) = mpsc::channel::<DiskMsg>(3);
 
         let (_, rx) = mpsc::channel(5);
         let mut disk = Disk::new(rx, download_dir.clone());
 
-        let torrent = Torrent::new(disk_tx, &magnet, &download_dir);
+        let (fr_tx, _) = mpsc::channel::<FrMsg>(300);
+        let torrent = Torrent::new(disk_tx, fr_tx, &magnet);
         let mut info_t = torrent.ctx.info.write().await;
         *info_t = info.clone();
         drop(info_t);
@@ -1029,5 +972,43 @@ mod tests {
         // read piece 3 block from third file
         let result = disk.read_block(block_info, info_hash).await;
         assert_eq!(result.unwrap(), vec![25, 26, 27, 28, 29, 30]);
+
+        //
+        //  VALIDATE PIECES
+        //
+
+        println!("---- piece 0 ----");
+        let r = disk.validate_piece(info_hash, 0).await;
+        assert!(r.is_ok());
+
+        println!("---- piece 1 ----");
+        let r = disk.validate_piece(info_hash, 1).await;
+        assert!(r.is_ok());
+
+        println!("---- piece 2 ----");
+        let r = disk.validate_piece(info_hash, 2).await;
+        assert!(r.is_ok());
+
+        println!("---- piece 20 ----");
+        let r = disk.validate_piece(info_hash, 20).await;
+        assert!(r.is_ok());
+
+        println!("---- piece 21 ----");
+        let r = disk.validate_piece(info_hash, 21).await;
+        assert!(r.is_ok());
+
+        println!("---- piece 22 ----");
+        let r = disk.validate_piece(info_hash, 22).await;
+        assert!(r.is_ok());
+
+        println!("---- piece 24 ----");
+        let r = disk.validate_piece(info_hash, 24).await;
+        assert!(r.is_ok());
+
+        println!("---- piece 25 ----");
+        let r = disk.validate_piece(info_hash, 25).await;
+        assert!(r.is_ok());
+
+        tokio::fs::remove_dir_all(&download_dir).await.unwrap();
     }
 }

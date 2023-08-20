@@ -1,27 +1,25 @@
 use std::sync::Arc;
 
 use crossterm::event::KeyCode;
+use hashbrown::HashMap;
 use ratatui::{
     layout::Constraint,
     prelude::{Backend, Direction, Layout, Rect},
-    style::{Stylize},
+    style::Stylize,
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
     Terminal,
 };
 
-use crate::{
-    to_human_readable,
-    torrent::{TorrentCtx, TorrentStatus},
-};
+use crate::{to_human_readable, torrent::TorrentStatus};
 
-use super::{AppStyle, FrMsg, FrontendCtx};
+use super::{AppStyle, FrMsg, FrontendCtx, TorrentInfo};
 
 #[derive(Clone)]
 pub struct TorrentList<'a> {
     pub style: AppStyle,
     pub state: ListState,
-    pub torrent_ctxs: Vec<Arc<TorrentCtx>>,
+    pub torrent_infos: HashMap<[u8; 20], TorrentInfo>,
     ctx: Arc<FrontendCtx>,
     show_popup: bool,
     input: String,
@@ -36,11 +34,11 @@ impl<'a> TorrentList<'a> {
 
         let k: Line = vec![
             Span::styled("k".to_string(), style.highlight_fg),
-            " move up   ".into(),
+            " move up ".into(),
             Span::styled("j".to_string(), style.highlight_fg),
-            " move down   ".into(),
+            " move down ".into(),
             Span::styled("t".to_string(), style.highlight_fg),
-            " add torrent   ".into(),
+            " add torrent ".into(),
             Span::styled("q".to_string(), style.highlight_fg),
             " quit".into(),
         ]
@@ -57,7 +55,7 @@ impl<'a> TorrentList<'a> {
             footer,
             cursor_position: 0,
             input: String::new(),
-            torrent_ctxs: vec![],
+            torrent_infos: HashMap::new(),
             show_popup: false,
             ctx,
             state,
@@ -118,50 +116,32 @@ impl<'a> TorrentList<'a> {
         let selected = self.state.selected();
         let mut rows: Vec<ListItem> = Vec::new();
 
-        for (i, ctx) in self.torrent_ctxs.iter().enumerate() {
-            let info = ctx.info.read().await;
-            let stats = ctx.stats.read().await;
-            let status = ctx.status.read().await;
-            let downloaded = ctx.downloaded.load(std::sync::atomic::Ordering::Relaxed);
-            let last_second_downloaded = ctx
-                .last_second_downloaded
-                .load(std::sync::atomic::Ordering::Relaxed);
-
-            let diff = if downloaded > last_second_downloaded {
-                downloaded - last_second_downloaded
-            } else {
-                0
-            };
-
-            ctx.last_second_downloaded
-                .fetch_add(diff, std::sync::atomic::Ordering::SeqCst);
-
-            let mut download_rate = to_human_readable(diff as f64);
+        for (i, ctx) in self.torrent_infos.values().enumerate() {
+            let mut download_rate = to_human_readable(ctx.download_rate as f64);
             download_rate.push_str("/s");
 
-            let name = Span::from(info.name.clone()).bold();
+            let name = Span::from(ctx.name.clone()).bold();
 
-            let status_style = match *status {
+            let status_style = match ctx.status {
                 TorrentStatus::Seeding => self.style.success,
                 TorrentStatus::Error => self.style.error,
                 _ => self.style.highlight_fg,
             };
 
-            let status_txt: &str = status.clone().into();
+            let status_txt: &str = ctx.status.clone().into();
             let mut status_txt = vec![Span::styled(status_txt, status_style)];
 
-            if *status == TorrentStatus::Downloading {
+            if ctx.status == TorrentStatus::Downloading {
                 let download_and_rate = format!(
                     " {} - {download_rate}",
-                    to_human_readable(downloaded as f64)
+                    to_human_readable(ctx.downloaded as f64)
                 )
                 .into();
                 status_txt.push(download_and_rate);
             }
-            drop(status);
 
-            let s = stats.seeders.to_string();
-            let l = stats.leechers.to_string();
+            let s = ctx.stats.seeders.to_string();
+            let l = ctx.stats.leechers.to_string();
             let sl = format!("Seeders {s} Leechers {l}").into();
 
             let mut line_top = Line::from("-".repeat(terminal.size().unwrap().width as usize));
@@ -175,7 +155,7 @@ impl<'a> TorrentList<'a> {
             let mut items = vec![
                 line_top,
                 name.into(),
-                to_human_readable(info.get_size() as f64).into(),
+                to_human_readable(ctx.size as f64).into(),
                 sl,
                 status_txt.into(),
                 line_bottom,
@@ -217,17 +197,10 @@ impl<'a> TorrentList<'a> {
             .unwrap();
     }
 
-    pub async fn update_ctx(&mut self, ctx: Arc<TorrentCtx>) {
-        self.torrent_ctxs.push(ctx);
-        if self.state.selected().is_none() {
-            self.state.select(Some(0));
-        }
-    }
-
     fn next(&mut self) {
-        if !self.torrent_ctxs.is_empty() {
+        if !self.torrent_infos.is_empty() {
             let i = self.state.selected().map_or(0, |v| {
-                if v != self.torrent_ctxs.len() - 1 {
+                if v != self.torrent_infos.len() - 1 {
                     v + 1
                 } else {
                     0
@@ -238,10 +211,10 @@ impl<'a> TorrentList<'a> {
     }
 
     fn previous(&mut self) {
-        if !self.torrent_ctxs.is_empty() {
+        if !self.torrent_infos.is_empty() {
             let i = self.state.selected().map_or(0, |v| {
                 if v == 0 {
-                    self.torrent_ctxs.len() - 1
+                    self.torrent_infos.len() - 1
                 } else {
                     v - 1
                 }

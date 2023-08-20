@@ -1,7 +1,7 @@
 use rand::Rng;
 use speedy::{BigEndian, Readable, Writable};
 
-use crate::error::Error;
+use crate::{error::Error, torrent::Stats};
 
 use super::{action::Action, event::Event};
 
@@ -71,6 +71,16 @@ pub struct Response {
     pub interval: u32,
     pub leechers: u32,
     pub seeders: u32,
+}
+
+impl From<Response> for Stats {
+    fn from(value: Response) -> Self {
+        Self {
+            interval: value.interval,
+            seeders: value.seeders,
+            leechers: value.leechers,
+        }
+    }
 }
 
 impl Response {

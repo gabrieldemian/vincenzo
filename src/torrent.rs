@@ -1,3 +1,4 @@
+use crate::frontend::{FrMsg, TorrentInfo};
 use crate::magnet_parser::get_magnet;
 use crate::peer::session::ConnectionState;
 use crate::tcp_wire::lib::BlockInfo;
@@ -17,12 +18,10 @@ use crate::{
 };
 use bendy::decoding::FromBencode;
 use clap::Parser;
-use core::sync::atomic::{AtomicU64, Ordering};
 use hashbrown::HashMap;
 use magnet_url::Magnet;
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
-use std::path::Path;
 use std::{sync::Arc, time::Duration};
 use tokio::time::interval;
 use tokio::{
@@ -63,6 +62,8 @@ pub enum TorrentMsg {
     /// When a peer request a piece of the info
     /// index, recipient
     RequestInfoPiece(u32, oneshot::Sender<Option<Vec<u8>>>),
+    IncrementDownloaded(u64),
+    IncrementUploaded(u64),
     /// When torrent is being gracefully shutdown
     Quit,
 }
@@ -83,6 +84,24 @@ pub struct Torrent {
     /// After the dict is complete, it will be decoded into [`info`]
     pub info_dict: BTreeMap<u32, Vec<u8>>,
     pub have_info: bool,
+    /// How many bytes we have uploaded to other peers.
+    pub uploaded: u64,
+    /// How many bytes we have downloaded from other peers.
+    pub downloaded: u64,
+    pub fr_tx: mpsc::Sender<FrMsg>,
+    pub status: TorrentStatus,
+    /// Stats of the current Torrent, returned from tracker on announce requests.
+    pub stats: Stats,
+    /// The downloaded bytes of the previous second,
+    /// used to get the download rate in seconds.
+    /// this will be mutated on the frontend event loop.
+    pub last_second_downloaded: u64,
+    /// The download rate of the torrent, in bytes
+    pub download_rate: u64,
+    /// The total size of the torrent files, in bytes,
+    /// this is a cache of ctx.info.get_size()
+    pub size: u64,
+    pub name: String,
 }
 
 #[derive(Debug)]
@@ -93,17 +112,6 @@ pub struct TorrentCtx {
     pub info_hash: [u8; 20],
     pub pieces: RwLock<Bitfield>,
     pub info: RwLock<Info>,
-    /// Stats of the current Torrent, returned from tracker on announce requests.
-    pub stats: RwLock<Stats>,
-    /// How many bytes we have uploaded to other peers.
-    pub uploaded: Arc<AtomicU64>,
-    /// How many bytes we have downloaded from other peers.
-    pub downloaded: Arc<AtomicU64>,
-    /// The downloaded bytes of the previous second,
-    /// used to get the download rate in seconds.
-    /// this will be mutated on the frontend event loop.
-    pub last_second_downloaded: Arc<AtomicU64>,
-    pub status: RwLock<TorrentStatus>,
 }
 
 // Status of the current Torrent, updated at every announce request.
@@ -115,22 +123,21 @@ pub struct Stats {
 }
 
 impl Torrent {
-    pub fn new(disk_tx: mpsc::Sender<DiskMsg>, magnet: &str, download_dir: &str) -> Self {
+    pub fn new(disk_tx: mpsc::Sender<DiskMsg>, fr_tx: mpsc::Sender<FrMsg>, magnet: &str) -> Self {
         let magnet = get_magnet(magnet).unwrap_or_else(|_| {
-            eprintln!("The magnet link is invalid, try another one.");
+            eprintln!("The magnet link is invalid, try another one");
             std::process::exit(exitcode::USAGE)
         });
 
-        if !Path::new(&download_dir).is_dir() {
-            eprintln!("Your download_dir is not a directory! Did you forget to create it?");
-            std::process::exit(exitcode::USAGE)
-        }
+        let xt = magnet
+            .xt
+            .clone()
+            .expect("The magnet link does not have a hash");
 
-        let xt = magnet.xt.clone().unwrap();
         let dn = magnet.dn.clone().unwrap_or("Unknown".to_string());
 
         let pieces = RwLock::new(Bitfield::default());
-        let info = RwLock::new(Info::default().name(dn));
+        let info = RwLock::new(Info::default().name(dn.clone()));
         let info_dict = BTreeMap::new();
         let tracker_ctx = Arc::new(TrackerCtx::default());
 
@@ -139,19 +146,23 @@ impl Torrent {
 
         let ctx = Arc::new(TorrentCtx {
             tx: tx.clone(),
-            status: RwLock::new(TorrentStatus::default()),
             tracker_tx: RwLock::new(None),
-            stats: RwLock::new(Stats::default()),
             info_hash,
             pieces,
             magnet,
             info,
-            uploaded: Arc::new(AtomicU64::new(0)),
-            downloaded: Arc::new(AtomicU64::new(0)),
-            last_second_downloaded: Arc::new(AtomicU64::new(0)),
         });
 
         Self {
+            name: dn,
+            size: 0,
+            last_second_downloaded: 0,
+            download_rate: 0,
+            status: TorrentStatus::default(),
+            stats: Stats::default(),
+            fr_tx,
+            uploaded: 0,
+            downloaded: 0,
             info_dict,
             tracker_ctx,
             tracker_tx: None,
@@ -171,16 +182,13 @@ impl Torrent {
         let info_hash = self.ctx.clone().info_hash;
         let (res, peers) = tracker.announce_exchange(info_hash, listen).await?;
 
-        let mut stats = self.ctx.stats.write().await;
-
-        *stats = Stats {
+        self.stats = Stats {
             interval: res.interval,
             seeders: res.seeders,
             leechers: res.leechers,
         };
 
-        info!("new stats {stats:#?}");
-        drop(stats);
+        info!("new stats {:#?}", self.stats);
 
         let peers: Vec<Peer> = peers
             .into_iter()
@@ -237,6 +245,7 @@ impl Torrent {
 
                         let socket = Framed::new(socket, HandshakeCodec);
                         let socket = peer.start(Direction::Outbound, socket).await?;
+
                         let r = peer.run(Direction::Outbound, socket).await;
 
                         if let Err(r) = r {
@@ -327,15 +336,14 @@ impl Torrent {
 
     #[tracing::instrument(name = "torrent::run", skip(self))]
     pub async fn run(&mut self) -> Result<(), Error> {
-        let stats = self.ctx.stats.read().await;
         let tracker_tx = self.tracker_tx.clone().unwrap();
 
         let mut announce_interval = interval_at(
-            Instant::now() + Duration::from_secs(stats.interval.max(500).into()),
-            Duration::from_secs((stats.interval as u64).max(500)),
+            Instant::now() + Duration::from_secs(self.stats.interval.max(500).into()),
+            Duration::from_secs((self.stats.interval as u64).max(500)),
         );
 
-        drop(stats);
+        let mut frontend_interval = interval(Duration::from_secs(1));
 
         loop {
             select! {
@@ -367,19 +375,15 @@ impl Torrent {
                         TorrentMsg::DownloadComplete => {
                             info!("received msg download complete");
                             let (otx, orx) = oneshot::channel();
-                            let downloaded = self.ctx.downloaded.load(Ordering::Relaxed);
-                            let uploaded = self.ctx.uploaded.load(Ordering::Relaxed);
 
-                            let mut status = self.ctx.status.write().await;
-                            *status = TorrentStatus::Seeding;
-                            drop(status);
+                            self.status = TorrentStatus::Seeding;
 
                             let _ = tracker_tx.send(
                                 TrackerMsg::Announce {
                                     event: Event::Completed,
                                     info_hash: self.ctx.info_hash,
-                                    downloaded,
-                                    uploaded,
+                                    downloaded: self.downloaded,
+                                    uploaded: self.uploaded,
                                     left: 0,
                                     recipient: Some(otx),
                                 })
@@ -414,6 +418,10 @@ impl Torrent {
                             }
                         }
                         TorrentMsg::DownloadedInfoPiece(total, index, bytes) => {
+                            if self.status == TorrentStatus::ConnectingTrackers {
+                                self.status = TorrentStatus::DownloadingMetainfo;
+                            }
+
                             self.info_dict.insert(index, bytes);
 
                             let info_len = self.info_dict.values().fold(0, |acc, b| {
@@ -442,8 +450,10 @@ impl Torrent {
                                 let hash = hex::encode(hash);
 
                                 if hash.to_uppercase() == m_info.to_uppercase() {
+                                    self.status = TorrentStatus::Downloading;
                                     info!("the hash of the downloaded info matches the hash of the magnet link");
 
+                                    self.size = info.get_size();
                                     self.have_info = true;
 
                                     let mut info_l = self.ctx.info.write().await;
@@ -462,23 +472,36 @@ impl Torrent {
                             let bytes = self.info_dict.get(&index).cloned();
                             let _ = recipient.send(bytes);
                         }
+                        TorrentMsg::IncrementDownloaded(n) => {
+                            self.downloaded += n;
+
+                            // check if the torrent download is complete
+                            let is_download_complete = self.downloaded >= self.size;
+                            info!("yy__downloaded {:?}", self.downloaded);
+
+                            if is_download_complete {
+                                info!("download completed!! wont request more blocks");
+                                self.ctx.tx.send(TorrentMsg::DownloadComplete).await?;
+                            }
+                        }
+                        TorrentMsg::IncrementUploaded(n) => {
+                            self.uploaded += n;
+                        }
                         TorrentMsg::Quit => {
                             info!("torrent is quitting");
                             let (otx, orx) = oneshot::channel();
-                            let downloaded = self.ctx.downloaded.load(Ordering::Relaxed);
-                            let uploaded = self.ctx.uploaded.load(Ordering::Relaxed);
                             let info = self.ctx.info.read().await;
                             let left =
-                                if downloaded > info.get_size()
-                                    { downloaded - info.get_size() }
+                                if self.downloaded > info.get_size()
+                                    { self.downloaded - info.get_size() }
                                 else { 0 };
 
                             let _ = tracker_tx.send(
                                 TrackerMsg::Announce {
                                     event: Event::Stopped,
                                     info_hash: self.ctx.info_hash,
-                                    downloaded,
-                                    uploaded,
+                                    downloaded: self.downloaded,
+                                    uploaded: self.uploaded,
                                     left,
                                     recipient: Some(otx),
                                 })
@@ -497,6 +520,22 @@ impl Torrent {
                         }
                     }
                 }
+                _ = frontend_interval.tick() => {
+                    self.download_rate = self.downloaded - self.last_second_downloaded;
+
+                    let torrent_info = TorrentInfo {
+                        name: self.name.clone(),
+                        size: self.size,
+                        downloaded: self.downloaded,
+                        uploaded: self.uploaded,
+                        stats: self.stats.clone(),
+                        status: self.status.clone(),
+                        download_rate: self.download_rate,
+                    };
+
+                    self.last_second_downloaded = self.downloaded;
+                    self.fr_tx.send(FrMsg::Draw(self.ctx.info_hash, torrent_info)).await?;
+                }
                 // periodically announce to tracker, at the specified interval
                 // to update the tracker about the client's stats.
                 // let have_info = self.ctx.info_dict;
@@ -506,8 +545,7 @@ impl Torrent {
                     // we know if the info is downloaded if the piece_length is > 0
                     if info.piece_length > 0 {
                         info!("sending periodic announce, interval {announce_interval:?}");
-                        let downloaded = self.ctx.downloaded.load(Ordering::Relaxed);
-                        let left = if downloaded < info.get_size() { info.get_size() } else { downloaded - info.get_size() };
+                        let left = if self.downloaded < info.get_size() { info.get_size() } else { self.downloaded - info.get_size() };
 
                         let (otx, orx) = oneshot::channel();
 
@@ -515,8 +553,8 @@ impl Torrent {
                             TrackerMsg::Announce {
                                 event: Event::None,
                                 info_hash: self.ctx.info_hash,
-                                downloaded,
-                                uploaded: self.ctx.uploaded.load(Ordering::SeqCst),
+                                downloaded: self.downloaded,
+                                uploaded: self.uploaded,
                                 left,
                                 recipient: Some(otx),
                             })
@@ -526,13 +564,10 @@ impl Torrent {
                         info!("new stats {r:#?}");
 
                         // update our stats, received from the tracker
-                        let mut stats = self.ctx.stats.write().await;
-                        stats.interval = r.interval;
-                        stats.seeders = r.seeders;
-                        stats.leechers = r.leechers;
+                        self.stats = r.into();
 
                         announce_interval = interval(
-                            Duration::from_secs(r.interval as u64),
+                            Duration::from_secs(self.stats.interval as u64),
                         );
                     }
                     drop(info);

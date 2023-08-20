@@ -1,12 +1,10 @@
 use std::path::Path;
 
-// use std::fs::OpenOptions;
 use tokio::{fs::OpenOptions, io::AsyncWriteExt};
 
 use clap::Parser;
 use directories::{ProjectDirs, UserDirs};
 use tokio::{fs::create_dir, io::AsyncReadExt, runtime::Runtime, spawn, sync::mpsc};
-use tracing::info;
 use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt;
 use vincenzo::{
     cli::Args,
@@ -14,7 +12,6 @@ use vincenzo::{
     disk::{Disk, DiskMsg},
     error::Error,
     frontend::{FrMsg, Frontend},
-    torrent::Torrent,
 };
 
 #[tokio::main]
@@ -112,7 +109,7 @@ async fn main() -> Result<(), Error> {
     });
 
     // Start and run the terminal UI
-    let (fr_tx, fr_rx) = mpsc::channel::<FrMsg>(100);
+    let (fr_tx, fr_rx) = mpsc::channel::<FrMsg>(300);
     let mut fr = Frontend::new(fr_tx.clone(), disk_tx.clone(), config.clone());
 
     spawn(async move {
@@ -121,25 +118,8 @@ async fn main() -> Result<(), Error> {
 
     // If the user passed a magnet through the CLI,
     // start this torrent immediately
-    if let Some(magnet) = &args.magnet {
-        let mut torrent = Torrent::new(disk_tx, magnet, &config.download_dir);
-
-        // Add this torrent to or UI
-        fr_tx
-            .send(FrMsg::AddTorrent(torrent.ctx.clone()))
-            .await
-            .unwrap();
-
-        let mut listen = config.listen;
-        if args.listen.is_some() {
-            listen = args.listen;
-        }
-
-        spawn(async move {
-            torrent.start_and_run(listen).await?;
-            torrent.disk_tx.send(DiskMsg::Quit).await.unwrap();
-            Ok::<_, Error>(())
-        });
+    if let Some(magnet) = args.magnet {
+        fr_tx.send(FrMsg::NewTorrent(magnet)).await.unwrap();
     }
 
     handle.join().unwrap();

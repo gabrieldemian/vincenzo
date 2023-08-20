@@ -1,18 +1,14 @@
 pub mod torrent_list;
 use clap::Parser;
 use futures::{FutureExt, StreamExt};
+use hashbrown::HashMap;
 use tracing::info;
 
 use std::{
     io::{self, Stdout},
     sync::Arc,
-    time::Duration,
 };
-use tokio::{
-    select, spawn,
-    sync::{mpsc, RwLock},
-    time::interval,
-};
+use tokio::{select, spawn, sync::mpsc};
 
 use crossterm::{
     self,
@@ -32,7 +28,7 @@ use crate::{
     cli::Args,
     config::Config,
     disk::DiskMsg,
-    torrent::{Torrent, TorrentCtx, TorrentMsg},
+    torrent::{Stats, Torrent, TorrentMsg, TorrentStatus},
 };
 
 #[derive(Clone, Debug)]
@@ -65,14 +61,25 @@ impl AppStyle {
 #[derive(Debug, Clone)]
 pub enum FrMsg {
     Quit,
-    AddTorrent(Arc<TorrentCtx>),
+    Draw([u8; 20], TorrentInfo),
     NewTorrent(String),
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct TorrentInfo {
+    pub name: String,
+    pub stats: Stats,
+    pub status: TorrentStatus,
+    pub downloaded: u64,
+    pub download_rate: u64,
+    pub uploaded: u64,
+    pub size: u64,
 }
 
 pub struct Frontend<'a> {
     pub style: AppStyle,
     pub ctx: Arc<FrontendCtx>,
-    torrent_ctxs: RwLock<Vec<Arc<TorrentCtx>>>,
+    torrent_txs: HashMap<[u8; 20], mpsc::Sender<TorrentMsg>>,
     disk_tx: mpsc::Sender<DiskMsg>,
     terminal: Terminal<CrosstermBackend<Stdout>>,
     torrent_list: TorrentList<'a>,
@@ -97,10 +104,10 @@ impl<'a> Frontend<'a> {
             config,
             terminal,
             torrent_list,
+            torrent_txs: HashMap::new(),
             ctx,
             disk_tx,
             style,
-            torrent_ctxs: RwLock::new(Vec::new()),
         }
     }
 
@@ -113,8 +120,6 @@ impl<'a> Frontend<'a> {
         enable_raw_mode()?;
         execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
 
-        let mut tick_interval = interval(Duration::from_secs(1));
-
         let original_hook = std::panic::take_hook();
 
         std::panic::set_hook(Box::new(move |panic| {
@@ -122,14 +127,12 @@ impl<'a> Frontend<'a> {
             original_hook(panic);
         }));
 
+        self.torrent_list.draw(&mut self.terminal).await;
+
         loop {
             let event = reader.next().fuse();
 
             select! {
-                // Repaint UI every 1 second
-                _ = tick_interval.tick() => {
-                    self.torrent_list.draw(&mut self.terminal).await;
-                }
                 event = event => {
                     match event {
                         Some(Ok(event)) => {
@@ -146,8 +149,13 @@ impl<'a> Frontend<'a> {
                             let _ = self.stop().await;
                             return Ok(());
                         },
-                        FrMsg::AddTorrent(torrent_ctx) => {
-                            self.add_torrent(torrent_ctx).await;
+                        FrMsg::Draw(info_hash, torrent_info) => {
+                            info!("draw {torrent_info:#?}");
+
+                            self.torrent_list
+                                .torrent_infos
+                                .insert(info_hash, torrent_info);
+
                             self.torrent_list.draw(&mut self.terminal).await;
                         },
                         FrMsg::NewTorrent(magnet) => {
@@ -159,14 +167,6 @@ impl<'a> Frontend<'a> {
         }
 
         Ok(())
-    }
-
-    // Add a torrent that is already initialized, this is called when the user
-    // uses the magnet flag on the CLI, the Torrent is created on main.rs.
-    async fn add_torrent(&mut self, torrent_ctx: Arc<TorrentCtx>) {
-        let mut v = self.torrent_ctxs.write().await;
-        v.push(torrent_ctx.clone());
-        self.torrent_list.update_ctx(torrent_ctx).await;
     }
 
     fn reset_terminal() {
@@ -184,35 +184,22 @@ impl<'a> Frontend<'a> {
         .unwrap();
     }
 
-    async fn stop(&self) {
-        Self::reset_terminal();
-
-        let torrent_ctxs = self.torrent_ctxs.read().await;
-
-        // tell all torrents that we are gracefully shutting down,
-        // each torrent will kill their peers tasks, and their tracker task
-        for torrent_ctx in torrent_ctxs.iter() {
-            let torrent_tx = torrent_ctx.tx.clone();
-
-            spawn(async move {
-                let _ = torrent_tx.send(TorrentMsg::Quit).await;
-            });
-        }
-
-        let torrent_ctxs = self.torrent_ctxs.read().await;
-
-        if torrent_ctxs.is_empty() {
-            self.disk_tx.send(DiskMsg::Quit).await.unwrap();
-        }
-    }
-
     // Create a Torrent, and then Add it. This will be called when the user
     // adds a torrent using the UI.
     async fn new_torrent(&mut self, magnet: &str) {
-        info!("download_dir {}", self.config.download_dir);
+        let mut torrent = Torrent::new(self.disk_tx.clone(), self.ctx.fr_tx.clone(), magnet);
+        let info_hash = torrent.ctx.info_hash.clone();
 
-        let mut torrent = Torrent::new(self.disk_tx.clone(), magnet, &self.config.download_dir);
-        let _ = self.add_torrent(torrent.ctx.clone()).await;
+        self.torrent_txs.insert(info_hash, torrent.ctx.tx.clone());
+
+        let torrent_info_l = TorrentInfo {
+            name: torrent.ctx.info.read().await.name.clone(),
+            ..Default::default()
+        };
+
+        self.torrent_list
+            .torrent_infos
+            .insert(info_hash, torrent_info_l);
 
         let args = Args::parse();
         let mut listen = self.config.listen;
@@ -225,5 +212,19 @@ impl<'a> Frontend<'a> {
             torrent.start_and_run(listen).await.unwrap();
             torrent.disk_tx.send(DiskMsg::Quit).await.unwrap();
         });
+
+        self.torrent_list.draw(&mut self.terminal).await;
+    }
+
+    async fn stop(&mut self) {
+        Self::reset_terminal();
+
+        // tell all torrents that we are gracefully shutting down,
+        // each torrent will kill their peers tasks, and their tracker task
+        for (_, tx) in std::mem::take(&mut self.torrent_txs) {
+            spawn(async move {
+                let _ = tx.send(TorrentMsg::Quit).await;
+            });
+        }
     }
 }
