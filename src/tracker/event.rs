@@ -1,5 +1,4 @@
-#[derive(Debug, Clone, PartialEq)]
-#[derive(Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub enum Event {
     #[default]
     None,
@@ -7,8 +6,6 @@ pub enum Event {
     Started,
     Stopped,
 }
-
-
 
 impl From<Event> for u64 {
     fn from(a: Event) -> Self {

@@ -1,21 +1,23 @@
+#![allow(missing_docs)]
+#![allow(rustdoc::missing_doc_code_examples)]
 use std::{convert::TryInto, time::Duration};
 
-/// This is an exponential moving average accumulator.
-///
-/// An algorithm is used that addresss the initial bias that occurs when all
-/// values are initialized with zero or with the first sample (which would bias
-/// the average toward the first value). This is achieved by initially giving
-/// a low gain for the average and slowly increasing it until the inverted gain
-/// is reached.
-///
-/// For example, the first sample should have a gain of 1 as the average has no
-/// meaning.  When adding the second sample, the average has some meaning, but
-/// since it only has one sample in it, the gain should be low. In the next
-/// round however, the gain may be larger. This increase is repeated until
-/// inverted gain is reached.  This way, even early samples have a reasonable
-/// impact on the average, which is important in a torrent app.
-///
-/// Ported from libtorrent: https://blog.libtorrent.org/2014/09/running-averages/
+// This is an exponential moving average accumulator.
+//
+// An algorithm is used that addresss the initial bias that occurs when all
+// values are initialized with zero or with the first sample (which would bias
+// the average toward the first value). This is achieved by initially giving
+// a low gain for the average and slowly increasing it until the inverted gain
+// is reached.
+//
+// For example, the first sample should have a gain of 1 as the average has no
+// meaning.  When adding the second sample, the average has some meaning, but
+// since it only has one sample in it, the gain should be low. In the next
+// round however, the gain may be larger. This increase is repeated until
+// inverted gain is reached.  This way, even early samples have a reasonable
+// impact on the average, which is important in a torrent app.
+//
+// Ported from libtorrent: https://blog.libtorrent.org/2014/09/running-averages/
 #[derive(Debug)]
 pub struct SlidingAvg {
     /// The current running average, effectively the mean.

@@ -188,7 +188,7 @@ impl<'a> Frontend<'a> {
     // adds a torrent using the UI.
     async fn new_torrent(&mut self, magnet: &str) {
         let mut torrent = Torrent::new(self.disk_tx.clone(), self.ctx.fr_tx.clone(), magnet);
-        let info_hash = torrent.ctx.info_hash.clone();
+        let info_hash = torrent.ctx.info_hash;
 
         // prevent the user from adding a duplicate torrent,
         // todo: handle this on the UI with a message.

@@ -621,7 +621,7 @@ impl From<&str> for TorrentStatus {
             "Downloading metainfo" => DownloadingMetainfo,
             "Downloading" => Downloading,
             "Seeding" => Seeding,
-            "Error" | _ => Error,
+            _ => Error,
         }
     }
 }

@@ -1,3 +1,5 @@
+#![allow(missing_docs)]
+#![allow(rustdoc::missing_doc_code_examples)]
 use std::path::Path;
 
 use tokio::{

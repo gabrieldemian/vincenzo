@@ -1,3 +1,5 @@
+#![allow(missing_docs)]
+#![allow(rustdoc::missing_doc_code_examples)]
 pub mod avg;
 pub mod bitfield;
 pub mod cli;

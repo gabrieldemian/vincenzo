@@ -397,7 +397,7 @@ impl Disk {
 
         // if this is the last block of a piece,
         // validate the hash
-        if begin + len as u32 >= info.piece_length {
+        if begin + len >= info.piece_length {
             // self.validate_piece(info_hash, index).await?;
 
             torrent_tx.send(TorrentMsg::DownloadedPiece(index)).await?;

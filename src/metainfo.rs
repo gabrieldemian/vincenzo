@@ -217,13 +217,7 @@ impl File {
             }
         }
         let mut infos = VecDeque::new();
-        partition(
-            self,
-            piece_length,
-            &mut infos,
-            prev_block_file,
-            self.length,
-        )
+        partition(self, piece_length, &mut infos, prev_block_file, self.length)
     }
 }
 

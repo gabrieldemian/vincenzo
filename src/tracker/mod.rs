@@ -140,7 +140,7 @@ impl Tracker {
             });
         }
 
-        while let Some(tracker) = rx.recv().await {
+        if let Some(tracker) = rx.recv().await {
             debug!("Connected and announced to tracker {tracker:#?}");
             return Ok(tracker);
         }
@@ -282,7 +282,7 @@ impl Tracker {
     ) -> Result<UdpSocket, Error> {
         let socket = UdpSocket::bind("0.0.0.0:0").await;
         if let Ok(socket) = socket {
-            if let Ok(_) = socket.connect(addr).await {
+            if socket.connect(addr).await.is_ok() {
                 return Ok(socket);
             }
             return Err(Error::TrackerSocketConnect);
@@ -413,4 +413,3 @@ impl Tracker {
         }
     }
 }
-
