@@ -4,7 +4,7 @@ use tokio::{fs::OpenOptions, io::AsyncWriteExt};
 
 use clap::Parser;
 use directories::{ProjectDirs, UserDirs};
-use tokio::{fs::create_dir, io::AsyncReadExt, runtime::Runtime, spawn, sync::mpsc};
+use tokio::{fs::create_dir_all, io::AsyncReadExt, runtime::Runtime, spawn, sync::mpsc};
 use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt;
 use vincenzo::{
     cli::Args,
@@ -41,7 +41,7 @@ async fn main() -> Result<(), Error> {
     let mut config_path = dotfile.config_dir().to_path_buf();
 
     if !config_path.exists() {
-        create_dir(&config_path).await.unwrap();
+        create_dir_all(&config_path).await.unwrap();
     }
 
     config_path.push("config.toml");
