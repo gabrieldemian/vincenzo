@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crossterm::event::KeyCode;
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 use hashbrown::HashMap;
 use ratatui::{
     layout::Constraint,
@@ -62,14 +62,10 @@ impl<'a> TorrentList<'a> {
         }
     }
 
-    pub async fn keybindings<T: Backend>(&mut self, k: KeyCode, terminal: &mut Terminal<T>) {
+    pub async fn keybindings<T: Backend>(&mut self, k_event: KeyEvent, terminal: &mut Terminal<T>) {
+        let k = k_event.code;
         match k {
-            KeyCode::Char('q') | KeyCode::Esc => {
-                self.reset_cursor();
-                self.input.clear();
-                self.quit(terminal).await;
-            }
-            k if self.show_popup => match k {
+            k if self.show_popup && k_event.kind == KeyEventKind::Press => match k {
                 KeyCode::Enter => self.submit_magnet_link(terminal).await,
                 KeyCode::Char(to_insert) => {
                     self.enter_char(to_insert);
@@ -94,6 +90,11 @@ impl<'a> TorrentList<'a> {
                 }
                 _ => {}
             },
+            KeyCode::Char('q') | KeyCode::Esc => {
+                self.reset_cursor();
+                self.input.clear();
+                self.quit(terminal).await;
+            }
             k => match k {
                 KeyCode::Down | KeyCode::Char('j') => {
                     self.next();

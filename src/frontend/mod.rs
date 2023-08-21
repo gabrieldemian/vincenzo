@@ -137,7 +137,7 @@ impl<'a> Frontend<'a> {
                     match event {
                         Some(Ok(event)) => {
                             if let crossterm::event::Event::Key(k) = event {
-                                self.torrent_list.keybindings(k.code, &mut self.terminal).await;
+                                self.torrent_list.keybindings(k, &mut self.terminal).await;
                             }
                         }
                         _ => break
