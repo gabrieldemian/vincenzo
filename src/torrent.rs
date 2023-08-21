@@ -82,7 +82,7 @@ pub struct Torrent {
     /// and those pieces may come in different order,
     /// hence the HashMap (dictionary), and not a vec.
     /// After the dict is complete, it will be decoded into [`info`]
-    pub info_dict: BTreeMap<u32, Vec<u8>>,
+    pub info_pieces: BTreeMap<u32, Vec<u8>>,
     pub have_info: bool,
     /// How many bytes we have uploaded to other peers.
     pub uploaded: u64,
@@ -138,7 +138,7 @@ impl Torrent {
 
         let pieces = RwLock::new(Bitfield::default());
         let info = RwLock::new(Info::default().name(dn.clone()));
-        let info_dict = BTreeMap::new();
+        let info_pieces = BTreeMap::new();
         let tracker_ctx = Arc::new(TrackerCtx::default());
 
         let info_hash = get_info_hash(&xt);
@@ -163,7 +163,7 @@ impl Torrent {
             fr_tx,
             uploaded: 0,
             downloaded: 0,
-            info_dict,
+            info_pieces,
             tracker_ctx,
             tracker_tx: None,
             ctx,
@@ -422,9 +422,9 @@ impl Torrent {
                                 self.status = TorrentStatus::DownloadingMetainfo;
                             }
 
-                            self.info_dict.insert(index, bytes);
+                            self.info_pieces.insert(index, bytes);
 
-                            let info_len = self.info_dict.values().fold(0, |acc, b| {
+                            let info_len = self.info_pieces.values().fold(0, |acc, b| {
                                 acc + b.len()
                             });
 
@@ -432,7 +432,7 @@ impl Torrent {
 
                             if have_all_pieces {
                                 // info has a valid bencode format
-                                let info_bytes = self.info_dict.values().fold(Vec::new(), |mut acc, b| {
+                                let info_bytes = self.info_pieces.values().fold(Vec::new(), |mut acc, b| {
                                     acc.extend_from_slice(b);
                                     acc
                                 });
@@ -469,7 +469,7 @@ impl Torrent {
                             }
                         }
                         TorrentMsg::RequestInfoPiece(index, recipient) => {
-                            let bytes = self.info_dict.get(&index).cloned();
+                            let bytes = self.info_pieces.get(&index).cloned();
                             let _ = recipient.send(bytes);
                         }
                         TorrentMsg::IncrementDownloaded(n) => {

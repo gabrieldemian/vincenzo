@@ -165,6 +165,9 @@ impl<'a> TorrentList<'a> {
             if Some(i) != selected && selected > Some(0) {
                 items.remove(0);
             }
+            if Some(i) != selected && selected == Some(0) {
+                items.pop();
+            }
 
             rows.push(ListItem::new(items));
         }
@@ -187,7 +190,7 @@ impl<'a> TorrentList<'a> {
                         .style(self.style.highlight_fg)
                         .block(Block::default().borders(Borders::ALL).title("Add Torrent"));
 
-                    f.render_widget(Clear, area);
+                    // f.render_widget(Clear, area);
                     f.render_widget(input, area);
                     f.set_cursor(area.x + self.cursor_position as u16 + 1, area.y + 1);
                 } else {

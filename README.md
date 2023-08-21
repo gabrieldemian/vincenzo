@@ -1,16 +1,15 @@
 # Vincenzo
-!⚠️ Work in progress. !⚠️ <br />
-Vincenzo is a BitTorrent client with vim-like keybindings and a terminal based UI. Torrents can be downloaded using the CLI or UI. Still a work in progress, however, it is already usable.
+Vincenzo is a BitTorrent client with vim-like keybindings and a terminal based UI. Torrents can be downloaded using the CLI or UI.
 
 ![image](tape.gif)
 
 ## Features
 - Terminal based UI <br />
-- Vim-like keybindings
+- Vim-like keybindings <br />
 - Multi-platform <br />
 - Magnet links support <br />
 - UDP connections with trackers, TCP connections with peers <br />
-- Multithreaded. One OS thread specific for I/O. <br />
+- Multithreaded. One OS thread specific for I/O <br />
 
 ## How to use
 An example on how to download a torrent using the CLI. Please use the "--help" flag to read the descriptions of the CLI flags.
@@ -24,6 +23,13 @@ Or
 ```bash
 vcz -d "/tmp/btr" -m "<insert magnet link here>" -q
 ```
+
+## Configuration File
+During the first startup, a default configuration file is created.
+The configuration file is located at the default config folder of your OS. At the moment, the only configuration option is: `download_dir`
+Linux:   ~/.config/vincenzo/config.toml
+Windows: C:\Users\Alice\AppData\Roaming\Vincenzo\config.toml
+macOS:   /Users/Alice/Library/Application Support/Vincenzo/config.toml
 
 ## Supported BEPs
 - [BEP 0003](http://www.bittorrent.org/beps/bep_0003.html) - The BitTorrent Protocol Specification

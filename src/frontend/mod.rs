@@ -190,30 +190,34 @@ impl<'a> Frontend<'a> {
         let mut torrent = Torrent::new(self.disk_tx.clone(), self.ctx.fr_tx.clone(), magnet);
         let info_hash = torrent.ctx.info_hash.clone();
 
-        self.torrent_txs.insert(info_hash, torrent.ctx.tx.clone());
+        // prevent the user from adding a duplicate torrent,
+        // todo: handle this on the UI with a message.
+        if self.torrent_txs.get(&info_hash).is_none() {
+            self.torrent_txs.insert(info_hash, torrent.ctx.tx.clone());
 
-        let torrent_info_l = TorrentInfo {
-            name: torrent.ctx.info.read().await.name.clone(),
-            ..Default::default()
-        };
+            let torrent_info_l = TorrentInfo {
+                name: torrent.ctx.info.read().await.name.clone(),
+                ..Default::default()
+            };
 
-        self.torrent_list
-            .torrent_infos
-            .insert(info_hash, torrent_info_l);
+            self.torrent_list
+                .torrent_infos
+                .insert(info_hash, torrent_info_l);
 
-        let args = Args::parse();
-        let mut listen = self.config.listen;
+            let args = Args::parse();
+            let mut listen = self.config.listen;
 
-        if args.listen.is_some() {
-            listen = args.listen;
+            if args.listen.is_some() {
+                listen = args.listen;
+            }
+
+            spawn(async move {
+                torrent.start_and_run(listen).await.unwrap();
+                torrent.disk_tx.send(DiskMsg::Quit).await.unwrap();
+            });
+
+            self.torrent_list.draw(&mut self.terminal).await;
         }
-
-        spawn(async move {
-            torrent.start_and_run(listen).await.unwrap();
-            torrent.disk_tx.send(DiskMsg::Quit).await.unwrap();
-        });
-
-        self.torrent_list.draw(&mut self.terminal).await;
     }
 
     async fn stop(&mut self) {
@@ -226,5 +230,6 @@ impl<'a> Frontend<'a> {
                 let _ = tx.send(TorrentMsg::Quit).await;
             });
         }
+        let _ = self.disk_tx.send(DiskMsg::Quit).await;
     }
 }

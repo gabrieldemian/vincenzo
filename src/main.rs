@@ -37,11 +37,13 @@ async fn main() -> Result<(), Error> {
         .init();
 
     // load the config file
-    let dotfile = ProjectDirs::from("", "", "vincenzo").ok_or(Error::HomeInvalid)?;
+    let dotfile = ProjectDirs::from("", "", "Vincenzo").ok_or(Error::HomeInvalid)?;
     let mut config_path = dotfile.config_dir().to_path_buf();
 
     if !config_path.exists() {
-        create_dir_all(&config_path).await.unwrap();
+        create_dir_all(&config_path)
+            .await
+            .map_err(|_| Error::FolderOpenError(config_path.to_str().unwrap().to_owned()))?;
     }
 
     config_path.push("config.toml");
