@@ -9,7 +9,6 @@ use hashbrown::{HashMap, HashSet};
 use tokio::{
     fs::{create_dir_all, File, OpenOptions},
     io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
-    spawn,
     sync::{mpsc::Receiver, oneshot::Sender},
 };
 use tracing::info;
@@ -383,12 +382,10 @@ impl Disk {
         // and only increment the downloaded count after writing,
         // because otherwise the UI could say the torrent is complete
         // while not every byte is written to disk.
-        spawn(async move {
-            fs_file.write_all(&block.block).await.unwrap();
-            let _ = torrent_tx
-                .send(TorrentMsg::IncrementDownloaded(len as u64))
-                .await;
-        });
+        fs_file.write_all(&block.block).await.unwrap();
+        let _ = torrent_tx
+            .send(TorrentMsg::IncrementDownloaded(len as u64))
+            .await;
 
         let mut pieces = torrent_ctx.pieces.write().await;
         let torrent_tx = &torrent_ctx.tx;
@@ -873,7 +870,7 @@ mod tests {
         let block_info = BlockInfo {
             index: 0,
             begin: 0,
-            len: 12,
+            len: block.block.len() as u32,
         };
         let result = disk.read_block(block_info, info_hash).await;
         assert_eq!(result.unwrap(), block.block);
