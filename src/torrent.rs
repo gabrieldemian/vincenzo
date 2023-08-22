@@ -35,12 +35,6 @@ use tracing::{info, warn};
 
 #[derive(Debug)]
 pub enum TorrentMsg {
-    /// Message to update the torrent's Bitfield,
-    /// Torrent will start with a blank bitfield
-    /// because it cannot know it from a magnet link
-    /// once a peer send the first bitfield message,
-    /// we will update it.
-    UpdateBitfield(usize),
     /// Message when one of the peers have downloaded
     /// an entire piece. We send Have messages to peers
     /// that don't have it and update the UI with stats.
@@ -49,9 +43,16 @@ pub enum TorrentMsg {
     DownloadComplete,
     /// When in endgame mode, the first peer that receives this info,
     /// sends this message to send Cancel's to all other peers.
-    SendCancel {
+    SendCancelBlock {
         from: [u8; 20],
         block_info: BlockInfo,
+    },
+    /// When a peer downloads a piece of a metadata,
+    /// send cancels to all other peers so that we dont receive
+    /// pieces that we already have
+    SendCancelMetadata {
+        from: [u8; 20],
+        index: u32,
     },
     StartEndgame([u8; 20], Vec<BlockInfo>),
     /// When a peer downloads an info piece,
@@ -123,6 +124,7 @@ pub struct Stats {
 }
 
 impl Torrent {
+    #[tracing::instrument(skip(disk_tx, fr_tx), name = "torrent::new")]
     pub fn new(disk_tx: mpsc::Sender<DiskMsg>, fr_tx: mpsc::Sender<FrMsg>, magnet: &str) -> Self {
         let magnet = get_magnet(magnet).unwrap_or_else(|_| {
             eprintln!("The magnet link is invalid, try another one");
@@ -349,19 +351,6 @@ impl Torrent {
             select! {
                 Some(msg) = self.rx.recv() => {
                     match msg {
-                        TorrentMsg::UpdateBitfield(len) => {
-                            // create an empty bitfield with the same
-                            // len as the bitfield from the peer
-                            let ctx = Arc::clone(&self.ctx);
-                            let mut pieces = ctx.pieces.write().await;
-
-                            // only create the bitfield if we don't have one
-                            // pieces.len() will start at 0
-                            if pieces.len() < len {
-                                let inner = vec![0_u8; len];
-                                *pieces = Bitfield::from(inner);
-                            }
-                        }
                         TorrentMsg::DownloadedPiece(piece) => {
                             // send Have messages to peers that dont have our pieces
                             for peer in self.peer_ctxs.values() {
@@ -391,6 +380,7 @@ impl Torrent {
 
                             if let Ok(Ok(r)) = orx.await {
                                 info!("announced completion with success {r:#?}");
+                                self.stats = r.into();
                             }
 
                             // tell all peers that we are not interested,
@@ -406,10 +396,16 @@ impl Torrent {
                         }
                         // The peer "from" was the first one to receive the "info".
                         // Send Cancel messages to everyone else.
-                        TorrentMsg::SendCancel { from, block_info } => {
+                        TorrentMsg::SendCancelBlock { from, block_info } => {
                             for (k, peer) in self.peer_ctxs.iter() {
                                 if *k == from { continue };
-                                let _ = peer.tx.send(PeerMsg::Cancel(block_info.clone())).await;
+                                let _ = peer.tx.send(PeerMsg::CancelBlock(block_info.clone())).await;
+                            }
+                        }
+                        TorrentMsg::SendCancelMetadata { from, index } => {
+                            for (k, peer) in self.peer_ctxs.iter() {
+                                if *k == from { continue };
+                                let _ = peer.tx.send(PeerMsg::CancelMetadata(index)).await;
                             }
                         }
                         TorrentMsg::StartEndgame(_peer_id, block_infos) => {
@@ -450,8 +446,12 @@ impl Torrent {
                                 let hash = hex::encode(hash);
 
                                 if hash.to_uppercase() == m_info.to_uppercase() {
-                                    self.status = TorrentStatus::Downloading;
                                     info!("the hash of the downloaded info matches the hash of the magnet link");
+
+                                    // with the info fully downloaded, we now know the pieces len,
+                                    // this will update the bitfield of the torrent
+                                    let mut pieces = self.ctx.pieces.write().await;
+                                    *pieces = Bitfield::from(vec![0_u8; info.pieces() as usize * 8]);
 
                                     self.size = info.get_size();
                                     self.have_info = true;
@@ -460,6 +460,8 @@ impl Torrent {
                                     info!("new info files {:?}", info.files);
                                     *info_l = info;
                                     drop(info_l);
+
+                                    self.status = TorrentStatus::Downloading;
 
                                     self.disk_tx.send(DiskMsg::NewTorrent(self.ctx.clone())).await?;
                                 } else {

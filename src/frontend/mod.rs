@@ -79,10 +79,10 @@ pub struct TorrentInfo {
 pub struct Frontend<'a> {
     pub style: AppStyle,
     pub ctx: Arc<FrontendCtx>,
+    pub torrent_list: TorrentList<'a>,
     torrent_txs: HashMap<[u8; 20], mpsc::Sender<TorrentMsg>>,
     disk_tx: mpsc::Sender<DiskMsg>,
     terminal: Terminal<CrosstermBackend<Stdout>>,
-    torrent_list: TorrentList<'a>,
     config: Config,
 }
 
@@ -203,6 +203,10 @@ impl<'a> Frontend<'a> {
             self.torrent_list
                 .torrent_infos
                 .insert(info_hash, torrent_info_l);
+
+            if self.torrent_list.state.selected().is_none() {
+                self.torrent_list.state.select(Some(0));
+            }
 
             let args = Args::parse();
             let mut listen = self.config.listen;

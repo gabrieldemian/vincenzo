@@ -91,10 +91,7 @@ pub struct Session {
     /// ```
     ///
     /// Only set once we start downloading.
-    // TODO: consider changing this to just usize starting at 0 and reset to
-    // 0 once download finishes so that it's easier to deal with it (not having
-    // to match on it all the time)
-    pub target_request_queue_len: Option<u16>,
+    pub target_request_queue_len: u16,
 
     /// The last time some requests were sent to the peer.
     pub last_outgoing_request_time: Option<Instant>,
@@ -147,8 +144,8 @@ impl Session {
     pub fn register_request_timeout(&mut self) {
         // peer has timed out, only allow a single outstanding request
         // from now until peer hasn't timed out
-        self.target_request_queue_len = Some(1);
-        self.timed_out_request_count += 1;
+        // self.target_request_queue_len -= 1;
+        // self.timed_out_request_count -= 1;
         self.request_timed_out = true;
         self.in_slow_start = false;
     }
@@ -164,7 +161,7 @@ impl Session {
         self.in_slow_start = reqq.is_none();
         // reset the target request queue size, which will be adjusted as the
         // download progresses
-        self.target_request_queue_len = Some(reqq.unwrap_or(Self::START_REQUEST_QUEUE_LEN));
+        self.target_request_queue_len = reqq.unwrap_or(Self::START_REQUEST_QUEUE_LEN);
     }
 
     /// Updates various statistics around a block download.
@@ -200,9 +197,7 @@ impl Session {
         // if we're in slow-start mode, we need to increase the target queue
         // size every time a block is received
         if self.in_slow_start {
-            if let Some(target_request_queue_len) = &mut self.target_request_queue_len {
-                *target_request_queue_len += 1;
-            }
+            self.target_request_queue_len += 1;
         }
     }
 
@@ -244,7 +239,7 @@ impl Session {
         // this only makes sense if we're not choked
         if !self.state.am_choking
             && self.in_slow_start
-            && self.target_request_queue_len.is_some()
+            && self.target_request_queue_len > 0
             && self.counters.payload.down.round() > 0
             && self.counters.payload.down.round() + Self::SLOW_START_ERROR_MARGIN
                 < self.counters.payload.down.avg()
@@ -256,33 +251,31 @@ impl Session {
     /// Adjusts the target request queue size based on the current download
     /// statistics.
     fn update_target_request_queue_len(&mut self) {
-        if let Some(target_request_queue_len) = &mut self.target_request_queue_len {
-            let prev_queue_len = *target_request_queue_len;
+        let prev_queue_len = self.target_request_queue_len;
 
-            // this is only applicable if we're not in slow start, as in slow
-            // start mode the request queue is increased with each incoming
-            // block
-            if !self.in_slow_start {
-                let download_rate = self.counters.payload.down.avg();
-                // guard against integer truncation and round up as
-                // overestimating the link capacity is cheaper than
-                // underestimating it
-                *target_request_queue_len =
-                    ((download_rate + (BLOCK_LEN - 1) as u64) / BLOCK_LEN as u64) as u16;
-            }
+        // this is only applicable if we're not in slow start, as in slow
+        // start mode the request queue is increased with each incoming
+        // block
+        if !self.in_slow_start {
+            let download_rate = self.counters.payload.down.avg();
+            // guard against integer truncation and round up as
+            // overestimating the link capacity is cheaper than
+            // underestimating it
+            self.target_request_queue_len =
+                ((download_rate + (BLOCK_LEN - 1) as u64) / BLOCK_LEN as u64) as u16;
+        }
 
-            // make sure the target doesn't go below 1
-            // TODO: make this configurable and also enforce an upper bound
-            if *target_request_queue_len < 1 {
-                *target_request_queue_len = 1;
-            }
+        // make sure the target doesn't go below 1
+        // TODO: make this configurable and also enforce an upper bound
+        if self.target_request_queue_len < 1 {
+            self.target_request_queue_len = 1;
+        }
 
-            if prev_queue_len != *target_request_queue_len {
-                info!(
-                    "Request queue changed from {} to {}",
-                    prev_queue_len, *target_request_queue_len
-                );
-            }
+        if prev_queue_len != self.target_request_queue_len {
+            info!(
+                "Request queue changed from {} to {}",
+                prev_queue_len, self.target_request_queue_len
+            );
         }
     }
 }
@@ -300,7 +293,7 @@ mod tests {
 
         s.prepare_for_download(None);
 
-        assert!(s.target_request_queue_len > Some(0));
+        assert!(s.target_request_queue_len > 0);
         assert!(s.in_slow_start);
     }
 
@@ -311,7 +304,7 @@ mod tests {
         s.state.am_interested = true;
         s.state.am_choking = false;
         s.in_slow_start = true;
-        s.target_request_queue_len = Some(1);
+        s.target_request_queue_len = 1;
 
         // rate increasing
         s.counters.payload.down += 10 * BLOCK_LEN as u64;
@@ -350,7 +343,7 @@ mod tests {
         s.state.am_interested = true;
         s.state.am_choking = false;
         s.in_slow_start = true;
-        s.target_request_queue_len = Some(1);
+        s.target_request_queue_len = 1;
 
         // rate increasing
         s.counters.payload.down += 2 * BLOCK_LEN as u64;
@@ -360,7 +353,7 @@ mod tests {
 
         // this should be a noop
         s.update_target_request_queue_len();
-        assert_eq!(s.target_request_queue_len, Some(1));
+        assert_eq!(s.target_request_queue_len, 1);
     }
 
     #[test]
@@ -370,7 +363,7 @@ mod tests {
         s.state.am_interested = true;
         s.state.am_choking = false;
         s.in_slow_start = false;
-        s.target_request_queue_len = Some(1);
+        s.target_request_queue_len = 1;
 
         // rate increasing (make it more than a multiple of the block
         // length to be able to test against integer truncation)
@@ -384,7 +377,7 @@ mod tests {
         // queue size based on bandwidth-delay product:
         // (33768 + (16384 - 1)) / 16384 = 3.06 ~ 3
         s.update_target_request_queue_len();
-        assert_eq!(s.target_request_queue_len, Some(3));
+        assert_eq!(s.target_request_queue_len, 3);
     }
 
     #[test]
@@ -394,12 +387,12 @@ mod tests {
         s.state.am_interested = true;
         s.state.am_choking = false;
         s.in_slow_start = true;
-        s.target_request_queue_len = Some(1);
+        s.target_request_queue_len = 1;
 
         s.update_download_stats(BLOCK_LEN);
 
         // request queue length should be increased by one in slow start
-        assert_eq!(s.target_request_queue_len, Some(2));
+        assert_eq!(s.target_request_queue_len, 2);
         // incoming request time should be set
         assert!(s.last_incoming_block_time.is_some());
         // download stat should be increased
