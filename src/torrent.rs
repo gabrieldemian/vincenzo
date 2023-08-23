@@ -65,6 +65,7 @@ pub enum TorrentMsg {
     RequestInfoPiece(u32, oneshot::Sender<Option<Vec<u8>>>),
     IncrementDownloaded(u64),
     IncrementUploaded(u64),
+    TogglePause,
     /// When torrent is being gracefully shutdown
     Quit,
 }
@@ -479,15 +480,37 @@ impl Torrent {
 
                             // check if the torrent download is complete
                             let is_download_complete = self.downloaded >= self.size;
-                            info!("yy__downloaded {:?}", self.downloaded);
+                            info!("IncrementDownloaded {:?}", self.downloaded);
 
                             if is_download_complete {
-                                info!("download completed!! wont request more blocks");
+                                info!("download completed, sending DownloadComplete");
                                 self.ctx.tx.send(TorrentMsg::DownloadComplete).await?;
                             }
                         }
                         TorrentMsg::IncrementUploaded(n) => {
                             self.uploaded += n;
+                        }
+                        TorrentMsg::TogglePause => {
+                            // can only pause if the torrent is not connecting, or not erroring
+                            if self.status == TorrentStatus::Downloading || self.status == TorrentStatus::Seeding || self.status == TorrentStatus::Paused {
+                                info!("received pause on torrent {:?}", self.status);
+                                if self.status == TorrentStatus::Paused {
+                                    if self.downloaded >= self.size {
+                                        self.status = TorrentStatus::Seeding;
+                                    } else {
+                                        self.status = TorrentStatus::Downloading;
+                                    }
+                                } else {
+                                    self.status = TorrentStatus::Paused;
+                                }
+                                for (_, peer) in &self.peer_ctxs {
+                                    if self.status == TorrentStatus::Paused {
+                                        let _ = peer.tx.send(PeerMsg::Pause).await;
+                                    } else {
+                                        let _ = peer.tx.send(PeerMsg::Resume).await;
+                                    }
+                                }
+                            }
                         }
                         TorrentMsg::Quit => {
                             info!("torrent is quitting");
@@ -533,6 +556,7 @@ impl Torrent {
                         stats: self.stats.clone(),
                         status: self.status.clone(),
                         download_rate: self.download_rate,
+                        info_hash: self.ctx.info_hash,
                     };
 
                     self.last_second_downloaded = self.downloaded;
@@ -586,6 +610,7 @@ pub enum TorrentStatus {
     DownloadingMetainfo,
     Downloading,
     Seeding,
+    Paused,
     Error,
 }
 
@@ -597,6 +622,7 @@ impl<'a> From<TorrentStatus> for &'a str {
             DownloadingMetainfo => "Downloading metainfo",
             Downloading => "Downloading",
             Seeding => "Seeding",
+            Paused => "Paused",
             Error => "Error",
         }
     }
@@ -610,6 +636,7 @@ impl From<TorrentStatus> for String {
             DownloadingMetainfo => "Downloading metainfo".to_owned(),
             Downloading => "Downloading".to_owned(),
             Seeding => "Seeding".to_owned(),
+            Paused => "Paused".to_owned(),
             Error => "Error".to_owned(),
         }
     }
@@ -623,6 +650,7 @@ impl From<&str> for TorrentStatus {
             "Downloading metainfo" => DownloadingMetainfo,
             "Downloading" => Downloading,
             "Seeding" => Seeding,
+            "Paused" => Paused,
             _ => Error,
         }
     }

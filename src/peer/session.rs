@@ -43,6 +43,11 @@ pub struct State {
     pub peer_choking: bool,
     /// If peer is interested in us, they mean to download pieces that we have.
     pub peer_interested: bool,
+
+    // when the torrent is paused, those values will be set, so we can
+    // assign them again when the torrent is resumed.
+    // peer interested will be calculated by parsing the peers pieces
+    pub prev_peer_choking: bool,
 }
 
 impl Default for State {
@@ -55,6 +60,7 @@ impl Default for State {
             am_interested: false,
             peer_choking: true,
             peer_interested: false,
+            prev_peer_choking: true,
         }
     }
 }
@@ -136,8 +142,9 @@ impl Session {
     /// of past request round trip times.
     pub fn request_timeout(&self) -> Duration {
         // we allow up to four times the average deviation from the mean
-        let t = self.avg_request_rtt.mean() + 4 * self.avg_request_rtt.deviation();
-        t.max(Self::MIN_TIMEOUT)
+        // let t = self.avg_request_rtt.mean() + 4 * self.avg_request_rtt.deviation();
+        // t.max(Self::MIN_TIMEOUT)
+        Self::MIN_TIMEOUT
     }
 
     /// Updates state to reflect that peer was timed out.
@@ -145,7 +152,7 @@ impl Session {
         // peer has timed out, only allow a single outstanding request
         // from now until peer hasn't timed out
         // self.target_request_queue_len -= 1;
-        // self.timed_out_request_count -= 1;
+        self.timed_out_request_count += 1;
         self.request_timed_out = true;
         self.in_slow_start = false;
     }
@@ -214,7 +221,7 @@ impl Session {
     ///
     /// This should be called every second.
     pub fn slow_start_tick(&mut self) {
-        self.maybe_exit_slow_start();
+        // self.maybe_exit_slow_start();
 
         // NOTE: This has to be *after* `maybe_exit_slow_start` and *before*
         // `update_target_request_queue_len`, as the first relies on the round
@@ -222,13 +229,13 @@ impl Session {
         // concluded (having this round's download accounted for in the download
         // rate).
         // TODO: can we statically ensure this rather than rely on the comment?
-        // self.counters.reset();
+        self.counters.reset();
 
         // if we're still in the timeout, we don't want to increase
         // the target request queue size
-        if !self.request_timed_out {
-            self.update_target_request_queue_len();
-        }
+        // if !self.request_timed_out {
+        //     self.update_target_request_queue_len();
+        // }
     }
 
     /// Checks if we need to exit slow start.

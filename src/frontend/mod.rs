@@ -2,7 +2,7 @@ pub mod torrent_list;
 use clap::Parser;
 use futures::{FutureExt, StreamExt};
 use hashbrown::HashMap;
-use tracing::info;
+
 
 use std::{
     io::{self, Stdout},
@@ -28,6 +28,7 @@ use crate::{
     cli::Args,
     config::Config,
     disk::DiskMsg,
+    error::Error,
     torrent::{Stats, Torrent, TorrentMsg, TorrentStatus},
 };
 
@@ -38,6 +39,7 @@ pub struct AppStyle {
     pub highlight_fg: Style,
     pub success: Style,
     pub error: Style,
+    pub warning: Style,
 }
 
 impl Default for AppStyle {
@@ -54,15 +56,17 @@ impl AppStyle {
             highlight_fg: Style::default().fg(Color::LightBlue),
             success: Style::default().fg(Color::LightGreen),
             error: Style::default().fg(Color::Red),
+            warning: Style::default().fg(Color::Yellow),
         }
     }
 }
 
 #[derive(Debug, Clone)]
 pub enum FrMsg {
-    Quit,
-    Draw([u8; 20], TorrentInfo),
     NewTorrent(String),
+    Draw([u8; 20], TorrentInfo),
+    TogglePause([u8; 20]),
+    Quit,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -74,6 +78,7 @@ pub struct TorrentInfo {
     pub download_rate: u64,
     pub uploaded: u64,
     pub size: u64,
+    pub info_hash: [u8; 20],
 }
 
 pub struct Frontend<'a> {
@@ -112,7 +117,7 @@ impl<'a> Frontend<'a> {
     }
 
     /// Run the UI event loop
-    pub async fn run(&mut self, mut fr_rx: mpsc::Receiver<FrMsg>) -> Result<(), std::io::Error> {
+    pub async fn run(&mut self, mut fr_rx: mpsc::Receiver<FrMsg>) -> Result<(), Error> {
         let mut reader = EventStream::new();
 
         // setup terminal
@@ -150,8 +155,6 @@ impl<'a> Frontend<'a> {
                             return Ok(());
                         },
                         FrMsg::Draw(info_hash, torrent_info) => {
-                            info!("draw {torrent_info:#?}");
-
                             self.torrent_list
                                 .torrent_infos
                                 .insert(info_hash, torrent_info);
@@ -160,6 +163,10 @@ impl<'a> Frontend<'a> {
                         },
                         FrMsg::NewTorrent(magnet) => {
                             self.new_torrent(&magnet).await;
+                        }
+                        FrMsg::TogglePause(id) => {
+                            let tx = self.torrent_txs.get(&id).ok_or(Error::TorrentDoesNotExist)?;
+                            tx.send(TorrentMsg::TogglePause).await?;
                         }
                     }
                 }
@@ -204,9 +211,9 @@ impl<'a> Frontend<'a> {
                 .torrent_infos
                 .insert(info_hash, torrent_info_l);
 
-            if self.torrent_list.state.selected().is_none() {
-                self.torrent_list.state.select(Some(0));
-            }
+            // if self.torrent_list.state.selected().is_none() {
+            //     self.torrent_list.state.select(Some(0));
+            // }
 
             let args = Args::parse();
             let mut listen = self.config.listen;

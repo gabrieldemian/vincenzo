@@ -10,6 +10,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
     Terminal,
 };
+use tracing::info;
 
 use crate::{to_human_readable, torrent::TorrentStatus};
 
@@ -20,6 +21,7 @@ pub struct TorrentList<'a> {
     pub style: AppStyle,
     pub state: ListState,
     pub torrent_infos: HashMap<[u8; 20], TorrentInfo>,
+    active_torrent: Option<[u8; 20]>,
     ctx: Arc<FrontendCtx>,
     show_popup: bool,
     input: String,
@@ -39,6 +41,8 @@ impl<'a> TorrentList<'a> {
             " move down ".into(),
             Span::styled("t".to_string(), style.highlight_fg),
             " add torrent ".into(),
+            Span::styled("p".to_string(), style.highlight_fg),
+            " toggle pause/resume ".into(),
             Span::styled("q".to_string(), style.highlight_fg),
             " quit".into(),
         ]
@@ -51,6 +55,7 @@ impl<'a> TorrentList<'a> {
             .block(Block::default().borders(Borders::ALL).title("Keybindings"));
 
         Self {
+            active_torrent: None,
             style,
             footer,
             cursor_position: 0,
@@ -108,6 +113,17 @@ impl<'a> TorrentList<'a> {
                     self.show_popup = true;
                     self.draw(terminal).await;
                 }
+                KeyCode::Char('p') => {
+                    info!("sending pause with id {:?}", self.active_torrent);
+                    if let Some(active_torrent) = self.active_torrent {
+                        let _ = self
+                            .ctx
+                            .fr_tx
+                            .send(FrMsg::TogglePause(active_torrent))
+                            .await;
+                        self.draw(terminal).await;
+                    }
+                }
                 _ => {}
             },
         }
@@ -126,6 +142,7 @@ impl<'a> TorrentList<'a> {
             let status_style = match ctx.status {
                 TorrentStatus::Seeding => self.style.success,
                 TorrentStatus::Error => self.style.error,
+                TorrentStatus::Paused => self.style.warning,
                 _ => self.style.highlight_fg,
             };
 
@@ -162,11 +179,12 @@ impl<'a> TorrentList<'a> {
                 line_bottom,
             ];
 
+            if Some(i) == selected {
+                self.active_torrent = Some(ctx.info_hash);
+            }
+
             if Some(i) != selected && selected > Some(0) {
                 items.remove(0);
-            }
-            if Some(i) != selected && selected == Some(0) {
-                items.pop();
             }
 
             rows.push(ListItem::new(items));

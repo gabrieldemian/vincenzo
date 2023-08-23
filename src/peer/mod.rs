@@ -5,7 +5,7 @@ use futures::{SinkExt, StreamExt};
 use hashbrown::HashSet;
 use std::{collections::VecDeque, net::SocketAddr, sync::Arc, time::Duration};
 use tokio::{
-    select, spawn,
+    select,
     sync::{
         mpsc::{self, Receiver, Sender},
         oneshot, RwLock,
@@ -63,6 +63,8 @@ pub enum PeerMsg {
     ReRequest(BlockInfo),
     /// Sent when the torrent has downloaded the entire info
     HaveInfo,
+    Pause,
+    Resume,
     /// When the program is being gracefuly shutdown, we need to kill the tokio green thread
     /// of the peer.
     Quit,
@@ -384,8 +386,8 @@ impl Peer {
                             info!("len: {:?}", block.block.len());
                             info!("--");
 
-                            self.handle_piece_msg(block).await?;
                             if self.can_request() {
+                                self.handle_piece_msg(block).await?;
                                 self.request_block_infos(&mut sink).await?;
                             }
 
@@ -540,16 +542,14 @@ impl Peer {
                             if self.outgoing_requests.get(&block_info).is_some() && self.can_request() {
                                 info!("{} rerequesting block_info due to timeout {block_info:?}", self.addr);
 
-                                sink.send(Message::Request(block_info.clone())).await?;
+                                self.session.register_request_timeout();
 
-                                let timeout = self.session.request_timeout();
-                                let tx = self.ctx.tx.clone();
-
-                                spawn(async move {
-                                    info!("rerequest timeout is {timeout:?}");
-                                    tokio::time::sleep(timeout).await;
-                                    let _ = tx.send(PeerMsg::ReRequest(block_info)).await;
-                                });
+                                if self.session.timed_out_request_count >= 3 {
+                                    // only free timed out blocks?
+                                    self.free_pending_block(block_info).await;
+                                } else {
+                                    sink.send(Message::Request(block_info.clone())).await?;
+                                }
                             }
                         }
                         PeerMsg::HavePiece(piece) => {
@@ -571,24 +571,75 @@ impl Peer {
                         }
                         PeerMsg::RequestBlockInfo(block_info) => {
                             info!("{:?} RequestBlockInfo {block_info:#?}", self.addr);
+
                             if self.outgoing_requests.len() < self.session.target_request_queue_len as usize && self.can_request() {
-                                self.outgoing_requests.insert(block_info);
+                                self.outgoing_requests.insert(block_info.clone());
                                 self.request_block_infos(&mut sink).await?;
                             }
                         }
                         PeerMsg::RequestBlockInfos(block_infos) => {
                             info!("{:?} RequestBlockInfos len {}", self.addr, block_infos.len());
+
                             let max = self.session.target_request_queue_len as usize - self.outgoing_requests.len();
-                            for info in block_infos.into_iter().take(max) {
-                                sink.send(Message::Request(info)).await?;
+
+                            if self.can_request() {
+                                self.session.last_outgoing_request_time = Some(std::time::Instant::now());
+
+                                for block_info in block_infos.into_iter().take(max) {
+                                    self.outgoing_requests.insert(block_info.clone());
+                                    sink.send(Message::Request(block_info.clone())).await?;
+                                }
                             }
                         }
                         PeerMsg::NotInterested => {
                             self.session.state.am_interested = false;
                             sink.send(Message::NotInterested).await?;
                         }
+                        PeerMsg::Pause => {
+                            self.session.state.prev_peer_choking = self.session.state.peer_choking;
+
+                            if self.session.state.am_interested {
+                                self.session.state.am_interested = false;
+                                let _ = sink.send(Message::NotInterested).await;
+                            }
+
+                            if !self.session.state.peer_choking {
+                                self.session.state.peer_choking = true;
+                                let _ = sink.send(Message::Choke).await;
+                            }
+
+                            for block_info in &self.outgoing_requests {
+                                sink.send(Message::Cancel(block_info.clone())).await?;
+                            }
+
+                            self.free_pending_blocks().await;
+                        }
+                        PeerMsg::Resume => {
+                            self.session.state.peer_choking = self.session.state.prev_peer_choking;
+
+                            if !self.session.state.peer_choking {
+                                sink.send(Message::Unchoke).await?;
+                            }
+
+                            let p = self.ctx.pieces.read().await.clone();
+                            for x in p {
+                                if x.bit == 0 {
+                                    info!("{:?} we are interested due to Bitfield", self.addr);
+
+                                    self.session.state.am_interested = true;
+                                    sink.send(Message::Interested).await?;
+
+                                    if self.can_request() {
+                                        self.request_block_infos(&mut sink).await?;
+                                    }
+
+                                    break;
+                                }
+                            }
+                        }
                         PeerMsg::CancelBlock(block_info) => {
                             info!("{:?} sending Cancel", self.addr);
+                            self.outgoing_requests.remove(&block_info);
                             sink.send(Message::Cancel(block_info)).await?;
                         }
                         PeerMsg::CancelMetadata(index) => {
@@ -629,7 +680,7 @@ impl Peer {
         };
 
         // remove pending block request
-        self.outgoing_requests.remove(&block_info);
+        let _existed = self.outgoing_requests.remove(&block_info);
 
         // if in endgame, send cancels to all other peers
         if self.session.in_endgame {
@@ -666,23 +717,23 @@ impl Peer {
         T: SinkExt<Message> + Sized + std::marker::Unpin,
     {
         // request blocks if we can
-        if self.can_request() {
-            self.request_block_infos(sink).await?;
-        }
+        // if self.can_request() {
+        //     self.request_block_infos(sink).await?;
+        // }
+
         // resent requests if we have pending requests and more time has elapsed
         // since the last request than the current timeout value
         if !self.outgoing_requests.is_empty() {
             self.check_request_timeout(sink).await?;
         }
 
-        if self.extension.reqq.is_none() {
-            self.session.slow_start_tick();
-        }
+        self.session.slow_start_tick();
 
         Ok(())
     }
+
     /// Times out the peer if it hasn't sent a request in too long.
-    async fn check_request_timeout<T>(&mut self, _sink: &mut T) -> Result<(), Error>
+    async fn check_request_timeout<T>(&mut self, sink: &mut T) -> Result<(), Error>
     where
         T: SinkExt<Message> + Sized + std::marker::Unpin,
     {
@@ -717,28 +768,47 @@ impl Peer {
                 warn!("inflight blocks {}", self.outgoing_requests.len());
                 warn!("can request {}", self.session.target_request_queue_len);
 
-                // note: im trying to spawn threads and rerequest individual block_infos,
-                // but, if this approach doesnt work, I should move the free_pending_blocks
-                // outside of this if.
-                // self.free_pending_blocks().await;
-                // self.session.register_request_timeout();
-                // if self.can_request() {
-                //     self.request_block_infos(sink).await?;
-                // }
+                // todo: only free blocks that timed out?
+                self.free_pending_blocks().await;
+                self.session.register_request_timeout();
+                if self.can_request() {
+                    self.request_block_infos(sink).await?;
+                }
             }
         }
 
         Ok(())
     }
+
+    pub async fn free_pending_block(&mut self, block_info: BlockInfo) {
+        info!(
+            "{:?} freeing {:?} block for download",
+            self.addr, block_info
+        );
+
+        self.session.timed_out_request_count = 0;
+        self.session.request_timed_out = false;
+
+        let _ = self
+            .disk_tx
+            .send(DiskMsg::ReturnBlockInfos(
+                self.torrent_ctx.info_hash,
+                VecDeque::from(vec![block_info]),
+            ))
+            .await;
+    }
+
     /// Marks requested blocks as free in their respective downlaods so that
     /// other peer sessions may download them.
     pub async fn free_pending_blocks(&mut self) {
         let blocks: VecDeque<BlockInfo> = self.outgoing_requests.drain().collect();
+
         info!(
             "{:?} freeing {:?} blocks for download",
             self.addr,
             blocks.len()
         );
+
         // The piece may no longer be present if it was completed by
         // another peer in the meantime and torrent removed it from the
         // shared download store. This is fine, in this case we don't have
@@ -799,30 +869,30 @@ impl Peer {
 
             if r.is_empty() && !self.session.in_endgame && self.outgoing_requests.len() <= 20 {
                 // endgame is probably slowing down the download_rate for some reason?
-                // self.start_endgame().await;
+                self.start_endgame().await;
             }
 
             self.session.last_outgoing_request_time = Some(std::time::Instant::now());
 
             for block_info in r {
                 info!("{:?} requesting {block_info:#?}", self.addr);
+
                 self.outgoing_requests.insert(block_info.clone());
 
                 let _ = sink.send(Message::Request(block_info.clone())).await;
+
                 let req_id: u64 = MessageId::Request as u64;
 
+                let _timeout = self.session.request_timeout();
+                let _tx = self.ctx.tx.clone();
+
+                // spawn(async move {
+                //     info!("rerequest timeout is {timeout:?}");
+                //     tokio::time::sleep(timeout).await;
+                //     let _ = tx.send(PeerMsg::ReRequest(block_info)).await;
+                // });
+
                 self.session.counters.protocol.up += req_id;
-
-                // after the timeout limit has passed,
-                // we check if the block_info is still ongoing,
-                // if it is we request it again
-                let timeout = self.session.request_timeout();
-                let tx = self.ctx.tx.clone();
-
-                spawn(async move {
-                    tokio::time::sleep(timeout).await;
-                    let _ = tx.send(PeerMsg::ReRequest(block_info)).await;
-                });
             }
         }
 

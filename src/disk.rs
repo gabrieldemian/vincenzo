@@ -161,18 +161,14 @@ impl Disk {
         let mut infos: VecDeque<BlockInfo> = VecDeque::new();
         let mut idxs = VecDeque::new();
 
-        let available = self
-            .block_infos
-            .get(&info_hash)
-            .ok_or(Error::TorrentDoesNotExist)?
-            .len();
-
         let block_infos = self
             .block_infos
             .get_mut(&info_hash)
             .ok_or(Error::TorrentDoesNotExist)?;
 
-        info!("available blocks {}", block_infos.len());
+        let available = block_infos.len();
+
+        info!("disk: available blocks {available}");
 
         // prevent from requesting more blocks than what is available
         if available < qnt {
