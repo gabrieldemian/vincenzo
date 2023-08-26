@@ -11,7 +11,7 @@ use clap::Parser;
 use directories::{ProjectDirs, UserDirs};
 use tokio::{io::AsyncReadExt, runtime::Runtime, spawn, sync::mpsc};
 use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt;
-use vincenzo::{
+use vcz::{
     cli::Args,
     config::Config,
     disk::{Disk, DiskMsg},
