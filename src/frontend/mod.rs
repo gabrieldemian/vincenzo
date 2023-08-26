@@ -3,7 +3,6 @@ use clap::Parser;
 use futures::{FutureExt, StreamExt};
 use hashbrown::HashMap;
 
-
 use std::{
     io::{self, Stdout},
     sync::Arc,
@@ -210,10 +209,6 @@ impl<'a> Frontend<'a> {
             self.torrent_list
                 .torrent_infos
                 .insert(info_hash, torrent_info_l);
-
-            // if self.torrent_list.state.selected().is_none() {
-            //     self.torrent_list.state.select(Some(0));
-            // }
 
             let args = Args::parse();
             let mut listen = self.config.listen;

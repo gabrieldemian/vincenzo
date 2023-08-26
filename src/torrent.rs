@@ -132,6 +132,11 @@ impl Torrent {
             std::process::exit(exitcode::USAGE)
         });
 
+        if magnet.tr.is_empty() {
+            eprintln!("This magnet link does not have any addresses to announce. Currently, we do not support DHT, please used a different magnet link.");
+            std::process::exit(exitcode::DATAERR)
+        }
+
         let xt = magnet
             .xt
             .clone()

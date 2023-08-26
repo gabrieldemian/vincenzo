@@ -1,5 +1,4 @@
 #![allow(missing_docs)]
-#![allow(rustdoc::missing_doc_code_examples)]
 use std::{convert::TryInto, time::Duration};
 
 // This is an exponential moving average accumulator.

@@ -716,18 +716,13 @@ impl Peer {
     where
         T: SinkExt<Message> + Sized + std::marker::Unpin,
     {
-        // request blocks if we can
-        // if self.can_request() {
-        //     self.request_block_infos(sink).await?;
-        // }
-
-        // resent requests if we have pending requests and more time has elapsed
+        // resend requests if we have pending requests and more time has elapsed
         // since the last request than the current timeout value
         if !self.outgoing_requests.is_empty() {
             self.check_request_timeout(sink).await?;
         }
 
-        self.session.slow_start_tick();
+        self.session.counters.reset();
 
         Ok(())
     }

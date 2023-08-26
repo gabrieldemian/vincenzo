@@ -9,6 +9,7 @@ use clap::Parser;
 )]
 #[command(author, version, about, long_about = None)]
 pub struct Args {
+    /// The directory in which torrents will be downloaded
     #[clap(short, long)]
     pub download_dir: Option<String>,
 
@@ -20,6 +21,7 @@ pub struct Args {
     #[clap(short, long)]
     pub listen: Option<SocketAddr>,
 
+    /// If the program should quit after a torrent is fully downloaded
     #[clap(short, long)]
     pub quit_after_complete: bool,
 }

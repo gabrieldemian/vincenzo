@@ -42,10 +42,11 @@ macOS:   /Users/Alice/Library/Application Support/Vincenzo/config.toml
 [x] - Initial version of UI. <br />
 [x] - Download pipelining. <br />
 [x] - Endgame mode. <br />
+[x] - Pause and resume torrents. <br />
 [ ] - Use a buffered I/O strategy to reduce the number of writes on disk. <br />
 [ ] - Choking algorithm. <br />
 [ ] - Anti-snubbing. <br />
-[ ] - Resume torrent download. <br />
+[ ] - Resume torrent download from a file. <br />
 [ ] - Change piece selection strategy. <br />
 [ ] - Select files to download. <br />
 [ ] - Support streaming of videos/music on MPV. <br />
