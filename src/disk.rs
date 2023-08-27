@@ -662,10 +662,14 @@ mod tests {
 
         // write 0s to all files with their sizes
         for file in &info.files.clone().unwrap() {
-            let download_dir = download_dir.clone();
-            let name = name.clone();
-            let path = &format!("{download_dir}/{name}/{:?}", file.path[0].clone());
+            let mut path = PathBuf::new();
+
+            path.push(download_dir.clone());
+            path.push(name.clone());
+            path.push(file.path[0].clone());
+
             let mut fs_file = fs::File::create(path).await.unwrap();
+
             fs_file
                 .write_all(&vec![0_u8; file.length as usize])
                 .await
