@@ -378,6 +378,8 @@ impl Disk {
         // and only increment the downloaded count after writing,
         // because otherwise the UI could say the torrent is complete
         // while not every byte is written to disk.
+        // note: spawning a task to do this write was causing bugs on Windows.
+        // todo: fix this
         fs_file.write_all(&block.block).await.unwrap();
         let _ = torrent_tx
             .send(TorrentMsg::IncrementDownloaded(len as u64))
@@ -391,11 +393,12 @@ impl Disk {
         // if this is the last block of a piece,
         // validate the hash
         if begin + len >= info.piece_length {
+            // todo: add validation of pieces
             // self.validate_piece(info_hash, index).await?;
 
             torrent_tx.send(TorrentMsg::DownloadedPiece(index)).await?;
 
-            info!("hash of piece {index:?} is valid");
+            // info!("hash of piece {index:?} is valid");
 
             // update the bitfield of the torrent
             pieces.set(index);
@@ -519,25 +522,25 @@ impl Disk {
 mod tests {
     use std::path::Path;
 
-    use bendy::decoding::FromBencode;
     use rand::{distributions::Alphanumeric, Rng};
 
     use crate::{
         bitfield::Bitfield,
         frontend::FrMsg,
-        metainfo::{self, Info, MetaInfo},
+        metainfo::{self, Info},
         tcp_wire::lib::{Block, BLOCK_LEN},
         torrent::Torrent,
     };
 
     use super::*;
-    use tokio::sync::mpsc;
+    use tokio::{fs, sync::mpsc};
 
     // when we send the msg `NewTorrent` the `Disk` must create
     // the "skeleton" of the torrent tree. Empty folders and empty files.
     #[tokio::test]
     async fn can_create_file_tree() {
-        let magnet = "magnet:?xt=urn:btih:48aac768a865798307ddd4284be77644368dd2c7&dn=book&tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%2Fannounce&tr=udp%3A%2F%2F9.rarbg.to%3A2920%2Fannounce&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&tr=udp%3A%2F%2Ftracker.internetwarriors.net%3A1337%2Fannounce&tr=udp%3A%2F%2Ftracker.leechers-paradise.org%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.pirateparty.gr%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.cyberia.is%3A6969%2Fannounce".to_owned();
+        let name = "arch".to_owned();
+        let magnet = format!("magnet:?xt=urn:btih:9999999999999999999999999999999999999999&amp;dn={name}&amp;tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.openbittorrent.com%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.bittor.pw%3A1337%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&amp;tr=udp%3A%2F%2Fbt.xxx-tracker.com%3A2710%2Fannounce&amp;tr=udp%3A%2F%2Fpublic.popcorn-tracker.org%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Feddie4.nl%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451%2Fannounce&amp;tr=udp%3A%2F%2Fp4p.arenabg.com%3A1337%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.tiny-vps.com%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Fopen.stealth.si%3A80%2Fannounce");
         let (disk_tx, disk_rx) = mpsc::channel::<DiskMsg>(1000);
 
         let (fr_tx, _) = mpsc::channel::<FrMsg>(300);
@@ -551,7 +554,7 @@ mod tests {
 
         let info = Info {
             file_length: None,
-            name: "arch".to_owned(),
+            name,
             piece_length: BLOCK_LEN,
             pieces: vec![],
             files: Some(vec![
@@ -613,12 +616,35 @@ mod tests {
         //
         // Complex multi file torrent, 64 blocks per piece
         //
-        let metainfo = include_bytes!("../btr/music.torrent");
-        let metainfo = MetaInfo::from_bencode(metainfo).unwrap();
-        let info = metainfo.info;
+        let mut rng = rand::thread_rng();
+        let download_dir: String = (0..20).map(|_| rng.sample(Alphanumeric) as char).collect();
+        let name = "name_of_torrent_folder".to_owned();
+        let file_a = "file_a";
+        let file_b = "file_b";
+        let file_c = "file_c";
 
-        let magnet = "magnet:?xt=urn:btih:9281EF9099967ED8413E87589EFD38F9B9E484B0&amp;dn=The%20Doors%20%20(Complete%20Studio%20Discography%20-%20MP3%20%40%20320kbps)&amp;tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.openbittorrent.com%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.bittor.pw%3A1337%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&amp;tr=udp%3A%2F%2Fbt.xxx-tracker.com%3A2710%2Fannounce&amp;tr=udp%3A%2F%2Fpublic.popcorn-tracker.org%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Feddie4.nl%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451%2Fannounce&amp;tr=udp%3A%2F%2Fp4p.arenabg.com%3A1337%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.tiny-vps.com%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Fopen.stealth.si%3A80%2Fannounce ".to_owned();
-        let download_dir = "btr".to_owned();
+        let info = Info {
+            name: name.clone(),
+            piece_length: 1048576,
+            file_length: None,
+            pieces: vec![],
+            files: Some(vec![
+                metainfo::File {
+                    length: 26384160,
+                    path: vec![file_a.to_owned()],
+                },
+                metainfo::File {
+                    length: 8281625,
+                    path: vec![file_b.to_owned()],
+                },
+                metainfo::File {
+                    length: 46,
+                    path: vec![file_c.to_owned()],
+                },
+            ]),
+        };
+
+        let magnet = format!("magnet:?xt=urn:btih:9999999999999999999999999999999999999999&amp;dn={name}&amp;tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.openbittorrent.com%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.bittor.pw%3A1337%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&amp;tr=udp%3A%2F%2Fbt.xxx-tracker.com%3A2710%2Fannounce&amp;tr=udp%3A%2F%2Fpublic.popcorn-tracker.org%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Feddie4.nl%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451%2Fannounce&amp;tr=udp%3A%2F%2Fp4p.arenabg.com%3A1337%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.tiny-vps.com%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Fopen.stealth.si%3A80%2Fannounce");
 
         let (disk_tx, disk_rx) = mpsc::channel::<DiskMsg>(3);
 
@@ -626,14 +652,25 @@ mod tests {
         let torrent = Torrent::new(disk_tx.clone(), fr_tx, &magnet);
         let torrent_ctx = torrent.ctx.clone();
         let info_hash: [u8; 20] = torrent_ctx.info_hash;
-        let mut disk = Disk::new(disk_rx, download_dir);
-        disk.torrent_ctxs
-            .insert(torrent_ctx.info_hash, torrent_ctx.clone());
+        let mut disk = Disk::new(disk_rx, download_dir.clone());
 
         let mut info_ctx = torrent.ctx.info.write().await;
         *info_ctx = info.clone();
-
         drop(info_ctx);
+
+        disk.new_torrent(torrent_ctx).await.unwrap();
+
+        // write 0s to all files with their sizes
+        for file in &info.files.clone().unwrap() {
+            let download_dir = download_dir.clone();
+            let name = name.clone();
+            let path = &format!("{download_dir}/{name}/{:?}", file.path[0].clone());
+            let mut fs_file = fs::File::create(path).await.unwrap();
+            fs_file
+                .write_all(&vec![0_u8; file.length as usize])
+                .await
+                .unwrap();
+        }
 
         let (_, meta_file) = disk
             .get_file_from_block_info(
@@ -647,16 +684,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(
-            meta_file,
-            metainfo::File {
-                length: 26384160,
-                path: vec![
-                    "1967 - Strange Days".to_string(),
-                    "The Doors - When The Music's Over.MP3".to_string(),
-                ],
-            }
-        );
+        assert_eq!(meta_file, info.files.as_ref().unwrap()[0]);
 
         // first block of the last piece
         let block = BlockInfo {
@@ -670,41 +698,21 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(
-            meta_file,
-            metainfo::File {
-                length: 26384160,
-                path: vec![
-                    "1967 - Strange Days".to_string(),
-                    "The Doors - When The Music's Over.MP3".to_string(),
-                ],
-            }
-        );
+        assert_eq!(meta_file, info.files.as_ref().unwrap()[0]);
 
-        // when the peer sends the last block of the last piece of file[0]
-        // block 1610 (0 idx)
+        // last block of the first file
         let last_block = BlockInfo {
             index: 25,
             begin: 163840,
             len: 5920,
         };
 
-        // last of first file
         let (_, meta_file) = disk
             .get_file_from_block_info(&last_block, info_hash)
             .await
             .unwrap();
 
-        assert_eq!(
-            meta_file,
-            metainfo::File {
-                length: 26384160,
-                path: vec![
-                    "1967 - Strange Days".to_string(),
-                    "The Doors - When The Music's Over.MP3".to_string(),
-                ],
-            }
-        );
+        assert_eq!(meta_file, info.files.as_ref().unwrap()[0]);
 
         // first block of second file
         let block = BlockInfo {
@@ -713,22 +721,12 @@ mod tests {
             len: BLOCK_LEN,
         };
 
-        println!("----- i 25 -------");
         let (_, meta_file) = disk
             .get_file_from_block_info(&block, info_hash)
             .await
             .unwrap();
 
-        assert_eq!(
-            meta_file,
-            metainfo::File {
-                length: 8281625,
-                path: vec![
-                    "1967 - Strange Days".to_string(),
-                    "The Doors - I Can't See Your Face In My Mind.MP3".to_string(),
-                ],
-            }
-        );
+        assert_eq!(meta_file, info.files.as_ref().unwrap()[1]);
 
         // second block of second file
         let block = BlockInfo {
@@ -742,69 +740,47 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(
-            meta_file,
-            metainfo::File {
-                length: 8281625,
-                path: vec![
-                    "1967 - Strange Days".to_string(),
-                    "The Doors - I Can't See Your Face In My Mind.MP3".to_string(),
-                ],
-            }
-        );
+        assert_eq!(meta_file, info.files.as_ref().unwrap()[1]);
 
         // last of second file
         let block = BlockInfo {
             index: 33,
-            begin: 0,
+            begin: 49152,
             len: 13625,
         };
 
-        println!("----- i 33 -------");
         let (_, meta_file) = disk
             .get_file_from_block_info(&block, info_hash)
             .await
             .unwrap();
 
-        assert_eq!(
-            meta_file,
-            metainfo::File {
-                length: 8281625,
-                path: vec![
-                    "1967 - Strange Days".to_string(),
-                    "The Doors - I Can't See Your Face In My Mind.MP3".to_string(),
-                ],
-            }
-        );
+        assert_eq!(meta_file, info.files.as_ref().unwrap()[1]);
 
         // last file of torrent
         let block = BlockInfo {
-            index: 823,
-            begin: 126687,
+            index: 33,
+            begin: 62777,
             len: 46,
         };
 
-        println!("----- i 823 -------");
         let (_, meta_file) = disk
             .get_file_from_block_info(&block, info_hash)
             .await
             .unwrap();
 
-        assert_eq!(
-            meta_file,
-            metainfo::File {
-                length: 46,
-                path: vec!["Torrent downloaded from Demonoid.me.txt".to_string(),],
-            }
-        );
+        assert_eq!(meta_file, info.files.as_ref().unwrap()[2]);
+
+        tokio::fs::remove_dir_all(download_dir).await.unwrap();
     }
 
     // if we can write, read blocks, and then validate the hash of the pieces
     #[tokio::test]
     async fn read_write_blocks_and_validate_pieces() {
+        let name = "arch";
+
         let info = Info {
             file_length: None,
-            name: "arch".to_owned(),
+            name: name.to_owned(),
             piece_length: 6,
             pieces: vec![60; 0],
             files: Some(vec![
@@ -823,7 +799,7 @@ mod tests {
             ]),
         };
 
-        let magnet = "magnet:?xt=urn:btih:9281EF9099967ED8413E87589EFD38F9B9E484B0&amp;dn=The%20Doors%20%20(Complete%20Studio%20Discography%20-%20MP3%20%40%20320kbps)&amp;tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.openbittorrent.com%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.bittor.pw%3A1337%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&amp;tr=udp%3A%2F%2Fbt.xxx-tracker.com%3A2710%2Fannounce&amp;tr=udp%3A%2F%2Fpublic.popcorn-tracker.org%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Feddie4.nl%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451%2Fannounce&amp;tr=udp%3A%2F%2Fp4p.arenabg.com%3A1337%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.tiny-vps.com%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Fopen.stealth.si%3A80%2Fannounce ".to_owned();
+        let magnet = format!("magnet:?xt=urn:btih:9999999999999999999999999999999999999999&amp;dn={name}&amp;tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.openbittorrent.com%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.bittor.pw%3A1337%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&amp;tr=udp%3A%2F%2Fbt.xxx-tracker.com%3A2710%2Fannounce&amp;tr=udp%3A%2F%2Fpublic.popcorn-tracker.org%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Feddie4.nl%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451%2Fannounce&amp;tr=udp%3A%2F%2Fp4p.arenabg.com%3A1337%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.tiny-vps.com%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Fopen.stealth.si%3A80%2Fannounce");
         let mut rng = rand::thread_rng();
         let download_dir: String = (0..20).map(|_| rng.sample(Alphanumeric) as char).collect();
 
