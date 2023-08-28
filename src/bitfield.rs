@@ -169,20 +169,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn can_create_from_vec() {
+    fn from_vec() {
         let bitfield = Bitfield::from(vec![255_u8]);
         assert_eq!(bitfield.inner, vec![255_u8]);
     }
 
     #[test]
-    fn can_complete_bitfield() {
+    fn is_complete() {
         let mut bitfield = Bitfield::from(vec![0b11111111, 0b01111100]);
         let _is_complete = bitfield.is_complete(bitfield.len() as u32);
         // assert!(is_complete);
     }
 
     #[test]
-    fn can_has_from_bitfield() {
+    fn has() {
         let bits: Vec<u8> = vec![0b10101010, 0b00011011, 0b00111110];
         let bitfield = Bitfield::from(bits);
 
@@ -209,7 +209,7 @@ mod tests {
     }
 
     #[test]
-    fn can_get_from_bitfield() {
+    fn get() {
         let bits: Vec<u8> = vec![0b1010_1010, 0b0001_1011, 0b0011_1110];
         let bitfield = Bitfield::from(bits);
 
@@ -245,7 +245,7 @@ mod tests {
     }
 
     #[test]
-    fn can_fail_get_bitfield() {
+    fn get_failure() {
         let bits: Vec<u8> = vec![0b10101010];
         let bitfield = Bitfield::from(bits);
 
@@ -259,7 +259,7 @@ mod tests {
     }
 
     #[test]
-    fn can_set() {
+    fn set() {
         let mut bitfield = Bitfield::new();
         // [0..7] [8..15] [16..23] [24..31]
         bitfield.set(10_usize);
@@ -291,7 +291,7 @@ mod tests {
     }
 
     #[test]
-    fn can_try_set() {
+    fn try_set() {
         let bits: Vec<u8> = vec![0b0000_0000, 0b0000_0000];
         let mut bitfield = Bitfield::from(bits);
 
@@ -321,7 +321,7 @@ mod tests {
     }
 
     #[test]
-    fn can_clear_a_bit() {
+    fn clear_bit() {
         let bits: Vec<u8> = vec![0b1000_0001];
         let mut bitfield = Bitfield::from(bits);
 
@@ -338,7 +338,7 @@ mod tests {
     }
 
     #[test]
-    fn can_iter_a_bit() {
+    fn as_iterator() {
         let bits: Vec<u8> = vec![0b1000_0101, 0b0111_0001];
         let mut bitfield = Bitfield::from(bits);
 
@@ -364,7 +364,7 @@ mod tests {
     }
 
     #[test]
-    fn receive_lazy_bitfield() {
+    fn try_set_out_of_bounds() {
         let bitfield = Bitfield::from(vec![0b0000_1111, 0b1111_1111]);
         let mut empty_bitfield = Bitfield::default();
 
