@@ -141,7 +141,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_sliding_average() {
+    fn sliding_average() {
         let inverted_gain = 4;
         let mut a = SlidingAvg::new(inverted_gain);
 
@@ -193,7 +193,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sliding_duration_average() {
+    fn sliding_duration_average() {
         // since the implementation of the moving average is the same as for
         // `SlidSlidingAvg`, we only need to test that the i64 <-> duration
         // conversions are correct

@@ -299,7 +299,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn can_create_metadata_request() {
+    fn metadata_request_roundtrip_serialization() {
         let metadata_request = Metadata::request(0);
         let bencoded = String::from_utf8(metadata_request.to_bencode().unwrap());
         assert_eq!(bencoded.unwrap(), "d8:msg_typei0e5:piecei0ee");
@@ -310,7 +310,7 @@ mod tests {
     }
 
     #[test]
-    fn can_create_metadata_data() {
+    fn metadata_data_from_info() {
         let metainfo_bytes = include_bytes!("../test-files/book.torrent");
         let metainfo = MetaInfo::from_bencode(metainfo_bytes).unwrap();
 
@@ -324,7 +324,7 @@ mod tests {
     }
 
     #[test]
-    fn can_create_metadata_reject() {
+    fn metadata_reject_roundtrip_serialization() {
         let metadata_request = Metadata::reject(0);
         let bencoded = String::from_utf8(metadata_request.to_bencode().unwrap());
         assert_eq!(bencoded.unwrap(), "d8:msg_typei2e5:piecei0ee");
@@ -336,7 +336,7 @@ mod tests {
 
     // should transform a byte array into an Extension
     #[test]
-    fn from_bytes_to_extension() {
+    fn extension_deserialization() {
         let bytes = [
             100, 49, 58, 101, 105, 49, 101, 49, 58, 109, 100, 49, 49, 58, 117, 116, 95, 109, 101,
             116, 97, 100, 97, 116, 97, 105, 51, 101, 54, 58, 117, 116, 95, 112, 101, 120, 105, 49,
@@ -367,7 +367,7 @@ mod tests {
     // should get a byte array, and encode to an Extension
     // should ignore all data structures that we do not care about
     #[test]
-    fn from_extension_to_bytes() {
+    fn extension_serialization() {
         let bytes = [
             100, 49, 58, 101, 105, 49, 101, 49, 58, 109, 100, 49, 49, 58, 117, 116, 95, 109, 101,
             116, 97, 100, 97, 116, 97, 105, 51, 101, 54, 58, 117, 116, 95, 112, 101, 120, 105, 49,
@@ -399,7 +399,7 @@ mod tests {
     }
 
     #[test]
-    fn from_bytes_to_metadata_msg() {
+    fn metadata_msg_deserialization() {
         let buf = [
             100, 56, 58, 109, 115, 103, 95, 116, 121, 112, 101, 105, 49, 101, 53, 58, 112, 105,
             101, 99, 101, 105, 48, 101, 49, 48, 58, 116, 111, 116, 97, 108, 95, 115, 105, 122, 101,
