@@ -11,13 +11,16 @@ use clap::Parser;
 use directories::{ProjectDirs, UserDirs};
 use tokio::{io::AsyncReadExt, runtime::Runtime, spawn, sync::mpsc};
 use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt;
+
 use vcz_lib::{
     cli::Args,
     config::Config,
     disk::{Disk, DiskMsg},
     error::Error,
-    // frontend::{FrMsg, Frontend},
 };
+
+use vcz_lib::FrMsg;
+use vcz_ui::Frontend;
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {

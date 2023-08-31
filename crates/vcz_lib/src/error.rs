@@ -3,9 +3,7 @@ use std::io;
 use thiserror::Error;
 use tokio::sync::{mpsc, oneshot};
 
-use crate::{
-    disk::DiskMsg, frontend::FrMsg, peer::PeerMsg, torrent::TorrentMsg, tracker::TrackerMsg,
-};
+use crate::{disk::DiskMsg, peer::PeerMsg, torrent::TorrentMsg, tracker::TrackerMsg};
 
 #[derive(Error, Debug)]
 pub enum Error {
@@ -80,8 +78,6 @@ pub enum Error {
     #[error("Could not send message to Tracker")]
     SendErrorTracker(#[from] mpsc::error::SendError<TrackerMsg>),
     #[error("Could not send message to Frontend")]
-    SendErrorFr(#[from] mpsc::error::SendError<FrMsg>),
-    #[error("Could not send message to Torrent")]
     SendErrorTorrent(#[from] mpsc::error::SendError<TorrentMsg>),
     #[error("The `{0}` folder was not found, please edit the config file manually at `{1}")]
     FolderNotFound(String, String),

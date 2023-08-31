@@ -10,9 +10,8 @@ use ratatui::{
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
     Terminal,
 };
-use tracing::info;
-
-use crate::{to_human_readable, torrent::TorrentStatus};
+use vcz_lib::{to_human_readable, torrent::TorrentStatus};
+// use tracing::info;
 
 use super::{AppStyle, FrMsg, FrontendCtx, TorrentInfo};
 
@@ -114,7 +113,7 @@ impl<'a> TorrentList<'a> {
                     self.draw(terminal).await;
                 }
                 KeyCode::Char('p') => {
-                    info!("sending pause with id {:?}", self.active_torrent);
+                    // info!("sending pause with id {:?}", self.active_torrent);
                     if let Some(active_torrent) = self.active_torrent {
                         let _ = self
                             .ctx

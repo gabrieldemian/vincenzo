@@ -1,4 +1,4 @@
-use crate::frontend::{FrMsg, TorrentInfo};
+use crate::{FrMsg, TorrentInfo};
 use crate::magnet_parser::get_magnet;
 use crate::peer::session::ConnectionState;
 use crate::tcp_wire::lib::BlockInfo;
@@ -565,7 +565,7 @@ impl Torrent {
                     };
 
                     self.last_second_downloaded = self.downloaded;
-                    self.fr_tx.send(FrMsg::Draw(self.ctx.info_hash, torrent_info)).await?;
+                    self.fr_tx.send(FrMsg::Draw(self.ctx.info_hash, torrent_info)).await.unwrap();
                 }
                 // periodically announce to tracker, at the specified interval
                 // to update the tracker about the client's stats.

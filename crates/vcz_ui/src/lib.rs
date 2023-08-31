@@ -1,3 +1,4 @@
+pub mod error;
 pub mod torrent_list;
 use clap::Parser;
 use futures::{FutureExt, StreamExt};
@@ -23,12 +24,13 @@ use ratatui::{
 
 use torrent_list::TorrentList;
 
-use crate::{
+use vcz_lib::{
     cli::Args,
     config::Config,
     disk::DiskMsg,
     error::Error,
-    torrent::{Stats, Torrent, TorrentMsg, TorrentStatus},
+    torrent::{Torrent, TorrentMsg},
+    FrMsg, TorrentInfo,
 };
 
 #[derive(Clone, Debug)]
@@ -58,26 +60,6 @@ impl AppStyle {
             warning: Style::default().fg(Color::Yellow),
         }
     }
-}
-
-#[derive(Debug, Clone)]
-pub enum FrMsg {
-    NewTorrent(String),
-    Draw([u8; 20], TorrentInfo),
-    TogglePause([u8; 20]),
-    Quit,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct TorrentInfo {
-    pub name: String,
-    pub stats: Stats,
-    pub status: TorrentStatus,
-    pub downloaded: u64,
-    pub download_rate: u64,
-    pub uploaded: u64,
-    pub size: u64,
-    pub info_hash: [u8; 20],
 }
 
 pub struct Frontend<'a> {
