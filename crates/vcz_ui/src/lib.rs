@@ -30,7 +30,7 @@ use vcz_lib::{
     disk::DiskMsg,
     error::Error,
     torrent::{Torrent, TorrentMsg},
-    FrMsg, TorrentInfo,
+    FrMsg, TorrentState,
 };
 
 #[derive(Clone, Debug)]
@@ -188,7 +188,7 @@ impl<'a> Frontend<'a> {
         if self.torrent_txs.get(&info_hash).is_none() {
             self.torrent_txs.insert(info_hash, torrent.ctx.tx.clone());
 
-            let torrent_info_l = TorrentInfo {
+            let torrent_info_l = TorrentState {
                 name: torrent.ctx.info.read().await.name.clone(),
                 ..Default::default()
             };

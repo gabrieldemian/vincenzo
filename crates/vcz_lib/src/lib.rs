@@ -53,13 +53,13 @@ mod tests {
 #[derive(Debug, Clone)]
 pub enum FrMsg {
     NewTorrent(String),
-    Draw([u8; 20], TorrentInfo),
+    Draw([u8; 20], TorrentState),
     TogglePause([u8; 20]),
     Quit,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Readable, Writable)]
-pub struct TorrentInfo {
+pub struct TorrentState {
     pub name: String,
     pub stats: Stats,
     pub status: TorrentStatus,

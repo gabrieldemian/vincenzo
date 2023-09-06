@@ -2,33 +2,36 @@
 /// Messages that will be sent betwheen UI <-> Daemon
 ///
 use bytes::{Buf, BufMut, BytesMut};
-use hashbrown::HashMap;
-use speedy::Writable;
-// use speedy::{BigEndian, Readable, Writable};
+use speedy::{Readable, Writable};
 use std::io::Cursor;
 use tokio::io;
 use tokio_util::codec::{Decoder, Encoder};
 
-use crate::TorrentInfo;
+use crate::TorrentState;
 
+/// Messages of `DaemonCodec`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Message {
-    /// Every second, the Daemon will send information about all torrents
-    /// to all listeners
-    TorrentsState(HashMap<[u8; 20], TorrentInfo>),
-    /// Torrents must send this message to Daemon
-    /// every second with updated state
-    TorrentUpdate(TorrentInfo),
     /// Message sent by clients to add a new Torrent on Daemon
     /// can be sent using the daemon CLI or any UI.
-    /// The first argument is the magnet string.
+    ///
+    /// <len=1+magnet_link_len><id=0><magnet_link>
     NewTorrent(String),
+    /// Every second, the Daemon will send information about all torrents
+    /// to all listeners
+    TorrentState(TorrentState),
+    /// Torrents must send this message to Daemon
+    /// every second with updated state
+    ///
+    /// <len=1+torrent_info_len><id=0><torrent_info>
+    TorrentUpdate(TorrentState),
 }
 
 #[repr(u8)]
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum MessageId {
     NewTorrent = 0,
+    TorrentState = 1,
 }
 
 impl TryFrom<u8> for MessageId {
@@ -38,6 +41,7 @@ impl TryFrom<u8> for MessageId {
         use MessageId::*;
         match k {
             k if k == NewTorrent as u8 => Ok(NewTorrent),
+            k if k == TorrentState as u8 => Ok(TorrentState),
             _ => Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "Unknown message id",
@@ -46,6 +50,25 @@ impl TryFrom<u8> for MessageId {
     }
 }
 
+/// The daemon messages follow the same logic as the peer messages:
+/// The first `u32` is the len of the entire payload that comes after itself.
+/// Followed by an `u8` which is the message_id. The rest of the bytes
+/// depends on the message type.
+///
+/// # Example
+///
+/// You are sending a magnet of 18 bytes: "magnet:blabla"
+///
+/// ```
+/// let mut buf = BytesMut::new();
+/// let magnet = "magnet:blabla".to_owned();
+/// // 1 byte reserved for the message_id
+/// let msg_len = 1 + magnet.len() as u32;
+/// buf.put_u32(msg_len);
+/// // this message_id is 0
+/// buf.put_u8(MessageId::NewTorrent as u8);
+/// buf.extend_from_slice(magnet.as_bytes());
+/// ```
 #[derive(Debug)]
 pub struct DaemonCodec;
 
@@ -56,26 +79,20 @@ impl Encoder<Message> for DaemonCodec {
     fn encode(&mut self, item: Message, buf: &mut BytesMut) -> Result<(), Self::Error> {
         match item {
             Message::NewTorrent(magnet) => {
-                // 1 byte is for the ID of the mssage.
                 let msg_len = 1 + magnet.len() as u32;
+
                 buf.put_u32(msg_len);
                 buf.put_u8(MessageId::NewTorrent as u8);
                 buf.extend_from_slice(magnet.as_bytes());
             }
-            Message::TorrentsState(torrent_infos) => {
-                let mut msg_len = 1;
-                let mut payload: Vec<u8> = vec![];
+            Message::TorrentState(torrent_info) => {
+                let info_bytes = &torrent_info.write_to_vec()?;
+                let msg_len = 1 + info_bytes.len() as u32;
 
-                for info in torrent_infos.values() {
-                    buf.extend_from_slice(&info.write_to_vec()?);
-                    // buf.extend_from_slice(&info.info_hash);
-                }
-            } // Message::Bitfield(bitfield) => {
-            //     buf.put_u32(1 + bitfield.len_bytes() as u32);
-            //     buf.put_u8(MessageId::Bitfield as u8);
-            //     buf.extend_from_slice(bitfield.inner.as_slice());
-            // }
-            // <len=0013><id=6><index><begin><length>
+                buf.put_u32(msg_len);
+                buf.put_u8(MessageId::TorrentState as u8);
+                buf.extend_from_slice(info_bytes);
+            }
             _ => todo!(),
         }
         Ok(())
@@ -131,7 +148,13 @@ impl Decoder for DaemonCodec {
 
                 Message::NewTorrent(String::from_utf8(payload).unwrap())
             }
-            _ => todo!(),
+            MessageId::TorrentState => {
+                let mut payload = vec![0u8; buf.remaining()];
+                buf.copy_to_slice(&mut payload);
+                let info = TorrentState::read_from_buffer(&payload)?;
+
+                Message::TorrentState(info)
+            }
         };
 
         Ok(Some(msg))
@@ -140,6 +163,8 @@ impl Decoder for DaemonCodec {
 
 #[cfg(test)]
 mod tests {
+    use crate::torrent::TorrentStatus;
+
     use super::*;
 
     #[test]
@@ -150,7 +175,6 @@ mod tests {
 
         println!("encoded {buf:?}");
 
-        // let mut buf = BytesMut::new();
         let msg = DaemonCodec.decode(&mut buf).unwrap().unwrap();
 
         println!("decoded {msg:?}");
@@ -158,6 +182,41 @@ mod tests {
         match msg {
             Message::NewTorrent(magnet) => {
                 assert_eq!(magnet, "magnet:blabla".to_owned());
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn torrent_state() {
+        let mut buf = BytesMut::new();
+        let info = TorrentState {
+            name: "Eesti".to_owned(),
+            stats: crate::torrent::Stats {
+                interval: 5,
+                leechers: 9,
+                seeders: 1,
+            },
+            status: TorrentStatus::Downloading,
+            downloaded: 999,
+            download_rate: 111,
+            uploaded: 44,
+            size: 9,
+            info_hash: [0u8; 20],
+        };
+
+        let msg = Message::TorrentState(info.clone());
+        DaemonCodec.encode(msg, &mut buf).unwrap();
+
+        println!("encoded {buf:?}");
+
+        let msg = DaemonCodec.decode(&mut buf).unwrap().unwrap();
+
+        println!("decoded {msg:?}");
+
+        match msg {
+            Message::TorrentState(deserialized) => {
+                assert_eq!(deserialized, info);
             }
             _ => panic!(),
         }

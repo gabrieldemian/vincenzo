@@ -13,13 +13,13 @@ use ratatui::{
 use vcz_lib::{to_human_readable, torrent::TorrentStatus};
 // use tracing::info;
 
-use super::{AppStyle, FrMsg, FrontendCtx, TorrentInfo};
+use super::{AppStyle, FrMsg, FrontendCtx, TorrentState};
 
 #[derive(Clone)]
 pub struct TorrentList<'a> {
     pub style: AppStyle,
     pub state: ListState,
-    pub torrent_infos: HashMap<[u8; 20], TorrentInfo>,
+    pub torrent_infos: HashMap<[u8; 20], TorrentState>,
     active_torrent: Option<[u8; 20]>,
     ctx: Arc<FrontendCtx>,
     show_popup: bool,

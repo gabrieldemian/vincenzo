@@ -26,7 +26,7 @@ use vcz_lib::{
     cli::Args,
     config::Config,
     daemon_wire::{DaemonCodec, Message},
-    TorrentInfo,
+    TorrentState,
 };
 
 /// The UI will ask the Daemon to create new Torrents.
@@ -41,7 +41,7 @@ use vcz_lib::{
 pub struct Daemon {
     pub config: Config,
     pub download_dir: String,
-    torrent_infos: HashMap<[u8; 20], TorrentInfo>,
+    torrent_infos: HashMap<[u8; 20], TorrentState>,
 }
 
 impl Daemon {

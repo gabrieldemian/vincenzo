@@ -15,7 +15,7 @@ use crate::{
         {Tracker, TrackerCtx, TrackerMsg},
     },
 };
-use crate::{FrMsg, TorrentInfo};
+use crate::{FrMsg, TorrentState};
 use bendy::decoding::FromBencode;
 use clap::Parser;
 use hashbrown::HashMap;
@@ -554,7 +554,7 @@ impl Torrent {
                 _ = frontend_interval.tick() => {
                     self.download_rate = self.downloaded - self.last_second_downloaded;
 
-                    let torrent_info = TorrentInfo {
+                    let torrent_info = TorrentState {
                         name: self.name.clone(),
                         size: self.size,
                         downloaded: self.downloaded,
