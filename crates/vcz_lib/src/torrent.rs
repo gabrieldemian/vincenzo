@@ -1,8 +1,7 @@
-use crate::{FrMsg, TorrentInfo};
 use crate::magnet_parser::get_magnet;
 use crate::peer::session::ConnectionState;
-use crate::tcp_wire::lib::BlockInfo;
 use crate::tcp_wire::messages::HandshakeCodec;
+use crate::tcp_wire::BlockInfo;
 use crate::{
     bitfield::Bitfield,
     cli::Args,
@@ -16,10 +15,12 @@ use crate::{
         {Tracker, TrackerCtx, TrackerMsg},
     },
 };
+use crate::{FrMsg, TorrentInfo};
 use bendy::decoding::FromBencode;
 use clap::Parser;
 use hashbrown::HashMap;
 use magnet_url::Magnet;
+use speedy::{Readable, Writable};
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::{sync::Arc, time::Duration};
@@ -117,7 +118,7 @@ pub struct TorrentCtx {
 }
 
 // Status of the current Torrent, updated at every announce request.
-#[derive(Clone, Debug, PartialEq, Default)]
+#[derive(Clone, Debug, PartialEq, Default, Readable, Writable)]
 pub struct Stats {
     pub interval: u32,
     pub leechers: u32,
@@ -608,7 +609,7 @@ impl Torrent {
     }
 }
 
-#[derive(Debug, Default, Clone, PartialEq)]
+#[derive(Debug, Default, Clone, PartialEq, Readable, Writable)]
 pub enum TorrentStatus {
     #[default]
     ConnectingTrackers,

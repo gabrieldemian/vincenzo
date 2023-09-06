@@ -1,11 +1,13 @@
 #![allow(missing_docs)]
 
+use speedy::{Readable, Writable};
 use torrent::{Stats, TorrentStatus};
 pub mod avg;
 pub mod bitfield;
 pub mod cli;
 pub mod config;
 pub mod counter;
+pub mod daemon_wire;
 pub mod disk;
 pub mod error;
 pub mod extension;
@@ -56,7 +58,7 @@ pub enum FrMsg {
     Quit,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Readable, Writable)]
 pub struct TorrentInfo {
     pub name: String,
     pub stats: Stats,

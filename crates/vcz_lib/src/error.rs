@@ -79,10 +79,6 @@ pub enum Error {
     SendErrorTracker(#[from] mpsc::error::SendError<TrackerMsg>),
     #[error("Could not send message to Frontend")]
     SendErrorTorrent(#[from] mpsc::error::SendError<TorrentMsg>),
-    #[error("The `{0}` folder was not found, please edit the config file manually at `{1}")]
-    FolderNotFound(String, String),
-    #[error("Tried to load $HOME but could not find it. Please make sure you have a $HOME env and that this program has the permission to create dirs.")]
-    HomeInvalid,
     #[error("The given PATH is invalid")]
     PathInvalid,
 }

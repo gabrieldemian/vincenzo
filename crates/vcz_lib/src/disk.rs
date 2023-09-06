@@ -17,7 +17,7 @@ use crate::{
     error::Error,
     metainfo,
     peer::{PeerCtx, PeerMsg},
-    tcp_wire::lib::{Block, BlockInfo},
+    tcp_wire::{Block, BlockInfo},
     torrent::{TorrentCtx, TorrentMsg},
 };
 
@@ -526,10 +526,9 @@ mod tests {
 
     use crate::{
         bitfield::Bitfield,
-        frontend::FrMsg,
         metainfo::{self, Info},
-        tcp_wire::lib::{Block, BLOCK_LEN},
-        torrent::Torrent,
+        tcp_wire::{Block, BLOCK_LEN},
+        torrent::Torrent, FrMsg,
     };
 
     use super::*;

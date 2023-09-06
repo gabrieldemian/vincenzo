@@ -330,6 +330,9 @@ impl<'a> TorrentList<'a> {
             .fr_tx
             .send(FrMsg::NewTorrent(std::mem::take(&mut self.input)))
             .await;
+
+        // this will quit the modal to add a new torrent,
+        // and not the entire UI
         self.quit(terminal).await;
     }
 }

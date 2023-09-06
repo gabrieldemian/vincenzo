@@ -5,9 +5,9 @@ use tokio::io;
 use tokio_util::codec::{Decoder, Encoder};
 use tracing::warn;
 
-use crate::{bitfield::Bitfield, error::Error, tcp_wire::lib::Block};
+use crate::{bitfield::Bitfield, error::Error};
 
-use super::lib::{BlockInfo, PSTR};
+use super::{Block, BlockInfo, PSTR};
 
 // Handshake is an edge-case message,
 // it will be sent separately from the codec,
@@ -92,13 +92,11 @@ impl Encoder<Message> for PeerCodec {
                 buf.put_u8(MessageId::Unchoke as u8);
             }
             Message::Interested => {
-                let msg_len = 1;
-                buf.put_u32(msg_len);
+                buf.put_u32(1);
                 buf.put_u8(MessageId::Interested as u8);
             }
             Message::NotInterested => {
-                let msg_len = 1;
-                buf.put_u32(msg_len);
+                buf.put_u32(1);
                 buf.put_u8(MessageId::NotInterested as u8);
             }
             Message::Have(piece_index) => {
@@ -437,7 +435,7 @@ impl Handshake {
 
 #[cfg(test)]
 mod tests {
-    use crate::tcp_wire::lib::BLOCK_LEN;
+    use crate::tcp_wire::BLOCK_LEN;
 
     use super::*;
     use bitlab::SingleBits;

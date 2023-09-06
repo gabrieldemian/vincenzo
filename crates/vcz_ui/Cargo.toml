@@ -17,5 +17,6 @@ ratatui = { version = "0.22.0", features = ["all-widgets"] }
 serde = { version = "1.0.185", features = ["derive"] }
 thiserror = "1.0.47"
 tokio = { version = "1.32.0", features = ["rt", "fs", "tracing", "time", "macros", "rt-multi-thread", "sync", "io-std", "io-util",  "net"] }
+tokio-tungstenite = "0.20.0"
 tokio-util = { version = "0.7.8", features = ["codec"] }
 vcz_lib = { path = "../vcz_lib" }

@@ -311,7 +311,7 @@ mod tests {
 
     #[test]
     fn can_create_metadata_data() {
-        let metainfo_bytes = include_bytes!("../test-files/book.torrent");
+        let metainfo_bytes = include_bytes!("../../../test-files/book.torrent");
         let metainfo = MetaInfo::from_bencode(metainfo_bytes).unwrap();
 
         let info = metainfo.info;

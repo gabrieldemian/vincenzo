@@ -24,8 +24,8 @@ use crate::{
     extension::{Extension, Metadata},
     peer::session::ConnectionState,
     tcp_wire::{
-        lib::{Block, BlockInfo, BLOCK_LEN},
         messages::{Handshake, HandshakeCodec, Message, MessageId, PeerCodec},
+        {Block, BlockInfo, BLOCK_LEN},
     },
     torrent::{TorrentCtx, TorrentMsg},
     tracker::TrackerCtx,

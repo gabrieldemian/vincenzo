@@ -175,6 +175,11 @@ impl<'a> Frontend<'a> {
     // Create a Torrent, and then Add it. This will be called when the user
     // adds a torrent using the UI.
     async fn new_torrent(&mut self, magnet: &str) {
+        // todo: send message to Daemon to create the torrent
+        // the message will return a torrent_tx
+        //
+        // disk will reply with a FrMsg::AddTorrent and the UI will add the torrent_info
+        // only the daemon should know how to create and handle a torrent
         let mut torrent = Torrent::new(self.disk_tx.clone(), self.ctx.fr_tx.clone(), magnet);
         let info_hash = torrent.ctx.info_hash;
 
