@@ -7,12 +7,9 @@ edition = "2021"
 
 [dependencies]
 clap = {version = "4.3.4", features = ["derive"]}
-crossterm = { version = "0.27.0", features = ["event-stream"] }
-exitcode = "1.1.2"
 futures = "0.3.28"
 hashbrown = "0.14.0"
 rand = "0.8.5"
-ratatui = { version = "0.22.0", features = ["all-widgets"] }
 serde = { version = "1.0.185", features = ["derive"] }
 thiserror = "1.0.47"
 tokio = { version = "1.32.0", features = ["rt", "fs", "tracing", "time", "macros", "rt-multi-thread", "sync", "io-std", "io-util",  "net"] }
@@ -20,15 +17,10 @@ tokio-util = { version = "0.7.8", features = ["codec"] }
 bendy = { version = "0.3.3", features = ["std"] }
 bitlab = "1.1.0"
 bytes = "1.4.0"
-console-subscriber = "0.1.9"
 decurse = "0.0.4"
-directories = "5.0.1"
 hex = "0.4.3"
 magnet-url = "2.0.0"
 sha1_smol = { version = "1.0.0", features = ["serde"] }
 speedy = "0.8.6"
-toml = "0.7.6"
 tracing = "0.1.37"
-tracing-appender = "0.2.2"
-tracing-subscriber = "0.3.17"
 urlencoding = "2.1.3"

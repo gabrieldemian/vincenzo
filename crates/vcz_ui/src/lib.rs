@@ -1,14 +1,14 @@
 pub mod error;
 pub mod torrent_list;
-use clap::Parser;
-use futures::{FutureExt, StreamExt};
+use futures::{stream::SplitStream, FutureExt, SinkExt, StreamExt};
 use hashbrown::HashMap;
+use tokio_util::codec::Framed;
 
 use std::{
     io::{self, Stdout},
     sync::Arc,
 };
-use tokio::{select, spawn, sync::mpsc};
+use tokio::{net::TcpStream, select, spawn, sync::mpsc};
 
 use crossterm::{
     self,
@@ -25,11 +25,9 @@ use ratatui::{
 use torrent_list::TorrentList;
 
 use vcz_lib::{
-    cli::Args,
-    config::Config,
-    disk::DiskMsg,
+    daemon_wire::{DaemonCodec, Message},
     error::Error,
-    torrent::{Torrent, TorrentMsg},
+    torrent::TorrentMsg,
     FrMsg, TorrentState,
 };
 
@@ -67,9 +65,7 @@ pub struct Frontend<'a> {
     pub ctx: Arc<FrontendCtx>,
     pub torrent_list: TorrentList<'a>,
     torrent_txs: HashMap<[u8; 20], mpsc::Sender<TorrentMsg>>,
-    disk_tx: mpsc::Sender<DiskMsg>,
     terminal: Terminal<CrosstermBackend<Stdout>>,
-    config: Config,
 }
 
 pub struct FrontendCtx {
@@ -77,7 +73,7 @@ pub struct FrontendCtx {
 }
 
 impl<'a> Frontend<'a> {
-    pub fn new(fr_tx: mpsc::Sender<FrMsg>, disk_tx: mpsc::Sender<DiskMsg>, config: Config) -> Self {
+    pub fn new(fr_tx: mpsc::Sender<FrMsg>) -> Self {
         let stdout = io::stdout();
         let style = AppStyle::new();
         let backend = CrosstermBackend::new(stdout);
@@ -87,13 +83,36 @@ impl<'a> Frontend<'a> {
         let torrent_list = TorrentList::new(ctx.clone());
 
         Frontend {
-            config,
             terminal,
             torrent_list,
             torrent_txs: HashMap::new(),
             ctx,
-            disk_tx,
             style,
+        }
+    }
+
+    /// Listen to the messages sent by the daemon on a TCP socket,
+    /// when we receive a message, we send a message to ourselves
+    /// that corresponds to the `FrMsg`. For example, when we receive
+    /// a Draw message from the daemon, we send a Draw message to `run`
+    pub async fn listen_daemon(
+        fr_tx: mpsc::Sender<FrMsg>,
+        mut sink: SplitStream<Framed<TcpStream, DaemonCodec>>,
+    ) -> Result<(), Error> {
+        loop {
+            select! {
+                Some(Ok(msg)) = sink.next() => {
+                    match msg {
+                        Message::TorrentState(torrent_info) => {
+                            fr_tx.send(FrMsg::Draw(torrent_info)).await.unwrap();
+                        }
+                        Message::Quit => {
+                            fr_tx.send(FrMsg::Quit).await.unwrap();
+                        }
+                        _ => {}
+                    }
+                }
+            }
         }
     }
 
@@ -115,6 +134,15 @@ impl<'a> Frontend<'a> {
 
         self.torrent_list.draw(&mut self.terminal).await;
 
+        let fr_tx = self.ctx.fr_tx.clone();
+        let socket = TcpStream::connect("127.0.0.1:3030").await.unwrap();
+        let socket = Framed::new(socket, DaemonCodec);
+        let (mut sink, stream) = socket.split();
+
+        spawn(async move {
+            Self::listen_daemon(fr_tx, stream).await.unwrap();
+        });
+
         loop {
             let event = reader.next().fuse();
 
@@ -132,18 +160,17 @@ impl<'a> Frontend<'a> {
                 Some(msg) = fr_rx.recv() => {
                     match msg {
                         FrMsg::Quit => {
-                            let _ = self.stop().await;
-                            return Ok(());
+                            return self.stop(&mut sink).await;
                         },
-                        FrMsg::Draw(info_hash, torrent_info) => {
+                        FrMsg::Draw(torrent_info) => {
                             self.torrent_list
                                 .torrent_infos
-                                .insert(info_hash, torrent_info);
+                                .insert(torrent_info.info_hash, torrent_info);
 
                             self.torrent_list.draw(&mut self.terminal).await;
                         },
                         FrMsg::NewTorrent(magnet) => {
-                            self.new_torrent(&magnet).await;
+                            self.new_torrent(&magnet, &mut sink).await?;
                         }
                         FrMsg::TogglePause(id) => {
                             let tx = self.torrent_txs.get(&id).ok_or(Error::TorrentDoesNotExist)?;
@@ -153,6 +180,31 @@ impl<'a> Frontend<'a> {
                 }
             }
         }
+
+        Ok(())
+    }
+
+    /// Send a NewTorrent message to Daemon, it will answer with a Draw request
+    /// with the newly added torrent state.
+    async fn new_torrent<T>(&mut self, magnet: &str, sink: &mut T) -> Result<(), Error>
+    where
+        T: SinkExt<Message> + Sized + std::marker::Unpin,
+    {
+        sink.send(Message::NewTorrent(magnet.to_owned()))
+            .await
+            .map_err(|_| Error::SendErrorTcp)?;
+        Ok(())
+    }
+
+    async fn stop<T>(&mut self, sink: &mut T) -> Result<(), Error>
+    where
+        T: SinkExt<Message> + Sized + std::marker::Unpin,
+    {
+        sink.send(Message::Quit)
+            .await
+            .map_err(|_| Error::SendErrorTcp)?;
+
+        Self::reset_terminal();
 
         Ok(())
     }
@@ -170,59 +222,5 @@ impl<'a> Frontend<'a> {
             DisableMouseCapture
         )
         .unwrap();
-    }
-
-    // Create a Torrent, and then Add it. This will be called when the user
-    // adds a torrent using the UI.
-    async fn new_torrent(&mut self, magnet: &str) {
-        // todo: send message to Daemon to create the torrent
-        // the message will return a torrent_tx
-        //
-        // disk will reply with a FrMsg::AddTorrent and the UI will add the torrent_info
-        // only the daemon should know how to create and handle a torrent
-        let mut torrent = Torrent::new(self.disk_tx.clone(), self.ctx.fr_tx.clone(), magnet);
-        let info_hash = torrent.ctx.info_hash;
-
-        // prevent the user from adding a duplicate torrent,
-        // todo: handle this on the UI with a message.
-        if self.torrent_txs.get(&info_hash).is_none() {
-            self.torrent_txs.insert(info_hash, torrent.ctx.tx.clone());
-
-            let torrent_info_l = TorrentState {
-                name: torrent.ctx.info.read().await.name.clone(),
-                ..Default::default()
-            };
-
-            self.torrent_list
-                .torrent_infos
-                .insert(info_hash, torrent_info_l);
-
-            let args = Args::parse();
-            let mut listen = self.config.listen;
-
-            if args.listen.is_some() {
-                listen = args.listen;
-            }
-
-            spawn(async move {
-                torrent.start_and_run(listen).await.unwrap();
-                torrent.disk_tx.send(DiskMsg::Quit).await.unwrap();
-            });
-
-            self.torrent_list.draw(&mut self.terminal).await;
-        }
-    }
-
-    async fn stop(&mut self) {
-        Self::reset_terminal();
-
-        // tell all torrents that we are gracefully shutting down,
-        // each torrent will kill their peers tasks, and their tracker task
-        for (_, tx) in std::mem::take(&mut self.torrent_txs) {
-            spawn(async move {
-                let _ = tx.send(TorrentMsg::Quit).await;
-            });
-        }
-        let _ = self.disk_tx.send(DiskMsg::Quit).await;
     }
 }

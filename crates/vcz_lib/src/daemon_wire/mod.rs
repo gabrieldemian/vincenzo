@@ -12,6 +12,10 @@ use crate::TorrentState;
 /// Messages of `DaemonCodec`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Message {
+    /// Quit can be sent to Daemon in 2 ways:
+    /// - From TCP (when the UI is quitting)
+    /// - From mpsc message (when Daemon is quitting, i.e: through the CLI)
+    Quit,
     /// Message sent by clients to add a new Torrent on Daemon
     /// can be sent using the daemon CLI or any UI.
     ///
@@ -19,19 +23,17 @@ pub enum Message {
     NewTorrent(String),
     /// Every second, the Daemon will send information about all torrents
     /// to all listeners
-    TorrentState(TorrentState),
-    /// Torrents must send this message to Daemon
-    /// every second with updated state
     ///
-    /// <len=1+torrent_info_len><id=0><torrent_info>
-    TorrentUpdate(TorrentState),
+    /// <len=1+torrent_state_len><id=0><torrent_state>
+    TorrentState(TorrentState),
 }
 
 #[repr(u8)]
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum MessageId {
-    NewTorrent = 0,
-    TorrentState = 1,
+    Quit = 0,
+    NewTorrent = 1,
+    TorrentState = 2,
 }
 
 impl TryFrom<u8> for MessageId {
@@ -40,6 +42,7 @@ impl TryFrom<u8> for MessageId {
     fn try_from(k: u8) -> Result<Self, Self::Error> {
         use MessageId::*;
         match k {
+            k if k == Quit as u8 => Ok(Quit),
             k if k == NewTorrent as u8 => Ok(NewTorrent),
             k if k == TorrentState as u8 => Ok(TorrentState),
             _ => Err(io::Error::new(
@@ -142,6 +145,7 @@ impl Decoder for DaemonCodec {
         // note: buf is already advanced past the len,
         // so all calls to `remaining` will get the payload, excluding the len.
         let msg = match msg_id {
+            MessageId::Quit => Message::Quit,
             MessageId::NewTorrent => {
                 let mut payload = vec![0u8; buf.remaining()];
                 buf.copy_to_slice(&mut payload);

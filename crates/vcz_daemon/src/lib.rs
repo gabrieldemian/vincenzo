@@ -15,6 +15,7 @@ use tokio::{
     io::AsyncWriteExt,
     net::{TcpListener, TcpStream},
     select, spawn,
+    sync::mpsc,
     time::interval,
 };
 
@@ -26,7 +27,10 @@ use vcz_lib::{
     cli::Args,
     config::Config,
     daemon_wire::{DaemonCodec, Message},
-    TorrentState,
+    disk::{Disk, DiskMsg},
+    magnet_parser::{get_info_hash, get_magnet},
+    torrent::{Torrent, TorrentMsg},
+    DaemonMsg, TorrentState,
 };
 
 /// The UI will ask the Daemon to create new Torrents.
@@ -41,11 +45,17 @@ use vcz_lib::{
 pub struct Daemon {
     pub config: Config,
     pub download_dir: String,
-    torrent_infos: HashMap<[u8; 20], TorrentState>,
+    pub disk_tx: Option<mpsc::Sender<DiskMsg>>,
+    tx: mpsc::Sender<DaemonMsg>,
+    /// key: info_hash
+    torrent_states: HashMap<[u8; 20], TorrentState>,
+    /// key: info_hash
+    torrent_txs: HashMap<[u8; 20], mpsc::Sender<TorrentMsg>>,
 }
 
 impl Daemon {
     pub async fn new() -> Result<Self, Error> {
+        let (tx, _rx) = mpsc::channel::<DaemonMsg>(300);
         let console_layer = console_subscriber::spawn();
         let r = tracing_subscriber::registry();
         r.with(console_layer);
@@ -84,31 +94,37 @@ impl Daemon {
         }
 
         Ok(Self {
+            tx,
+            disk_tx: None,
             config,
             download_dir,
-            torrent_infos: HashMap::new(),
+            torrent_states: HashMap::new(),
+            torrent_txs: HashMap::new(),
         })
     }
 
-    pub async fn run(&self) -> Result<(), Error> {
+    /// Run the daemon event loop and disk event loop.
+    pub async fn run(&mut self) -> Result<(), Error> {
         let socket = TcpListener::bind("127.0.0.1:3030").await.unwrap();
 
+        let (disk_tx, disk_rx) = mpsc::channel::<DiskMsg>(300);
+        self.disk_tx = Some(disk_tx);
+
+        let mut disk = Disk::new(disk_rx, self.download_dir.clone());
         spawn(async move {
-            loop {
-                if let Ok((socket, _addr)) = socket.accept().await {
-                    spawn(async move {
-                        let socket = Framed::new(socket, DaemonCodec);
-                        Self::listen_msgs(socket).await?;
-                        Ok::<(), Error>(())
-                    });
-                }
-            }
+            disk.run().await.unwrap();
         });
 
-        Ok(())
+        loop {
+            if let Ok((socket, _addr)) = socket.accept().await {
+                let socket = Framed::new(socket, DaemonCodec);
+                self.listen_msgs(socket).await?;
+            }
+        }
     }
 
-    async fn listen_msgs(socket: Framed<TcpStream, DaemonCodec>) -> Result<(), Error> {
+    /// Listen to messages sent by the UI
+    async fn listen_msgs(&mut self, socket: Framed<TcpStream, DaemonCodec>) -> Result<(), Error> {
         let (mut sink, mut stream) = socket.split();
         let mut draw_interval = interval(Duration::from_secs(1));
 
@@ -117,19 +133,61 @@ impl Daemon {
                 Some(Ok(msg)) = stream.next() => {
                     match msg {
                         Message::NewTorrent(magnet_link) => {
-                            // self.new_torrent(&magnet_link).await?;
+                            self.new_torrent(&magnet_link).await?;
+                            // immediately draw after adding the new torrent,
+                            // we dont want to wait up to 1 second to update the UI.
+                            // because of the `draw_interval`.
+                            self.draw(&mut sink).await?;
+                        }
+                        Message::Quit => {
+                            self.quit().await?;
                         }
                         _ => {}
                     }
                 }
                 _ = draw_interval.tick() => {
-                    // sink.send(Message::TorrentsState(())).await?;
+                    self.draw(&mut sink).await?;
                 }
             }
         }
     }
 
-    pub async fn new_torrent(&self, magnet: &str) -> Result<(), Error> {
+    pub async fn new_torrent(&mut self, magnet: &str) -> Result<(), Error> {
+        let magnet = get_magnet(magnet).map_err(|_| Error::InvalidMagnet(magnet.to_owned()))?;
+        let info_hash = get_info_hash(&magnet.xt.clone().unwrap());
+
+        if self.torrent_states.get(&info_hash).is_some() {
+            return Err(Error::NoDuplicateTorrent);
+        }
+
+        let name = magnet.dn.clone().unwrap_or("Unknown".to_owned());
+
+        let torrent_state = TorrentState {
+            name,
+            ..Default::default()
+        };
+
+        self.torrent_states.insert(info_hash, torrent_state);
+
+        let args = Args::parse();
+        let mut listen = self.config.listen;
+
+        if args.listen.is_some() {
+            listen = args.listen;
+        }
+
+        // disk_tx is not None at this point, this is safe
+        // (if calling after run)
+        let disk_tx = self.disk_tx.clone().unwrap();
+        let mut torrent = Torrent::new(disk_tx, self.tx.clone(), magnet);
+
+        self.torrent_txs.insert(info_hash, torrent.ctx.tx.clone());
+
+        spawn(async move {
+            torrent.start_and_run(listen).await.unwrap();
+            torrent.disk_tx.send(DiskMsg::Quit).await.unwrap();
+        });
+
         Ok(())
     }
 
@@ -195,6 +253,30 @@ impl Daemon {
             file.write_all(config_str.as_bytes()).await.unwrap();
         }
 
+        Ok(())
+    }
+
+    /// Sends a Draw message to the UI with all the torrent states
+    async fn draw<T>(&self, sink: &mut T) -> Result<(), Error>
+    where
+        T: SinkExt<Message> + Sized + std::marker::Unpin + Send,
+    {
+        for state in self.torrent_states.values().cloned() {
+            sink.send(Message::TorrentState(state))
+                .await
+                .map_err(|_| Error::SendErrorTcp)?;
+        }
+        Ok(())
+    }
+
+    async fn quit(&mut self) -> Result<(), Error> {
+        // tell all torrents that we are gracefully shutting down,
+        // each torrent will kill their peers tasks, and their tracker task
+        for (_, tx) in std::mem::take(&mut self.torrent_txs) {
+            spawn(async move {
+                let _ = tx.send(TorrentMsg::Quit).await;
+            });
+        }
         Ok(())
     }
 }

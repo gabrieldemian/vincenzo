@@ -53,8 +53,17 @@ mod tests {
 #[derive(Debug, Clone)]
 pub enum FrMsg {
     NewTorrent(String),
-    Draw([u8; 20], TorrentState),
+    Draw(TorrentState),
     TogglePause([u8; 20]),
+    Quit,
+}
+
+/// Messages that are only used from daemon to itself
+#[derive(Debug, Clone)]
+pub enum DaemonMsg {
+    NewTorrent(String),
+    TorrentState(TorrentState),
+    // TogglePause([u8; 20]),
     Quit,
 }
 

@@ -17,10 +17,12 @@ pub fn get_magnet(str: &str) -> Result<Magnet, MagnetError> {
                 *x = urlencoding::decode(x).unwrap().to_string();
                 *x = x.replace("http://", "");
                 *x = x.replace("udp://", "");
+
                 // remove any /announce
                 if let Some(i) = x.find('/') {
                     *x = x[..i].to_string();
                 };
+
                 x.to_owned()
             })
             .collect();
@@ -30,7 +32,7 @@ pub fn get_magnet(str: &str) -> Result<Magnet, MagnetError> {
 }
 
 /// The info_hash from the magnet link is already
-/// encoded in SHA1
+/// encoded in SHA1, but it is in hex format
 pub fn get_info_hash(info: &str) -> [u8; 20] {
     let info_hash = hex::decode(info).unwrap();
     let mut x = [0u8; 20];

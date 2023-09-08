@@ -81,4 +81,6 @@ pub enum Error {
     SendErrorTorrent(#[from] mpsc::error::SendError<TorrentMsg>),
     #[error("The given PATH is invalid")]
     PathInvalid,
+    #[error("Could not send message to TCP socket")]
+    SendErrorTcp,
 }

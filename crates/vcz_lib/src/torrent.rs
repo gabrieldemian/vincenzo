@@ -15,7 +15,7 @@ use crate::{
         {Tracker, TrackerCtx, TrackerMsg},
     },
 };
-use crate::{FrMsg, TorrentState};
+use crate::{DaemonMsg, TorrentState};
 use bendy::decoding::FromBencode;
 use clap::Parser;
 use hashbrown::HashMap;
@@ -91,7 +91,7 @@ pub struct Torrent {
     pub uploaded: u64,
     /// How many bytes we have downloaded from other peers.
     pub downloaded: u64,
-    pub fr_tx: mpsc::Sender<FrMsg>,
+    pub daemon_tx: mpsc::Sender<DaemonMsg>,
     pub status: TorrentStatus,
     /// Stats of the current Torrent, returned from tracker on announce requests.
     pub stats: Stats,
@@ -126,23 +126,13 @@ pub struct Stats {
 }
 
 impl Torrent {
-    #[tracing::instrument(skip(disk_tx, fr_tx), name = "torrent::new")]
-    pub fn new(disk_tx: mpsc::Sender<DiskMsg>, fr_tx: mpsc::Sender<FrMsg>, magnet: &str) -> Self {
-        let magnet = get_magnet(magnet).unwrap_or_else(|_| {
-            eprintln!("The magnet link is invalid, try another one");
-            std::process::exit(exitcode::USAGE)
-        });
-
-        if magnet.tr.is_empty() {
-            eprintln!("This magnet link does not have any addresses to announce. Currently, we do not support DHT, please used a different magnet link.");
-            std::process::exit(exitcode::DATAERR)
-        }
-
-        let xt = magnet
-            .xt
-            .clone()
-            .expect("The magnet link does not have a hash");
-
+    #[tracing::instrument(skip(disk_tx, daemon_tx), name = "torrent::new")]
+    // todo: fr_tx is actually daemon_tx
+    pub fn new(
+        disk_tx: mpsc::Sender<DiskMsg>,
+        daemon_tx: mpsc::Sender<DaemonMsg>,
+        magnet: Magnet,
+    ) -> Self {
         let dn = magnet.dn.clone().unwrap_or("Unknown".to_string());
 
         let pieces = RwLock::new(Bitfield::default());
@@ -150,7 +140,7 @@ impl Torrent {
         let info_pieces = BTreeMap::new();
         let tracker_ctx = Arc::new(TrackerCtx::default());
 
-        let info_hash = get_info_hash(&xt);
+        let info_hash = get_info_hash(&magnet.xt.clone().unwrap());
         let (tx, rx) = mpsc::channel::<TorrentMsg>(300);
 
         let ctx = Arc::new(TorrentCtx {
@@ -169,7 +159,7 @@ impl Torrent {
             download_rate: 0,
             status: TorrentStatus::default(),
             stats: Stats::default(),
-            fr_tx,
+            daemon_tx,
             uploaded: 0,
             downloaded: 0,
             info_pieces,
@@ -554,7 +544,7 @@ impl Torrent {
                 _ = frontend_interval.tick() => {
                     self.download_rate = self.downloaded - self.last_second_downloaded;
 
-                    let torrent_info = TorrentState {
+                    let torrent_state = TorrentState {
                         name: self.name.clone(),
                         size: self.size,
                         downloaded: self.downloaded,
@@ -566,7 +556,8 @@ impl Torrent {
                     };
 
                     self.last_second_downloaded = self.downloaded;
-                    self.fr_tx.send(FrMsg::Draw(self.ctx.info_hash, torrent_info)).await.unwrap();
+                    // send updated information to daemon
+                    self.daemon_tx.send(DaemonMsg::TorrentState(torrent_state)).await.unwrap();
                 }
                 // periodically announce to tracker, at the specified interval
                 // to update the tracker about the client's stats.

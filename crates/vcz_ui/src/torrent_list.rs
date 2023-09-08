@@ -10,10 +10,9 @@ use ratatui::{
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
     Terminal,
 };
-use vcz_lib::{to_human_readable, torrent::TorrentStatus};
-// use tracing::info;
+use vcz_lib::{to_human_readable, torrent::TorrentStatus, FrMsg};
 
-use super::{AppStyle, FrMsg, FrontendCtx, TorrentState};
+use super::{AppStyle, FrontendCtx, TorrentState};
 
 #[derive(Clone)]
 pub struct TorrentList<'a> {

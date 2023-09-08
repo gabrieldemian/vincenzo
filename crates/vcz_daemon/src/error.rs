@@ -1,7 +1,4 @@
-use std::io;
-
 use thiserror::Error;
-// use tokio::sync::{mpsc, oneshot};
 
 #[derive(Error, Debug)]
 pub enum Error {
@@ -13,6 +10,10 @@ pub enum Error {
     FolderOpenError(String),
     #[error("Tried to load $HOME but could not find it. Please make sure you have a $HOME env and that this program has the permission to create dirs.")]
     HomeInvalid,
-    #[error("IO error `{0}`")]
-    Io(#[from] io::Error),
+    #[error("Invalid magnet: `{0}")]
+    InvalidMagnet(String),
+    #[error("You cannot add a duplicate torrent, only 1 allowed")]
+    NoDuplicateTorrent,
+    #[error("Could not send message to TCP socket")]
+    SendErrorTcp,
 }
