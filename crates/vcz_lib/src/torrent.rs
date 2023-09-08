@@ -1,4 +1,3 @@
-use crate::magnet_parser::get_magnet;
 use crate::peer::session::ConnectionState;
 use crate::tcp_wire::messages::HandshakeCodec;
 use crate::tcp_wire::BlockInfo;
@@ -127,7 +126,6 @@ pub struct Stats {
 
 impl Torrent {
     #[tracing::instrument(skip(disk_tx, daemon_tx), name = "torrent::new")]
-    // todo: fr_tx is actually daemon_tx
     pub fn new(
         disk_tx: mpsc::Sender<DiskMsg>,
         daemon_tx: mpsc::Sender<DaemonMsg>,
@@ -557,7 +555,7 @@ impl Torrent {
 
                     self.last_second_downloaded = self.downloaded;
                     // send updated information to daemon
-                    self.daemon_tx.send(DaemonMsg::TorrentState(torrent_state)).await.unwrap();
+                    let _ = self.daemon_tx.send(DaemonMsg::TorrentState(torrent_state)).await;
                 }
                 // periodically announce to tracker, at the specified interval
                 // to update the tracker about the client's stats.

@@ -1,3 +1,4 @@
+use tracing::debug;
 pub mod error;
 pub mod torrent_list;
 use futures::{stream::SplitStream, FutureExt, SinkExt, StreamExt};
@@ -104,10 +105,11 @@ impl<'a> Frontend<'a> {
                 Some(Ok(msg)) = sink.next() => {
                     match msg {
                         Message::TorrentState(torrent_info) => {
-                            fr_tx.send(FrMsg::Draw(torrent_info)).await.unwrap();
+                            let _ = fr_tx.send(FrMsg::Draw(torrent_info)).await;
                         }
                         Message::Quit => {
-                            fr_tx.send(FrMsg::Quit).await.unwrap();
+                            let _ = fr_tx.send(FrMsg::Quit).await;
+                            return Ok(())
                         }
                         _ => {}
                     }
@@ -136,6 +138,9 @@ impl<'a> Frontend<'a> {
 
         let fr_tx = self.ctx.fr_tx.clone();
         let socket = TcpStream::connect("127.0.0.1:3030").await.unwrap();
+
+        debug!("ui connected to daemon on {:?}", socket.local_addr());
+
         let socket = Framed::new(socket, DaemonCodec);
         let (mut sink, stream) = socket.split();
 
@@ -143,7 +148,7 @@ impl<'a> Frontend<'a> {
             Self::listen_daemon(fr_tx, stream).await.unwrap();
         });
 
-        loop {
+        'outer: loop {
             let event = reader.next().fuse();
 
             select! {
@@ -160,7 +165,8 @@ impl<'a> Frontend<'a> {
                 Some(msg) = fr_rx.recv() => {
                     match msg {
                         FrMsg::Quit => {
-                            return self.stop(&mut sink).await;
+                            self.stop(&mut sink).await?;
+                            break 'outer;
                         },
                         FrMsg::Draw(torrent_info) => {
                             self.torrent_list
@@ -180,6 +186,7 @@ impl<'a> Frontend<'a> {
                 }
             }
         }
+        debug!("ui quitted loop");
 
         Ok(())
     }
@@ -200,9 +207,12 @@ impl<'a> Frontend<'a> {
     where
         T: SinkExt<Message> + Sized + std::marker::Unpin,
     {
+        debug!("ui on stop fn");
         sink.send(Message::Quit)
             .await
             .map_err(|_| Error::SendErrorTcp)?;
+
+        debug!("ui sent quit");
 
         Self::reset_terminal();
 

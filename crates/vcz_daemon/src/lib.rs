@@ -8,6 +8,7 @@ use std::{
     time::Duration,
 };
 use tokio_util::codec::Framed;
+use tracing::debug;
 
 use error::Error;
 use tokio::{
@@ -56,6 +57,7 @@ pub struct Daemon {
 impl Daemon {
     pub async fn new() -> Result<Self, Error> {
         let (tx, _rx) = mpsc::channel::<DaemonMsg>(300);
+
         let console_layer = console_subscriber::spawn();
         let r = tracing_subscriber::registry();
         r.with(console_layer);
@@ -63,12 +65,12 @@ impl Daemon {
         let file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open("log.txt")
+            .open("../../log.txt")
             .expect("Failed to open log file");
 
         tracing_subscriber::fmt()
             .with_env_filter("tokio=trace,runtime=trace")
-            .with_max_level(tracing::Level::INFO)
+            .with_max_level(tracing::Level::DEBUG)
             .with_target(false)
             .with_writer(file)
             .compact()
@@ -115,24 +117,28 @@ impl Daemon {
             disk.run().await.unwrap();
         });
 
-        loop {
+        'outer: loop {
             if let Ok((socket, _addr)) = socket.accept().await {
                 let socket = Framed::new(socket, DaemonCodec);
                 self.listen_msgs(socket).await?;
+                break 'outer;
             }
         }
+        Ok(())
     }
 
     /// Listen to messages sent by the UI
     async fn listen_msgs(&mut self, socket: Framed<TcpStream, DaemonCodec>) -> Result<(), Error> {
+        debug!("daemon listen_msgs");
         let (mut sink, mut stream) = socket.split();
         let mut draw_interval = interval(Duration::from_secs(1));
 
-        loop {
+        'outer: loop {
             select! {
                 Some(Ok(msg)) = stream.next() => {
                     match msg {
                         Message::NewTorrent(magnet_link) => {
+                            debug!("daemon received newTorrent");
                             self.new_torrent(&magnet_link).await?;
                             // immediately draw after adding the new torrent,
                             // we dont want to wait up to 1 second to update the UI.
@@ -140,7 +146,9 @@ impl Daemon {
                             self.draw(&mut sink).await?;
                         }
                         Message::Quit => {
+                            debug!("daemon received quit");
                             self.quit().await?;
+                            break 'outer;
                         }
                         _ => {}
                     }
@@ -150,6 +158,7 @@ impl Daemon {
                 }
             }
         }
+        Ok(())
     }
 
     pub async fn new_torrent(&mut self, magnet: &str) -> Result<(), Error> {
@@ -261,6 +270,7 @@ impl Daemon {
     where
         T: SinkExt<Message> + Sized + std::marker::Unpin + Send,
     {
+        debug!("daemon sending draw");
         for state in self.torrent_states.values().cloned() {
             sink.send(Message::TorrentState(state))
                 .await
@@ -277,6 +287,7 @@ impl Daemon {
                 let _ = tx.send(TorrentMsg::Quit).await;
             });
         }
+        let _ = self.disk_tx.as_ref().unwrap().send(DiskMsg::Quit).await;
         Ok(())
     }
 }

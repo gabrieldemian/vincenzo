@@ -42,7 +42,6 @@ impl TryFrom<u8> for MessageId {
     fn try_from(k: u8) -> Result<Self, Self::Error> {
         use MessageId::*;
         match k {
-            k if k == Quit as u8 => Ok(Quit),
             k if k == NewTorrent as u8 => Ok(NewTorrent),
             k if k == TorrentState as u8 => Ok(TorrentState),
             _ => Err(io::Error::new(
@@ -96,7 +95,9 @@ impl Encoder<Message> for DaemonCodec {
                 buf.put_u8(MessageId::TorrentState as u8);
                 buf.extend_from_slice(info_bytes);
             }
-            _ => todo!(),
+            Message::Quit => {
+                buf.put_u32(0);
+            }
         }
         Ok(())
     }
@@ -121,16 +122,17 @@ impl Decoder for DaemonCodec {
         let mut tmp_buf = Cursor::new(&buf);
         let msg_len = tmp_buf.get_u32() as usize;
 
-        // if tmp_buf.get_u8() == 20 {
-        //     println!("received ext msg, showing raw buf {:?}", buf.to_vec());
-        // }
-
         tmp_buf.set_position(0);
 
         if buf.remaining() >= 4 + msg_len {
             // we have the full message in the buffer so advance the buffer
             // cursor past the message length header
             buf.advance(4);
+
+            // Only a Quit doesnt have ID
+            if msg_len == 0 {
+                return Ok(Some(Message::Quit));
+            }
         } else {
             tracing::trace!(
                 "Read buffer is {} bytes long but message is {} bytes long",

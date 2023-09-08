@@ -4,6 +4,7 @@
 use clap::Parser;
 use tokio::{runtime::Runtime, spawn, sync::mpsc};
 
+use tracing::debug;
 use vcz_daemon::Daemon;
 use vcz_lib::{cli::Args, error::Error};
 
@@ -18,6 +19,7 @@ async fn main() -> Result<(), Error> {
     let handle = std::thread::spawn(move || {
         rt.block_on(async {
             daemon.run().await.unwrap();
+            debug!("main daemon exited run");
         });
     });
 
@@ -27,6 +29,7 @@ async fn main() -> Result<(), Error> {
 
     spawn(async move {
         fr.run(fr_rx).await.unwrap();
+        debug!("main ui exited run");
     });
 
     let args = Args::parse();

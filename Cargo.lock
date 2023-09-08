@@ -2030,6 +2030,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-util",
+ "tracing",
  "vcz_lib",
 ]
 
