@@ -83,4 +83,8 @@ pub enum Error {
     PathInvalid,
     #[error("Could not send message to TCP socket")]
     SendErrorTcp,
+    #[error("Tried to load $HOME but could not find it. Please make sure you have a $HOME env and that this program has the permission to create dirs.")]
+    HomeInvalid,
+    #[error("Error while trying to read the configuration file, please make sure it has the correct format")]
+    ConfigDeserializeError,
 }

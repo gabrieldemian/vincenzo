@@ -176,10 +176,6 @@ impl Decoder for PeerCodec {
         let mut tmp_buf = Cursor::new(&buf);
         let msg_len = tmp_buf.get_u32() as usize;
 
-        // if tmp_buf.get_u8() == 20 {
-        //     println!("received ext msg, showing raw buf {:?}", buf.to_vec());
-        // }
-
         tmp_buf.set_position(0);
 
         if buf.remaining() >= 4 + msg_len {

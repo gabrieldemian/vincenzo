@@ -17,9 +17,9 @@ pub struct Args {
     #[clap(short, long)]
     pub magnet: Option<String>,
 
-    /// The socket address on which to listen for new connections.
-    #[clap(short, long)]
-    pub listen: Option<SocketAddr>,
+    /// The Daemon will accept connections on this TCP address.
+    #[clap(long)]
+    pub daemon_addr: Option<SocketAddr>,
 
     /// If the program should quit after a torrent is fully downloaded
     #[clap(short, long)]

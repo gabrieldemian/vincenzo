@@ -2000,6 +2000,7 @@ dependencies = [
  "bytes",
  "clap",
  "decurse",
+ "directories",
  "futures",
  "hashbrown 0.14.0",
  "hex",
@@ -2011,6 +2012,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-util",
+ "toml",
  "tracing",
  "urlencoding",
 ]

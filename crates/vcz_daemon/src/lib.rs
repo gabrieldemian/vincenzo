@@ -90,14 +90,9 @@ impl Daemon {
 
         let args = Args::parse();
 
-        let mut str = String::new();
-        let (mut file, _) = Self::config_file().await?;
-
-        file.read_to_string(&mut str).await.unwrap();
-
-        let config = toml::from_str::<Config>(&str);
-
-        let config = config.unwrap();
+        let config = Config::load()
+            .await
+            .expect("Could not get the configuration file");
 
         let download_dir = args.download_dir.unwrap_or(config.download_dir.clone());
 
@@ -121,7 +116,20 @@ impl Daemon {
 
     /// Run the daemon event loop and disk event loop.
     pub async fn run(&mut self) -> Result<(), Error> {
-        let socket = TcpListener::bind("127.0.0.1:3030").await.unwrap();
+        let args = Args::parse();
+        let mut listen = self.config.daemon_addr;
+
+        if args.daemon_addr.is_some() {
+            listen = args.daemon_addr;
+        }
+
+        if listen.is_none() {
+            // if the user did not pass a `daemon_addr` on the config or CLI,
+            // we default to this value
+            listen = Some("127.0.0.1:3030".parse().unwrap())
+        }
+
+        let socket = TcpListener::bind(listen.unwrap()).await.unwrap();
 
         let (disk_tx, disk_rx) = mpsc::channel::<DiskMsg>(300);
         self.disk_tx = Some(disk_tx);
@@ -133,21 +141,25 @@ impl Daemon {
 
         let rx = std::mem::take(&mut self.rx).unwrap();
 
+        // spawn(async move {
+        //
+        // });
+
         'outer: loop {
             if let Ok((socket, addr)) = socket.accept().await {
-                if self.remote_addr.is_some() {
-                    eprintln!("{addr} Tried to connect to Daemon, but it already has one active connection, and only one connection is allowed");
-                    warn!("{addr} Tried to connect to Daemon, but it already has one active connection, and only one connection is allowed");
-                } else {
-                    self.remote_addr = Some(addr);
+                // if self.remote_addr.is_some() {
+                //     eprintln!("{addr} Tried to connect to Daemon, but it already has one active connection, and only one connection is allowed");
+                //     warn!("{addr} Tried to connect to Daemon, but it already has one active connection, and only one connection is allowed");
+                // } else {
+                self.remote_addr = Some(addr);
 
-                    let socket = Framed::new(socket, DaemonCodec);
+                let socket = Framed::new(socket, DaemonCodec);
 
-                    self.listen_remote_msgs(socket, self.ctx.tx.clone(), rx)
-                        .await?;
+                self.listen_remote_msgs(socket, self.ctx.tx.clone(), rx)
+                    .await?;
 
-                    break 'outer;
-                }
+                break 'outer;
+                // }
             }
         }
 
@@ -211,7 +223,12 @@ impl Daemon {
                     }
                 }
                 _ = draw_interval.tick() => {
-                    self.draw(&mut sink).await?;
+                    if self.remote_addr.is_some() {
+                        let r = self.draw(&mut sink).await;
+                        if r.is_err() {
+                            self.remote_addr = None;
+                        }
+                    }
                 }
             }
         }
@@ -239,13 +256,6 @@ impl Daemon {
         torrent_states.insert(info_hash, torrent_state);
         drop(torrent_states);
 
-        let args = Args::parse();
-        let mut listen = self.config.listen;
-
-        if args.listen.is_some() {
-            listen = args.listen;
-        }
-
         // disk_tx is not None at this point, this is safe
         // (if calling after run)
         let disk_tx = self.disk_tx.clone().unwrap();
@@ -254,7 +264,7 @@ impl Daemon {
         self.torrent_txs.insert(info_hash, torrent.ctx.tx.clone());
 
         spawn(async move {
-            torrent.start_and_run(listen).await.unwrap();
+            torrent.start_and_run(None).await.unwrap();
             torrent.disk_tx.send(DiskMsg::Quit).await.unwrap();
         });
 
@@ -294,8 +304,8 @@ impl Daemon {
         file.read_to_string(&mut str).await.unwrap();
         let config = toml::from_str::<Config>(&str);
 
-        // the user does not have the config file, write
-        // the default config
+        // if the user does not have the config file,
+        // write the default config
         if config.is_err() {
             let download_dir = UserDirs::new()
                 .ok_or(Error::FolderNotFound(
@@ -315,7 +325,7 @@ impl Daemon {
 
             let config_local = Config {
                 download_dir,
-                listen: None,
+                daemon_addr: None,
             };
 
             let config_str = toml::to_string(&config_local).unwrap();
