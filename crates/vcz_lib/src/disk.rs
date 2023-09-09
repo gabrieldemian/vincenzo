@@ -11,7 +11,7 @@ use tokio::{
     io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
     sync::{mpsc::Receiver, oneshot::Sender},
 };
-use tracing::info;
+use tracing::{info, field::debug, debug};
 
 use crate::{
     error::Error,
@@ -139,6 +139,7 @@ impl Disk {
         self.downloaded_infos.insert(info_hash, HashSet::new());
         drop(info);
 
+        debug!("disk has {} peer_ctxs", self.peer_ctxs.len());
         for peer in &self.peer_ctxs {
             peer.1.tx.send(PeerMsg::HaveInfo).await?;
         }
@@ -201,9 +202,11 @@ impl Disk {
 
     #[tracing::instrument(skip(self))]
     pub async fn run(&mut self) -> Result<(), Error> {
+        debug!("disk started event loop");
         while let Some(msg) = self.rx.recv().await {
             match msg {
                 DiskMsg::NewTorrent(torrent) => {
+                    debug!("disk received NewTorrent");
                     let _ = self.new_torrent(torrent).await;
                 }
                 DiskMsg::ReadBlock {

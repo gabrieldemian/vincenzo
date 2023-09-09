@@ -109,13 +109,15 @@ impl<'a> Frontend<'a> {
                         }
                         Message::Quit => {
                             let _ = fr_tx.send(FrMsg::Quit).await;
-                            return Ok(())
+                            break;
                         }
                         _ => {}
                     }
                 }
+                else => break,
             }
         }
+        Ok(())
     }
 
     /// Run the UI event loop
@@ -186,7 +188,6 @@ impl<'a> Frontend<'a> {
                 }
             }
         }
-        debug!("ui quitted loop");
 
         Ok(())
     }
@@ -207,12 +208,9 @@ impl<'a> Frontend<'a> {
     where
         T: SinkExt<Message> + Sized + std::marker::Unpin,
     {
-        debug!("ui on stop fn");
         sink.send(Message::Quit)
             .await
             .map_err(|_| Error::SendErrorTcp)?;
-
-        debug!("ui sent quit");
 
         Self::reset_terminal();
 

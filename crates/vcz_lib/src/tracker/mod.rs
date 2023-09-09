@@ -131,7 +131,6 @@ impl Tracker {
                 };
                 if tracker.connect_exchange(socket).await.is_ok() {
                     info!("announced to tracker {tracker_addr}");
-                    debug!("DNS of the tracker {tracker:#?}");
                     if tx.send(tracker).await.is_err() {
                         return Ok(());
                     };

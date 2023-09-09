@@ -31,7 +31,7 @@ use tokio::{
     time::{interval_at, Instant},
 };
 use tokio_util::codec::Framed;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 #[derive(Debug)]
 pub enum TorrentMsg {
@@ -333,6 +333,7 @@ impl Torrent {
 
     #[tracing::instrument(name = "torrent::run", skip(self))]
     pub async fn run(&mut self) -> Result<(), Error> {
+        debug!("torrent run");
         let tracker_tx = self.tracker_tx.clone().unwrap();
 
         let mut announce_interval = interval_at(
@@ -409,6 +410,8 @@ impl Torrent {
                             }
                         }
                         TorrentMsg::DownloadedInfoPiece(total, index, bytes) => {
+                            debug!("received DownloadedInfoPiece");
+
                             if self.status == TorrentStatus::ConnectingTrackers {
                                 self.status = TorrentStatus::DownloadingMetainfo;
                             }
@@ -452,12 +455,14 @@ impl Torrent {
                                     self.have_info = true;
 
                                     let mut info_l = self.ctx.info.write().await;
+
                                     info!("new info files {:?}", info.files);
+                                    info!("new info file_length {:?}", info.file_length);
+
                                     *info_l = info;
                                     drop(info_l);
 
                                     self.status = TorrentStatus::Downloading;
-
                                     self.disk_tx.send(DiskMsg::NewTorrent(self.ctx.clone())).await?;
                                 } else {
                                     warn!("a peer sent a valid Info, but the hash does not match the hash of the provided magnet link, panicking");
@@ -554,12 +559,12 @@ impl Torrent {
                     };
 
                     self.last_second_downloaded = self.downloaded;
+
                     // send updated information to daemon
                     let _ = self.daemon_tx.send(DaemonMsg::TorrentState(torrent_state)).await;
                 }
                 // periodically announce to tracker, at the specified interval
                 // to update the tracker about the client's stats.
-                // let have_info = self.ctx.info_dict;
                 _ = announce_interval.tick() => {
                     let info = self.ctx.info.read().await;
 

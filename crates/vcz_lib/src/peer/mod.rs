@@ -15,7 +15,7 @@ use tokio::{
 use tokio_util::codec::{Framed, FramedParts};
 
 use tokio::net::TcpStream;
-use tracing::{info, warn};
+use tracing::{info, warn, field::debug, debug};
 
 use crate::{
     bitfield::Bitfield,
@@ -522,11 +522,11 @@ impl Peer {
                                             info!("{metadata:?}");
 
                                             self.torrent_ctx.tx.send(TorrentMsg::DownloadedInfoPiece(t, metadata.piece, info)).await?;
-                                            self.torrent_ctx.tx.send(TorrentMsg::SendCancelMetadata{
-                                                from: self.ctx.id.read().await.unwrap(),
-                                                index: metadata.piece
-                                            })
-                                            .await?;
+                                            // self.torrent_ctx.tx.send(TorrentMsg::SendCancelMetadata{
+                                            //     from: self.ctx.id.read().await.unwrap(),
+                                            //     index: metadata.piece
+                                            // })
+                                            // .await?;
                                         }
                                         _ => {}
                                     }
@@ -655,11 +655,14 @@ impl Peer {
                             return Ok(());
                         }
                         PeerMsg::HaveInfo => {
+                            debug!("{:?} has entire info", self.addr);
                             self.have_info = true;
                             let am_interested = self.session.state.am_interested;
                             let peer_choking = self.session.state.peer_choking;
 
                             if am_interested && !peer_choking {
+                                self.session.prepare_for_download(self.extension.reqq);
+                                debug!("{:?} requesting blocks", self.addr);
                                 self.request_block_infos(&mut sink).await?;
                             }
                         }
@@ -716,6 +719,12 @@ impl Peer {
     where
         T: SinkExt<Message> + Sized + std::marker::Unpin,
     {
+        debug!("tick peer");
+
+        if self.can_request() {
+            self.request_block_infos(sink).await?;
+        }
+
         // resend requests if we have pending requests and more time has elapsed
         // since the last request than the current timeout value
         if !self.outgoing_requests.is_empty() {
