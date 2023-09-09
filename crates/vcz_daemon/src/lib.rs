@@ -4,13 +4,12 @@ mod error;
 use futures::{SinkExt, StreamExt};
 use hashbrown::HashMap;
 use std::{
-    net::SocketAddr,
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
 };
 use tokio_util::codec::Framed;
-use tracing::{debug, warn};
+use tracing::debug;
 
 use error::Error;
 use tokio::{
@@ -49,13 +48,10 @@ pub struct Daemon {
     pub config: Config,
     pub download_dir: String,
     pub disk_tx: Option<mpsc::Sender<DiskMsg>>,
-    rx: Option<mpsc::Receiver<DaemonMsg>>,
+    rx: mpsc::Receiver<DaemonMsg>,
     /// key: info_hash
     torrent_txs: HashMap<[u8; 20], mpsc::Sender<TorrentMsg>>,
     ctx: Arc<DaemonCtx>,
-    /// Addr of who is connected to the Daemon,
-    /// only one connection is allowed.
-    remote_addr: Option<SocketAddr>,
 }
 
 pub struct DaemonCtx {
@@ -101,8 +97,7 @@ impl Daemon {
         }
 
         Ok(Self {
-            remote_addr: None,
-            rx: Some(rx),
+            rx,
             disk_tx: None,
             config,
             download_dir,
@@ -135,72 +130,27 @@ impl Daemon {
         self.disk_tx = Some(disk_tx);
 
         let mut disk = Disk::new(disk_rx, self.download_dir.clone());
+
         spawn(async move {
             disk.run().await.unwrap();
         });
 
-        let rx = std::mem::take(&mut self.rx).unwrap();
-
-        // spawn(async move {
-        //
-        // });
-
-        'outer: loop {
-            if let Ok((socket, addr)) = socket.accept().await {
-                // if self.remote_addr.is_some() {
-                //     eprintln!("{addr} Tried to connect to Daemon, but it already has one active connection, and only one connection is allowed");
-                //     warn!("{addr} Tried to connect to Daemon, but it already has one active connection, and only one connection is allowed");
-                // } else {
-                self.remote_addr = Some(addr);
-
-                let socket = Framed::new(socket, DaemonCodec);
-
-                self.listen_remote_msgs(socket, self.ctx.tx.clone(), rx)
-                    .await?;
-
-                break 'outer;
-                // }
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Listen to messages sent remotely via TCP, like the UI sending messages to Daemon.
-    async fn listen_remote_msgs(
-        &mut self,
-        socket: Framed<TcpStream, DaemonCodec>,
-        tx: mpsc::Sender<DaemonMsg>,
-        mut rx: mpsc::Receiver<DaemonMsg>,
-    ) -> Result<(), Error> {
-        debug!("daemon listen_msgs");
-
-        let mut draw_interval = interval(Duration::from_secs(1));
-        let (mut sink, mut stream) = socket.split();
-
-        'outer: loop {
-            select! {
-                // listen to messages sent remotely via TCP, and pass them
-                // to our rx, the `Some` branch right below this one.
-                // We do this so we can use the exact same messages
-                // when sent remotely via TCP (i.e UI on remote server),
-                // or locally on the same binary (i.e CLI).
-                Some(Ok(msg)) = stream.next() => {
-                    match msg {
-                        Message::NewTorrent(magnet_link) => {
-                            debug!("daemon received newTorrent");
-                            let _ = tx.send(DaemonMsg::NewTorrent(magnet_link)).await;
-                        }
-                        Message::Quit => {
-                            debug!("daemon received quit");
-                            let _ = tx.send(DaemonMsg::Quit).await;
-                        }
-                        _ => {}
-                    }
+        let ctx = self.ctx.clone();
+        let handle = spawn(async move {
+            loop {
+                if let Ok((socket, _addr)) = socket.accept().await {
+                    let ctx = ctx.clone();
+                    spawn(async move {
+                        let socket = Framed::new(socket, DaemonCodec);
+                        let _ = Self::listen_remote_msgs(socket, ctx).await;
+                    });
                 }
-                // listen to messages sent locally, from the daemon binary.
-                // a Torrent that is owned by the Daemon, may send messages to this channel
-                Some(msg) = rx.recv() => {
+            }
+        });
+
+        loop {
+            select! {
+                Some(msg) = self.rx.recv() => {
                     match msg {
                         DaemonMsg::TorrentState(torrent_state) => {
                             let mut torrent_states = self.ctx.torrent_states.write().await;
@@ -210,28 +160,78 @@ impl Daemon {
                             drop(torrent_states);
                         }
                         DaemonMsg::NewTorrent(magnet) => {
-                            self.new_torrent(&magnet).await?;
+                            let _ = self.new_torrent(&magnet).await;
                             // immediately draw after adding the new torrent,
                             // we dont want to wait up to 1 second to update the UI.
                             // because of the `draw_interval`.
-                            self.draw(&mut sink).await?;
+                            // Self::draw(&mut sink).await?;
                         }
                         DaemonMsg::Quit => {
-                            self.quit().await?;
-                            break 'outer;
-                        }
-                    }
-                }
-                _ = draw_interval.tick() => {
-                    if self.remote_addr.is_some() {
-                        let r = self.draw(&mut sink).await;
-                        if r.is_err() {
-                            self.remote_addr = None;
+                            let _ = self.quit().await;
+                            handle.abort();
+                            break;
                         }
                     }
                 }
             }
         }
+
+        Ok(())
+    }
+
+    /// Listen to messages sent remotely via TCP, like the UI sending messages to Daemon.
+    async fn listen_remote_msgs(
+        socket: Framed<TcpStream, DaemonCodec>,
+        ctx: Arc<DaemonCtx>,
+    ) -> Result<(), Error> {
+        debug!("daemon listen_msgs");
+
+        let mut draw_interval = interval(Duration::from_secs(1));
+        let (mut sink, mut stream) = socket.split();
+
+        loop {
+            select! {
+                // listen to messages sent remotely via TCP, and pass them
+                // to our rx. We do this so we can use the exact same messages
+                // when sent remotely via TCP (i.e UI on remote server),
+                // or locally on the same binary (i.e CLI).
+                Some(Ok(msg)) = stream.next() => {
+                    match msg {
+                        Message::NewTorrent(magnet_link) => {
+                            debug!("daemon received newTorrent");
+                            let _ = ctx.tx.send(DaemonMsg::NewTorrent(magnet_link)).await;
+                        }
+                        Message::Quit => {
+                            debug!("daemon received quit");
+                            let _ = ctx.tx.send(DaemonMsg::Quit).await;
+                        }
+                        _ => {}
+                    }
+                }
+                // listen to messages sent locally, from the daemon binary.
+                // a Torrent that is owned by the Daemon, may send messages to this channel
+                _ = draw_interval.tick() => {
+                    let _ = Self::draw(&mut sink, ctx.clone()).await;
+                }
+            }
+        }
+    }
+
+    /// Sends a Draw message to the UI with all the torrent states
+    async fn draw<T>(sink: &mut T, ctx: Arc<DaemonCtx>) -> Result<(), Error>
+    where
+        T: SinkExt<Message> + Sized + std::marker::Unpin + Send,
+    {
+        debug!("daemon sending draw");
+        let torrent_states = ctx.torrent_states.read().await;
+
+        for state in torrent_states.values().cloned() {
+            sink.send(Message::TorrentState(state))
+                .await
+                .map_err(|_| Error::SendErrorTcp)?;
+        }
+
+        drop(torrent_states);
         Ok(())
     }
 
@@ -331,23 +331,6 @@ impl Daemon {
             let config_str = toml::to_string(&config_local).unwrap();
 
             file.write_all(config_str.as_bytes()).await.unwrap();
-        }
-
-        Ok(())
-    }
-
-    /// Sends a Draw message to the UI with all the torrent states
-    async fn draw<T>(&self, sink: &mut T) -> Result<(), Error>
-    where
-        T: SinkExt<Message> + Sized + std::marker::Unpin + Send,
-    {
-        debug!("daemon sending draw");
-        let torrent_states = self.ctx.torrent_states.read().await;
-
-        for state in torrent_states.values().cloned() {
-            sink.send(Message::TorrentState(state))
-                .await
-                .map_err(|_| Error::SendErrorTcp)?;
         }
 
         Ok(())
