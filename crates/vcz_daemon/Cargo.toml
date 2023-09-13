@@ -28,7 +28,7 @@ speedy = "0.8.6"
 thiserror = "1.0.47"
 tokio = { version = "1.32.0", features = ["rt", "fs", "tracing", "time", "macros", "rt-multi-thread", "sync", "io-std", "io-util",  "net"] }
 tokio-util = { version = "0.7.8", features = ["codec"] }
-toml = "0.7.6"
+toml = "0.8.0"
 tracing = "0.1.37"
 tracing-subscriber = "0.3.17"
 urlencoding = "2.1.3"

@@ -51,6 +51,8 @@ pub enum Error {
         "Could not open the folder `{0}`. Please make sure the program has permission to open it and that the folder exist"
     )]
     FolderOpenError(String),
+    #[error("The `{0}` folder was not found, please edit the config file manually at `{1}")]
+    FolderNotFound(String, String),
     #[error("This torrent is already downloaded fully")]
     TorrentComplete,
     #[error("Could not find torrent for the given info_hash")]
@@ -77,7 +79,7 @@ pub enum Error {
     SendErrorPeer(#[from] mpsc::error::SendError<PeerMsg>),
     #[error("Could not send message to Tracker")]
     SendErrorTracker(#[from] mpsc::error::SendError<TrackerMsg>),
-    #[error("Could not send message to Frontend")]
+    #[error("Could not send message to UI")]
     SendErrorTorrent(#[from] mpsc::error::SendError<TorrentMsg>),
     #[error("The given PATH is invalid")]
     PathInvalid,

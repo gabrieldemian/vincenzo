@@ -32,7 +32,7 @@ use vcz_lib::{
     daemon_wire::{DaemonCodec, Message},
     error::Error,
     torrent::TorrentMsg,
-    FrMsg, TorrentState,
+    UIMsg, TorrentState,
 };
 
 #[derive(Clone, Debug)]
@@ -64,9 +64,12 @@ impl AppStyle {
     }
 }
 
-pub struct Frontend<'a> {
+/// The UI runs entirely on the terminal.
+/// It will communicate with the [`Daemon`] occasionaly,
+/// via TCP messages documented at [`DaemonCodec`].
+pub struct UI<'a> {
     pub style: AppStyle,
-    pub ctx: Arc<FrontendCtx>,
+    pub ctx: Arc<UICtx>,
     pub torrent_list: TorrentList<'a>,
     torrent_txs: HashMap<[u8; 20], mpsc::Sender<TorrentMsg>>,
     terminal: Terminal<CrosstermBackend<Stdout>>,
@@ -77,21 +80,23 @@ pub struct Frontend<'a> {
     pub is_detached: bool,
 }
 
-pub struct FrontendCtx {
-    pub fr_tx: mpsc::Sender<FrMsg>,
+/// Context that is shared between all pages,
+/// at the moment, there is only one page [`TorrentList`].
+pub struct UICtx {
+    pub fr_tx: mpsc::Sender<UIMsg>,
 }
 
-impl<'a> Frontend<'a> {
-    pub fn new(fr_tx: mpsc::Sender<FrMsg>) -> Self {
+impl<'a> UI<'a> {
+    pub fn new(fr_tx: mpsc::Sender<UIMsg>) -> Self {
         let stdout = io::stdout();
         let style = AppStyle::new();
         let backend = CrosstermBackend::new(stdout);
         let terminal = Terminal::new(backend).unwrap();
 
-        let ctx = Arc::new(FrontendCtx { fr_tx });
+        let ctx = Arc::new(UICtx { fr_tx });
         let torrent_list = TorrentList::new(ctx.clone());
 
-        Frontend {
+        UI {
             terminal,
             torrent_list,
             torrent_txs: HashMap::new(),
@@ -101,12 +106,12 @@ impl<'a> Frontend<'a> {
         }
     }
 
-    /// Listen to the messages sent by the daemon on a TCP socket,
-    /// when we receive a message, we send a message to ourselves
-    /// that corresponds to the `FrMsg`. For example, when we receive
+    /// Listen to the messages sent by the daemon via TCP,
+    /// when we receive a message, we send it to ourselves
+    /// via mpsc [`UIMsg`]. For example, when we receive
     /// a Draw message from the daemon, we send a Draw message to `run`
     pub async fn listen_daemon(
-        fr_tx: mpsc::Sender<FrMsg>,
+        fr_tx: mpsc::Sender<UIMsg>,
         mut sink: SplitStream<Framed<TcpStream, DaemonCodec>>,
     ) -> Result<(), Error> {
         loop {
@@ -114,10 +119,10 @@ impl<'a> Frontend<'a> {
                 Some(Ok(msg)) = sink.next() => {
                     match msg {
                         Message::TorrentState(torrent_info) => {
-                            let _ = fr_tx.send(FrMsg::Draw(torrent_info)).await;
+                            let _ = fr_tx.send(UIMsg::Draw(torrent_info)).await;
                         }
                         Message::Quit => {
-                            let _ = fr_tx.send(FrMsg::Quit).await;
+                            let _ = fr_tx.send(UIMsg::Quit).await;
                             break;
                         }
                         _ => {}
@@ -129,8 +134,8 @@ impl<'a> Frontend<'a> {
         Ok(())
     }
 
-    /// Run the UI event loop
-    pub async fn run(&mut self, mut fr_rx: mpsc::Receiver<FrMsg>) -> Result<(), Error> {
+    /// Run the UI event loop and connect with the Daemon
+    pub async fn run(&mut self, mut fr_rx: mpsc::Receiver<UIMsg>) -> Result<(), Error> {
         let mut reader = EventStream::new();
 
         // setup terminal
@@ -193,21 +198,21 @@ impl<'a> Frontend<'a> {
                 }
                 Some(msg) = fr_rx.recv() => {
                     match msg {
-                        FrMsg::Quit => {
+                        UIMsg::Quit => {
                             self.stop(&mut sink).await?;
                             break 'outer;
                         },
-                        FrMsg::Draw(torrent_info) => {
+                        UIMsg::Draw(torrent_info) => {
                             self.torrent_list
                                 .torrent_infos
                                 .insert(torrent_info.info_hash, torrent_info);
 
                             self.torrent_list.draw(&mut self.terminal).await;
                         },
-                        FrMsg::NewTorrent(magnet) => {
+                        UIMsg::NewTorrent(magnet) => {
                             self.new_torrent(&magnet, &mut sink).await?;
                         }
-                        FrMsg::TogglePause(id) => {
+                        UIMsg::TogglePause(id) => {
                             let tx = self.torrent_txs.get(&id).ok_or(Error::TorrentDoesNotExist)?;
                             tx.send(TorrentMsg::TogglePause).await?;
                         }

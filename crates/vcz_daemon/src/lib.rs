@@ -3,18 +3,12 @@
 mod error;
 use futures::{SinkExt, StreamExt};
 use hashbrown::HashMap;
-use std::{
-    path::{Path, PathBuf},
-    sync::Arc,
-    time::Duration,
-};
+use std::{sync::Arc, time::Duration};
 use tokio_util::codec::Framed;
 use tracing::debug;
 
 use error::Error;
 use tokio::{
-    fs::{create_dir_all, File, OpenOptions},
-    io::AsyncWriteExt,
     net::{TcpListener, TcpStream},
     select, spawn,
     sync::{mpsc, RwLock},
@@ -22,8 +16,6 @@ use tokio::{
 };
 
 use clap::Parser;
-use directories::{ProjectDirs, UserDirs};
-use tokio::io::AsyncReadExt;
 use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt;
 use vcz_lib::{
     cli::Args,
@@ -35,15 +27,20 @@ use vcz_lib::{
     DaemonMsg, TorrentState,
 };
 
-/// The UI will ask the Daemon to create new Torrents.
-/// The Daemon will periodically send Draw messages to the UI.
+/// A daemon that runs on the background and handles everything
+/// that is not the UI.
 ///
-/// Daemon also stores `TorrentInfo`s, this is only used
-/// by the UI to present data about Torrents.
+/// The daemon is the most high-level API in all backend libs.
+/// It owns [`Disk`] and [`Torrent`]s, which owns [`Peer`]s.
 ///
-/// Daemon -> Torrent -> Peer
-///        -> Torrent -> Peer
-///                   -> Peer
+/// The communication with the daemon happens via TCP with messages
+/// documented at [`DaemonCodec`].
+///
+/// The daemon and the UI can run on different machines, and so,
+/// they need a way to communicate. We use TCP, so we can benefit
+/// from the Framed utilities that tokio provides, making it easy
+/// to create a protocol for the Daemon. HTTP wastes more bandwith
+/// and would reduce consistency.
 pub struct Daemon {
     pub config: Config,
     pub download_dir: String,
@@ -61,6 +58,9 @@ pub struct DaemonCtx {
 }
 
 impl Daemon {
+    /// Tries to create a Daemon struct and setup the logger listener.
+    /// Can error if the configuration validation fails,
+    /// check [`Config`] for more details about the validation.
     pub async fn new() -> Result<Self, Error> {
         let (tx, rx) = mpsc::channel::<DaemonMsg>(300);
 
@@ -88,13 +88,9 @@ impl Daemon {
 
         let config = Config::load()
             .await
-            .expect("Could not get the configuration file");
+            .map_err(|e| Error::ConfigError(e.to_string()))?;
 
         let download_dir = args.download_dir.unwrap_or(config.download_dir.clone());
-
-        if !Path::new(&download_dir).exists() {
-            return Err(Error::FolderOpenError(download_dir.clone()));
-        }
 
         Ok(Self {
             rx,
@@ -109,7 +105,18 @@ impl Daemon {
         })
     }
 
-    /// Run the daemon event loop and disk event loop.
+    /// This function will listen to 3 different event loops:
+    /// - The daemon internal messages via MPSC [`DaemonMsg`] (external)
+    /// - The daemon TCP framed messages [`DaemonCodec`] (internal)
+    /// - The Disk event loop [`Disk`]
+    ///
+    /// Both internal and external messages share the same API.
+    /// When the daemon receives a TCP message, it forwards to the
+    /// mpsc event loop.
+    ///
+    /// This is useful to keep consistency, because the same command
+    /// that can be fired remotely (example: via TCP),
+    /// can also be fired internaly (example: via CLI flags).
     pub async fn run(&mut self) -> Result<(), Error> {
         let args = Args::parse();
         let mut listen = self.config.daemon_addr;
@@ -136,6 +143,8 @@ impl Daemon {
         });
 
         let ctx = self.ctx.clone();
+
+        // Listen to remote TCP messages
         let handle = spawn(async move {
             loop {
                 if let Ok((socket, _addr)) = socket.accept().await {
@@ -148,6 +157,7 @@ impl Daemon {
             }
         });
 
+        // Listen to internal mpsc messages
         loop {
             select! {
                 Some(msg) = self.rx.recv() => {
@@ -161,9 +171,6 @@ impl Daemon {
                         }
                         DaemonMsg::NewTorrent(magnet) => {
                             let _ = self.new_torrent(&magnet).await;
-                            // immediately draw after adding the new torrent,
-                            // we dont want to wait up to 1 second to update the UI.
-                            // because of the `draw_interval`.
                             // Self::draw(&mut sink).await?;
                         }
                         DaemonMsg::Quit => {
@@ -179,7 +186,9 @@ impl Daemon {
         Ok(())
     }
 
-    /// Listen to messages sent remotely via TCP, like the UI sending messages to Daemon.
+    /// Listen to messages sent remotely via TCP,
+    /// A UI can be a standalone binary that is executing on another machine,
+    /// and wants to control the daemon using the [`DaemonCodec`] protocol.
     async fn listen_remote_msgs(
         socket: Framed<TcpStream, DaemonCodec>,
         ctx: Arc<DaemonCtx>,
@@ -217,7 +226,7 @@ impl Daemon {
         }
     }
 
-    /// Sends a Draw message to the UI with all the torrent states
+    /// Sends a Draw message to the [`UI`] with the updated state of a torrent.
     async fn draw<T>(sink: &mut T, ctx: Arc<DaemonCtx>) -> Result<(), Error>
     where
         T: SinkExt<Message> + Sized + std::marker::Unpin + Send,
@@ -235,6 +244,16 @@ impl Daemon {
         Ok(())
     }
 
+    /// Create a new [`Torrent`] given a magnet link URL
+    /// and run the torrent's event loop.
+    ///
+    /// # Errors
+    ///
+    /// This fn may return an [`Err`] if the magnet link is invalid
+    ///
+    /// # Panic
+    ///
+    /// This fn will panic if it is being called BEFORE [`run`].
     pub async fn new_torrent(&mut self, magnet: &str) -> Result<(), Error> {
         let magnet = get_magnet(magnet).map_err(|_| Error::InvalidMagnet(magnet.to_owned()))?;
         let info_hash = get_info_hash(&magnet.xt.clone().unwrap());
@@ -265,73 +284,7 @@ impl Daemon {
 
         spawn(async move {
             torrent.start_and_run(None).await.unwrap();
-            torrent.disk_tx.send(DiskMsg::Quit).await.unwrap();
         });
-
-        Ok(())
-    }
-
-    pub async fn config_file() -> Result<(File, PathBuf), Error> {
-        // load the config file
-        let dotfile = ProjectDirs::from("", "", "Vincenzo").ok_or(Error::HomeInvalid)?;
-        let mut config_path = dotfile.config_dir().to_path_buf();
-
-        if !config_path.exists() {
-            create_dir_all(&config_path)
-                .await
-                .map_err(|_| Error::FolderOpenError(config_path.to_str().unwrap().to_owned()))?
-        }
-
-        config_path.push("config.toml");
-
-        Ok((
-            OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create(true)
-                .open(&config_path)
-                .await
-                .expect("Error while trying to open the project config folder, please make sure this program has the right permissions.") ,
-            config_path.into()
-        ))
-    }
-
-    pub async fn prepare_config() -> Result<(), Error> {
-        // load the config file
-        let (mut file, config_path) = Self::config_file().await?;
-
-        let mut str = String::new();
-        file.read_to_string(&mut str).await.unwrap();
-        let config = toml::from_str::<Config>(&str);
-
-        // if the user does not have the config file,
-        // write the default config
-        if config.is_err() {
-            let download_dir = UserDirs::new()
-                .ok_or(Error::FolderNotFound(
-                    "home".into(),
-                    config_path.to_str().unwrap().to_owned(),
-                ))
-                .unwrap()
-                .download_dir()
-                .ok_or(Error::FolderNotFound(
-                    "download".into(),
-                    config_path.to_str().unwrap().to_owned(),
-                ))
-                .unwrap()
-                .to_str()
-                .unwrap()
-                .into();
-
-            let config_local = Config {
-                download_dir,
-                daemon_addr: None,
-            };
-
-            let config_str = toml::to_string(&config_local).unwrap();
-
-            file.write_all(config_str.as_bytes()).await.unwrap();
-        }
 
         Ok(())
     }

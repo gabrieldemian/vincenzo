@@ -9,29 +9,37 @@ use tokio_util::codec::{Decoder, Encoder};
 
 use crate::TorrentState;
 
-/// Messages of `DaemonCodec`.
+/// Messages of [`DaemonCodec`], check the struct documentation
+/// to read how to send messages.
+///
+/// Most messages can be sent to the Daemon in 2 ways:
+/// - Internally: within it's same process, via CLI flags for example.
+///     the message will be sent using mpsc.
+/// - Externally: via TCP. When the message arrives, it will be sent
+/// to the internal event handler in mpsc. They both use the same API.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Message {
-    /// Quit can be sent to Daemon in 2 ways:
-    /// - From TCP (when the UI is quitting)
-    /// - From mpsc message (when Daemon is quitting, i.e: through the CLI)
-    Quit,
-    /// Message sent by clients to add a new Torrent on Daemon
-    /// can be sent using the daemon CLI or any UI.
+    /// Daemon will send other Quit messages to all [`Torrent`]s,
+    /// and [`Disk`]. It will close all event loops spawned through `run`.
     ///
-    /// <len=1+magnet_link_len><id=0><magnet_link>
+    /// Quit does not have a message_id, only the u32 len.
+    ///
+    /// <len>
+    Quit,
+    /// Add a new torrent given a magnet link.
+    ///
+    /// <len=1+magnet_link_len><id=1><magnet_link>
     NewTorrent(String),
     /// Every second, the Daemon will send information about all torrents
     /// to all listeners
     ///
-    /// <len=1+torrent_state_len><id=0><torrent_state>
+    /// <len=1+torrent_state_len><id=2><torrent_state>
     TorrentState(TorrentState),
 }
 
 #[repr(u8)]
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum MessageId {
-    Quit = 0,
     NewTorrent = 1,
     TorrentState = 2,
 }
@@ -57,6 +65,10 @@ impl TryFrom<u8> for MessageId {
 /// Followed by an `u8` which is the message_id. The rest of the bytes
 /// depends on the message type.
 ///
+/// In other words:
+/// <len><msg_id><payload>
+///  u32    u8       x      (in bits)
+///
 /// # Example
 ///
 /// You are sending a magnet of 18 bytes: "magnet:blabla"
@@ -64,12 +76,23 @@ impl TryFrom<u8> for MessageId {
 /// ```
 /// let mut buf = BytesMut::new();
 /// let magnet = "magnet:blabla".to_owned();
-/// // 1 byte reserved for the message_id
+///
+/// // len is: 1 byte of the message_id + the payload len
 /// let msg_len = 1 + magnet.len() as u32;
+///
+/// // <len>
 /// buf.put_u32(msg_len);
-/// // this message_id is 0
+///
+/// // <msg_id> message_id is 1
 /// buf.put_u8(MessageId::NewTorrent as u8);
+///
+/// // <payload>
 /// buf.extend_from_slice(magnet.as_bytes());
+///
+/// // result
+/// <len><msg_id><payload>
+///  19     1    "magnet:blabla"
+///  u32    u8    (dynamic size)
 /// ```
 #[derive(Debug)]
 pub struct DaemonCodec;
@@ -147,7 +170,6 @@ impl Decoder for DaemonCodec {
         // note: buf is already advanced past the len,
         // so all calls to `remaining` will get the payload, excluding the len.
         let msg = match msg_id {
-            MessageId::Quit => Message::Quit,
             MessageId::NewTorrent => {
                 let mut payload = vec![0u8; buf.remaining()];
                 buf.copy_to_slice(&mut payload);

@@ -16,4 +16,6 @@ pub enum Error {
     NoDuplicateTorrent,
     #[error("Could not send message to TCP socket")]
     SendErrorTcp,
+    #[error("Config error: `{0}`")]
+    ConfigError(String),
 }

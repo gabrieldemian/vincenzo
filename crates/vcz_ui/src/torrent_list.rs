@@ -10,17 +10,22 @@ use ratatui::{
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
     Terminal,
 };
-use vcz_lib::{to_human_readable, torrent::TorrentStatus, FrMsg};
+use vcz_lib::{to_human_readable, torrent::TorrentStatus, UIMsg};
 
-use super::{AppStyle, FrontendCtx, TorrentState};
+use super::{AppStyle, UICtx, TorrentState};
 
+/// This is the main "page" of the UI, a list of torrents
+/// with their state, such as: download rate, name, percentage, etc.
+///
+/// It handles it's own keybindings and communicate with the main [`UI`]
+/// through mpsc.
 #[derive(Clone)]
 pub struct TorrentList<'a> {
     pub style: AppStyle,
     pub state: ListState,
     pub torrent_infos: HashMap<[u8; 20], TorrentState>,
     active_torrent: Option<[u8; 20]>,
-    ctx: Arc<FrontendCtx>,
+    ctx: Arc<UICtx>,
     show_popup: bool,
     input: String,
     cursor_position: usize,
@@ -28,7 +33,7 @@ pub struct TorrentList<'a> {
 }
 
 impl<'a> TorrentList<'a> {
-    pub fn new(ctx: Arc<FrontendCtx>) -> Self {
+    pub fn new(ctx: Arc<UICtx>) -> Self {
         let style = AppStyle::new();
         let state = ListState::default();
 
@@ -117,7 +122,7 @@ impl<'a> TorrentList<'a> {
                         let _ = self
                             .ctx
                             .fr_tx
-                            .send(FrMsg::TogglePause(active_torrent))
+                            .send(UIMsg::TogglePause(active_torrent))
                             .await;
                         self.draw(terminal).await;
                     }
@@ -249,7 +254,7 @@ impl<'a> TorrentList<'a> {
             self.draw(terminal).await;
             self.reset_cursor();
         } else {
-            self.ctx.fr_tx.send(FrMsg::Quit).await.unwrap();
+            self.ctx.fr_tx.send(UIMsg::Quit).await.unwrap();
         }
     }
 
@@ -327,7 +332,7 @@ impl<'a> TorrentList<'a> {
         let _ = self
             .ctx
             .fr_tx
-            .send(FrMsg::NewTorrent(std::mem::take(&mut self.input)))
+            .send(UIMsg::NewTorrent(std::mem::take(&mut self.input)))
             .await;
 
         // this will quit the modal to add a new torrent,
