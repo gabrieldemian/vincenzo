@@ -1,7 +1,6 @@
 # Overview
-This is the main binary of the program, with this binary alone the user can easily start
-both the daemon and the ui at the same time. With this binary, when the user closes
-the program, it will kill the process of the daemon and the UI.
+This is the main binary of the client. This binary spawns both the Daemon and
+the UI at the same process. When the user closes the UI, the Daemon will be killed.
 
 ```bash
 vcz -d "/home/user/Downloads" -m "<insert magnet link here>" -q

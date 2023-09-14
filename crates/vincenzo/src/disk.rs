@@ -11,7 +11,7 @@ use tokio::{
     io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
     sync::{mpsc::Receiver, oneshot::Sender},
 };
-use tracing::{info, field::debug, debug};
+use tracing::{debug, info};
 
 use crate::{
     error::Error,
@@ -531,7 +531,8 @@ mod tests {
         bitfield::Bitfield,
         metainfo::{self, Info},
         tcp_wire::{Block, BLOCK_LEN},
-        torrent::Torrent, DaemonMsg,
+        torrent::Torrent,
+        DaemonMsg,
     };
 
     use super::*;

@@ -1,8 +1,6 @@
 use thiserror::Error;
 use tokio::sync::mpsc;
-use vcz_lib::DaemonMsg;
-
-// use crate::DaemonMsg;
+use vincenzo::daemon::DaemonMsg;
 
 #[derive(Error, Debug)]
 pub enum Error {

@@ -10,9 +10,11 @@ use ratatui::{
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
     Terminal,
 };
-use vcz_lib::{to_human_readable, torrent::TorrentStatus, UIMsg};
+use vincenzo::{torrent::TorrentStatus, utils::to_human_readable};
 
-use super::{AppStyle, UICtx, TorrentState};
+use crate::UIMsg;
+
+use super::{AppStyle, TorrentState, UICtx};
 
 /// This is the main "page" of the UI, a list of torrents
 /// with their state, such as: download rate, name, percentage, etc.

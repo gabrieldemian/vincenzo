@@ -361,12 +361,8 @@ impl Decoder for HandshakeCodec {
     }
 }
 
-/// <pstrlen><pstr><reserved><info_hash><peer_id>
-/// <u8_1: pstrlen=19>
-/// <u8_19: pstr="BitTorrent protocol">
-/// <u8_8: reserved>
-/// <u8_20: info_hash>
-/// <u8_20: peer_id>
+/// pstrlen = 19
+/// pstr = "BitTorrent protocol"
 /// This is the very first message exchanged. If the peer's protocol string (`BitTorrent
 /// protocol`) or the info hash differs from ours, the connection is severed. The
 /// reserved field is 8 zero bytes, but will later be used to set which extensions

@@ -1,7 +1,6 @@
-#![allow(missing_docs)]
-#![allow(rustdoc::missing_doc_code_examples)]
-mod error;
-use vcz_daemon::Daemon;
+use vincenzo::daemon::Daemon;
+
+// todo: create clap config and implement cli flags
 
 #[tokio::main]
 async fn main() {

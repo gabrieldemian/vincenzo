@@ -26,14 +26,22 @@ use ratatui::{
 
 use torrent_list::TorrentList;
 
-use vcz_lib::{
+use vincenzo::{
     cli::Args,
     config::Config,
     daemon_wire::{DaemonCodec, Message},
     error::Error,
-    torrent::TorrentMsg,
-    UIMsg, TorrentState,
+    torrent::{TorrentMsg, TorrentState},
 };
+
+/// Messages used by [`UI`] for internal communication.
+#[derive(Debug, Clone)]
+pub enum UIMsg {
+    NewTorrent(String),
+    Draw(TorrentState),
+    TogglePause([u8; 20]),
+    Quit,
+}
 
 #[derive(Clone, Debug)]
 pub struct AppStyle {

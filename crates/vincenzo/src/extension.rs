@@ -7,7 +7,7 @@ use crate::error;
 
 /// This is the payload of the extension protocol described on:
 /// BEP 10 - Extension Protocol
-/// http://www.bittorrent.org/beps/bep_0010.html
+/// <http://www.bittorrent.org/beps/bep_0010.html>
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Extension {
     /// messages (dictionary of supported extensions)

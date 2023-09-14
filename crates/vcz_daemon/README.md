@@ -1,16 +1,20 @@
 # Overview
-This is the crate of the daemon. A daemon is simply the "backend" that is responsible
-for adding torrents and writing/reading data on disk.
+This is the binary of the daemon. A daemon is simply the "backend" that is responsible
+for adding torrents and writing/reading data on disk, communicating with the UI,
+and writing logs.
 
-The daemon is a web server that is running on a port, this port can be defined in the
-configuration file or passed through a CLI flag. `--listen`.
+The daemon listen on a TCP address that can be set on the configuration file,
+or through the CLI flag `--listen`. The default address is: `127.0.0.1:3030`.
 
-A daemon will also write logs in case of a panic.
+You can communicate with the Daemon in 2 days:
+- CLI flags
+- TCP messages
 
-The daemon can send information about torrents to anyone that requests it.
+The documentation can be found on the library crate.
 
-Starting the daemon and optionally adding a torrent. You need to have a download_dir on
-the config file or through the CLI. Having none of those will error.
+You need to have a download_dir on the config file or through the CLI,
+having none of these will error.
+
 ```bash
 vczd -d "/home/user/Downloads" -m "<insert magnet link here>"
 ```

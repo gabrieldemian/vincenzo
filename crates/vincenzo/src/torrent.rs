@@ -1,3 +1,4 @@
+use crate::daemon::DaemonMsg;
 use crate::peer::session::ConnectionState;
 use crate::tcp_wire::messages::HandshakeCodec;
 use crate::tcp_wire::BlockInfo;
@@ -14,7 +15,6 @@ use crate::{
         {Tracker, TrackerCtx, TrackerMsg},
     },
 };
-use crate::{DaemonMsg, TorrentState};
 use bendy::decoding::FromBencode;
 use clap::Parser;
 use hashbrown::HashMap;
@@ -104,6 +104,19 @@ pub struct Torrent {
     /// this is a cache of ctx.info.get_size()
     pub size: u64,
     pub name: String,
+}
+
+/// State of a particular [`Torrent`], used by the UI to present data.
+#[derive(Debug, Clone, Default, PartialEq, Readable, Writable)]
+pub struct TorrentState {
+    pub name: String,
+    pub stats: Stats,
+    pub status: TorrentStatus,
+    pub downloaded: u64,
+    pub download_rate: u64,
+    pub uploaded: u64,
+    pub size: u64,
+    pub info_hash: [u8; 20],
 }
 
 #[derive(Debug)]

@@ -1,3 +1,4 @@
+//! An implementation of the Bitfield data format, used by BitTorrent protocol.
 use bitlab::*;
 
 #[derive(Debug, Clone, Default, PartialEq)]

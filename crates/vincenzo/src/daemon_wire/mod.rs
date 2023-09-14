@@ -7,7 +7,7 @@ use std::io::Cursor;
 use tokio::io;
 use tokio_util::codec::{Decoder, Encoder};
 
-use crate::TorrentState;
+use crate::torrent::TorrentState;
 
 /// Messages of [`DaemonCodec`], check the struct documentation
 /// to read how to send messages.
@@ -19,12 +19,10 @@ use crate::TorrentState;
 /// to the internal event handler in mpsc. They both use the same API.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Message {
-    /// Daemon will send other Quit messages to all [`Torrent`]s,
-    /// and [`Disk`]. It will close all event loops spawned through `run`.
+    /// Daemon will send other Quit messages to all Torrents.
+    /// and Disk. It will close all event loops spawned through `run`.
     ///
     /// Quit does not have a message_id, only the u32 len.
-    ///
-    /// <len>
     Quit,
     /// Add a new torrent given a magnet link.
     ///

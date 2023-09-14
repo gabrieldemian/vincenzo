@@ -1,13 +1,9 @@
-// #![allow(missing_docs)]
-// #![allow(rustdoc::missing_doc_code_examples)]
-mod error;
 use futures::{SinkExt, StreamExt};
 use hashbrown::HashMap;
 use std::{sync::Arc, time::Duration};
 use tokio_util::codec::Framed;
 use tracing::debug;
 
-use error::Error;
 use tokio::{
     net::{TcpListener, TcpStream},
     select, spawn,
@@ -15,23 +11,23 @@ use tokio::{
     time::interval,
 };
 
-use clap::Parser;
-use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt;
-use vcz_lib::{
+use crate::{
     cli::Args,
     config::Config,
     daemon_wire::{DaemonCodec, Message},
     disk::{Disk, DiskMsg},
+    error::Error,
     magnet_parser::{get_info_hash, get_magnet},
-    torrent::{Torrent, TorrentMsg},
-    DaemonMsg, TorrentState,
+    torrent::{Torrent, TorrentMsg, TorrentState},
 };
+use clap::Parser;
+use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt;
 
 /// A daemon that runs on the background and handles everything
 /// that is not the UI.
 ///
 /// The daemon is the most high-level API in all backend libs.
-/// It owns [`Disk`] and [`Torrent`]s, which owns [`Peer`]s.
+/// It owns [`Disk`] and [`Torrent`]s, which owns Peers.
 ///
 /// The communication with the daemon happens via TCP with messages
 /// documented at [`DaemonCodec`].
@@ -55,6 +51,17 @@ pub struct DaemonCtx {
     pub tx: mpsc::Sender<DaemonMsg>,
     /// key: info_hash
     pub torrent_states: RwLock<HashMap<[u8; 20], TorrentState>>,
+}
+
+/// Messages used by the [`Daemon`] for internal communication.
+/// All of these local messages have an equivalent remote message
+/// on [`DaemonMsg`].
+#[derive(Debug, Clone)]
+pub enum DaemonMsg {
+    NewTorrent(String),
+    TorrentState(TorrentState),
+    // TogglePause([u8; 20]),
+    Quit,
 }
 
 impl Daemon {
@@ -86,9 +93,7 @@ impl Daemon {
 
         let args = Args::parse();
 
-        let config = Config::load()
-            .await
-            .map_err(|e| Error::ConfigError(e.to_string()))?;
+        let config = Config::load().await?;
 
         let download_dir = args.download_dir.unwrap_or(config.download_dir.clone());
 
@@ -253,9 +258,9 @@ impl Daemon {
     ///
     /// # Panic
     ///
-    /// This fn will panic if it is being called BEFORE [`run`].
+    /// This fn will panic if it is being called BEFORE run
     pub async fn new_torrent(&mut self, magnet: &str) -> Result<(), Error> {
-        let magnet = get_magnet(magnet).map_err(|_| Error::InvalidMagnet(magnet.to_owned()))?;
+        let magnet = get_magnet(magnet).map_err(|_| Error::MagnetLinkInvalid)?;
         let info_hash = get_info_hash(&magnet.xt.clone().unwrap());
 
         let mut torrent_states = self.ctx.torrent_states.write().await;

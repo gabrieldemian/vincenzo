@@ -15,7 +15,7 @@ use tokio::{
 use tokio_util::codec::{Framed, FramedParts};
 
 use tokio::net::TcpStream;
-use tracing::{info, warn, field::debug, debug};
+use tracing::{info, warn, debug};
 
 use crate::{
     bitfield::Bitfield,

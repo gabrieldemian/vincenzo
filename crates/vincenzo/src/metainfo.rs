@@ -21,7 +21,7 @@ pub struct MetaInfo {
 }
 
 /// File related information (Single-file format)
-/// https://fileformats.fandom.com/wiki/Torrent_file
+/// <https://fileformats.fandom.com/wiki/Torrent_file>
 /// in a multi file format, `name` is name of the directory
 /// `file_length` is specific to Single File format
 /// in a multi file format, `file_length` is replaced to `files`

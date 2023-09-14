@@ -1,15 +1,11 @@
-#![allow(missing_docs)]
-#![allow(rustdoc::missing_doc_code_examples)]
-
 use clap::Parser;
 use tokio::{runtime::Runtime, spawn, sync::mpsc};
 
 use tracing::debug;
-use vcz_daemon::Daemon;
-use vcz_lib::{cli::Args, error::Error};
+use vincenzo::daemon::Daemon;
+use vincenzo::{cli::Args, error::Error};
 
-use vcz_lib::UIMsg;
-use vcz_ui::UI;
+use vcz_ui::{UI, UIMsg};
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {

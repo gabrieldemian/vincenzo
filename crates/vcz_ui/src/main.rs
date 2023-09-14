@@ -1,10 +1,9 @@
 use tokio::sync::mpsc;
 
 use tracing::debug;
-use vcz_lib::error::Error;
+use vincenzo::error::Error;
 
-use vcz_lib::UIMsg;
-use vcz_ui::UI;
+use vcz_ui::{UIMsg, UI};
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {

@@ -2,7 +2,8 @@
 members = [
   "crates/vcz_daemon",
   "crates/vcz_ui",
-  "crates/vcz_lib",
+  "crates/vincenzo",
   "crates/vcz"
 ]
 
+resolver = "2"

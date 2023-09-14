@@ -89,4 +89,6 @@ pub enum Error {
     HomeInvalid,
     #[error("Error while trying to read the configuration file, please make sure it has the correct format")]
     ConfigDeserializeError,
+    #[error("You cannot add a duplicate torrent, only 1 is allowed")]
+    NoDuplicateTorrent,
 }
