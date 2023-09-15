@@ -24,7 +24,7 @@ impl DerefMut for Magnet {
 impl Magnet {
     pub fn new(magnet_url: &str) -> Result<Self, Error> {
         Ok(Self(
-            Magnet_::new(&magnet_url).map_err(|_| Error::MagnetLinkInvalid)?,
+            Magnet_::new(magnet_url).map_err(|_| Error::MagnetLinkInvalid)?,
         ))
     }
 
@@ -35,7 +35,7 @@ impl Magnet {
                 return dn.to_string();
             }
         }
-        return "Unknown".to_string();
+        "Unknown".to_string()
     }
 
     /// Transform the "xt" field from hex, to a slice.

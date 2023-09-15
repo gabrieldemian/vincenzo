@@ -200,7 +200,7 @@ impl Daemon {
                         DaemonMsg::TorrentState(torrent_state) => {
                             let mut torrent_states = self.ctx.torrent_states.write().await;
 
-                            torrent_states.insert(torrent_state.info_hash.clone(), torrent_state.clone());
+                            torrent_states.insert(torrent_state.info_hash, torrent_state.clone());
 
                             drop(torrent_states);
                         }

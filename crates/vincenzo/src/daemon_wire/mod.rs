@@ -194,7 +194,7 @@ impl Decoder for DaemonCodec {
                 Message::TorrentState(info)
             }
             MessageId::GetTorrentState => {
-                let mut payload = [0u8; 20 as usize];
+                let mut payload = [0u8; 20_usize];
                 buf.copy_to_slice(&mut payload);
 
                 Message::RequestTorrentState(payload)

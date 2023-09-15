@@ -21,7 +21,7 @@ async fn main() -> Result<(), Error> {
     );
 
     let mut daemon = Daemon::new(download_dir).await;
-    daemon.config.listen = daemon_addr.clone();
+    daemon.config.listen = daemon_addr;
 
     let rt = Runtime::new().unwrap();
     let handle = std::thread::spawn(move || {

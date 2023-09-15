@@ -23,7 +23,7 @@ async fn main() {
         daemon.config.listen = listen;
     }
 
-    let tx = daemon.ctx.tx.clone();
+    let _tx = daemon.ctx.tx.clone();
 
     daemon.run().await.unwrap();
 }

@@ -97,7 +97,7 @@ impl Config {
             .open(&config_path)
             .await?;
 
-        Ok((config_file, config_path.into()))
+        Ok((config_file, config_path))
     }
 
     /// Load the configuration file and transform it into Self.
