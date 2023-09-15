@@ -1,13 +1,13 @@
+//! Torrent that is spawned by the Daemon
 use crate::daemon::DaemonMsg;
 use crate::peer::session::ConnectionState;
 use crate::tcp_wire::messages::HandshakeCodec;
 use crate::tcp_wire::BlockInfo;
 use crate::{
     bitfield::Bitfield,
-    cli::Args,
     disk::DiskMsg,
     error::Error,
-    magnet_parser::get_info_hash,
+    magnet::Magnet,
     metainfo::Info,
     peer::{Direction, Peer, PeerCtx, PeerMsg},
     tracker::{
@@ -16,9 +16,7 @@ use crate::{
     },
 };
 use bendy::decoding::FromBencode;
-use clap::Parser;
 use hashbrown::HashMap;
-use magnet_url::Magnet;
 use speedy::{Readable, Writable};
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
@@ -106,7 +104,7 @@ pub struct Torrent {
     pub name: String,
 }
 
-/// State of a particular [`Torrent`], used by the UI to present data.
+/// State of a [`Torrent`], used by the UI to present data.
 #[derive(Debug, Clone, Default, PartialEq, Readable, Writable)]
 pub struct TorrentState {
     pub name: String,
@@ -119,6 +117,7 @@ pub struct TorrentState {
     pub info_hash: [u8; 20],
 }
 
+/// Context of [`Torrent`] that can be shared between other types
 #[derive(Debug)]
 pub struct TorrentCtx {
     pub tx: mpsc::Sender<TorrentMsg>,
@@ -129,7 +128,7 @@ pub struct TorrentCtx {
     pub info: RwLock<Info>,
 }
 
-// Status of the current Torrent, updated at every announce request.
+/// Status of the current Torrent, updated at every announce request.
 #[derive(Clone, Debug, PartialEq, Default, Readable, Writable)]
 pub struct Stats {
     pub interval: u32,
@@ -144,27 +143,25 @@ impl Torrent {
         daemon_tx: mpsc::Sender<DaemonMsg>,
         magnet: Magnet,
     ) -> Self {
-        let dn = magnet.dn.clone().unwrap_or("Unknown".to_string());
-
+        let name = magnet.parse_dn();
         let pieces = RwLock::new(Bitfield::default());
-        let info = RwLock::new(Info::default().name(dn.clone()));
+        let info = RwLock::new(Info::default().name(name.clone()));
         let info_pieces = BTreeMap::new();
         let tracker_ctx = Arc::new(TrackerCtx::default());
 
-        let info_hash = get_info_hash(&magnet.xt.clone().unwrap());
         let (tx, rx) = mpsc::channel::<TorrentMsg>(300);
 
         let ctx = Arc::new(TorrentCtx {
             tx: tx.clone(),
             tracker_tx: RwLock::new(None),
-            info_hash,
+            info_hash: magnet.parse_xt(),
             pieces,
             magnet,
             info,
         });
 
         Self {
-            name: dn,
+            name,
             size: 0,
             last_second_downloaded: 0,
             download_rate: 0,
@@ -230,6 +227,7 @@ impl Torrent {
         Ok(peers)
     }
 
+    /// Start the Torrent and immediately spawns all the event loops.
     #[tracing::instrument(skip(self), name = "torrent::start_and_run")]
     pub async fn start_and_run(&mut self, listen: Option<SocketAddr>) -> Result<(), Error> {
         let peers = self.start(listen).await?;
@@ -281,6 +279,7 @@ impl Torrent {
         Ok(())
     }
 
+    /// Spawn a new event loop every time a peer connect with us.
     #[tracing::instrument(skip(self))]
     pub async fn spawn_inbound_peers(&self) -> Result<(), Error> {
         info!("running spawn inbound peers...");
@@ -344,6 +343,7 @@ impl Torrent {
         Ok(())
     }
 
+    /// Run the Torrent main event loop to listen to internal [`TorrentMsg`].
     #[tracing::instrument(name = "torrent::run", skip(self))]
     pub async fn run(&mut self) -> Result<(), Error> {
         debug!("torrent run");
@@ -398,10 +398,11 @@ impl Torrent {
                                 let _ = peer.tx.send(PeerMsg::NotInterested).await;
                             }
 
+                            // todo: move this if to daemon
                             // announce to tracker that we are stopping
-                            if Args::parse().quit_after_complete {
-                                let _ = self.ctx.tx.send(TorrentMsg::Quit).await;
-                            }
+                            // if Args::parse().quit_after_complete {
+                            //     let _ = self.ctx.tx.send(TorrentMsg::Quit).await;
+                            // }
                         }
                         // The peer "from" was the first one to receive the "info".
                         // Send Cancel messages to everyone else.

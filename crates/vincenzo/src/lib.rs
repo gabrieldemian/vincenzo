@@ -20,26 +20,44 @@
 //! we simply run the [daemon] and send messages to it.
 //!
 //! ```
-//!    use daemon::Daemon;
+//!    use vincenzo::daemon::Daemon;
+//!    use tokio::spawn;
+//!    use tokio::oneshot;
 //!
-//!    let mut daemon = Daemon::new().await.unwrap();
-//!    let tx = daemon.ctx.tx.clone();
+//!    #[tokio::main]
+//!    async fn main() {
+//!        let download_dir = "/home/gabriel/Downloads".to_string();
 //!
-//!    spawn(async move {
-//!        daemon.run().await.unwrap();
-//!    });
+//!        let mut daemon = Daemon::new(download_dir).await.unwrap();
+//!        let tx = daemon.ctx.tx.clone();
 //!
-//!    tx.send(DaemonMsg::NewTorrent("magnet:........")).await.unwrap();
+//!        spawn(async move {
+//!            daemon.run().await.unwrap();
+//!        });
 //!
-//!    // the download directory can be read from the CLi,
-//!    // or on the configuration file, that's all we need.
-//!    // You can also chose the address that the daemon will run on,
-//!    // and a few more options.
+//!        let magnet = Magnet::new("magnet:?xt=urn:btih:.....").unwrap();
+//!
+//!        // identifier of the torrent
+//!        let info_hash = magnet.parse_xt();
+//!
+//!        tx.send(DaemonMsg::NewTorrent(magnet)).await.unwrap();
+//!
+//!        // get information about the torrent download
+//!        let (otx, orx) = oneshot::channel();
+//!
+//!        tx.send(DaemonMsg::RequestTorrentState(info_hash, otx)).await.unwrap();
+//!        let torrent_state = orx.await.unwrap();
+//!
+//!        // TorrentState {
+//!        //     name: "torrent name",
+//!        //     download_rate: 999999,
+//!        //     ...
+//!        // }
+//!    }
 //! ```
 
 pub mod avg;
 pub mod bitfield;
-pub mod cli;
 pub mod config;
 pub mod counter;
 pub mod daemon;
@@ -47,7 +65,7 @@ pub mod daemon_wire;
 pub mod disk;
 pub mod error;
 pub mod extension;
-pub mod magnet_parser;
+pub mod magnet;
 pub mod metainfo;
 pub mod peer;
 pub mod tcp_wire;

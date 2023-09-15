@@ -1,3 +1,4 @@
+//! Disk is responsible for file I/O of all Torrents.
 use std::{
     collections::VecDeque,
     io::SeekFrom,
@@ -529,10 +530,10 @@ mod tests {
 
     use crate::{
         bitfield::Bitfield,
+        daemon::DaemonMsg,
         metainfo::{self, Info},
         tcp_wire::{Block, BLOCK_LEN},
-        torrent::Torrent,
-        DaemonMsg,
+        torrent::Torrent, magnet::Magnet,
     };
 
     use super::*;
@@ -546,11 +547,10 @@ mod tests {
         let magnet = format!("magnet:?xt=urn:btih:9999999999999999999999999999999999999999&amp;dn={name}&amp;tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.openbittorrent.com%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.bittor.pw%3A1337%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&amp;tr=udp%3A%2F%2Fbt.xxx-tracker.com%3A2710%2Fannounce&amp;tr=udp%3A%2F%2Fpublic.popcorn-tracker.org%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Feddie4.nl%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451%2Fannounce&amp;tr=udp%3A%2F%2Fp4p.arenabg.com%3A1337%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.tiny-vps.com%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Fopen.stealth.si%3A80%2Fannounce");
         let (disk_tx, disk_rx) = mpsc::channel::<DiskMsg>(1000);
 
-        let (daemon_tx, daemon_rx) = mpsc::channel::<DaemonMsg>(1000);
+        let (daemon_tx, _daemon_rx) = mpsc::channel::<DaemonMsg>(1000);
 
-        let (fr_tx, _) = mpsc::channel::<DaemonMsg>(300);
-
-        let torrent = Torrent::new(disk_tx.clone(), daemon_tx, &magnet);
+        let magnet = Magnet::new(&magnet).unwrap();
+        let torrent = Torrent::new(disk_tx.clone(), daemon_tx, magnet);
         let torrent_ctx = torrent.ctx.clone();
 
         let mut rng = rand::thread_rng();
@@ -655,7 +655,8 @@ mod tests {
         let (disk_tx, disk_rx) = mpsc::channel::<DiskMsg>(3);
 
         let (fr_tx, _) = mpsc::channel::<DaemonMsg>(300);
-        let torrent = Torrent::new(disk_tx.clone(), fr_tx, &magnet);
+        let magnet = Magnet::new(&magnet).unwrap();
+        let torrent = Torrent::new(disk_tx.clone(), fr_tx, magnet);
         let torrent_ctx = torrent.ctx.clone();
         let info_hash: [u8; 20] = torrent_ctx.info_hash;
         let mut disk = Disk::new(disk_rx, download_dir.clone());
@@ -819,7 +820,8 @@ mod tests {
         let mut disk = Disk::new(rx, download_dir.clone());
 
         let (fr_tx, _) = mpsc::channel::<DaemonMsg>(300);
-        let torrent = Torrent::new(disk_tx, fr_tx, &magnet);
+        let magnet = Magnet::new(&magnet).unwrap();
+        let torrent = Torrent::new(disk_tx, fr_tx, magnet);
         let mut info_t = torrent.ctx.info.write().await;
         *info_t = info.clone();
         drop(info_t);

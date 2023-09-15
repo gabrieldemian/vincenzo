@@ -1,3 +1,4 @@
+//! A tracker is a server that manages peers and stats of multiple torrents.
 pub mod action;
 pub mod announce;
 pub mod connect;

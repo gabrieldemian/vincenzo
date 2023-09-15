@@ -2,14 +2,26 @@ use clap::Parser;
 use tokio::{runtime::Runtime, spawn, sync::mpsc};
 
 use tracing::debug;
+use vincenzo::{config::Config, daemon::Args};
 use vincenzo::daemon::Daemon;
-use vincenzo::{cli::Args, error::Error};
+use vincenzo::error::Error;
 
-use vcz_ui::{UI, UIMsg};
+use vcz_ui::{UIMsg, UI};
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
-    let mut daemon = Daemon::new().await.unwrap();
+    let args = Args::parse();
+    let config = Config::load().await.unwrap();
+
+    let download_dir = args.download_dir.unwrap_or(config.download_dir.clone());
+    let daemon_addr = args.daemon_addr.unwrap_or(
+        config
+            .daemon_addr
+            .unwrap_or("127.0.0.1:3030".parse().unwrap()),
+    );
+
+    let mut daemon = Daemon::new(download_dir).await;
+    daemon.config.listen = daemon_addr.clone();
 
     let rt = Runtime::new().unwrap();
     let handle = std::thread::spawn(move || {
@@ -24,7 +36,7 @@ async fn main() -> Result<(), Error> {
     let mut fr = UI::new(fr_tx.clone());
 
     spawn(async move {
-        fr.run(fr_rx).await.unwrap();
+        fr.run(fr_rx, daemon_addr).await.unwrap();
         debug!("ui exited run");
     });
 

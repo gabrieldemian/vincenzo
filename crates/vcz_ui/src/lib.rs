@@ -1,4 +1,3 @@
-use clap::Parser;
 use tracing::debug;
 pub mod error;
 pub mod torrent_list;
@@ -8,6 +7,7 @@ use tokio_util::codec::Framed;
 
 use std::{
     io::{self, Stdout},
+    net::SocketAddr,
     sync::Arc,
 };
 use tokio::{net::TcpStream, select, spawn, sync::mpsc};
@@ -27,8 +27,6 @@ use ratatui::{
 use torrent_list::TorrentList;
 
 use vincenzo::{
-    cli::Args,
-    config::Config,
     daemon_wire::{DaemonCodec, Message},
     error::Error,
     torrent::{TorrentMsg, TorrentState},
@@ -126,7 +124,7 @@ impl<'a> UI<'a> {
             select! {
                 Some(Ok(msg)) = sink.next() => {
                     match msg {
-                        Message::TorrentState(torrent_info) => {
+                        Message::TorrentState(Some(torrent_info)) => {
                             let _ = fr_tx.send(UIMsg::Draw(torrent_info)).await;
                         }
                         Message::Quit => {
@@ -143,7 +141,11 @@ impl<'a> UI<'a> {
     }
 
     /// Run the UI event loop and connect with the Daemon
-    pub async fn run(&mut self, mut fr_rx: mpsc::Receiver<UIMsg>) -> Result<(), Error> {
+    pub async fn run(
+        &mut self,
+        mut fr_rx: mpsc::Receiver<UIMsg>,
+        daemon_addr: SocketAddr,
+    ) -> Result<(), Error> {
         let mut reader = EventStream::new();
 
         // setup terminal
@@ -162,24 +164,7 @@ impl<'a> UI<'a> {
 
         let fr_tx = self.ctx.fr_tx.clone();
 
-        let args = Args::parse();
-        let config = Config::load()
-            .await
-            .expect("Could not get the configuration file");
-
-        let mut listen = config.daemon_addr;
-
-        if args.daemon_addr.is_some() {
-            listen = args.daemon_addr;
-        }
-
-        if listen.is_none() {
-            // if the user did not pass a `daemon_addr` on the config or CLI,
-            // we default to this value
-            listen = Some("127.0.0.1:3030".parse().unwrap())
-        }
-
-        let socket = TcpStream::connect(listen.unwrap()).await.unwrap();
+        let socket = TcpStream::connect(daemon_addr).await.unwrap();
 
         debug!("ui connected to daemon on {:?}", socket.local_addr());
 

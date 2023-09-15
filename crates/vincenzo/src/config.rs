@@ -1,3 +1,4 @@
+//! Config file
 use directories::ProjectDirs;
 use directories::UserDirs;
 use std::net::SocketAddr;
@@ -81,7 +82,7 @@ impl Config {
         if c.is_err() {
             let default_config = Config {
                 download_dir,
-                daemon_addr: None,
+                daemon_addr: Some("127.0.0.1:3030".parse().unwrap()),
             };
 
             let config_str = toml::to_string(&default_config).unwrap();

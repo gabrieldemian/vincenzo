@@ -1,3 +1,5 @@
+//! Metainfo is a .torrent file with information about the Torrent.
+//! From the magnet link, we get the Metainfo from other peers.
 use std::collections::VecDeque;
 
 use bendy::{
@@ -10,6 +12,8 @@ use crate::{
     tcp_wire::{BlockInfo, BLOCK_LEN},
 };
 
+/// Metainfo is a .torrent file with information about the Torrent.
+/// From the magnet link, we get the Metainfo from other peers.
 #[derive(Debug, PartialEq, Clone, Default)]
 pub struct MetaInfo {
     pub announce: String,
@@ -95,9 +99,13 @@ impl Info {
     }
 }
 
+/// Files in the [`Info`] are relative to the root folder name,
+/// but do not contain them as the first item in the vector.
 #[derive(Debug, PartialEq, Clone, Default)]
 pub struct File {
+    /// Length of the file in bytes.
     pub length: u32,
+    /// Path of the file, excluding the parent name.
     pub path: Vec<String>,
 }
 
@@ -431,7 +439,6 @@ impl FromBencode for Info {
 
 #[cfg(test)]
 mod tests {
-
     use super::*;
 
     /// piece_length: 16384

@@ -1,6 +1,4 @@
-///
-/// Messages that will be sent betwheen UI <-> Daemon
-///
+//! Framed messages sent to/from Daemon
 use bytes::{Buf, BufMut, BytesMut};
 use speedy::{Readable, Writable};
 use std::io::Cursor;
@@ -32,7 +30,10 @@ pub enum Message {
     /// to all listeners
     ///
     /// <len=1+torrent_state_len><id=2><torrent_state>
-    TorrentState(TorrentState),
+    TorrentState(Option<TorrentState>),
+    /// Ask the Daemon to send a [`TorrentState`] of the torrent with the given
+    /// hash_info.
+    RequestTorrentState([u8; 20]),
 }
 
 #[repr(u8)]
@@ -40,6 +41,7 @@ pub enum Message {
 pub enum MessageId {
     NewTorrent = 1,
     TorrentState = 2,
+    GetTorrentState = 3,
 }
 
 impl TryFrom<u8> for MessageId {
@@ -50,6 +52,7 @@ impl TryFrom<u8> for MessageId {
         match k {
             k if k == NewTorrent as u8 => Ok(NewTorrent),
             k if k == TorrentState as u8 => Ok(TorrentState),
+            k if k == GetTorrentState as u8 => Ok(GetTorrentState),
             _ => Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "Unknown message id",
@@ -116,6 +119,13 @@ impl Encoder<Message> for DaemonCodec {
                 buf.put_u8(MessageId::TorrentState as u8);
                 buf.extend_from_slice(info_bytes);
             }
+            Message::RequestTorrentState(info_hash) => {
+                let msg_len = 1 + info_hash.len() as u32;
+
+                buf.put_u32(msg_len);
+                buf.put_u8(MessageId::GetTorrentState as u8);
+                buf.extend_from_slice(&info_hash);
+            }
             Message::Quit => {
                 buf.put_u32(0);
             }
@@ -165,8 +175,8 @@ impl Decoder for DaemonCodec {
 
         let msg_id = MessageId::try_from(buf.get_u8())?;
 
-        // note: buf is already advanced past the len,
-        // so all calls to `remaining` will get the payload, excluding the len.
+        // here, buf is already advanced past the len and msg_id,
+        // so all calls to `remaining` and `get_*` will start from the payload.
         let msg = match msg_id {
             MessageId::NewTorrent => {
                 let mut payload = vec![0u8; buf.remaining()];
@@ -175,11 +185,19 @@ impl Decoder for DaemonCodec {
                 Message::NewTorrent(String::from_utf8(payload).unwrap())
             }
             MessageId::TorrentState => {
-                let mut payload = vec![0u8; buf.remaining()];
-                buf.copy_to_slice(&mut payload);
-                let info = TorrentState::read_from_buffer(&payload)?;
-
+                let mut info: Option<TorrentState> = None;
+                if buf.has_remaining() {
+                    let mut payload = vec![0u8; buf.remaining()];
+                    buf.copy_to_slice(&mut payload);
+                    info = TorrentState::read_from_buffer(&payload).ok();
+                }
                 Message::TorrentState(info)
+            }
+            MessageId::GetTorrentState => {
+                let mut payload = [0u8; 20 as usize];
+                buf.copy_to_slice(&mut payload);
+
+                Message::RequestTorrentState(payload)
             }
         };
 
@@ -231,7 +249,7 @@ mod tests {
             info_hash: [0u8; 20],
         };
 
-        let msg = Message::TorrentState(info.clone());
+        let msg = Message::TorrentState(Some(info.clone()));
         DaemonCodec.encode(msg, &mut buf).unwrap();
 
         println!("encoded {buf:?}");
@@ -242,7 +260,40 @@ mod tests {
 
         match msg {
             Message::TorrentState(deserialized) => {
-                assert_eq!(deserialized, info);
+                assert_eq!(deserialized, Some(info));
+            }
+            _ => panic!(),
+        }
+
+        // should send None to inexistent torrent
+        let mut buf = BytesMut::new();
+        let msg = Message::TorrentState(None);
+        DaemonCodec.encode(msg, &mut buf).unwrap();
+
+        let msg = DaemonCodec.decode(&mut buf).unwrap().unwrap();
+        match msg {
+            Message::TorrentState(r) => {
+                assert_eq!(r, None);
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn request_torrent_state() {
+        let mut buf = BytesMut::new();
+        let msg = Message::RequestTorrentState([1u8; 20]);
+        DaemonCodec.encode(msg, &mut buf).unwrap();
+
+        println!("encoded {buf:?}");
+
+        let msg = DaemonCodec.decode(&mut buf).unwrap().unwrap();
+
+        println!("decoded {msg:?}");
+
+        match msg {
+            Message::RequestTorrentState(info_hash) => {
+                assert_eq!(info_hash, [1u8; 20]);
             }
             _ => panic!(),
         }
