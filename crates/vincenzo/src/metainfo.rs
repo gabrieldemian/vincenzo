@@ -1002,6 +1002,7 @@ mod tests {
         Ok(())
     }
 
+    /// Confirm that the [`MetaInfo`] [`ToBencode`] and [`FromBencode`] implementations work as expected for a multi-file torrent
     #[test]
     fn should_encode_multi_file_torrent() -> Result<(), encoding::Error> {
         let torrent_book_bytes = include_bytes!("../../../test-files/book.torrent");
@@ -1015,6 +1016,7 @@ mod tests {
         Ok(())
     }
 
+    /// Confirm that the [`MetaInfo`] [`FromBencode`] implementation works as expected for a multi-file torrent
     #[test]
     fn should_decode_multi_file_torrent() -> Result<(), decoding::Error> {
         let torrent = include_bytes!("../../../test-files/book.torrent");
@@ -1077,6 +1079,7 @@ mod tests {
         Ok(())
     }
 
+    /// Confirm that the [`MetaInfo`] [`FromBencode`] implementation works as expected for a single-file torrent
     #[test]
     fn should_decode_single_file_torrent() -> Result<(), decoding::Error> {
         let torrent = include_bytes!("../../../test-files/debian.torrent");
@@ -1105,6 +1108,7 @@ mod tests {
         Ok(())
     }
 
+    /// Confirm that the [`MetaInfo`] [`ToBencode`] implementation works as expected for a single-file torrent
     #[test]
     fn should_encode_single_file_torrent() -> Result<(), encoding::Error> {
         let torrent_disk = include_bytes!("../../../test-files/debian.torrent");
@@ -1134,8 +1138,9 @@ mod tests {
         Ok(())
     }
 
+    /// Confirm that the [`metainfo::File`](struct@File) [`ToBencode`] implementation works as expected
     #[test]
-    fn should_encode_file() -> Result<(), encoding::Error> {
+    fn file_serialization() -> Result<(), encoding::Error> {
         let file = File {
             path: ["a".to_owned(), "b".to_owned(), "c.txt".to_owned()].into(),
             length: 222,
@@ -1151,8 +1156,9 @@ mod tests {
         Ok(())
     }
 
+    /// Confirm that the [`metainfo::File`](struct@File) [`FromBencode`] implementation works as expected
     #[test]
-    fn should_decode_file() -> Result<(), decoding::Error> {
+    fn file_deserialization() -> Result<(), decoding::Error> {
         let data = b"d6:lengthi222e4:pathl1:a1:b5:c.txtee";
 
         let file = File::from_bencode(data)?;
@@ -1168,3 +1174,4 @@ mod tests {
         Ok(())
     }
 }
+

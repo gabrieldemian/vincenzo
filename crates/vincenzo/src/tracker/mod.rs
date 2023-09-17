@@ -63,8 +63,13 @@ pub struct TrackerCtx {
 
 impl Default for TrackerCtx {
     fn default() -> Self {
+        // Peer ids should be prefixed with "vcz".
+        let mut peer_id = [0; 20];
+        peer_id[..3].copy_from_slice(b"vcz");
+        peer_id[3..].copy_from_slice(&rand::random::<[u8; 17]>());
+
         Self {
-            peer_id: rand::random(),
+            peer_id,
             tracker_addr: "".to_owned(),
             local_peer_addr: "0.0.0.0:0".parse().unwrap(),
             connection_id: None,
@@ -105,7 +110,7 @@ impl Tracker {
         let (tx, mut rx) = mpsc::channel::<Tracker>(30);
 
         // Connect to all trackers, return on the first
-        // succesful handshake
+        // successful handshake.
         for tracker_addr in trackers {
             debug!("trying to connect {tracker_addr:?}");
             let tx = tx.clone();
@@ -121,7 +126,6 @@ impl Tracker {
                 let (tracker_tx, tracker_rx) = mpsc::channel::<TrackerMsg>(300);
                 let mut tracker = Tracker {
                     ctx: TrackerCtx {
-                        peer_id: rand::random(),
                         tracker_addr: tracker_addr.to_string(),
                         ..Default::default()
                     },
@@ -410,6 +414,21 @@ impl Tracker {
                     }
                 }
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::tracker::TrackerCtx;
+
+    #[test]
+    fn peer_ids_prefixed_with_vcz() {
+        // Poor man's fuzzing.
+        for _ in 0..10 {
+            assert!(TrackerCtx::default()
+                .peer_id
+                .starts_with(&[b'v', b'c', b'z']));
         }
     }
 }
