@@ -5,7 +5,6 @@ use std::io::Cursor;
 use tokio::io;
 use tokio_util::codec::{Decoder, Encoder};
 
-
 use crate::torrent::TorrentState;
 
 /// Messages of [`DaemonCodec`], check the struct documentation
@@ -68,7 +67,7 @@ impl TryFrom<u8> for MessageId {
 /// depends on the message type.
 ///
 /// In other words:
-/// <len><msg_id><payload>
+/// len,msg_id,payload
 ///  u32    u8       x      (in bits)
 ///
 /// # Example
@@ -76,25 +75,28 @@ impl TryFrom<u8> for MessageId {
 /// You are sending a magnet of 18 bytes: "magnet:blabla"
 ///
 /// ```
+/// use bytes::{Buf, BufMut, BytesMut};
+/// use vincenzo::daemon_wire::MessageId;
+///
 /// let mut buf = BytesMut::new();
 /// let magnet = "magnet:blabla".to_owned();
 ///
 /// // len is: 1 byte of the message_id + the payload len
 /// let msg_len = 1 + magnet.len() as u32;
 ///
-/// // <len>
+/// // len>
 /// buf.put_u32(msg_len);
 ///
-/// // <msg_id> message_id is 1
+/// // msg_id message_id is 1
 /// buf.put_u8(MessageId::NewTorrent as u8);
 ///
-/// // <payload>
+/// // payload
 /// buf.extend_from_slice(magnet.as_bytes());
 ///
 /// // result
-/// <len><msg_id><payload>
-///  19     1    "magnet:blabla"
-///  u32    u8    (dynamic size)
+/// // len  msg_id  payload
+/// // 19     1    "magnet:blabla"
+/// // u32    u8    (dynamic size)
 /// ```
 #[derive(Debug)]
 pub struct DaemonCodec;

@@ -21,21 +21,23 @@
 //!
 //! ```
 //!    use vincenzo::daemon::Daemon;
+//!    use vincenzo::daemon::DaemonMsg;
+//!    use vincenzo::magnet::Magnet;
 //!    use tokio::spawn;
-//!    use tokio::oneshot;
+//!    use tokio::sync::oneshot;
 //!
 //!    #[tokio::main]
 //!    async fn main() {
 //!        let download_dir = "/home/gabriel/Downloads".to_string();
 //!
-//!        let mut daemon = Daemon::new(download_dir).await.unwrap();
+//!        let mut daemon = Daemon::new(download_dir);
 //!        let tx = daemon.ctx.tx.clone();
 //!
 //!        spawn(async move {
 //!            daemon.run().await.unwrap();
 //!        });
 //!
-//!        let magnet = Magnet::new("magnet:?xt=urn:btih:.....").unwrap();
+//!        let magnet = Magnet::new("magnet:?xt=urn:btih:ab6ad7ff24b5ed3a61352a1f1a7811a8c3cc6dde&amp;dn=archlinux-2023.09.01-x86_64.iso").unwrap();
 //!
 //!        // identifier of the torrent
 //!        let info_hash = magnet.parse_xt();

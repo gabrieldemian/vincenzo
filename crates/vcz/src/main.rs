@@ -20,7 +20,7 @@ async fn main() -> Result<(), Error> {
             .unwrap_or("127.0.0.1:3030".parse().unwrap()),
     );
 
-    let mut daemon = Daemon::new(download_dir).await;
+    let mut daemon = Daemon::new(download_dir);
     daemon.config.listen = daemon_addr;
 
     let rt = Runtime::new().unwrap();

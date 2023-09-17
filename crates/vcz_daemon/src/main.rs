@@ -29,7 +29,7 @@ async fn main() {
     // we dont want to run it again,
     // we just want to run the CLI flags.
     if !is_daemon_running {
-        let mut daemon = Daemon::new(download_dir).await;
+        let mut daemon = Daemon::new(download_dir);
 
         if let Some(listen) = listen {
             daemon.config.listen = listen;

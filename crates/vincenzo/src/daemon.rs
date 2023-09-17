@@ -112,7 +112,7 @@ impl Daemon {
     /// Tries to create a Daemon struct and setup the logger listener.
     /// Can error if the configuration validation fails,
     /// check [`Config`] for more details about the validation.
-    pub async fn new(download_dir: String) -> Self {
+    pub fn new(download_dir: String) -> Self {
         let (tx, rx) = mpsc::channel::<DaemonMsg>(300);
 
         let console_layer = console_subscriber::spawn();
