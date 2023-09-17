@@ -2,9 +2,9 @@ use clap::Parser;
 use tokio::{runtime::Runtime, spawn, sync::mpsc};
 
 use tracing::debug;
-use vincenzo::{config::Config, daemon::Args};
 use vincenzo::daemon::Daemon;
 use vincenzo::error::Error;
+use vincenzo::{config::Config, daemon::Args};
 
 use vcz_ui::{UIMsg, UI};
 
@@ -21,7 +21,7 @@ async fn main() -> Result<(), Error> {
     );
 
     let mut daemon = Daemon::new(download_dir).await;
-    daemon.config.listen = daemon_addr;
+    daemon.config.listen = daemon_addr.clone();
 
     let rt = Runtime::new().unwrap();
     let handle = std::thread::spawn(move || {

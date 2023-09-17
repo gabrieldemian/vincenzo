@@ -23,7 +23,7 @@ use crate::{
 use clap::Parser;
 use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt;
 
-/// CLI flags used by the [`Daemon`] binary. These values
+/// CLI flags used by the Daemon binary. These values
 /// will take preference over values of the config file.
 #[derive(Parser, Debug, Default)]
 #[clap(name = "Vincenzo Daemon", author = "Gabriel Lombardo")]
@@ -42,12 +42,12 @@ pub struct Args {
     pub magnet: Option<String>,
 
     /// If the program should quit after all torrents are fully downloaded
-    #[clap(short, long)]
+    #[clap(long)]
     pub quit_after_complete: bool,
 
-    /// Immediately kills the process without announcing to any tracker
+    /// Quit the Daemon and announce to trackers
     #[clap(short, long)]
-    pub kill: bool,
+    pub quit: bool,
 }
 
 /// The daemon is the most high-level API in all backend libs.
@@ -281,10 +281,11 @@ impl Daemon {
     where
         T: SinkExt<Message> + Sized + std::marker::Unpin + Send,
     {
-        debug!("daemon sending draw");
         let torrent_states = ctx.torrent_states.read().await;
+        debug!("daemon sending draw");
 
         for state in torrent_states.values().cloned() {
+            // debug!("{state:#?}");
             sink.send(Message::TorrentState(Some(state)))
                 .await
                 .map_err(|_| Error::SendErrorTcp)?;
@@ -305,6 +306,7 @@ impl Daemon {
     ///
     /// This fn will panic if it is being called BEFORE run
     pub async fn new_torrent(&mut self, magnet: Magnet) -> Result<(), Error> {
+        debug!("new_torrent");
         let info_hash = magnet.parse_xt();
 
         let mut torrent_states = self.ctx.torrent_states.write().await;

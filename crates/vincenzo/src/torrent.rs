@@ -185,7 +185,7 @@ impl Torrent {
     /// messages to one of the trackers, and returning a list of peers.
     #[tracing::instrument(skip(self), name = "torrent::start")]
     pub async fn start(&mut self, listen: Option<SocketAddr>) -> Result<Vec<Peer>, Error> {
-        let mut tracker = Tracker::connect(self.ctx.magnet.tr.clone()).await?;
+        let mut tracker = Tracker::connect(self.ctx.magnet.parse_trackers()).await?;
         let info_hash = self.ctx.clone().info_hash;
         let (res, peers) = tracker.announce_exchange(info_hash, listen).await?;
 

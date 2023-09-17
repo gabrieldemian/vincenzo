@@ -10,9 +10,9 @@ use vcz_ui::{UIMsg, UI};
 
 #[derive(Parser, Debug, Default)]
 #[clap(name = "Vincenzo Frontend", author = "Gabriel Lombardo")]
-#[command(author, version, about, long_about = None)]
+#[command(author, version, about)]
 struct Args {
-    /// The Daemon will accept TCP connections on this address.
+    /// The address that the Daemon is listening on.
     #[clap(long)]
     pub daemon_addr: Option<SocketAddr>,
 }

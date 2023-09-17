@@ -1,9 +1,10 @@
 //! Framed messages sent to/from Daemon
 use bytes::{Buf, BufMut, BytesMut};
-use speedy::{Readable, Writable};
+use speedy::{BigEndian, Readable, Writable};
 use std::io::Cursor;
 use tokio::io;
 use tokio_util::codec::{Decoder, Encoder};
+use tracing::{debug, field::debug};
 
 use crate::torrent::TorrentState;
 
@@ -112,12 +113,15 @@ impl Encoder<Message> for DaemonCodec {
                 buf.extend_from_slice(magnet.as_bytes());
             }
             Message::TorrentState(torrent_info) => {
-                let info_bytes = &torrent_info.write_to_vec()?;
+                let info_bytes = match torrent_info {
+                    Some(v) => v.write_to_vec_with_ctx(BigEndian {})?,
+                    None => vec![],
+                };
                 let msg_len = 1 + info_bytes.len() as u32;
 
                 buf.put_u32(msg_len);
                 buf.put_u8(MessageId::TorrentState as u8);
-                buf.extend_from_slice(info_bytes);
+                buf.extend_from_slice(&info_bytes);
             }
             Message::RequestTorrentState(info_hash) => {
                 let msg_len = 1 + info_hash.len() as u32;
@@ -186,10 +190,11 @@ impl Decoder for DaemonCodec {
             }
             MessageId::TorrentState => {
                 let mut info: Option<TorrentState> = None;
+
                 if buf.has_remaining() {
                     let mut payload = vec![0u8; buf.remaining()];
                     buf.copy_to_slice(&mut payload);
-                    info = TorrentState::read_from_buffer(&payload).ok();
+                    info = TorrentState::read_from_buffer_with_ctx(BigEndian {}, &payload).ok();
                 }
                 Message::TorrentState(info)
             }
@@ -233,7 +238,6 @@ mod tests {
 
     #[test]
     fn torrent_state() {
-        let mut buf = BytesMut::new();
         let info = TorrentState {
             name: "Eesti".to_owned(),
             stats: crate::torrent::Stats {
@@ -249,14 +253,14 @@ mod tests {
             info_hash: [0u8; 20],
         };
 
+        let a = info.write_to_vec_with_ctx(BigEndian {}).unwrap();
+        println!("encoding a {a:?}");
+
+        let mut buf = BytesMut::new();
         let msg = Message::TorrentState(Some(info.clone()));
         DaemonCodec.encode(msg, &mut buf).unwrap();
 
-        println!("encoded {buf:?}");
-
         let msg = DaemonCodec.decode(&mut buf).unwrap().unwrap();
-
-        println!("decoded {msg:?}");
 
         match msg {
             Message::TorrentState(deserialized) => {

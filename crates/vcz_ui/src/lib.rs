@@ -120,14 +120,16 @@ impl<'a> UI<'a> {
         fr_tx: mpsc::Sender<UIMsg>,
         mut sink: SplitStream<Framed<TcpStream, DaemonCodec>>,
     ) -> Result<(), Error> {
+        debug!("ui liste_daemon");
         loop {
             select! {
                 Some(Ok(msg)) = sink.next() => {
                     match msg {
-                        Message::TorrentState(Some(torrent_info)) => {
-                            let _ = fr_tx.send(UIMsg::Draw(torrent_info)).await;
+                        Message::TorrentState(Some(torrent_state)) => {
+                            let _ = fr_tx.send(UIMsg::Draw(torrent_state)).await;
                         }
                         Message::Quit => {
+                            debug!("ui Quit");
                             let _ = fr_tx.send(UIMsg::Quit).await;
                             break;
                         }
