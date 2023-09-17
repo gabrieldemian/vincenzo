@@ -21,8 +21,9 @@ async fn main() {
         listen = args.daemon_addr;
     }
 
-    let is_daemon_running =
-        TcpListener::bind(listen.unwrap_or("127.0.0.1:3030".parse().unwrap())).await.is_err();
+    let is_daemon_running = TcpListener::bind(listen.unwrap_or("127.0.0.1:3030".parse().unwrap()))
+        .await
+        .is_err();
     println!("is running {is_daemon_running:?} {:?}", listen);
 
     // if the daemon is already running,

@@ -531,9 +531,10 @@ mod tests {
     use crate::{
         bitfield::Bitfield,
         daemon::DaemonMsg,
+        magnet::Magnet,
         metainfo::{self, Info},
         tcp_wire::{Block, BLOCK_LEN},
-        torrent::Torrent, magnet::Magnet,
+        torrent::Torrent,
     };
 
     use super::*;
