@@ -7,18 +7,22 @@ Vincenzo is a BitTorrent client with vim-like keybindings and a terminal based U
 - Terminal based UI <br />
 - Vim-like keybindings <br />
 - Multi-platform <br />
+- Detached Daemon for the UI <br />
 - Magnet links support <br />
 - UDP connections with trackers, TCP connections with peers <br />
 - Multithreaded. One OS thread specific for I/O <br />
 
+## Structure
+Vincenzo offers 3 binaries: one for the daemon, one for the UI, and another one
+for both. Most people will use the latter.
+
+`crates/vcz` - Main binary with both UI and Daemon. <br />
+`crates/vincenzo` - Library. <br />
+`crates/vcz_ui` - UI binary. <br />
+`crates/vcz_daemon` - Daemon binary. <br />
+
 ## How to use
 An example on how to download a torrent using the CLI. Please use the "--help" flag to read the descriptions of the CLI flags.
-
-```bash
-cargo run -- -d "/tmp/btr" -m "<insert magnet link here>" -q
-```
-
-Or
 
 ```bash
 vcz -d "/tmp/btr" -m "<insert magnet link here>" -q
@@ -43,6 +47,7 @@ macOS:   /Users/Alice/Library/Application Support/Vincenzo/config.toml
 [x] - Download pipelining. <br />
 [x] - Endgame mode. <br />
 [x] - Pause and resume torrents. <br />
+[x] - Separate main binary into 3 binaries (ui, daemon, and both). <br />
 [ ] - Use a buffered I/O strategy to reduce the number of writes on disk. <br />
 [ ] - Choking algorithm. <br />
 [ ] - Anti-snubbing. <br />
