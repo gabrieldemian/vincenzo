@@ -488,12 +488,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "exitcode"
-version = "1.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "de853764b47027c2e862a995c34978ffa63c1501f2e15f987ba11bd4f9bba193"
-
-[[package]]
 name = "failure"
 version = "0.1.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1655,12 +1649,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0bb39ee79a6d8de55f48f2293a830e040392f1c5f16e336bdd1788cd0aadce07"
 dependencies = [
  "deranged",
- "itoa",
  "libc",
  "num_threads",
  "serde",
  "time-core",
- "time-macros",
 ]
 
 [[package]]
@@ -1668,15 +1660,6 @@ name = "time-core"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7300fbefb4dadc1af235a9cef3737cea692a9d97e1b9cbcd4ebdae6f8868e6fb"
-
-[[package]]
-name = "time-macros"
-version = "0.2.13"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "733d258752e9303d392b94b75230d07b0b9c489350c69b851fc6c065fde3e8f9"
-dependencies = [
- "time-core",
-]
 
 [[package]]
 name = "tokio"
@@ -1744,9 +1727,9 @@ dependencies = [
 
 [[package]]
 name = "toml"
-version = "0.7.6"
+version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c17e963a819c331dcacd7ab957d80bc2b9a9c1e71c804826d2f283dd65306542"
+checksum = "c226a7bba6d859b63c92c4b4fe69c5b6b72d0cb897dbc8e6012298e6154cb56e"
 dependencies = [
  "serde",
  "serde_spanned",
@@ -1765,9 +1748,9 @@ dependencies = [
 
 [[package]]
 name = "toml_edit"
-version = "0.19.14"
+version = "0.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f8123f27e969974a3dfba720fdb560be359f57b44302d280ba72e76a74480e8a"
+checksum = "8ff63e60a958cefbb518ae1fd6566af80d9d4be430a33f3723dfc47d1d411d95"
 dependencies = [
  "indexmap 2.0.0",
  "serde",
@@ -1846,17 +1829,6 @@ dependencies = [
  "pin-project-lite",
  "tracing-attributes",
  "tracing-core",
-]
-
-[[package]]
-name = "tracing-appender"
-version = "0.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "09d48f71a791638519505cefafe162606f706c25592e4bde4d97600c0195312e"
-dependencies = [
- "crossbeam-channel",
- "time",
- "tracing-subscriber",
 ]
 
 [[package]]
@@ -1969,7 +1941,6 @@ dependencies = [
  "crossterm 0.27.0",
  "decurse",
  "directories",
- "exitcode",
  "futures",
  "hashbrown 0.14.0",
  "hex",
@@ -1984,9 +1955,58 @@ dependencies = [
  "tokio-util",
  "toml",
  "tracing",
- "tracing-appender",
  "tracing-subscriber",
  "urlencoding",
+ "vcz_ui",
+ "vincenzo",
+]
+
+[[package]]
+name = "vcz_daemon"
+version = "0.0.1"
+dependencies = [
+ "bendy",
+ "bitlab",
+ "bytes",
+ "clap",
+ "console-subscriber",
+ "decurse",
+ "directories",
+ "futures",
+ "hashbrown 0.14.0",
+ "hex",
+ "magnet-url",
+ "rand 0.8.5",
+ "serde",
+ "sha1_smol",
+ "speedy",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+ "urlencoding",
+ "vincenzo",
+]
+
+[[package]]
+name = "vcz_ui"
+version = "0.0.1"
+dependencies = [
+ "clap",
+ "crossterm 0.27.0",
+ "futures",
+ "hashbrown 0.14.0",
+ "magnet-url",
+ "rand 0.8.5",
+ "ratatui",
+ "serde",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "vincenzo",
 ]
 
 [[package]]
@@ -1994,6 +2014,34 @@ name = "version_check"
 version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "49874b5167b65d7193b8aba1567f5c7d93d001cafc34600cee003eda787e483f"
+
+[[package]]
+name = "vincenzo"
+version = "0.0.1"
+dependencies = [
+ "bendy",
+ "bitlab",
+ "bytes",
+ "clap",
+ "console-subscriber",
+ "decurse",
+ "directories",
+ "futures",
+ "hashbrown 0.14.0",
+ "hex",
+ "magnet-url",
+ "rand 0.8.5",
+ "serde",
+ "sha1_smol",
+ "speedy",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+ "urlencoding",
+]
 
 [[package]]
 name = "waker-fn"

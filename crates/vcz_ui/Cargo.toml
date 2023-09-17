@@ -1,0 +1,21 @@
+[package]
+name = "vcz_ui"
+version = "0.0.1"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+clap = {version = "4.3.4", features = ["derive"]}
+crossterm = { version = "0.27.0", features = ["event-stream"] }
+futures = "0.3.28"
+hashbrown = "0.14.0"
+magnet-url = "2.0.0"
+rand = "0.8.5"
+ratatui = { version = "0.22.0", features = ["all-widgets"] }
+serde = { version = "1.0.185", features = ["derive"] }
+thiserror = "1.0.47"
+tokio = { version = "1.32.0", features = ["rt", "fs", "tracing", "time", "macros", "rt-multi-thread", "sync", "io-std", "io-util",  "net"] }
+tokio-util = { version = "0.7.8", features = ["codec"] }
+tracing = "0.1.37"
+vincenzo = { path = "../vincenzo" }
