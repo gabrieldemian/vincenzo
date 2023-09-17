@@ -4,7 +4,7 @@ use speedy::{BigEndian, Readable, Writable};
 use std::io::Cursor;
 use tokio::io;
 use tokio_util::codec::{Decoder, Encoder};
-use tracing::{debug, field::debug};
+
 
 use crate::torrent::TorrentState;
 

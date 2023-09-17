@@ -22,10 +22,7 @@ async fn main() {
     }
 
     let is_daemon_running =
-        match TcpListener::bind(listen.unwrap_or("127.0.0.1:3030".parse().unwrap())).await {
-            Ok(_) => false,
-            Err(_) => true,
-        };
+        TcpListener::bind(listen.unwrap_or("127.0.0.1:3030".parse().unwrap())).await.is_err();
     println!("is running {is_daemon_running:?} {:?}", listen);
 
     // if the daemon is already running,
