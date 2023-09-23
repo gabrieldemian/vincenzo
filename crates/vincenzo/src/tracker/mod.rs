@@ -15,7 +15,7 @@ use crate::error::Error;
 use rand::Rng;
 use tokio::{
     net::{ToSocketAddrs, UdpSocket},
-    select, spawn,
+    select,
     sync::{mpsc, oneshot},
     time::timeout,
 };
@@ -110,48 +110,35 @@ impl Tracker {
     {
         debug!("...trying to connect to {:?} trackers", trackers.len());
 
-        let (tx, mut rx) = mpsc::channel::<Tracker>(30);
-
         // Connect to all trackers, return on the first
         // successful handshake.
         for tracker_addr in trackers {
             debug!("trying to connect {tracker_addr:?}");
-            let tx = tx.clone();
 
-            spawn(async move {
-                let socket = match Self::new_udp_socket(tracker_addr.clone()).await {
-                    Ok(socket) => socket,
-                    Err(_) => {
-                        debug!("could not connect to tracker");
-                        return Ok::<(), Error>(());
-                    }
-                };
-                let (tracker_tx, tracker_rx) = mpsc::channel::<TrackerMsg>(300);
-                let mut tracker = Tracker {
-                    ctx: TrackerCtx {
-                        tracker_addr: tracker_addr.to_string(),
-                        tx: tracker_tx.into(),
-                        peer_id: Tracker::gen_peer_id(),
-                        local_peer_addr: "0.0.0.0:0".parse().unwrap(),
-                        connection_id: None,
-                    },
-                    rx: tracker_rx,
-                    local_addr: socket.local_addr().unwrap(),
-                    peer_addr: socket.peer_addr().unwrap(),
-                };
-                if tracker.connect_exchange(socket).await.is_ok() {
-                    debug!("announced to tracker {tracker_addr}");
-                    if tx.send(tracker).await.is_err() {
-                        return Ok(());
-                    };
+            let socket = match Self::new_udp_socket(tracker_addr.clone()).await {
+                Ok(socket) => socket,
+                Err(_) => {
+                    debug!("could not connect to tracker");
+                    continue;
                 }
-                Ok(())
-            });
-        }
-
-        if let Some(tracker) = rx.recv().await {
-            debug!("Connected and announced to tracker {tracker:?}");
-            return Ok(tracker);
+            };
+            let (tracker_tx, tracker_rx) = mpsc::channel::<TrackerMsg>(300);
+            let mut tracker = Tracker {
+                ctx: TrackerCtx {
+                    tracker_addr: tracker_addr.to_string(),
+                    tx: tracker_tx.into(),
+                    peer_id: Tracker::gen_peer_id(),
+                    local_peer_addr: "0.0.0.0:0".parse().unwrap(),
+                    connection_id: None,
+                },
+                rx: tracker_rx,
+                local_addr: socket.local_addr().unwrap(),
+                peer_addr: socket.peer_addr().unwrap(),
+            };
+            if tracker.connect_exchange(socket).await.is_ok() {
+                debug!("announced to tracker {tracker_addr}");
+                return Ok(tracker);
+            }
         }
 
         warn!("Could not connect to any tracker");
