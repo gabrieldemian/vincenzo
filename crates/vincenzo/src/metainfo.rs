@@ -6,6 +6,7 @@ use bendy::{
     decoding::{self, FromBencode, Object, ResultExt},
     encoding::{self, AsString, Error, SingleItemEncoder, ToBencode},
 };
+use tracing::warn;
 
 use crate::{
     error,
@@ -95,6 +96,7 @@ impl Info {
             return f as u64;
         }
 
+        warn!("tried to call get_size of malformed Info {self:#?}");
         0
     }
 }
@@ -181,11 +183,8 @@ impl File {
                 infos.push_back(BlockInfo { index, begin, len });
                 partition(file, piece_length, infos, prev_block_file, file_length)
             } else {
-                let len = if file_length >= BLOCK_LEN {
-                    BLOCK_LEN
-                } else {
-                    file_length % BLOCK_LEN
-                };
+                let available = BLOCK_LEN.min(file_length);
+                let len = available.min(piece_length);
                 let mut b = BlockInfo {
                     index: 0,
                     begin: 0,
@@ -440,6 +439,36 @@ impl FromBencode for Info {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// piece_length: 15
+    /// -------------------
+    /// | f: 30           |
+    /// ---------p---------
+    /// | b: 15  | b: 15  |
+    /// -------------------
+    #[test]
+    fn get_block_infos_smaller_than_block_info() {
+        let info = Info {
+            file_length: Some(30),
+            piece_length: 15,
+            ..Default::default()
+        };
+        assert_eq!(
+            info.get_block_infos().unwrap(),
+            VecDeque::from([
+                BlockInfo {
+                    index: 0,
+                    begin: 0,
+                    len: 15,
+                },
+                BlockInfo {
+                    index: 1,
+                    begin: 0,
+                    len: 15,
+                },
+            ]),
+        );
+    }
 
     /// piece_length: 16384
     /// -------------------------------------

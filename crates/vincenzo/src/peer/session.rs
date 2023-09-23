@@ -64,21 +64,17 @@ impl Default for State {
 }
 
 /// Holds and provides facilities to modify the state of a peer session.
-#[derive(Default, Debug)]
+#[derive(Debug)]
 pub struct Session {
     /// The session state.
     pub state: State,
-
     /// Measures various transfer statistics.
     pub counters: ThruputCounters,
-
     /// Whether we're in endgame mode.
     pub in_endgame: bool,
-
     /// The target request queue size is the number of block requests we keep
     /// outstanding
     pub target_request_queue_len: u16,
-
     /// The last time some requests were sent to the peer.
     pub last_outgoing_request_time: Option<Instant>,
     /// Updated with the time of receipt of the most recently received requested
@@ -95,10 +91,31 @@ pub struct Session {
     pub avg_request_rtt: SlidingDurationAvg,
     pub request_timed_out: bool,
     pub timed_out_request_count: usize,
-
     /// The time the BitTorrent connection was established (i.e. after
     /// handshaking)
     pub connected_time: Option<Instant>,
+    /// If the torrent was fully downloaded, all peers will become seed only.
+    /// They will only seed but not download anything anymore.
+    pub seed_only: bool,
+}
+
+impl Default for Session {
+    fn default() -> Self {
+        Self {
+            state: State::default(),
+            counters: ThruputCounters::default(),
+            in_endgame: false,
+            target_request_queue_len: Session::START_REQUEST_QUEUE_LEN,
+            connected_time: None,
+            avg_request_rtt: SlidingDurationAvg::default(),
+            request_timed_out: false,
+            timed_out_request_count: 0,
+            last_incoming_block_time: None,
+            last_outgoing_block_time: None,
+            last_outgoing_request_time: None,
+            seed_only: false,
+        }
+    }
 }
 
 impl Session {

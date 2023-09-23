@@ -119,14 +119,12 @@ impl<'a> TorrentList<'a> {
                     self.draw(terminal).await;
                 }
                 KeyCode::Char('p') => {
-                    // info!("sending pause with id {:?}", self.active_torrent);
                     if let Some(active_torrent) = self.active_torrent {
                         let _ = self
                             .ctx
                             .fr_tx
                             .send(UIMsg::TogglePause(active_torrent))
                             .await;
-                        self.draw(terminal).await;
                     }
                 }
                 _ => {}

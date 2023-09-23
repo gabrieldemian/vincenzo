@@ -12,7 +12,7 @@ use tokio::{
     io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
     sync::{mpsc::Receiver, oneshot::Sender},
 };
-use tracing::{debug, info};
+use tracing::debug;
 
 use crate::{
     error::Error,
@@ -98,8 +98,12 @@ impl Disk {
         }
     }
 
+    /// Should only be called after torrent has Info downloaded
+    #[tracing::instrument(skip(self, torrent_ctx), name = "new_torrent")]
     pub async fn new_torrent(&mut self, torrent_ctx: Arc<TorrentCtx>) -> Result<(), Error> {
         let info_hash = torrent_ctx.info_hash;
+        debug!("{info_hash:?}");
+
         self.torrent_ctxs.insert(info_hash, torrent_ctx);
 
         let torrent_ctx = self.torrent_ctxs.get(&info_hash).unwrap();
@@ -140,7 +144,6 @@ impl Disk {
         self.downloaded_infos.insert(info_hash, HashSet::new());
         drop(info);
 
-        debug!("disk has {} peer_ctxs", self.peer_ctxs.len());
         for peer in &self.peer_ctxs {
             peer.1.tx.send(PeerMsg::HaveInfo).await?;
         }
@@ -149,8 +152,7 @@ impl Disk {
     }
 
     pub async fn new_peer(&mut self, peer_ctx: Arc<PeerCtx>) -> Result<(), Error> {
-        let k = peer_ctx.id.read().await.ok_or(Error::PeerIdInvalid)?;
-        self.peer_ctxs.insert(k, peer_ctx);
+        self.peer_ctxs.insert(peer_ctx.id, peer_ctx);
         Ok(())
     }
 
@@ -170,7 +172,7 @@ impl Disk {
 
         let available = block_infos.len();
 
-        info!("disk: available blocks {available}");
+        debug!("disk: available blocks {available}");
 
         // prevent from requesting more blocks than what is available
         if available < qnt {
@@ -201,13 +203,13 @@ impl Disk {
         Ok(infos)
     }
 
-    #[tracing::instrument(skip(self))]
+    #[tracing::instrument(skip(self), name = "disk::run")]
     pub async fn run(&mut self) -> Result<(), Error> {
         debug!("disk started event loop");
         while let Some(msg) = self.rx.recv().await {
             match msg {
                 DiskMsg::NewTorrent(torrent) => {
-                    debug!("disk received NewTorrent");
+                    debug!("NewTorrent");
                     let _ = self.new_torrent(torrent).await;
                 }
                 DiskMsg::ReadBlock {
@@ -215,6 +217,7 @@ impl Disk {
                     recipient,
                     info_hash,
                 } => {
+                    debug!("ReadBlock");
                     let result = self.read_block(b, info_hash).await;
                     let _ = recipient.send(result);
                 }
@@ -223,10 +226,12 @@ impl Disk {
                     recipient,
                     info_hash,
                 } => {
+                    debug!("WriteBlock");
                     let _ = recipient.send(self.write_block(b, info_hash).await);
                     // let _ = recipient.send(Ok(()));
                 }
                 DiskMsg::OpenFile(path, tx) => {
+                    debug!("OpenFile");
                     let file = self.open_file(path).await?;
                     let _ = tx.send(file);
                 }
@@ -236,23 +241,28 @@ impl Disk {
                     info_hash,
                     peer_id,
                 } => {
+                    debug!("RequestBlocks");
                     let infos = self.request_blocks(info_hash, qnt, peer_id).await?;
                     let _ = recipient.send(infos);
                 }
                 DiskMsg::ValidatePiece(index, info_hash, tx) => {
+                    debug!("ValidatePiece");
                     let r = self.validate_piece(info_hash, index).await;
                     let _ = tx.send(r);
                 }
                 DiskMsg::NewPeer(peer) => {
+                    debug!("NewPeer");
                     self.new_peer(peer).await?;
                 }
                 DiskMsg::ReturnBlockInfos(info_hash, mut block_infos) => {
+                    debug!("ReturnBlockInfos");
                     self.block_infos
                         .get_mut(&info_hash)
                         .ok_or(Error::TorrentDoesNotExist)?
                         .append(&mut block_infos);
                 }
                 DiskMsg::Quit => {
+                    debug!("Quit");
                     return Ok(());
                 }
             }
@@ -361,7 +371,7 @@ impl Disk {
         let already_downloaded = torrent_downloaded_infos.get(&block_info).is_some();
 
         if already_downloaded {
-            info!("already downloaded, ignoring");
+            debug!("already downloaded, ignoring");
             return Ok(());
         }
 
