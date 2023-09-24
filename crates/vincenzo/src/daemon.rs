@@ -190,10 +190,8 @@ impl Daemon {
 
                             torrent_states.insert(torrent_state.info_hash, torrent_state.clone());
 
-                            if self.config.quit_after_complete {
-                                if torrent_states.values().all(|v| v.status == TorrentStatus::Seeding) {
-                                    let _ = ctx.tx.send(DaemonMsg::Quit).await;
-                                }
+                            if self.config.quit_after_complete && torrent_states.values().all(|v| v.status == TorrentStatus::Seeding) {
+                                let _ = ctx.tx.send(DaemonMsg::Quit).await;
                             }
 
                             drop(torrent_states);
@@ -308,7 +306,6 @@ impl Daemon {
         T: SinkExt<Message> + Sized + std::marker::Unpin + Send,
     {
         let torrent_states = ctx.torrent_states.read().await;
-        debug!("daemon sending draw");
 
         for state in torrent_states.values().cloned() {
             // debug!("{state:#?}");

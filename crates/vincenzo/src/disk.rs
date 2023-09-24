@@ -6,7 +6,8 @@ use std::{
     sync::Arc,
 };
 
-use hashbrown::{HashMap, HashSet};
+use hashbrown::HashMap;
+use rand::seq::SliceRandom;
 use tokio::{
     fs::{create_dir_all, File, OpenOptions},
     io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
@@ -16,9 +17,9 @@ use tracing::debug;
 
 use crate::{
     error::Error,
-    metainfo,
+    metainfo::{self, Info},
     peer::{PeerCtx, PeerMsg},
-    tcp_wire::{Block, BlockInfo},
+    tcp_wire::{Block, BlockInfo, BLOCK_LEN},
     torrent::{TorrentCtx, TorrentMsg},
 };
 
@@ -63,6 +64,29 @@ pub enum DiskMsg {
     Quit,
 }
 
+/// The algorithm that determines how pieces are downloaded.
+/// The recommended is [Random]. But for streaming, [Sequential] is used.
+///
+/// The default algorithm is to use Random first until we have
+/// a complete piece, after that, we switch to Rarest first.
+#[derive(Clone, Copy, Hash, PartialEq, Eq, Default, Debug)]
+pub enum PieceOrder {
+    /// Random First, select random pieces to download
+    Random,
+    /// Rarest First, select the rarest pieces to download,
+    /// and the most common to download at the end.
+    #[default]
+    Rarest,
+    /// Sequential downloads, only used in streaming.
+    Sequential,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+struct PieceInfo {
+    pub index: u32,
+    pub cursor: u32,
+}
+
 /// The Disk struct responsabilities:
 /// - Open and create files, create directories
 /// - Read/Write blocks to files
@@ -70,20 +94,15 @@ pub enum DiskMsg {
 /// - Validate hash of pieces
 #[derive(Debug)]
 pub struct Disk {
-    rx: Receiver<DiskMsg>,
     /// k: info_hash
     pub torrent_ctxs: HashMap<[u8; 20], Arc<TorrentCtx>>,
     /// k: peer_id
     pub peer_ctxs: HashMap<[u8; 20], Arc<PeerCtx>>,
-    /// The block infos of a torrent to be downloaded,
-    /// K: info_hash
-    block_infos: HashMap<[u8; 20], VecDeque<BlockInfo>>,
-    /// The downloaded block infos of all torrents.
-    /// A hashmap of torrents, in which the values are
-    /// hashsets of block_infos
-    /// K: info_hash (torrent)
-    downloaded_infos: HashMap<[u8; 20], HashSet<BlockInfo>>,
+    pieces: HashMap<[u8; 20], VecDeque<u32>>,
+    pieces_cursor: HashMap<[u8; 20], HashMap<u32, u32>>,
+    piece_order: HashMap<[u8; 20], PieceOrder>,
     download_dir: String,
+    rx: Receiver<DiskMsg>,
 }
 
 impl Disk {
@@ -93,8 +112,9 @@ impl Disk {
             download_dir,
             peer_ctxs: HashMap::new(),
             torrent_ctxs: HashMap::new(),
-            block_infos: HashMap::new(),
-            downloaded_infos: HashMap::new(),
+            pieces_cursor: HashMap::default(),
+            pieces: HashMap::default(),
+            piece_order: HashMap::default(),
         }
     }
 
@@ -139,10 +159,26 @@ impl Disk {
             }
         }
 
-        // generate block_infos of the new torrent
-        self.block_infos.insert(info_hash, info.get_block_infos()?);
-        self.downloaded_infos.insert(info_hash, HashSet::new());
+        let pieces_len = info.pieces();
+
         drop(info);
+
+        self.piece_order.insert(info_hash, PieceOrder::default());
+        let piece_order = self.piece_order.get(&info_hash).cloned().unwrap();
+
+        let mut r: Vec<u32> = (0..pieces_len).collect();
+
+        if piece_order != PieceOrder::Sequential {
+            r.shuffle(&mut rand::thread_rng());
+        }
+
+        let cursors = r.iter().fold(HashMap::new(), |mut hashmap, index| {
+            hashmap.insert(*index, 0_u32);
+            hashmap
+        });
+
+        self.pieces.insert(info_hash, r.into());
+        self.pieces_cursor.insert(info_hash, cursors);
 
         for peer in &self.peer_ctxs {
             peer.1.tx.send(PeerMsg::HaveInfo).await?;
@@ -156,48 +192,128 @@ impl Disk {
         Ok(())
     }
 
+    async fn next_piece(&self, peer_id: [u8; 20], info_hash: [u8; 20]) -> Option<(usize, u32)> {
+        let peer_ctx = self.peer_ctxs.get(&peer_id);
+        if peer_ctx.is_none() {
+            return None;
+        }
+        let peer_pieces = peer_ctx.unwrap().pieces.read().await;
+        self.pieces
+            .get(&info_hash)
+            .unwrap()
+            .iter()
+            .enumerate()
+            .find(|x| {
+                peer_pieces
+                    .clone()
+                    .into_iter()
+                    .find(|y| y.index == *x.1 as usize && y.bit == 1)
+                    .is_some()
+            })
+            .map(|(i, x)| (i, x.to_owned()))
+    }
+
     pub async fn request_blocks(
         &mut self,
         info_hash: [u8; 20],
-        mut qnt: usize,
+        qnt: usize,
         peer_id: [u8; 20],
     ) -> Result<VecDeque<BlockInfo>, Error> {
         let mut infos: VecDeque<BlockInfo> = VecDeque::new();
-        let mut idxs = VecDeque::new();
 
-        let block_infos = self
-            .block_infos
-            .get_mut(&info_hash)
-            .ok_or(Error::TorrentDoesNotExist)?;
+        let info_ = self
+            .torrent_ctxs
+            .get(&info_hash)
+            .ok_or(Error::TorrentDoesNotExist)?
+            .info
+            .read()
+            .await;
 
-        let available = block_infos.len();
+        let piece_len = info_.piece_length;
+        let info = info_.clone();
 
-        debug!("disk: available blocks {available}");
+        drop(info_);
 
-        // prevent from requesting more blocks than what is available
-        if available < qnt {
-            qnt = available;
+        let peer_pieces = self
+            .peer_ctxs
+            .get(&peer_id)
+            .ok_or(Error::PeerIdInvalid)?
+            .pieces
+            .read()
+            .await;
+
+        // get the next piece that the peer has
+        let piece = self.next_piece(peer_id, info_hash).await;
+
+        if piece.is_none() {
+            return Ok(VecDeque::new());
         }
 
-        for (i, info) in block_infos.iter_mut().enumerate() {
-            if infos.len() >= qnt {
-                break;
+        let (mut piece_index, mut piece) = piece.unwrap();
+
+        let piece_cursor = self
+            .pieces_cursor
+            .get_mut(&info_hash)
+            .unwrap()
+            .get_mut(&piece)
+            .unwrap();
+
+        if *piece_cursor >= piece_len {
+            return Ok(VecDeque::new());
+        }
+
+        drop(peer_pieces);
+
+        let file = Self::get_file_from_piece_info(piece, info.clone())?;
+        let file_len = file.length;
+
+        let piece_len = file.get_piece_len(piece, piece_len);
+
+        for _ in 0..qnt {
+            let piece_cursor = self
+                .pieces_cursor
+                .get_mut(&info_hash)
+                .unwrap()
+                .get_mut(&piece)
+                .unwrap();
+
+            let begin = piece_cursor.clone();
+
+            // free space available in the file
+            let available = file_len - begin;
+
+            // align len with file boundary
+            let mut len = BLOCK_LEN.min(available as u32);
+
+            // align len with piece boundary
+            if (begin + len) > piece_len {
+                len -= (begin + len) % piece_len;
             }
 
-            // only request blocks that the peer has
-            let peer = self.peer_ctxs.get(&peer_id).ok_or(Error::PeerIdInvalid)?;
-            let pieces = peer.pieces.read().await;
+            *piece_cursor += len;
 
-            if let Some(r) = pieces.get(info.index as usize) {
-                if r.bit == 1 {
-                    idxs.push_front(i);
-                    infos.push_back(info.clone());
+            infos.push_front(BlockInfo {
+                index: piece,
+                begin,
+                len,
+            });
+
+            // if piece is fully requested we want to
+            // delete and request the next one
+            if *piece_cursor >= piece_len {
+                let pieces = self.pieces.get_mut(&info_hash).unwrap();
+                pieces.remove(piece_index);
+                let cursor = self.pieces_cursor.get_mut(&info_hash).unwrap();
+                cursor.remove(&piece);
+
+                let piece_ = self.next_piece(peer_id, info_hash).await;
+                if let Some(x) = piece_ {
+                    piece = x.1;
+                    piece_index = x.0;
+                } else {
+                    return Ok(VecDeque::new());
                 }
             }
-        }
-        // remove the requested infos from block_infos
-        for i in idxs {
-            block_infos.remove(i);
         }
 
         Ok(infos)
@@ -242,7 +358,11 @@ impl Disk {
                     peer_id,
                 } => {
                     debug!("RequestBlocks");
-                    let infos = self.request_blocks(info_hash, qnt, peer_id).await?;
+                    let infos = self
+                        .request_blocks(info_hash, qnt, peer_id)
+                        .await
+                        .unwrap_or_default();
+                    debug!("disk sending {}", infos.len());
                     let _ = recipient.send(infos);
                 }
                 DiskMsg::ValidatePiece(index, info_hash, tx) => {
@@ -256,10 +376,11 @@ impl Disk {
                 }
                 DiskMsg::ReturnBlockInfos(info_hash, mut block_infos) => {
                     debug!("ReturnBlockInfos");
-                    self.block_infos
-                        .get_mut(&info_hash)
-                        .ok_or(Error::TorrentDoesNotExist)?
-                        .append(&mut block_infos);
+                    // self.block_infos
+                    //     .get_mut(&info_hash)
+                    //     .ok_or(Error::TorrentDoesNotExist)?
+                    //     .append(&mut block_infos);
+                    //     todo: send to peers
                 }
                 DiskMsg::Quit => {
                     debug!("Quit");
@@ -363,19 +484,19 @@ impl Disk {
             begin,
         };
 
-        let torrent_downloaded_infos = self
-            .downloaded_infos
-            .get_mut(&info_hash)
-            .ok_or(Error::TorrentDoesNotExist)?;
-
-        let already_downloaded = torrent_downloaded_infos.get(&block_info).is_some();
-
-        if already_downloaded {
-            debug!("already downloaded, ignoring");
-            return Ok(());
-        }
-
-        torrent_downloaded_infos.insert(block_info.clone());
+        // let torrent_downloaded_infos = self
+        //     .downloaded_infos
+        //     .get_mut(&info_hash)
+        //     .ok_or(Error::TorrentDoesNotExist)?;
+        //
+        // let already_downloaded = torrent_downloaded_infos.get(&block_info).is_some();
+        //
+        // if already_downloaded {
+        //     debug!("already downloaded, ignoring");
+        //     return Ok(());
+        // }
+        //
+        // torrent_downloaded_infos.insert(block_info.clone());
 
         let (mut fs_file, _) = self
             .get_file_from_block_info(&block_info, info_hash)
@@ -399,7 +520,7 @@ impl Disk {
             .send(TorrentMsg::IncrementDownloaded(len as u64))
             .await;
 
-        let mut pieces = torrent_ctx.pieces.write().await;
+        let mut bitfield = torrent_ctx.bitfield.write().await;
         let torrent_tx = &torrent_ctx.tx;
 
         let info = torrent_ctx.info.read().await;
@@ -415,7 +536,7 @@ impl Disk {
             // info!("hash of piece {index:?} is valid");
 
             // update the bitfield of the torrent
-            pieces.set(index);
+            bitfield.set(index);
         }
 
         drop(info);
@@ -509,6 +630,68 @@ impl Disk {
         };
 
         Ok((file, file_info))
+    }
+
+    pub async fn get_file_from_piece(
+        &self,
+        piece: u32,
+        info_hash: [u8; 20],
+    ) -> Result<metainfo::File, Error> {
+        let torrent = self
+            .torrent_ctxs
+            .get(&info_hash)
+            .ok_or(Error::InfoHashInvalid)?;
+
+        let info = torrent.info.read().await;
+        let piece_len = info.piece_length;
+
+        // multi file torrent
+        if let Some(files) = &info.files {
+            let mut acc = 0;
+            let file_info = files.iter().find(|f| {
+                let pieces = f.pieces(piece_len) as u64 + acc;
+                acc = pieces;
+                return piece as u64 >= pieces;
+            });
+
+            let file = file_info.ok_or(Error::FileOpenError("".to_owned()))?;
+
+            return Ok(file.clone());
+        }
+
+        // single file torrent
+        let file_info = metainfo::File {
+            path: vec![info.name.to_owned()],
+            length: info.file_length.unwrap(),
+        };
+
+        Ok(file_info)
+    }
+
+    fn get_file_from_piece_info(piece: u32, info: Info) -> Result<metainfo::File, Error> {
+        let piece_len = info.piece_length;
+
+        // multi file torrent
+        if let Some(files) = &info.files {
+            let mut acc = 0;
+            let file_info = files.iter().find(|f| {
+                let pieces = f.pieces(piece_len) as u64 + acc;
+                acc = pieces;
+                return piece as u64 >= pieces;
+            });
+
+            let file = file_info.ok_or(Error::FileOpenError("".to_owned()))?;
+
+            return Ok(file.clone());
+        }
+
+        // single file torrent
+        let file_info = metainfo::File {
+            path: vec![info.name.to_owned()],
+            length: info.file_length.unwrap(),
+        };
+
+        Ok(file_info)
     }
 
     pub async fn get_block_from_block_info(
@@ -841,7 +1024,7 @@ mod tests {
 
         let info_hash = torrent.ctx.info_hash;
 
-        let mut p = torrent.ctx.pieces.write().await;
+        let mut p = torrent.ctx.bitfield.write().await;
         *p = Bitfield::from(vec![255, 255, 255, 255]);
         drop(info);
         drop(p);

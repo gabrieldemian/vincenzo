@@ -123,7 +123,7 @@ pub struct TorrentCtx {
     pub tx: mpsc::Sender<TorrentMsg>,
     pub magnet: Magnet,
     pub info_hash: [u8; 20],
-    pub pieces: RwLock<Bitfield>,
+    pub bitfield: RwLock<Bitfield>,
     pub info: RwLock<Info>,
 }
 
@@ -143,7 +143,7 @@ impl Torrent {
         magnet: Magnet,
     ) -> Self {
         let name = magnet.parse_dn();
-        let pieces = RwLock::new(Bitfield::default());
+        let bitfield = RwLock::new(Bitfield::default());
         let info = RwLock::new(Info::default().name(name.clone()));
         let info_pieces = BTreeMap::new();
         let tracker_ctx = Arc::new(TrackerCtx::default());
@@ -154,7 +154,7 @@ impl Torrent {
             tx: tx.clone(),
             disk_tx,
             info_hash: magnet.parse_xt(),
-            pieces,
+            bitfield,
             magnet,
             info,
         });
@@ -230,13 +230,8 @@ impl Torrent {
             spawn(async move {
                 match TcpStream::connect(peer).await {
                     Ok(socket) => {
-                        Self::start_and_run_peer(
-                            ctx,
-                            socket,
-                            local_peer_id.clone(),
-                            Direction::Outbound,
-                        )
-                        .await?;
+                        Self::start_and_run_peer(ctx, socket, local_peer_id, Direction::Outbound)
+                            .await?;
                     }
                     Err(e) => {
                         debug!("error with peer: {:?} {e:#?}", peer);
@@ -293,7 +288,7 @@ impl Torrent {
         );
 
         let local_peer_socket = TcpListener::bind(self.tracker_ctx.local_peer_addr).await?;
-        let local_peer_id = self.tracker_ctx.peer_id.clone();
+        let local_peer_id = self.tracker_ctx.peer_id;
         let ctx = self.ctx.clone();
 
         // accept connections from other peers
@@ -306,13 +301,8 @@ impl Torrent {
                     let ctx = ctx.clone();
 
                     spawn(async move {
-                        Self::start_and_run_peer(
-                            ctx,
-                            socket,
-                            local_peer_id.clone(),
-                            Direction::Inbound,
-                        )
-                        .await?;
+                        Self::start_and_run_peer(ctx, socket, local_peer_id, Direction::Inbound)
+                            .await?;
                         Ok::<(), Error>(())
                     });
                 }
@@ -446,8 +436,8 @@ impl Torrent {
 
                                     // with the info fully downloaded, we now know the pieces len,
                                     // this will update the bitfield of the torrent
-                                    let mut pieces = self.ctx.pieces.write().await;
-                                    *pieces = Bitfield::from(vec![0_u8; info.pieces() as usize * 8]);
+                                    let mut bitfield = self.ctx.bitfield.write().await;
+                                    *bitfield = Bitfield::from(vec![0_u8; info.pieces() as usize * 8]);
 
                                     self.size = info.get_size();
                                     self.have_info = true;

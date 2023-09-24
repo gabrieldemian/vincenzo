@@ -67,7 +67,7 @@ async fn peer_request() {
         .await
         .unwrap();
 
-    let bytes = [3u8; 30 as usize];
+    let bytes = [3u8; 30_usize];
     file.write_all(&bytes).await.unwrap();
 
     let magnet = format!("magnet:?xt=urn:btih:9999999999999999999999999999999999999999&amp;dn={name}&amp;tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.openbittorrent.com%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.bittor.pw%3A1337%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&amp;tr=udp%3A%2F%2Fbt.xxx-tracker.com%3A2710%2Fannounce&amp;tr=udp%3A%2F%2Fpublic.popcorn-tracker.org%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Feddie4.nl%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451%2Fannounce&amp;tr=udp%3A%2F%2Fp4p.arenabg.com%3A1337%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.tiny-vps.com%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Fopen.stealth.si%3A80%2Fannounce");
@@ -96,7 +96,7 @@ async fn peer_request() {
     *torrent_info = info.clone();
     drop(torrent_info);
 
-    let mut p = torrent.ctx.pieces.write().await;
+    let mut p = torrent.ctx.bitfield.write().await;
     *p = Bitfield::from(vec![255]);
     drop(p);
 
@@ -124,8 +124,8 @@ async fn peer_request() {
                 let (socket, handshake) = Peer::start(
                     socket,
                     Direction::Inbound,
-                    info_hash.clone(),
-                    local_peer_id.clone(),
+                    info_hash,
+                    local_peer_id,
                 )
                 .await
                 .unwrap();
@@ -213,7 +213,7 @@ async fn peer_request() {
     let (socket, handshake) = Peer::start(
         socket,
         Direction::Outbound,
-        info_hash.clone(),
+        info_hash,
         local_peer_id,
     )
     .await

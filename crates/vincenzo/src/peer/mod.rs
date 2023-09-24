@@ -212,7 +212,7 @@ impl Peer {
         new_parts.write_buf = old_parts.write_buf;
         let socket = Framed::from_parts(new_parts);
 
-        return Ok((socket, our_handshake));
+        Ok((socket, our_handshake))
     }
 
     /// Start the event loop of the Peer, listen to messages sent by others
@@ -268,7 +268,7 @@ impl Peer {
         let (mut sink, mut stream) = socket.split();
 
         // maybe send bitfield
-        let bitfield = self.torrent_ctx.pieces.read().await;
+        let bitfield = self.torrent_ctx.bitfield.read().await;
         if bitfield.len_bytes() > 0 {
             debug!("{local} sending bitfield to {remote}");
             sink.send(Message::Bitfield(bitfield.clone())).await?;
@@ -371,7 +371,7 @@ impl Peer {
                             drop(pieces);
 
                             let torrent_ctx = self.torrent_ctx.clone();
-                            let torrent_p = torrent_ctx.pieces.read().await;
+                            let torrent_p = torrent_ctx.bitfield.read().await;
                             let bit_item = torrent_p.get(piece);
 
                             // maybe become interested in peer and request blocks
@@ -785,7 +785,7 @@ impl Peer {
                 }
             }
         } else {
-            self.free_pending_blocks().await;
+            // self.free_pending_blocks().await;
         }
 
         Ok(())
@@ -800,6 +800,8 @@ impl Peer {
         let remote = self.ctx.remote_addr;
         let blocks: VecDeque<BlockInfo> = self.outgoing_requests.drain().collect();
         self.outgoing_requests_timeout.clear();
+
+        self.session.timed_out_request_count = 0;
 
         debug!(
             "{local} freeing {:?} blocks for download of {remote}",
