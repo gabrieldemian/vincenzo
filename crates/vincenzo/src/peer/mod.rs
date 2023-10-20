@@ -61,7 +61,7 @@ pub enum PeerMsg {
     /// Sends a Cancel message to cancel a metadata piece that we
     /// expect the peer to send us, because we requested it previously.
     CancelMetadata(u32),
-    /// Sent when the torrent has downloaded the entire info
+    /// Sent when the torrent has downloaded the entire info of the torrent.
     HaveInfo,
     /// Sent when the torrent is paused, it makes the peer pause downloads and uploads
     Pause,

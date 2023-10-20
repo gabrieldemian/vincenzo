@@ -62,6 +62,38 @@ impl Info {
     }
     /// Get all block_infos of a torrent
     /// Returns an Err if the Info is malformed, if it does not have `files` or `file_length`.
+    // pub fn get_block_infos_by_piece(
+    //     &self,
+    //     piece: u32,
+    // ) -> Result<VecDeque<BlockInfo>, error::Error> {
+    //     let is_last_piece = self.pieces() >= piece;
+    //     let piece_len = {
+    //         if is_last_piece {
+    //             let r = (self.get_size() % self.piece_length as u64) as u32;
+    //             r.max(self.piece_length)
+    //         } else {
+    //             self.piece_length
+    //         }
+    //     };
+    //
+    //     let mut infos: VecDeque<BlockInfo> = VecDeque::new();
+    //     let mut cursor: u32 = 0;
+    //
+    //     while cursor < piece_len {
+    //         let len = 0;
+    //         let info = BlockInfo {
+    //             index: piece,
+    //             begin: cursor,
+    //             len,
+    //         };
+    //         infos.push_back(info);
+    //         cursor += len;
+    //     }
+    //
+    //     Ok(infos)
+    // }
+    /// Get all block_infos of a torrent
+    /// Returns an Err if the Info is malformed, if it does not have `files` or `file_length`.
     pub fn get_block_infos(&self) -> Result<VecDeque<BlockInfo>, error::Error> {
         // multi file torrent
         if let Some(files) = &self.files {

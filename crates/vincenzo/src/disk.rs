@@ -19,7 +19,7 @@ use crate::{
     error::Error,
     metainfo::{self, Info},
     peer::{PeerCtx, PeerMsg},
-    tcp_wire::{Block, BlockInfo, BLOCK_LEN},
+    tcp_wire::{Block, BlockInfo},
     torrent::{TorrentCtx, TorrentMsg},
 };
 
@@ -98,8 +98,9 @@ pub struct Disk {
     pub torrent_ctxs: HashMap<[u8; 20], Arc<TorrentCtx>>,
     /// k: peer_id
     pub peer_ctxs: HashMap<[u8; 20], Arc<PeerCtx>>,
-    pieces: HashMap<[u8; 20], VecDeque<u32>>,
-    pieces_cursor: HashMap<[u8; 20], HashMap<u32, u32>>,
+    pieces_blocks: HashMap<[u8; 20], Vec<VecDeque<BlockInfo>>>,
+    pieces: HashMap<[u8; 20], Vec<u32>>,
+    downloaded_pieces: HashMap<[u8; 20], u32>,
     piece_order: HashMap<[u8; 20], PieceOrder>,
     download_dir: String,
     rx: Receiver<DiskMsg>,
@@ -112,7 +113,8 @@ impl Disk {
             download_dir,
             peer_ctxs: HashMap::new(),
             torrent_ctxs: HashMap::new(),
-            pieces_cursor: HashMap::default(),
+            downloaded_pieces: HashMap::new(),
+            pieces_blocks: HashMap::default(),
             pieces: HashMap::default(),
             piece_order: HashMap::default(),
         }
@@ -161,8 +163,6 @@ impl Disk {
 
         let pieces_len = info.pieces();
 
-        drop(info);
-
         self.piece_order.insert(info_hash, PieceOrder::default());
         let piece_order = self.piece_order.get(&info_hash).cloned().unwrap();
 
@@ -172,14 +172,28 @@ impl Disk {
             r.shuffle(&mut rand::thread_rng());
         }
 
-        let cursors = r.iter().fold(HashMap::new(), |mut hashmap, index| {
-            hashmap.insert(*index, 0_u32);
-            hashmap
-        });
+        // each index of Vec is a piece index, that is a VecDeque of blocks
+        let mut pieces_blocks: Vec<VecDeque<BlockInfo>> = Vec::with_capacity(r.len());
+        self.pieces.insert(info_hash, r);
 
-        self.pieces.insert(info_hash, r.into());
-        self.pieces_cursor.insert(info_hash, cursors);
+        // generate all block_infos of this torrent
+        for block in info.get_block_infos()? {
+            // and place each block_info into it's corresponding
+            // piece, which is the index of `pieces_blocks`
+            match pieces_blocks.get_mut(block.index as usize) {
+                None => {
+                    pieces_blocks.push(vec![block].into());
+                }
+                Some(g) => {
+                    g.push_back(block);
+                }
+            };
+        }
+        self.pieces_blocks.insert(info_hash, pieces_blocks);
+        self.downloaded_pieces.insert(info_hash, 0);
 
+        // tell all peers that the Info is downloaded, and
+        // everything is ready to start the download.
         for peer in &self.peer_ctxs {
             peer.1.tx.send(PeerMsg::HaveInfo).await?;
         }
@@ -192,6 +206,10 @@ impl Disk {
         Ok(())
     }
 
+    /// This function will get the next available piece that a peer has,
+    /// and that wasn't downloaded yet.
+    ///
+    /// It will traverse the pieces in the order of [PieceOrder].
     async fn next_piece(&self, peer_id: [u8; 20], info_hash: [u8; 20]) -> Option<(usize, u32)> {
         let peer_ctx = self.peer_ctxs.get(&peer_id);
         if peer_ctx.is_none() {
@@ -213,34 +231,82 @@ impl Disk {
             .map(|(i, x)| (i, x.to_owned()))
     }
 
+    /// Change the piece download algorithm to rarest-first.
+    ///
+    /// The rarest-first strategy actually begins in random-first,
+    /// until the first piece is downloaded, after that, it finally
+    /// switches to rarest-first.
+    ///
+    /// The function will get the pieces of all peers, and see
+    /// which pieces are the most rare, and reorder the piece
+    /// vector of Disk, where the most rare are the ones to the right.
+    async fn to_rarest(&mut self, info_hash: [u8; 20]) -> Result<(), Error> {
+        // get all peers of the given torrent `info_hash`
+        let peer_ctxs: Vec<Arc<PeerCtx>> = self
+            .peer_ctxs
+            .values()
+            .cloned()
+            .filter(|v| v.info_hash == info_hash)
+            .collect();
+
+        if peer_ctxs.is_empty() {
+            return Err(Error::NoPeers);
+        }
+
+        let len = peer_ctxs[0].pieces.read().await.len();
+        // vec of pieces scores/occurences, where index = piece.
+        let mut score: Vec<u32> = vec![0u32; len];
+
+        // traverse pieces of the peers
+        for ctx in peer_ctxs {
+            let pieces = ctx.pieces.read().await.clone().into_iter();
+            for item in pieces {
+                // increment each occurence of a piece
+                if item.bit == 1 {
+                    if let Some(item) = score.get_mut(item.index) {
+                        *item += 1;
+                    }
+                }
+            }
+        }
+
+        // pieces of the local peer
+        let pieces = self
+            .pieces
+            .get_mut(&info_hash)
+            .ok_or(Error::TorrentDoesNotExist)?;
+
+        while !score.is_empty() {
+            // get the rarest, the piece with the least occurences
+            let (rarest_idx, _) = score.iter().enumerate().min().unwrap();
+
+            // get the most common, the piece with the most occurences
+            let (common_idx, _) = score.iter().enumerate().max().unwrap();
+
+            pieces.swap(common_idx, rarest_idx);
+
+            // remove the rarest from the score,
+            // as it's already used.
+            score.remove(rarest_idx);
+        }
+
+        let piece_order = self.piece_order.get_mut(&info_hash).unwrap();
+        if *piece_order == PieceOrder::Random {
+            *piece_order = PieceOrder::Rarest;
+        }
+
+        Ok(())
+    }
+
+    /// Request blocks of the given `peer_id` that has not been requested
+    /// nor downloaded yet, given a `qnt` quantity.
     pub async fn request_blocks(
         &mut self,
         info_hash: [u8; 20],
-        qnt: usize,
+        mut qnt: usize,
         peer_id: [u8; 20],
     ) -> Result<VecDeque<BlockInfo>, Error> {
         let mut infos: VecDeque<BlockInfo> = VecDeque::new();
-
-        let info_ = self
-            .torrent_ctxs
-            .get(&info_hash)
-            .ok_or(Error::TorrentDoesNotExist)?
-            .info
-            .read()
-            .await;
-
-        let piece_len = info_.piece_length;
-        let info = info_.clone();
-
-        drop(info_);
-
-        let peer_pieces = self
-            .peer_ctxs
-            .get(&peer_id)
-            .ok_or(Error::PeerIdInvalid)?
-            .pieces
-            .read()
-            .await;
 
         // get the next piece that the peer has
         let piece = self.next_piece(peer_id, info_hash).await;
@@ -249,70 +315,64 @@ impl Disk {
             return Ok(VecDeque::new());
         }
 
-        let (mut piece_index, mut piece) = piece.unwrap();
+        while qnt > 0 {
+            let (piece_index, _piece) = piece.unwrap();
 
-        let piece_cursor = self
-            .pieces_cursor
-            .get_mut(&info_hash)
-            .unwrap()
-            .get_mut(&piece)
-            .unwrap();
-
-        if *piece_cursor >= piece_len {
-            return Ok(VecDeque::new());
-        }
-
-        drop(peer_pieces);
-
-        let file = Self::get_file_from_piece_info(piece, info.clone())?;
-        let file_len = file.length;
-
-        let piece_len = file.get_piece_len(piece, piece_len);
-
-        for _ in 0..qnt {
-            let piece_cursor = self
-                .pieces_cursor
+            // get pieces_blocks of the requested torrent,
+            // but also draining the Vec and taking ownership.
+            let pieces_blocks = self
+                .pieces_blocks
                 .get_mut(&info_hash)
                 .unwrap()
-                .get_mut(&piece)
-                .unwrap();
+                .get_mut(piece_index)
+                .map(|x| std::mem::take(x));
 
-            let begin = piece_cursor.clone();
+            if let Some(blocks) = pieces_blocks {
+                // traverse the blocks and only get the amount
+                // requested by `qnt`.
+                for block in &blocks {
+                    if qnt == 0 {
+                        break;
+                    };
+                    qnt -= 1;
+                    infos.push_back(block.clone());
+                }
+                // if the piece is not fully consumed,
+                // give back the remaining blocks.
+                if !blocks.is_empty() {
+                    let pieces_blocks = self
+                        .pieces_blocks
+                        .get_mut(&info_hash)
+                        .unwrap()
+                        .get_mut(piece_index)
+                        .unwrap();
 
-            // free space available in the file
-            let available = file_len - begin;
-
-            // align len with file boundary
-            let mut len = BLOCK_LEN.min(available as u32);
-
-            // align len with piece boundary
-            if (begin + len) > piece_len {
-                len -= (begin + len) % piece_len;
-            }
-
-            *piece_cursor += len;
-
-            infos.push_front(BlockInfo {
-                index: piece,
-                begin,
-                len,
-            });
-
-            // if piece is fully requested we want to
-            // delete and request the next one
-            if *piece_cursor >= piece_len {
+                    for block in blocks {
+                        pieces_blocks.push_back(block);
+                    }
+                }
+                // if piece is fully requested we want to
+                // delete and request the next one. Delete because
+                // self.pieces is only about pieces that the local peer
+                // does not have downloaded.
                 let pieces = self.pieces.get_mut(&info_hash).unwrap();
                 pieces.remove(piece_index);
-                let cursor = self.pieces_cursor.get_mut(&info_hash).unwrap();
-                cursor.remove(&piece);
 
-                let piece_ = self.next_piece(peer_id, info_hash).await;
-                if let Some(x) = piece_ {
-                    piece = x.1;
-                    piece_index = x.0;
-                } else {
-                    return Ok(VecDeque::new());
+                // if the piece order is random-first (first step of rarest-first),
+                // and the local peer just downloaded its first piece,
+                // change it to rarest-first algorithm.
+                if let Some(downloaded_pieces) = self.downloaded_pieces.get_mut(&info_hash) {
+                    *downloaded_pieces += 1;
+
+                    let piece_order = self.piece_order.get_mut(&info_hash).unwrap();
+                    if *downloaded_pieces == 1 {
+                        if *piece_order == PieceOrder::Random {
+                            self.to_rarest(info_hash).await?;
+                        }
+                    }
                 }
+            } else {
+                break;
             }
         }
 
@@ -374,13 +434,20 @@ impl Disk {
                     debug!("NewPeer");
                     self.new_peer(peer).await?;
                 }
-                DiskMsg::ReturnBlockInfos(info_hash, mut block_infos) => {
+                DiskMsg::ReturnBlockInfos(info_hash, block_infos) => {
                     debug!("ReturnBlockInfos");
-                    // self.block_infos
-                    //     .get_mut(&info_hash)
-                    //     .ok_or(Error::TorrentDoesNotExist)?
-                    //     .append(&mut block_infos);
-                    //     todo: send to peers
+                    for block in block_infos {
+                        // get vector of piece_blocks for each
+                        // piece of the blocks.
+                        if let Some(piece) = self
+                            .pieces_blocks
+                            .get_mut(&info_hash)
+                            .ok_or(Error::TorrentDoesNotExist)?
+                            .get_mut(block.index as usize)
+                        {
+                            piece.push_back(block);
+                        }
+                    }
                 }
                 DiskMsg::Quit => {
                     debug!("Quit");
@@ -668,7 +735,7 @@ impl Disk {
         Ok(file_info)
     }
 
-    fn get_file_from_piece_info(piece: u32, info: Info) -> Result<metainfo::File, Error> {
+    fn _get_file_from_piece_info(piece: u32, info: Info) -> Result<metainfo::File, Error> {
         let piece_len = info.piece_length;
 
         // multi file torrent

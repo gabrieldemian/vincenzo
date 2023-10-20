@@ -91,4 +91,6 @@ pub enum Error {
     ConfigDeserializeError,
     #[error("You cannot add a duplicate torrent, only 1 is allowed")]
     NoDuplicateTorrent,
+    #[error("No peers in the torrent")]
+    NoPeers,
 }
