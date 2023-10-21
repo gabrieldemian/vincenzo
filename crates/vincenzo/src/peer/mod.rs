@@ -1,7 +1,7 @@
 //! A peer in the network that downloads and uploads data
 pub mod session;
 use bendy::{decoding::FromBencode, encoding::ToBencode};
-use bitlab::SingleBits;
+use bitvec::prelude::{BitArray, Msb0};
 use futures::{SinkExt, StreamExt};
 use hashbrown::{HashMap, HashSet};
 use std::{collections::VecDeque, net::SocketAddr, sync::Arc, time::Duration};
@@ -19,7 +19,7 @@ use tokio::net::TcpStream;
 use tracing::{debug, info, warn};
 
 use crate::{
-    bitfield::Bitfield,
+    bitfield::{Bitfield, Reserved},
     disk::DiskMsg,
     error::Error,
     extension::{Extension, Metadata},
@@ -81,7 +81,7 @@ pub enum PeerMsg {
 pub struct Peer {
     /// Extensions of the protocol that the peer supports.
     pub extension: Extension,
-    pub reserved: [u8; 8],
+    pub reserved: BitArray<[u8; 8], Msb0>,
     pub torrent_ctx: Arc<TorrentCtx>,
     pub rx: Receiver<PeerMsg>,
     /// Context of the Peer which is shared for anyone who needs it.
@@ -146,6 +146,8 @@ impl Peer {
             local_addr,
         });
 
+        let reserved = Reserved::from(handshake.reserved);
+
         Peer {
             incoming_requests: HashSet::default(),
             outgoing_requests: HashSet::default(),
@@ -153,7 +155,7 @@ impl Peer {
             session: Session::default(),
             have_info: false,
             extension: Extension::default(),
-            reserved: handshake.reserved,
+            reserved,
             torrent_ctx,
             ctx,
             rx,
@@ -230,7 +232,7 @@ impl Peer {
         // if they are connecting, answer with our extended handshake
         // if supported
         if direction == Direction::Inbound {
-            if let Ok(true) = self.reserved[5].get_bit(3) {
+            if self.reserved[43] {
                 debug!("{local} sending extended handshake to {remote}");
 
                 // we need to have the info downloaded in order to send the
@@ -269,7 +271,7 @@ impl Peer {
 
         // maybe send bitfield
         let bitfield = self.torrent_ctx.bitfield.read().await;
-        if bitfield.len_bytes() > 0 {
+        if bitfield.len() > 0 {
             debug!("{local} sending bitfield to {remote}");
             sink.send(Message::Bitfield(bitfield.clone())).await?;
         }
@@ -308,18 +310,16 @@ impl Peer {
                             *b = bitfield.clone();
                             drop(b);
 
-                            for x in bitfield.into_iter() {
-                                if x.bit == 0 {
-                                    debug!("{local} interested due to Bitfield");
+                            let peer_has_piece = self.has_piece_not_in_local().await;
 
-                                    self.session.state.am_interested = true;
-                                    sink.send(Message::Interested).await?;
+                            if peer_has_piece {
+                                debug!("{local} interested due to Bitfield");
 
-                                    if self.can_request() {
-                                        self.request_block_infos(&mut sink).await?;
-                                    }
+                                self.session.state.am_interested = true;
+                                sink.send(Message::Interested).await?;
 
-                                    break;
+                                if self.can_request() {
+                                    self.request_block_infos(&mut sink).await?;
                                 }
                             }
 
@@ -367,18 +367,17 @@ impl Peer {
                             // from ISPs.
                             // Overwrite pieces on bitfield, if the peer has one
                             let mut pieces = self.ctx.pieces.write().await;
-                            pieces.set(piece);
+                            pieces.set(piece, true);
                             drop(pieces);
 
-                            let torrent_ctx = self.torrent_ctx.clone();
-                            let torrent_p = torrent_ctx.bitfield.read().await;
-                            let bit_item = torrent_p.get(piece);
+                            let local_bitfield = self.torrent_ctx.bitfield.read().await;
+                            let piece = local_bitfield.get(piece);
 
                             // maybe become interested in peer and request blocks
                             if !self.session.state.am_interested {
-                                match bit_item {
+                                match piece {
                                     Some(a) => {
-                                        if a.bit == 1 {
+                                        if *a {
                                             debug!("already have this piece, ignoring");
                                         } else {
                                             debug!("We do not have this piece, sending interested");
@@ -566,13 +565,10 @@ impl Peer {
 
                             if let Some(b) = pieces.get(piece) {
                                 // send Have to this peer if he doesnt have this piece
-                                if b.bit == 0 {
+                                if !b {
                                     debug!("sending have {piece} to peer {local}");
                                     let _ = sink.send(Message::Have(piece)).await;
                                 }
-                            }
-                            else if pieces.len_bytes() == 0 {
-                                let _ = sink.send(Message::Have(piece)).await;
                             }
                             drop(pieces);
                         }
@@ -629,19 +625,15 @@ impl Peer {
                                 sink.send(Message::Unchoke).await?;
                             }
 
-                            let p = self.ctx.pieces.read().await.clone();
-                            for x in p {
-                                if x.bit == 0 {
-                                    debug!("{local} we are interested due to Bitfield");
+                            let peer_has_piece = self.has_piece_not_in_local().await;
 
-                                    self.session.state.am_interested = true;
-                                    sink.send(Message::Interested).await?;
+                            if peer_has_piece {
+                                debug!("{local} we are interested due to Bitfield");
+                                self.session.state.am_interested = true;
+                                sink.send(Message::Interested).await?;
 
-                                    if self.can_request() {
-                                        self.request_block_infos(&mut sink).await?;
-                                    }
-
-                                    break;
+                                if self.can_request() {
+                                    self.request_block_infos(&mut sink).await?;
                                 }
                             }
                         }
@@ -962,5 +954,22 @@ impl Peer {
             self.outgoing_requests.len() < self.session.target_request_queue_len as usize;
 
         am_interested && !am_choking && self.have_info && have_capacity && !self.session.seed_only
+    }
+
+    /// If this Peer has a piece that the local Peer (client)
+    /// does not have.
+    pub async fn has_piece_not_in_local(&self) -> bool {
+        // bitfield of the peer
+        let bitfield = self.ctx.pieces.read().await;
+
+        // local bitfield of the local peer
+        let local_bitfield = self.torrent_ctx.bitfield.read().await;
+
+        for (local_piece, piece) in local_bitfield.iter().zip(bitfield.iter()) {
+            if *piece && !local_piece {
+                return true;
+            }
+        }
+        return false;
     }
 }

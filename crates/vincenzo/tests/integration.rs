@@ -97,7 +97,7 @@ async fn peer_request() {
     drop(torrent_info);
 
     let mut p = torrent.ctx.bitfield.write().await;
-    *p = Bitfield::from(vec![255]);
+    *p = Bitfield::from_vec(vec![255]);
     drop(p);
 
     disk.new_torrent(torrent.ctx.clone()).await.unwrap();
@@ -228,7 +228,7 @@ async fn peer_request() {
     peer.session.state.am_interested = true;
     peer.have_info = true;
     let mut p = peer.ctx.pieces.write().await;
-    *p = Bitfield::from(vec![255]);
+    *p = Bitfield::from_vec(vec![255]);
     drop(p);
 
     // let msg = Message::Request(BlockInfo {

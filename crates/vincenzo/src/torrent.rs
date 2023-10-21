@@ -16,6 +16,8 @@ use crate::{
     },
 };
 use bendy::decoding::FromBencode;
+use bitvec::bitvec;
+use bitvec::prelude::Msb0;
 use hashbrown::HashMap;
 use speedy::{Readable, Writable};
 use std::collections::BTreeMap;
@@ -437,7 +439,7 @@ impl Torrent {
                                     // with the info fully downloaded, we now know the pieces len,
                                     // this will update the bitfield of the torrent
                                     let mut bitfield = self.ctx.bitfield.write().await;
-                                    *bitfield = Bitfield::from(vec![0_u8; info.pieces() as usize * 8]);
+                                    *bitfield = bitvec![u8, Msb0; 0; info.pieces() as usize];
 
                                     self.size = info.get_size();
                                     self.have_info = true;

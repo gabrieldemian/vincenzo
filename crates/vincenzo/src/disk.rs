@@ -221,11 +221,12 @@ impl Disk {
             .unwrap()
             .iter()
             .enumerate()
-            .find(|x| {
+            .find(|(_local_piece_idx, local_piece)| {
                 peer_pieces
                     .clone()
                     .into_iter()
-                    .find(|y| y.index == *x.1 as usize && y.bit == 1)
+                    .enumerate()
+                    .find(|(piece_idx, piece)| *piece_idx == **local_piece as usize && *piece)
                     .is_some()
             })
             .map(|(i, x)| (i, x.to_owned()))
@@ -259,11 +260,11 @@ impl Disk {
 
         // traverse pieces of the peers
         for ctx in peer_ctxs {
-            let pieces = ctx.pieces.read().await.clone().into_iter();
-            for item in pieces {
+            let pieces = ctx.pieces.read().await.clone().into_iter().enumerate();
+            for (i, item) in pieces {
                 // increment each occurence of a piece
-                if item.bit == 1 {
-                    if let Some(item) = score.get_mut(item.index) {
+                if item {
+                    if let Some(item) = score.get_mut(i) {
                         *item += 1;
                     }
                 }
@@ -603,7 +604,7 @@ impl Disk {
             // info!("hash of piece {index:?} is valid");
 
             // update the bitfield of the torrent
-            bitfield.set(index);
+            bitfield.set(index, true);
         }
 
         drop(info);
@@ -1092,7 +1093,7 @@ mod tests {
         let info_hash = torrent.ctx.info_hash;
 
         let mut p = torrent.ctx.bitfield.write().await;
-        *p = Bitfield::from(vec![255, 255, 255, 255]);
+        *p = Bitfield::from_vec(vec![255, 255, 255, 255]);
         drop(info);
         drop(p);
 

@@ -79,9 +79,9 @@ impl Encoder<Message> for PeerCodec {
                 buf.put_u32(0);
             }
             Message::Bitfield(bitfield) => {
-                buf.put_u32(1 + bitfield.len_bytes() as u32);
+                buf.put_u32(1 + bitfield.len() as u32 / 8);
                 buf.put_u8(MessageId::Bitfield as u8);
-                buf.extend_from_slice(bitfield.inner.as_slice());
+                buf.extend_from_slice(&bitfield.into_vec());
             }
             Message::Choke => {
                 buf.put_u32(1);
@@ -216,7 +216,7 @@ impl Decoder for PeerCodec {
             MessageId::Bitfield => {
                 let mut bitfield = vec![0; msg_len - 1];
                 buf.copy_to_slice(&mut bitfield);
-                Message::Bitfield(Bitfield::from(bitfield))
+                Message::Bitfield(Bitfield::from_vec(bitfield))
             }
             // <len=0013><id=6><index><begin><length>
             MessageId::Request => {
@@ -430,7 +430,11 @@ mod tests {
     use crate::tcp_wire::BLOCK_LEN;
 
     use super::*;
-    use bitlab::SingleBits;
+    use bitvec::{
+        bitarr,
+        prelude::Msb0,
+        view::{BitView, BitViewSized},
+    };
     use bytes::{Buf, BytesMut};
     use tokio_util::codec::{Decoder, Encoder};
 
@@ -555,12 +559,13 @@ mod tests {
 
     #[test]
     fn reserved_bytes() {
-        let mut reserved = [0u8; 8];
-        reserved[5] |= 0x10;
+        let reserved = Bitfield::from_vec(vec![0, 0, 0, 0, 0, 16, 0, 0]);
+        // let mut a = bitarr![u8, Msb0; 0; 64];
+        // reserved.set(43, true);
 
-        assert_eq!(reserved, [0, 0, 0, 0, 0, 16, 0, 0]);
+        assert_eq!(reserved.clone().into_vec(), [0, 0, 0, 0, 0, 16, 0, 0]);
 
-        let support_extension_protocol = reserved[5].get_bit(3).unwrap();
+        let support_extension_protocol = reserved[43];
 
         assert!(support_extension_protocol)
     }
