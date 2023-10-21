@@ -232,6 +232,8 @@ impl Peer {
         // if they are connecting, answer with our extended handshake
         // if supported
         if direction == Direction::Inbound {
+            // The bit selected for the extension protocol is bit 20 from the right
+            // and bit 44 from the left
             if self.reserved[43] {
                 debug!("{local} sending extended handshake to {remote}");
 
@@ -283,6 +285,17 @@ impl Peer {
         sink.send(Message::Unchoke).await?;
         sink.send(Message::Interested).await?;
 
+        // let info = self.torrent_ctx.info.read().await;
+        // let mut peer_pieces = self.ctx.pieces.write().await;
+        // if local peer has info, initialize the bitfield
+        // of this peer.
+        // if peer_pieces.is_empty() && info.piece_length != 0 {
+        //     *peer_pieces = bitvec![u8, Msb0; 0; info.pieces() as usize];
+        // }
+        // drop(peer_pieces);
+        // drop(info);
+        debug!("PAAAAAAAAAAAAAAAAAAAAAAAAAAASSSSSSSSSSSSSSTTTTTTTTTTTTTTTTTTTs");
+
         loop {
             select! {
                 // update internal data every 1 second
@@ -306,11 +319,22 @@ impl Peer {
                             debug!("----------------------------------");
                             debug!("| {local} Bitfield  |");
                             debug!("----------------------------------\n");
+
+                            // remove excess bits
                             let mut b = self.ctx.pieces.write().await;
                             *b = bitfield.clone();
+                            // let pieces = self.torrent_ctx.info.read().await.pieces() as usize;
+                            // if bitfield.len() != pieces && pieces > 0 && self.have_info {
+                            //     unsafe {
+                            //         b.set_len(pieces);
+                            //     }
+                            // }
+
+                            debug!("{local} bitfield is len {:?}", b.len());
                             drop(b);
 
                             let peer_has_piece = self.has_piece_not_in_local().await;
+                            debug!("{local} peer_has_piece {peer_has_piece}");
 
                             if peer_has_piece {
                                 debug!("{local} interested due to Bitfield");
@@ -665,6 +689,9 @@ impl Peer {
                             let am_interested = self.session.state.am_interested;
                             let peer_choking = self.session.state.peer_choking;
 
+                            debug!("{local} am_interested {am_interested}");
+                            debug!("{local} peer_choking {peer_choking}");
+
                             if am_interested && !peer_choking {
                                 self.session.prepare_for_download(self.extension.reqq);
                                 debug!("{local} requesting blocks");
@@ -735,9 +762,9 @@ impl Peer {
     where
         T: SinkExt<Message> + Sized + std::marker::Unpin,
     {
-        if self.can_request() {
-            self.request_block_infos(sink).await?;
-        }
+        // if self.can_request() {
+        //     self.request_block_infos(sink).await?;
+        // }
 
         // resend requests if we have any pending and more time has elapsed
         // since the last received block than the current timeout value
@@ -762,22 +789,23 @@ impl Peer {
             self.outgoing_requests.len()
         );
 
-        if self.session.timed_out_request_count < 2 {
-            for (block, timeout) in self.outgoing_requests_timeout.iter_mut() {
-                if *timeout >= Instant::now() && self.session.timed_out_request_count < 2 {
-                    *timeout = Instant::now() + self.session.request_timeout();
-                    self.session.register_request_timeout();
+        if self.session.timed_out_request_count >= 10 {
+            self.free_pending_blocks().await;
+            return Ok(());
+        }
 
-                    let _ = sink.send(Message::Request(block.clone())).await;
+        for (block, timeout) in self.outgoing_requests_timeout.iter_mut() {
+            if *timeout >= Instant::now() {
+                *timeout = Instant::now() + self.session.request_timeout();
+                self.session.register_request_timeout();
 
-                    debug!(
-                        "{local} timeout, total: {}",
-                        self.session.timed_out_request_count + 1
-                    );
-                }
+                let _ = sink.send(Message::Request(block.clone())).await;
+
+                debug!(
+                    "{local} timeout, total: {}",
+                    self.session.timed_out_request_count + 1
+                );
             }
-        } else {
-            // self.free_pending_blocks().await;
         }
 
         Ok(())
@@ -964,6 +992,12 @@ impl Peer {
 
         // local bitfield of the local peer
         let local_bitfield = self.torrent_ctx.bitfield.read().await;
+
+        // when we don't have the info fully downloaded yet,
+        // and the peer has already sent a bitfield or a have.
+        if local_bitfield.is_empty() {
+            return true;
+        }
 
         for (local_piece, piece) in local_bitfield.iter().zip(bitfield.iter()) {
             if *piece && !local_piece {

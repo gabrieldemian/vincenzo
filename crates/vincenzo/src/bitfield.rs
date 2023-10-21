@@ -1,7 +1,10 @@
-//! An implementation of the Bitfield data format, used by BitTorrent protocol.
+//! Wrapper types around Bitvec.
 use bitvec::prelude::*;
 
+/// Bitfield where index = piece.
 pub type Bitfield = BitVec<u8, Msb0>;
+
+/// Reserved bytes exchanged during handshake.
 pub type Reserved = BitArray<[u8; 8], Msb0>;
 
 #[cfg(test)]

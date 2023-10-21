@@ -122,7 +122,7 @@ impl Session {
     /// The target request queue size is set to this value once we are able to start
     /// downloading, unless the peer extension has the `reqq` field, in this case, we
     /// mutate this const to it's value.
-    const START_REQUEST_QUEUE_LEN: u16 = 50;
+    const START_REQUEST_QUEUE_LEN: u16 = 100;
 
     /// The smallest timeout value we can give a peer. Very fast peers will have
     /// an average round-trip-times, so a slight deviation would punish them

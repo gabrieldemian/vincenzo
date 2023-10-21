@@ -282,7 +282,7 @@ impl Torrent {
     }
 
     /// Spawn a new event loop every time a peer connect with us.
-    #[tracing::instrument(skip(self), fields(self.name))]
+    #[tracing::instrument(skip(self))]
     pub async fn spawn_inbound_peers(&self) -> Result<(), Error> {
         debug!(
             "accepting requests in {:?}",
@@ -440,6 +440,15 @@ impl Torrent {
                                     // this will update the bitfield of the torrent
                                     let mut bitfield = self.ctx.bitfield.write().await;
                                     *bitfield = bitvec![u8, Msb0; 0; info.pieces() as usize];
+
+                                    // remove excess bits
+                                    if (info.pieces() as usize) < bitfield.len() {
+                                        unsafe {
+                                            bitfield.set_len(info.pieces() as usize);
+                                        }
+                                    }
+
+                                    debug!("local_bitfield is now of len {:?}", bitfield.len());
 
                                     self.size = info.get_size();
                                     self.have_info = true;
