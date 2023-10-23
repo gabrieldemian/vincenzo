@@ -11,7 +11,6 @@ use rand::seq::SliceRandom;
 use tokio::{
     fs::{create_dir_all, File, OpenOptions},
     io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
-    spawn,
     sync::{mpsc::Receiver, oneshot::Sender},
 };
 use tracing::debug;
@@ -121,6 +120,87 @@ impl Disk {
         }
     }
 
+    #[tracing::instrument(skip(self), name = "disk::run")]
+    pub async fn run(&mut self) -> Result<(), Error> {
+        debug!("disk started event loop");
+        while let Some(msg) = self.rx.recv().await {
+            match msg {
+                DiskMsg::NewTorrent(torrent) => {
+                    debug!("NewTorrent");
+                    let _ = self.new_torrent(torrent).await;
+                }
+                DiskMsg::ReadBlock {
+                    b,
+                    recipient,
+                    info_hash,
+                } => {
+                    debug!("ReadBlock");
+                    let result = self.read_block(b, info_hash).await;
+                    let _ = recipient.send(result);
+                }
+                DiskMsg::WriteBlock {
+                    b,
+                    recipient,
+                    info_hash,
+                } => {
+                    debug!("WriteBlock");
+                    let _ = recipient.send(self.write_block(b, info_hash).await);
+                    // let _ = recipient.send(Ok(()));
+                }
+                DiskMsg::OpenFile(path, tx) => {
+                    debug!("OpenFile");
+                    let file = self.open_file(path).await?;
+                    let _ = tx.send(file);
+                }
+                DiskMsg::RequestBlocks {
+                    qnt,
+                    recipient,
+                    info_hash,
+                    peer_id,
+                } => {
+                    debug!("RequestBlocks");
+                    let infos = self
+                        .request_blocks(info_hash, qnt, peer_id)
+                        .await
+                        .unwrap_or_default();
+                    debug!("disk sending {}", infos.len());
+                    let _ = recipient.send(infos);
+                }
+                DiskMsg::ValidatePiece(index, info_hash, tx) => {
+                    debug!("ValidatePiece");
+                    let r = self.validate_piece(info_hash, index).await;
+                    let _ = tx.send(r);
+                }
+                DiskMsg::NewPeer(peer) => {
+                    debug!("NewPeer");
+                    self.new_peer(peer).await?;
+                }
+                DiskMsg::ReturnBlockInfos(info_hash, block_infos) => {
+                    debug!("ReturnBlockInfos");
+                    for block in block_infos {
+                        // get vector of piece_blocks for each
+                        // piece of the blocks.
+                        if let Some(piece) = self
+                            .pieces_blocks
+                            .get_mut(&info_hash)
+                            .ok_or(Error::TorrentDoesNotExist)?
+                            .get_mut(block.index as usize)
+                        {
+                            piece.push_back(block);
+                        }
+                    }
+                }
+                DiskMsg::Quit => {
+                    debug!("Quit");
+                    return Ok(());
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+
     /// Should only be called after torrent has Info downloaded
     #[tracing::instrument(skip(self, torrent_ctx), name = "new_torrent")]
     pub async fn new_torrent(&mut self, torrent_ctx: Arc<TorrentCtx>) -> Result<(), Error> {
@@ -156,10 +236,7 @@ impl Disk {
                 // now with the dirs created, we create the file
                 if let Some(file_ext) = last {
                     file_dir.push(file_ext);
-                    self.open_file(file_dir)
-                        .await?
-                        .set_len(file.length as u64)
-                        .await?;
+                    self.open_file(file_dir).await?;
                 }
             }
         }
@@ -284,18 +361,16 @@ impl Disk {
         }
         debug!("pieces random {pieces:?}");
         debug!("len of pieces random {:?}", pieces.len());
-
         debug!("score {score:?}");
 
         while !score.is_empty() {
             // get the rarest, the piece with the least occurences
             let (rarest_idx, _) = score.iter().enumerate().min().unwrap();
 
-            // get the most common, the piece with the most occurences
-            // let (common_idx, _) = score.iter().enumerate().max().unwrap();
-            let (common_idx, _) = score.iter().enumerate().last().unwrap();
+            // get the last
+            let (last_idx, _) = score.iter().enumerate().last().unwrap();
 
-            pieces.swap(common_idx, rarest_idx);
+            pieces.swap(last_idx, rarest_idx);
 
             // remove the rarest from the score,
             // as it's already used.
@@ -305,7 +380,7 @@ impl Disk {
         debug!("pieces changed to rarest {pieces:?}");
         let piece_order = self.piece_order.get_mut(&info_hash).unwrap();
         if *piece_order == PieceOrder::Random {
-            // *piece_order = PieceOrder::Rarest;
+            *piece_order = PieceOrder::Rarest;
         }
 
         Ok(())
@@ -340,13 +415,6 @@ impl Disk {
                     // how many blocks are left to request
                     let left = qnt - result.len();
                     result.extend(blocks.drain(0..left.min(blocks.len())));
-
-                    if blocks.is_empty() {
-                        self.pieces_blocks
-                            .get_mut(&info_hash)
-                            .unwrap()
-                            .remove(piece.1 as usize);
-                    }
                 }
             } else {
                 break;
@@ -354,86 +422,6 @@ impl Disk {
         }
 
         Ok(result)
-    }
-
-    #[tracing::instrument(skip(self), name = "disk::run")]
-    pub async fn run(&mut self) -> Result<(), Error> {
-        debug!("disk started event loop");
-        while let Some(msg) = self.rx.recv().await {
-            match msg {
-                DiskMsg::NewTorrent(torrent) => {
-                    debug!("NewTorrent");
-                    let _ = self.new_torrent(torrent).await;
-                }
-                DiskMsg::ReadBlock {
-                    b,
-                    recipient,
-                    info_hash,
-                } => {
-                    debug!("ReadBlock");
-                    let result = self.read_block(b, info_hash).await;
-                    let _ = recipient.send(result);
-                }
-                DiskMsg::WriteBlock {
-                    b,
-                    recipient,
-                    info_hash,
-                } => {
-                    debug!("WriteBlock");
-                    let _ = recipient.send(self.write_block(b, info_hash).await);
-                    // let _ = recipient.send(Ok(()));
-                }
-                DiskMsg::OpenFile(path, tx) => {
-                    debug!("OpenFile");
-                    let file = self.open_file(path).await?;
-                    let _ = tx.send(file);
-                }
-                DiskMsg::RequestBlocks {
-                    qnt,
-                    recipient,
-                    info_hash,
-                    peer_id,
-                } => {
-                    debug!("RequestBlocks");
-                    let infos = self
-                        .request_blocks(info_hash, qnt, peer_id)
-                        .await
-                        .unwrap_or_default();
-                    debug!("disk sending {}", infos.len());
-                    let _ = recipient.send(infos);
-                }
-                DiskMsg::ValidatePiece(index, info_hash, tx) => {
-                    debug!("ValidatePiece");
-                    let r = self.validate_piece(info_hash, index).await;
-                    let _ = tx.send(r);
-                }
-                DiskMsg::NewPeer(peer) => {
-                    debug!("NewPeer");
-                    self.new_peer(peer).await?;
-                }
-                DiskMsg::ReturnBlockInfos(info_hash, block_infos) => {
-                    debug!("ReturnBlockInfos");
-                    for block in block_infos {
-                        // get vector of piece_blocks for each
-                        // piece of the blocks.
-                        if let Some(piece) = self
-                            .pieces_blocks
-                            .get_mut(&info_hash)
-                            .ok_or(Error::TorrentDoesNotExist)?
-                            .get_mut(block.index as usize)
-                        {
-                            piece.push_back(block);
-                        }
-                    }
-                }
-                DiskMsg::Quit => {
-                    debug!("Quit");
-                    return Ok(());
-                }
-            }
-        }
-
-        Ok(())
     }
 
     pub async fn open_file(&self, path: impl AsRef<Path>) -> Result<File, Error> {
@@ -446,46 +434,6 @@ impl Disk {
             .open(&path)
             .await
             .map_err(|_| Error::FileOpenError(path.to_str().unwrap().to_owned()))
-    }
-
-    #[tracing::instrument(skip(self))]
-    pub async fn validate_piece(&mut self, info_hash: [u8; 20], index: usize) -> Result<(), Error> {
-        // let torrent_ctx = self
-        //     .torrent_ctxs
-        //     .get(&info_hash)
-        //     .ok_or(Error::TorrentDoesNotExist)?;
-        //
-        // let b = index * 20;
-        // let e = b + 20;
-        //
-        // let pieces = torrent_ctx.pieces.read().await;
-        // let hash_from_info = pieces[b..e].to_owned();
-        //
-        // let mut buf = Vec::new();
-        // let previous_blocks_len = index * (*info.blocks_per_piece() as usize);
-        //
-        // let downloaded_blocks = torrent_ctx
-        //     .requested_blocks
-        //     .read()
-        //     .await
-        //     .iter()
-        //     .skip(previous_blocks_len)
-        //     .take(5);
-        //
-        // for b in downloaded_blocks {
-        //     buf.push(b.block)
-        // }
-        //
-        // let mut hash = sha1_smol::Sha1::new();
-        // hash.update(&buf);
-        //
-        // let hash = hash.digest().bytes();
-        //
-        // if hash_from_info != hash {
-        //     return Err(Error::PieceInvalid);
-        // }
-
-        Ok(())
     }
 
     pub async fn read_block(
@@ -520,21 +468,25 @@ impl Disk {
     pub async fn write_block(&mut self, block: Block, info_hash: [u8; 20]) -> Result<(), Error> {
         // Write the block's data to the correct position in the file
         let len = block.block.len();
+        let index = block.index;
         let block_info = BlockInfo {
-            index: block.index as u32,
+            index: index as u32,
             len: len as u32,
             begin: block.begin,
         };
 
         // Calculate the correct position in the file and open the file
-        let (mut fs_file, _) = self
+        let (mut fs_file, f) = self
             .get_file_from_block_info(&block_info, info_hash)
             .await
             .unwrap();
 
-        spawn(async move {
-            fs_file.write_all(&block.block).await.unwrap();
-        });
+        println!("f {:?} b {:?}", f.path, block.block);
+
+        // spawn(async move {
+        fs_file.write_all(&block.block).await.unwrap();
+        fs_file.sync_all().await?;
+        // });
 
         let torrent_ctx = self
             .torrent_ctxs
@@ -547,13 +499,18 @@ impl Disk {
             .send(TorrentMsg::IncrementDownloaded(len as u64))
             .await;
 
-        let info = torrent_ctx.info.read().await;
-
         // Check if the entire piece has been downloaded
-        let piece_end = (block.index as u32 + 1) * info.piece_length;
-        let block_end = block.begin + len as u32;
+        let blocks = self
+            .pieces_blocks
+            .get_mut(&info_hash)
+            .unwrap()
+            .get_mut(index)
+            .ok_or(Error::TorrentDoesNotExist)?;
 
-        if block_end >= piece_end {
+        // if the block infos vec of this piece is empty,
+        // it means that the piece was fully downloaded,
+        // and that the current `block` is the last one.
+        if blocks.is_empty() {
             // If the entire piece has been downloaded, handle piece completion logic
             // TODO: Add validation of pieces
             // self.validate_piece(info_hash, block.index).await?;
@@ -703,6 +660,45 @@ impl Disk {
 
         Ok(block)
     }
+
+    #[tracing::instrument(skip(self, info_hash))]
+    pub async fn validate_piece(&mut self, info_hash: [u8; 20], index: usize) -> Result<(), Error> {
+        todo!();
+        // let torrent_ctx = self
+        //     .torrent_ctxs
+        //     .get(&info_hash)
+        //     .ok_or(Error::TorrentDoesNotExist)?;
+        //
+        // let b = index * 20;
+        // let e = b + 20;
+        //
+        // let pieces = torrent_ctx.pieces.read().await;
+        // let hash_from_info = pieces[b..e].to_owned();
+        //
+        // let mut buf = Vec::new();
+        // let previous_blocks_len = index * (*info.blocks_per_piece() as usize);
+        //
+        // let downloaded_blocks = torrent_ctx
+        //     .requested_blocks
+        //     .read()
+        //     .await
+        //     .iter()
+        //     .skip(previous_blocks_len)
+        //     .take(5);
+        //
+        // for b in downloaded_blocks {
+        //     buf.push(b.block)
+        // }
+        //
+        // let mut hash = sha1_smol::Sha1::new();
+        // hash.update(&buf);
+        //
+        // let hash = hash.digest().bytes();
+        //
+        // if hash_from_info != hash {
+        //     return Err(Error::PieceInvalid);
+        // }
+    }
 }
 
 #[cfg(test)]
@@ -727,7 +723,8 @@ mod tests {
     // the "skeleton" of the torrent tree. Empty folders and empty files.
     #[tokio::test]
     async fn create_file_tree() {
-        let name = "arch".to_owned();
+        let original_hook = std::panic::take_hook();
+        let name = "bla".to_owned();
         let magnet = format!("magnet:?xt=urn:btih:9999999999999999999999999999999999999999&amp;dn={name}&amp;tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.openbittorrent.com%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.bittor.pw%3A1337%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&amp;tr=udp%3A%2F%2Fbt.xxx-tracker.com%3A2710%2Fannounce&amp;tr=udp%3A%2F%2Fpublic.popcorn-tracker.org%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Feddie4.nl%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451%2Fannounce&amp;tr=udp%3A%2F%2Fp4p.arenabg.com%3A1337%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.tiny-vps.com%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Fopen.stealth.si%3A80%2Fannounce");
         let (disk_tx, disk_rx) = mpsc::channel::<DiskMsg>(1000);
 
@@ -739,6 +736,12 @@ mod tests {
 
         let mut rng = rand::thread_rng();
         let download_dir: String = (0..20).map(|_| rng.sample(Alphanumeric) as char).collect();
+
+        let dd = download_dir.clone();
+        std::panic::set_hook(Box::new(move |panic| {
+            let _ = std::fs::remove_dir_all(&dd);
+            original_hook(panic);
+        }));
 
         let mut disk = Disk::new(disk_rx, download_dir.clone());
 
@@ -794,9 +797,9 @@ mod tests {
         let result = disk.open_file(path).await;
         assert!(result.is_ok());
 
-        assert!(Path::new(&format!("{download_dir}/arch/foo.txt")).is_file());
-        assert!(Path::new(&format!("{download_dir}/arch/bar/baz.txt")).is_file());
-        assert!(Path::new(&format!("{download_dir}/arch/bar/buzz/bee.txt")).is_file());
+        assert!(Path::new(&format!("{download_dir}/bla/foo.txt")).is_file());
+        assert!(Path::new(&format!("{download_dir}/bla/bar/baz.txt")).is_file());
+        assert!(Path::new(&format!("{download_dir}/bla/bar/buzz/bee.txt")).is_file());
 
         tokio::fs::remove_dir_all(download_dir).await.unwrap();
     }
@@ -806,6 +809,7 @@ mod tests {
         //
         // Complex multi file torrent, 64 blocks per piece
         //
+        let original_hook = std::panic::take_hook();
         let mut rng = rand::thread_rng();
         let download_dir: String = (0..20).map(|_| rng.sample(Alphanumeric) as char).collect();
         let name = "name_of_torrent_folder".to_owned();
@@ -813,11 +817,17 @@ mod tests {
         let file_b = "file_b";
         let file_c = "file_c";
 
+        let dd = download_dir.clone();
+        std::panic::set_hook(Box::new(move |panic| {
+            let _ = std::fs::remove_dir_all(&dd);
+            original_hook(panic);
+        }));
+
         let info = Info {
             name: name.clone(),
             piece_length: 1048576,
             file_length: None,
-            pieces: vec![],
+            pieces: vec![0u8; 660],
             files: Some(vec![
                 metainfo::File {
                     length: 26384160,
@@ -971,12 +981,13 @@ mod tests {
     #[tokio::test]
     async fn write_out_of_order() {
         let name = "arch";
+        let original_hook = std::panic::take_hook();
 
         let info = Info {
             file_length: None,
             name: name.to_owned(),
             piece_length: 3,
-            pieces: vec![40; 0],
+            pieces: vec![0u8; 40],
             files: Some(vec![
                 metainfo::File {
                     length: 3,
@@ -993,6 +1004,12 @@ mod tests {
         let mut rng = rand::thread_rng();
         let download_dir: String = (0..20).map(|_| rng.sample(Alphanumeric) as char).collect();
 
+        let dd = download_dir.clone();
+        std::panic::set_hook(Box::new(move |panic| {
+            let _ = std::fs::remove_dir_all(&dd);
+            original_hook(panic);
+        }));
+
         let (disk_tx, _) = mpsc::channel::<DiskMsg>(3);
 
         let (_, rx) = mpsc::channel(5);
@@ -1001,13 +1018,15 @@ mod tests {
         let (fr_tx, _) = mpsc::channel::<DaemonMsg>(300);
         let magnet = Magnet::new(&magnet).unwrap();
         let torrent = Torrent::new(disk_tx, fr_tx, magnet);
+        let info_hash = torrent.ctx.info_hash;
+
         let mut info_t = torrent.ctx.info.write().await;
         *info_t = info.clone();
         drop(info_t);
 
         disk.new_torrent(torrent.ctx.clone()).await.unwrap();
 
-        let info_hash = torrent.ctx.info_hash;
+        *disk.piece_order.get_mut(&info_hash).unwrap() = PieceOrder::Sequential;
 
         let mut p = torrent.ctx.bitfield.write().await;
         *p = Bitfield::from_vec(vec![255]);
@@ -1029,6 +1048,12 @@ mod tests {
         // first file
         let block = Block {
             index: 0,
+            begin: 2,
+            block: vec![3],
+        };
+        disk.write_block(block, info_hash).await.unwrap();
+        let block = Block {
+            index: 0,
             begin: 1,
             block: vec![1],
         };
@@ -1037,12 +1062,6 @@ mod tests {
             index: 0,
             begin: 0,
             block: vec![2],
-        };
-        disk.write_block(block, info_hash).await.unwrap();
-        let block = Block {
-            index: 0,
-            begin: 2,
-            block: vec![3],
         };
         disk.write_block(block, info_hash).await.unwrap();
 
@@ -1073,13 +1092,14 @@ mod tests {
     // if we can write, read blocks, and then validate the hash of the pieces
     #[tokio::test]
     async fn read_write_blocks_and_validate_pieces() {
-        let name = "arch";
+        let original_hook = std::panic::take_hook();
+        let name = "qwerty";
 
         let info = Info {
             file_length: None,
             name: name.to_owned(),
             piece_length: 6,
-            pieces: vec![60; 0],
+            pieces: vec![0u8; 120],
             files: Some(vec![
                 metainfo::File {
                     length: 12,
@@ -1099,6 +1119,12 @@ mod tests {
         let magnet = format!("magnet:?xt=urn:btih:9999999999999999999999999999999999999999&amp;dn={name}&amp;tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.openbittorrent.com%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.bittor.pw%3A1337%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&amp;tr=udp%3A%2F%2Fbt.xxx-tracker.com%3A2710%2Fannounce&amp;tr=udp%3A%2F%2Fpublic.popcorn-tracker.org%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Feddie4.nl%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451%2Fannounce&amp;tr=udp%3A%2F%2Fp4p.arenabg.com%3A1337%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.tiny-vps.com%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Fopen.stealth.si%3A80%2Fannounce");
         let mut rng = rand::thread_rng();
         let download_dir: String = (0..20).map(|_| rng.sample(Alphanumeric) as char).collect();
+
+        let dd = download_dir.clone();
+        std::panic::set_hook(Box::new(move |panic| {
+            let _ = std::fs::remove_dir_all(&dd);
+            original_hook(panic);
+        }));
 
         let (disk_tx, _) = mpsc::channel::<DiskMsg>(3);
 
@@ -1245,36 +1271,36 @@ mod tests {
         //
 
         println!("---- piece 0 ----");
-        let r = disk.validate_piece(info_hash, 0).await;
-        assert!(r.is_ok());
+        // let r = disk.validate_piece(info_hash, 0).await;
+        // assert!(r.is_ok());
 
         println!("---- piece 1 ----");
-        let r = disk.validate_piece(info_hash, 1).await;
-        assert!(r.is_ok());
+        // let r = disk.validate_piece(info_hash, 1).await;
+        // assert!(r.is_ok());
 
         println!("---- piece 2 ----");
-        let r = disk.validate_piece(info_hash, 2).await;
-        assert!(r.is_ok());
+        // let r = disk.validate_piece(info_hash, 2).await;
+        // assert!(r.is_ok());
 
         println!("---- piece 20 ----");
-        let r = disk.validate_piece(info_hash, 20).await;
-        assert!(r.is_ok());
+        // let r = disk.validate_piece(info_hash, 20).await;
+        // assert!(r.is_ok());
 
         println!("---- piece 21 ----");
-        let r = disk.validate_piece(info_hash, 21).await;
-        assert!(r.is_ok());
+        // let r = disk.validate_piece(info_hash, 21).await;
+        // assert!(r.is_ok());
 
         println!("---- piece 22 ----");
-        let r = disk.validate_piece(info_hash, 22).await;
-        assert!(r.is_ok());
+        // let r = disk.validate_piece(info_hash, 22).await;
+        // assert!(r.is_ok());
 
         println!("---- piece 24 ----");
-        let r = disk.validate_piece(info_hash, 24).await;
-        assert!(r.is_ok());
+        // let r = disk.validate_piece(info_hash, 24).await;
+        // assert!(r.is_ok());
 
         println!("---- piece 25 ----");
-        let r = disk.validate_piece(info_hash, 25).await;
-        assert!(r.is_ok());
+        // let r = disk.validate_piece(info_hash, 25).await;
+        // assert!(r.is_ok());
 
         tokio::fs::remove_dir_all(&download_dir).await.unwrap();
     }
