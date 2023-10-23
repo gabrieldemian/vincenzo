@@ -72,12 +72,12 @@ pub enum DiskMsg {
 #[derive(Clone, Copy, Hash, PartialEq, Eq, Default, Debug)]
 pub enum PieceOrder {
     /// Random First, select random pieces to download
-    #[default]
     Random,
     /// Rarest First, select the rarest pieces to download,
     /// and the most common to download at the end.
     Rarest,
     /// Sequential downloads, only used in streaming.
+    #[default]
     Sequential,
 }
 
@@ -155,8 +155,10 @@ impl Disk {
                 // now with the dirs created, we create the file
                 if let Some(file_ext) = last {
                     file_dir.push(file_ext);
-
-                    self.open_file(file_dir).await?;
+                    self.open_file(file_dir)
+                        .await?
+                        .set_len(file.length as u64)
+                        .await?;
                 }
             }
         }
@@ -190,8 +192,6 @@ impl Disk {
                 }
             };
         }
-        debug!("pieces_blocks len {:?}", pieces_blocks.len());
-        debug!("pieces_blocks first {:?}", pieces_blocks.get(0));
         self.pieces_blocks.insert(info_hash, pieces_blocks);
         self.downloaded_pieces.insert(info_hash, 0);
 
@@ -253,6 +253,8 @@ impl Disk {
             .filter(|v| v.info_hash == info_hash)
             .collect();
 
+        debug!("calculating score of {:?} peers", peer_ctxs.len());
+
         if peer_ctxs.is_empty() {
             return Err(Error::NoPeers);
         }
@@ -302,7 +304,7 @@ impl Disk {
         debug!("pieces changed to rarest {pieces:?}");
         let piece_order = self.piece_order.get_mut(&info_hash).unwrap();
         if *piece_order == PieceOrder::Random {
-            *piece_order = PieceOrder::Rarest;
+            // *piece_order = PieceOrder::Rarest;
         }
 
         Ok(())
@@ -551,13 +553,11 @@ impl Disk {
 
         let torrent_tx = torrent_ctx.tx.clone();
 
-        // the write operation is heavy, so we want to spawn a thread here,
-        // and only increment the downloaded count after writing,
-        // because otherwise the UI could say the torrent is complete
-        // while not every byte is written to disk.
         // note: spawning a task to do this write was causing bugs on Windows.
         // todo: fix this
+
         fs_file.write_all(&block.block).await.unwrap();
+
         let _ = torrent_tx
             .send(TorrentMsg::IncrementDownloaded(len as u64))
             .await;
@@ -1037,6 +1037,95 @@ mod tests {
         assert_eq!(meta_file, info.files.as_ref().unwrap()[2]);
 
         tokio::fs::remove_dir_all(download_dir).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn write_out_of_order() {
+        let name = "arch";
+
+        let info = Info {
+            file_length: None,
+            name: name.to_owned(),
+            piece_length: 3,
+            pieces: vec![20; 0],
+            files: Some(vec![metainfo::File {
+                length: 3,
+                path: vec!["out.txt".to_owned()],
+            }]),
+        };
+
+        let magnet = format!("magnet:?xt=urn:btih:9999999999999999999999999999999999999999&amp;dn={name}&amp;tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.openbittorrent.com%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.bittor.pw%3A1337%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&amp;tr=udp%3A%2F%2Fbt.xxx-tracker.com%3A2710%2Fannounce&amp;tr=udp%3A%2F%2Fpublic.popcorn-tracker.org%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Feddie4.nl%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451%2Fannounce&amp;tr=udp%3A%2F%2Fp4p.arenabg.com%3A1337%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.tiny-vps.com%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Fopen.stealth.si%3A80%2Fannounce");
+        let mut rng = rand::thread_rng();
+        let download_dir: String = (0..20).map(|_| rng.sample(Alphanumeric) as char).collect();
+
+        let (disk_tx, _) = mpsc::channel::<DiskMsg>(3);
+
+        let (_, rx) = mpsc::channel(5);
+        let mut disk = Disk::new(rx, download_dir.clone());
+
+        let (fr_tx, _) = mpsc::channel::<DaemonMsg>(300);
+        let magnet = Magnet::new(&magnet).unwrap();
+        let torrent = Torrent::new(disk_tx, fr_tx, magnet);
+        let mut info_t = torrent.ctx.info.write().await;
+        *info_t = info.clone();
+        drop(info_t);
+
+        disk.new_torrent(torrent.ctx.clone()).await.unwrap();
+
+        let info_hash = torrent.ctx.info_hash;
+
+        let mut p = torrent.ctx.bitfield.write().await;
+        *p = Bitfield::from_vec(vec![255]);
+        drop(info);
+        drop(p);
+
+        //
+        //  WRITE
+        //
+
+        let block = Block {
+            index: 0,
+            begin: 1,
+            block: vec![1],
+        };
+        let result = disk.write_block(block, info_hash).await;
+        assert!(result.is_ok());
+        let block = Block {
+            index: 0,
+            begin: 0,
+            block: vec![2],
+        };
+        let result = disk.write_block(block, info_hash).await;
+        assert!(result.is_ok());
+        let block = Block {
+            index: 0,
+            begin: 2,
+            block: vec![3],
+        };
+        let result = disk.write_block(block.clone(), info_hash).await;
+        assert!(result.is_ok());
+
+        //
+        // READ
+        //
+        let block_info = BlockInfo {
+            index: 0,
+            begin: 0,
+            len: 2,
+        };
+        let mut d = disk
+            .open_file(format!("{download_dir}/arch/out.txt"))
+            .await
+            .unwrap();
+
+        let mut buf = Vec::new();
+        d.read_to_end(&mut buf).await.unwrap();
+
+        println!("buf {buf:?}");
+
+        // let result = disk.read_block(block_info, info_hash).await;
+        // assert_eq!(result.unwrap(), vec![0, 0, 3]);
+        tokio::fs::remove_dir_all(&download_dir).await.unwrap();
     }
 
     // if we can write, read blocks, and then validate the hash of the pieces

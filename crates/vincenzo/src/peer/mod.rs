@@ -1,7 +1,10 @@
 //! A peer in the network that downloads and uploads data
 pub mod session;
 use bendy::{decoding::FromBencode, encoding::ToBencode};
-use bitvec::prelude::{BitArray, Msb0};
+use bitvec::{
+    bitvec,
+    prelude::{BitArray, Msb0},
+};
 use futures::{SinkExt, StreamExt};
 use hashbrown::{HashMap, HashSet};
 use std::{collections::VecDeque, net::SocketAddr, sync::Arc, time::Duration};
@@ -285,16 +288,24 @@ impl Peer {
         sink.send(Message::Unchoke).await?;
         sink.send(Message::Interested).await?;
 
-        // let info = self.torrent_ctx.info.read().await;
-        // let mut peer_pieces = self.ctx.pieces.write().await;
+        let have = self
+            .torrent_ctx
+            .has_at_least_one_piece
+            .load(std::sync::atomic::Ordering::Relaxed);
+
+        if have {
+            self.have_info = have;
+        }
+
+        let info = self.torrent_ctx.info.read().await;
+        let mut peer_pieces = self.ctx.pieces.write().await;
         // if local peer has info, initialize the bitfield
         // of this peer.
-        // if peer_pieces.is_empty() && info.piece_length != 0 {
-        //     *peer_pieces = bitvec![u8, Msb0; 0; info.pieces() as usize];
-        // }
-        // drop(peer_pieces);
-        // drop(info);
-        debug!("PAAAAAAAAAAAAAAAAAAAAAAAAAAASSSSSSSSSSSSSSTTTTTTTTTTTTTTTTTTTs");
+        if peer_pieces.is_empty() && info.piece_length != 0 {
+            *peer_pieces = bitvec![u8, Msb0; 0; info.pieces() as usize];
+        }
+        drop(peer_pieces);
+        drop(info);
 
         loop {
             select! {
@@ -320,17 +331,17 @@ impl Peer {
                             debug!("| {local} Bitfield  |");
                             debug!("----------------------------------\n");
 
-                            // remove excess bits
                             let mut b = self.ctx.pieces.write().await;
                             *b = bitfield.clone();
-                            // let pieces = self.torrent_ctx.info.read().await.pieces() as usize;
-                            // if bitfield.len() != pieces && pieces > 0 && self.have_info {
-                            //     unsafe {
-                            //         b.set_len(pieces);
-                            //     }
-                            // }
+                            // remove excess bits
+                            let pieces = self.torrent_ctx.info.read().await.pieces() as usize;
+                            if bitfield.len() != pieces && pieces > 0 && self.have_info {
+                                unsafe {
+                                    b.set_len(pieces);
+                                }
+                            }
 
-                            debug!("{local} bitfield is len {:?}", b.len());
+                            debug!("{local} bitfield is len {:?}", bitfield.len());
                             drop(b);
 
                             let peer_has_piece = self.has_piece_not_in_local().await;
@@ -343,6 +354,7 @@ impl Peer {
                                 sink.send(Message::Interested).await?;
 
                                 if self.can_request() {
+                                    self.prepare_for_download().await;
                                     self.request_block_infos(&mut sink).await?;
                                 }
                             }
@@ -356,7 +368,7 @@ impl Peer {
                             debug!("---------------------------------");
 
                             if self.can_request() {
-                                self.session.prepare_for_download(self.extension.reqq);
+                                self.prepare_for_download().await;
                                 self.request_block_infos(&mut sink).await?;
                             }
                             debug!("---------------------------------\n");
@@ -390,36 +402,41 @@ impl Peer {
                             // have's. They do this to try to prevent censhorship
                             // from ISPs.
                             // Overwrite pieces on bitfield, if the peer has one
-                            let mut pieces = self.ctx.pieces.write().await;
+                            let ctx = self.ctx.clone();
+                            let mut pieces = ctx.pieces.write().await;
+
+                            if pieces.clone().get(piece).is_none() {
+                                warn!("{local} sent Have but it's bitfield is out of bounds");
+                                warn!("initializing an empty bitfield with the len of the piece {piece}");
+                                *pieces = Bitfield::from_vec(vec![0u8; piece as usize]);
+                            }
+
                             pieces.set(piece, true);
                             drop(pieces);
 
-                            let local_bitfield = self.torrent_ctx.bitfield.read().await;
+                            let torrent_ctx = self.torrent_ctx.clone();
+                            let local_bitfield = torrent_ctx.bitfield.read().await;
                             let piece = local_bitfield.get(piece);
 
                             // maybe become interested in peer and request blocks
                             if !self.session.state.am_interested {
-                                match piece {
-                                    Some(a) => {
-                                        if *a {
-                                            debug!("already have this piece, ignoring");
-                                        } else {
-                                            debug!("We do not have this piece, sending interested");
-                                            debug!("{local} we are interested due to Have");
-
-                                            self.session.state.am_interested = true;
-                                            sink.send(Message::Interested).await?;
-                                        }
-                                    }
-                                    None => {
-                                        debug!("We do not have `info` downloaded yet, sending interested");
+                                if let Some(a) = piece {
+                                    if *a {
+                                        debug!("already have this piece, ignoring");
+                                    } else {
+                                        debug!("We do not have this piece, sending interested");
                                         debug!("{local} we are interested due to Have");
+
                                         self.session.state.am_interested = true;
                                         sink.send(Message::Interested).await?;
+
+                                        if self.can_request() {
+                                            self.prepare_for_download().await;
+                                            self.request_block_infos(&mut sink).await?;
+                                        }
                                     }
                                 }
                             }
-
                         }
                         Message::Piece(block) => {
                             debug!("-------------------------------");
@@ -432,6 +449,7 @@ impl Peer {
 
                             self.handle_piece_msg(block).await?;
                             if self.can_request() {
+                                self.prepare_for_download().await;
                                 self.request_block_infos(&mut sink).await?;
                             }
 
@@ -585,6 +603,7 @@ impl Peer {
                         PeerMsg::HavePiece(piece) => {
                             debug!("{local} has piece {piece}");
 
+                            self.have_info = true;
                             let pieces = self.ctx.pieces.read().await;
 
                             if let Some(b) = pieces.get(piece) {
@@ -602,16 +621,16 @@ impl Peer {
                             let max = self.session.target_request_queue_len as usize - self.outgoing_requests.len();
 
                             if self.can_request() {
-                                self.session.last_outgoing_request_time = Some(std::time::Instant::now());
+                                self.session.last_outgoing_request_time = Some(Instant::now());
 
                                 for block_info in block_infos.into_iter().take(max) {
                                     self.outgoing_requests.insert(
                                         block_info.clone()
                                     );
-                                    self.outgoing_requests_timeout.insert(
-                                        block_info.clone(),
-                                        Instant::now() + self.session.request_timeout()
-                                    );
+
+                                    self.outgoing_requests_timeout
+                                        .insert(block_info.clone(), Instant::now());
+
                                     sink.send(Message::Request(block_info)).await?;
                                 }
                             }
@@ -693,7 +712,7 @@ impl Peer {
                             debug!("{local} peer_choking {peer_choking}");
 
                             if am_interested && !peer_choking {
-                                self.session.prepare_for_download(self.extension.reqq);
+                                self.prepare_for_download().await;
                                 debug!("{local} requesting blocks");
                                 self.request_block_infos(&mut sink).await?;
                             }
@@ -762,10 +781,6 @@ impl Peer {
     where
         T: SinkExt<Message> + Sized + std::marker::Unpin,
     {
-        // if self.can_request() {
-        //     self.request_block_infos(sink).await?;
-        // }
-
         // resend requests if we have any pending and more time has elapsed
         // since the last received block than the current timeout value
         if !self.outgoing_requests.is_empty() && self.can_request() {
@@ -784,28 +799,35 @@ impl Peer {
     {
         let local = self.ctx.local_addr;
 
-        debug!(
-            "{local} check_request_timeout outgoing_requests {}",
-            self.outgoing_requests.len()
-        );
-
         if self.session.timed_out_request_count >= 10 {
             self.free_pending_blocks().await;
             return Ok(());
         }
 
         for (block, timeout) in self.outgoing_requests_timeout.iter_mut() {
-            if *timeout >= Instant::now() {
-                *timeout = Instant::now() + self.session.request_timeout();
+            let elapsed_since_last_request = Instant::now().saturating_duration_since(*timeout);
+
+            // if the timeout time has already passed,
+            if elapsed_since_last_request >= self.session.request_timeout() {
                 self.session.register_request_timeout();
 
+                debug!(
+                    "{local} this block {block:#?} timed out \
+                    ({} ms ago)",
+                    elapsed_since_last_request.as_millis(),
+                );
+
                 let _ = sink.send(Message::Request(block.clone())).await;
+                *timeout = Instant::now();
 
                 debug!(
                     "{local} timeout, total: {}",
                     self.session.timed_out_request_count + 1
                 );
             }
+        }
+        if !self.session.seed_only {
+            self.request_block_infos(sink).await?;
         }
 
         Ok(())
@@ -849,13 +871,17 @@ impl Peer {
     where
         T: SinkExt<Message> + Sized + std::marker::Unpin,
     {
+        if self.session.seed_only {
+            warn!("Calling request_block_infos when peer is in seed-only mode");
+            return Ok(());
+        }
         let local = self.ctx.local_addr;
-        let remote = self.ctx.remote_addr;
+        // let remote = self.ctx.remote_addr;
 
         let target_request_queue_len = self.session.target_request_queue_len as usize;
 
         // the number of blocks we can request right now
-        let mut request_len = if self.outgoing_requests.len() >= target_request_queue_len {
+        let request_len = if self.outgoing_requests.len() >= target_request_queue_len {
             0
         } else {
             target_request_queue_len - self.outgoing_requests.len()
@@ -864,19 +890,10 @@ impl Peer {
         debug!("inflight: {}", self.outgoing_requests.len());
         debug!("max to request: {}", target_request_queue_len);
         debug!("request_len: {request_len}");
-
-        // on the first request, we only ask for 1 block,
-        // the first peer to answer is probably the fastest peer.
-        //
-        // when we receive this first block, we request the max amount.
-        // this is useful in the scenario of downloading a small torrent,
-        // the first peer can easily request all blocks of the torrent.
-        // if the peer is a slow one, we wasted a lot of time.
-        if self.session.last_outgoing_request_time.is_none() && request_len > 0 {
-            request_len = 1;
-        }
+        debug!("target_request_queue_len: {target_request_queue_len}");
 
         if request_len > 0 {
+            debug!("{local} peer requesting l: {:?} block infos", request_len);
             // get a list of unique block_infos from the Disk,
             // those are already marked as requested on Torrent
             let (otx, orx) = oneshot::channel();
@@ -894,21 +911,20 @@ impl Peer {
             let r = orx.await?;
 
             if r.is_empty() && !self.session.in_endgame && self.outgoing_requests.len() <= 20 {
-                // endgame is probably slowing down the download_rate for some reason?
-                self.start_endgame().await;
+                // self.start_endgame().await;
             }
 
-            self.session.last_outgoing_request_time = Some(std::time::Instant::now());
+            debug!("disk sent {:?} blocks", r.len());
+            self.session.last_outgoing_request_time = Some(Instant::now());
 
             for block_info in r {
-                debug!("{local} requesting \n {block_info:#?} to {remote}");
-
+                // debug!("{local} requesting \n {block_info:#?} to {remote}");
                 self.outgoing_requests.insert(block_info.clone());
 
                 let _ = sink.send(Message::Request(block_info.clone())).await;
 
-                let timeout = Instant::now() + self.session.request_timeout();
-                self.outgoing_requests_timeout.insert(block_info, timeout);
+                self.outgoing_requests_timeout
+                    .insert(block_info, Instant::now());
 
                 let req_id: u64 = MessageId::Request as u64;
 
@@ -1005,5 +1021,34 @@ impl Peer {
             }
         }
         return false;
+    }
+
+    /// Calculate the maximum number of block infos to request,
+    /// and set this value on `session` of the peer.
+    pub async fn prepare_for_download(&mut self) {
+        debug_assert!(self.session.state.am_interested);
+        debug_assert!(!self.session.state.am_choking);
+
+        let has_one_piece = self
+            .torrent_ctx
+            .has_at_least_one_piece
+            .load(std::sync::atomic::Ordering::Relaxed);
+
+        // the max number of block_infos to request
+        let n = if has_one_piece {
+            debug!("has one piece, changing it to {:?}", self.extension.reqq);
+            self.extension
+                .reqq
+                .unwrap_or(Session::DEFAULT_REQUEST_QUEUE_LEN) as u16
+        } else {
+            // self.torrent_ctx.info.read().await.pieces() as u16
+            self.extension
+                .reqq
+                .unwrap_or(Session::DEFAULT_REQUEST_QUEUE_LEN) as u16
+        };
+
+        if n > 0 {
+            self.session.target_request_queue_len = n;
+        }
     }
 }

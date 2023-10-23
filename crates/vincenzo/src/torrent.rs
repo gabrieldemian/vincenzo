@@ -2,7 +2,6 @@
 use crate::daemon::DaemonMsg;
 use crate::peer::session::ConnectionState;
 use crate::tcp_wire::BlockInfo;
-use crate::utils::to_human_readable;
 use crate::{
     bitfield::Bitfield,
     disk::DiskMsg,
@@ -22,6 +21,7 @@ use hashbrown::HashMap;
 use speedy::{Readable, Writable};
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
+use std::sync::atomic::AtomicBool;
 use std::{sync::Arc, time::Duration};
 use tokio::time::interval;
 use tokio::{
@@ -127,6 +127,7 @@ pub struct TorrentCtx {
     pub info_hash: [u8; 20],
     pub bitfield: RwLock<Bitfield>,
     pub info: RwLock<Info>,
+    pub has_at_least_one_piece: AtomicBool,
 }
 
 /// Status of the current Torrent, updated at every announce request.
@@ -159,6 +160,7 @@ impl Torrent {
             bitfield,
             magnet,
             info,
+            has_at_least_one_piece: AtomicBool::new(false),
         });
 
         Self {
@@ -331,6 +333,10 @@ impl Torrent {
                 Some(msg) = self.rx.recv() => {
                     match msg {
                         TorrentMsg::DownloadedPiece(piece) => {
+                            self.ctx.has_at_least_one_piece.store(
+                                true,
+                                std::sync::atomic::Ordering::Relaxed
+                            );
                             // send Have messages to peers that dont have our pieces
                             for peer in self.peer_ctxs.values() {
                                 let _ = peer.tx.send(PeerMsg::HavePiece(piece)).await;
@@ -563,13 +569,13 @@ impl Torrent {
                     };
 
                     self.last_second_downloaded = self.downloaded;
-                    debug!(
-                        "{} {} of {}. Download rate: {}",
-                        self.name,
-                        to_human_readable(self.size as f64),
-                        to_human_readable(self.downloaded as f64),
-                        to_human_readable(self.download_rate as f64),
-                    );
+                    // debug!(
+                    //     "{} {} of {}. Download rate: {}",
+                    //     self.name,
+                    //     to_human_readable(self.size as f64),
+                    //     to_human_readable(self.downloaded as f64),
+                    //     to_human_readable(self.download_rate as f64),
+                    // );
 
                     // send updated information to daemon
                     let _ = self.daemon_tx.send(DaemonMsg::TorrentState(torrent_state)).await;

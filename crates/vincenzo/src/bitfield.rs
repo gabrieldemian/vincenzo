@@ -13,7 +13,8 @@ mod tests {
 
     #[test]
     fn new_bitvec() {
-        let a = bitvec![u8, Msb0; 0; 0 as usize];
+        let a = bitvec![u8, Msb0; 0; 1];
+        // a.set(9, true);
         println!("a {a:#?}");
         println!("len {:#?}", a.len());
 

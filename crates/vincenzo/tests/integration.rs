@@ -1,5 +1,6 @@
 use std::{fs::create_dir_all, net::SocketAddr, time::Duration};
 
+use bitvec::{bitvec, prelude::Msb0};
 use futures::{SinkExt, StreamExt};
 use rand::{distributions::Alphanumeric, Rng};
 use tokio::{
@@ -12,13 +13,12 @@ use tokio::{
 };
 use tracing::debug;
 use vincenzo::{
-    bitfield::Bitfield,
     daemon::DaemonMsg,
     disk::{Disk, DiskMsg},
     magnet::Magnet,
     metainfo::Info,
-    peer::{Direction, Peer},
-    tcp_wire::{messages::Message, Block},
+    peer::{Direction, Peer, PeerMsg},
+    tcp_wire::{messages::Message, Block, BlockInfo},
     torrent::{Torrent, TorrentMsg},
     tracker::Tracker,
 };
@@ -75,7 +75,7 @@ async fn peer_request() {
         file_length: Some(30),
         name,
         piece_length: 15,
-        pieces: vec![],
+        pieces: vec![0; 40],
         files: None,
     };
 
@@ -89,6 +89,11 @@ async fn peer_request() {
     torrent.stats.seeders = 1;
     torrent.stats.leechers = 1;
     torrent.size = info.get_size();
+    torrent.have_info = true;
+    torrent
+        .ctx
+        .has_at_least_one_piece
+        .store(true, std::sync::atomic::Ordering::Relaxed);
 
     // pretend we already have the info,
     // that was downloaded from the magnet
@@ -97,7 +102,7 @@ async fn peer_request() {
     drop(torrent_info);
 
     let mut p = torrent.ctx.bitfield.write().await;
-    *p = Bitfield::from_vec(vec![255]);
+    *p = bitvec![u8, Msb0; 0; info.pieces() as usize];
     drop(p);
 
     disk.new_torrent(torrent.ctx.clone()).await.unwrap();
@@ -121,14 +126,10 @@ async fn peer_request() {
             if let Ok((socket, remote)) = listener.accept().await {
                 let local = socket.local_addr().unwrap();
 
-                let (socket, handshake) = Peer::start(
-                    socket,
-                    Direction::Inbound,
-                    info_hash,
-                    local_peer_id,
-                )
-                .await
-                .unwrap();
+                let (socket, handshake) =
+                    Peer::start(socket, Direction::Inbound, info_hash, local_peer_id)
+                        .await
+                        .unwrap();
 
                 let mut peer = Peer::new(remote, torrent_ctx.clone(), handshake, local);
                 peer.session.state.peer_choking = false;
@@ -155,7 +156,7 @@ async fn peer_request() {
                         Some(Ok(msg)) = stream.next() => {
                             match msg {
                                 Message::Request(block) => {
-                                    debug!("{local} \n {block:#?} \n from {remote}");
+                                    debug!("{local} received \n {block:#?} \n from {remote}");
 
                                     // only answer on the second request
                                     if n == 1 {
@@ -210,47 +211,30 @@ async fn peer_request() {
     let local = socket.local_addr().unwrap();
     let local_peer_id = Tracker::gen_peer_id();
 
-    let (socket, handshake) = Peer::start(
-        socket,
-        Direction::Outbound,
-        info_hash,
-        local_peer_id,
-    )
-    .await
-    .unwrap();
+    let (socket, handshake) =
+        Peer::start(socket, Direction::Outbound, info_hash, local_peer_id)
+            .await
+            .unwrap();
 
     // do not change the pieces here,
     // this peer does not have anything downloaded
-
     let mut peer = Peer::new(seeder, torrent_ctx, handshake, local);
-    // let tx = peer.ctx.tx.clone();
+    let tx = peer.ctx.tx.clone();
     peer.session.state.peer_choking = false;
     peer.session.state.am_interested = true;
     peer.have_info = true;
-    let mut p = peer.ctx.pieces.write().await;
-    *p = Bitfield::from_vec(vec![255]);
-    drop(p);
-
-    // let msg = Message::Request(BlockInfo {
-    //     index: 0,
-    //     begin: 0,
-    //     len: BLOCK_LEN,
-    // });
-    // peer.request_block_infos(&mut socket).await.unwrap();
-    // socket.send(msg).await.unwrap();
 
     spawn(async move {
         peer.run(Direction::Outbound, socket).await.unwrap();
     });
 
-    // tx.send(PeerMsg::RequestBlockInfo(BlockInfo {
-    //     index: 0,
-    //     begin: 0,
-    //     len: BLOCK_LEN,
-    // }))
-    // .await
-    // .unwrap();
-    // seeder_handle.await.unwrap();
+    tx.send(PeerMsg::RequestBlockInfos(vec![BlockInfo {
+        index: 0,
+        begin: 0,
+        len: 15,
+    }]))
+    .await
+    .unwrap();
     tokio::time::sleep(Duration::from_secs(5)).await;
     std::fs::remove_dir_all(download_dir).unwrap();
 }
