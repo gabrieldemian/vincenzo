@@ -153,106 +153,6 @@ impl File {
         let pieces = self.length as f32 / piece_length as f32;
         pieces.ceil() as u32
     }
-    /// Get all block infos of the File.
-    pub fn get_block_infos(
-        &self,
-        piece_length: u32,
-        prev_block_file: Option<&BlockInfo>,
-    ) -> VecDeque<BlockInfo> {
-        #[decurse::decurse_unsound]
-        fn partition(
-            file: &File,
-            piece_length: u32,
-            infos: &mut VecDeque<BlockInfo>,
-            prev_block_file: Option<&BlockInfo>,
-            file_length: u32,
-        ) -> VecDeque<BlockInfo> {
-            let prev_block = infos.back();
-            if let Some(prev) = prev_block {
-                // global cursor, where we are in the torrent (all files)
-                let mut cursor: u64 = (prev.index * piece_length + prev.begin + prev.len).into();
-
-                // transform global cursor into a
-                // local cursor, where we are in the file
-                if let Some(b) = prev_block_file {
-                    let prev_bytes: u64 =
-                        b.index as u64 * piece_length as u64 + b.len as u64 + b.begin as u64;
-                    cursor -= prev_bytes;
-                }
-
-                if cursor >= file_length as u64 {
-                    return std::mem::take(infos);
-                }
-
-                let begin = if prev.begin + prev.len >= piece_length {
-                    0
-                } else {
-                    prev.begin + prev.len
-                };
-
-                // free space available in the file
-                let available = file_length as u64 - cursor;
-
-                // align len with file boundary
-                let mut len = BLOCK_LEN.min(available as u32);
-
-                // align len with piece boundary
-                if (begin + len) > piece_length {
-                    len -= (begin + len) % piece_length;
-                }
-
-                let index = if prev.begin + prev.len >= piece_length {
-                    prev.index + 1
-                } else {
-                    prev.index
-                };
-
-                infos.push_back(BlockInfo { index, begin, len });
-                partition(file, piece_length, infos, prev_block_file, file_length)
-            } else {
-                let available = BLOCK_LEN.min(file_length);
-                let len = available.min(piece_length);
-                let mut b = BlockInfo {
-                    index: 0,
-                    begin: 0,
-                    len,
-                };
-                if let Some(prev) = prev_block_file {
-                    let begin = if prev.begin + prev.len >= piece_length {
-                        0
-                    } else {
-                        prev.begin + prev.len
-                    };
-
-                    // file boundary
-                    let mut len = if file_length >= BLOCK_LEN {
-                        BLOCK_LEN
-                    } else {
-                        file_length % BLOCK_LEN
-                    };
-
-                    // piece boundary
-                    if (begin + len) > piece_length {
-                        len -= (begin + len) % piece_length;
-                    }
-
-                    b = BlockInfo {
-                        index: if prev.begin + prev.len >= piece_length {
-                            prev.index + 1
-                        } else {
-                            prev.index
-                        },
-                        begin,
-                        len,
-                    };
-                };
-                infos.push_back(b);
-                return partition(file, piece_length, infos, prev_block_file, file_length);
-            }
-        }
-        let mut infos = VecDeque::new();
-        partition(self, piece_length, &mut infos, prev_block_file, self.length)
-    }
 }
 
 impl ToBencode for File {
@@ -745,9 +645,7 @@ mod tests {
         let files = info.files.clone().unwrap();
 
         let file0 = &files[0];
-        let infos0 = file0.get_block_infos(info.piece_length, None);
 
-        let file_bytes = infos0.iter().fold(0, |acc, x| acc + x.len);
         let pieces_file = file0.pieces(info.piece_length);
         let blocks_file = pieces_file * per_piece;
 
@@ -755,17 +653,11 @@ mod tests {
         println!("--- file[0] ---");
         println!("{:#?}", files[0]);
 
-        // validations on file[0]
-        let file_infos = file0.get_block_infos(info.piece_length, None);
-        let file0_len = file_infos.iter().fold(0, |acc, x| acc + x.len);
         // 611
         // assert_eq!(1664, blocks_file);
         assert_eq!(26, pieces_file);
-        assert_eq!(26384160, file_bytes);
         assert_eq!(26384160, file0.length);
-        assert_eq!(file0_len as u64, file0.length as u64);
 
-        println!("infos_file {:#?}", file_infos.len());
         println!("blocks {:#?}", blocks_file);
         println!("pieces {:#?}", pieces_file);
         println!("blocks per piece {:#?}", pieces_file);
@@ -852,11 +744,9 @@ mod tests {
         // file0 ended /\
 
         let file1 = &files[1];
-        let infos1 = file1.get_block_infos(info.piece_length, infos0.back());
 
         let pieces_file = file1.pieces(info.piece_length);
         let blocks_file = pieces_file * per_piece;
-        let file_len = infos1.iter().fold(0, |acc, x| acc + x.len);
         println!("--- file[1] ---");
         println!("{file1:#?}");
 
@@ -864,11 +754,9 @@ mod tests {
         assert_eq!(512, blocks_file);
         assert_eq!(8, pieces_file);
         assert_eq!(8281625, file1.length);
-        assert_eq!(file_len, file1.length);
 
         // file1 has 8 pieces (0 idx based)
         // 507
-        println!("blocks_infos_len {:?}", infos1.len());
         println!("pieces {pieces_file}");
         println!("blocks {blocks_file}");
 

@@ -1932,7 +1932,6 @@ dependencies = [
  "bytes",
  "clap",
  "console-subscriber",
- "decurse",
  "directories",
  "futures",
  "hashbrown 0.14.0",

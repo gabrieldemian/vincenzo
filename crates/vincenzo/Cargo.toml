@@ -17,7 +17,6 @@ tokio = { version = "1.32.0", features = ["rt", "fs", "tracing", "time", "macros
 tokio-util = { version = "0.7.8", features = ["codec"] }
 bendy = { version = "0.3.3", features = ["std"] }
 bytes = "1.4.0"
-decurse = "0.0.4"
 hex = "0.4.3"
 magnet-url = "2.0.0"
 sha1_smol = { version = "1.0.0", features = ["serde"] }
