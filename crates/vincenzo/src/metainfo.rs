@@ -63,48 +63,42 @@ impl Info {
     /// Get all block_infos of a torrent
     /// Returns an Err if the Info is malformed, if it does not have `files` or `file_length`.
     pub fn get_block_infos(&self) -> Result<VecDeque<BlockInfo>, error::Error> {
-        let mut block_infos = Vec::new();
-        
-        let total_pieces = self.pieces();
-        let max_block_len = BLOCK_LEN;
-
         let total_size = self.get_size() as u32;
-
+        let mut block_infos = Vec::new();
         let mut processed_bytes = 0;
-        let mut file_index = 0;
         let mut offset_within_file = 0;
+        let mut file_index = 0;
 
-        for piece_index in 0..total_pieces as u32 {
-            let mut piece_offset = 0;
-
-            while piece_offset < self.piece_length && processed_bytes < total_size {
-                let remaining_bytes_in_current_file = 
-                    if let Some(files) = &self.files {
-                        files[file_index].length - offset_within_file
-                    } else {
-                        total_size - processed_bytes
-                    };
-
-                let block_len = std::cmp::min(
-                    std::cmp::min(remaining_bytes_in_current_file, self.piece_length - piece_offset),
-                    max_block_len
-                );
-
-                block_infos.push(BlockInfo {
-                    index: piece_index,
-                    begin: piece_offset,
-                    len: block_len,
+        while processed_bytes < total_size {
+            let remaining_in_file = self
+                .files
+                .as_ref()
+                .map_or(total_size - processed_bytes, |f| {
+                    f[file_index].length - offset_within_file
                 });
+            let len = [
+                remaining_in_file,
+                self.piece_length - processed_bytes % self.piece_length,
+                BLOCK_LEN,
+            ]
+            .iter()
+            .cloned()
+            .min()
+            .unwrap();
 
-                processed_bytes += block_len;
-                piece_offset += block_len;
-                offset_within_file += block_len;
+            block_infos.push(BlockInfo {
+                index: (processed_bytes / self.piece_length) as u32,
+                begin: processed_bytes % self.piece_length,
+                len,
+            });
 
-                if let Some(files) = &self.files {
-                    if offset_within_file == files[file_index].length {
-                        file_index += 1;
-                        offset_within_file = 0;
-                    }
+            processed_bytes += len;
+            offset_within_file += len;
+
+            if let Some(files) = &self.files {
+                while file_index < files.len() && offset_within_file >= files[file_index].length {
+                    offset_within_file -= files[file_index].length;
+                    file_index += 1;
                 }
             }
         }
@@ -125,6 +119,21 @@ impl Info {
 
         warn!("tried to call get_size of malformed Info {self:#?}");
         0
+    }
+
+    /// Get the size (in bytes) of a piece.
+    pub fn piece_size(&self, piece_index: usize) -> u32 {
+        let total_size = self.get_size() as u32;
+        if piece_index == self.pieces() as usize - 1 {
+            let remainder = total_size % self.piece_length;
+            if remainder == 0 {
+                self.piece_length
+            } else {
+                remainder
+            }
+        } else {
+            self.piece_length
+        }
     }
 }
 
@@ -510,6 +519,60 @@ mod tests {
         );
     }
 
+    /// piece_length: 45152
+    /// ---------------------------------------
+    /// | f: 16384   | f: 12384 | f: 16384    |
+    /// p------------f----------f-------------|
+    /// | b: 16384   | b: 12384 | b: 16384    |
+    /// --------------------------------------|
+    #[test]
+    fn get_block_infos_file_boundary() {
+        let info = Info {
+            files: Some(vec![
+                File {
+                    length: BLOCK_LEN,
+                    path: vec!["a.txt".to_owned()],
+                },
+                File {
+                    length: 12384,
+                    path: vec!["b.txt".to_owned()],
+                },
+                File {
+                    length: BLOCK_LEN,
+                    path: vec!["c.txt".to_owned()],
+                },
+            ]),
+            piece_length: 45152,
+            pieces: vec![0; 20],
+            ..Default::default()
+        };
+        let blocks = info.get_block_infos().unwrap();
+
+        // check the pieces size
+        assert_eq!(info.piece_size(0), 45152);
+
+        assert_eq!(
+            blocks,
+            VecDeque::from([
+                BlockInfo {
+                    index: 0,
+                    begin: 0,
+                    len: BLOCK_LEN,
+                },
+                BlockInfo {
+                    index: 0,
+                    begin: BLOCK_LEN,
+                    len: 12384,
+                },
+                BlockInfo {
+                    index: 0,
+                    begin: BLOCK_LEN + 12384,
+                    len: BLOCK_LEN,
+                },
+            ])
+        );
+    }
+
     /// piece_length: 32668
     /// --------------------------------------
     /// | f: 10 | f: 32768                   |
@@ -534,6 +597,11 @@ mod tests {
             ..Default::default()
         };
         let blocks = info.get_block_infos().unwrap();
+
+        // check the pieces size
+        assert_eq!(info.piece_size(0), 32668);
+        assert_eq!(info.piece_size(1), 110);
+
         assert_eq!(
             blocks,
             VecDeque::from([
@@ -581,10 +649,16 @@ mod tests {
                 },
             ]),
             piece_length: 32668, // -100 of block_len
-            pieces: vec![0; 40],
+            pieces: vec![0u8; 40],
             ..Default::default()
         };
+
         let blocks = info.get_block_infos().unwrap();
+
+        // check the pieces size
+        assert_eq!(info.piece_size(0), 32668);
+        assert_eq!(info.piece_size(1), 110);
+
         assert_eq!(
             blocks,
             VecDeque::from([

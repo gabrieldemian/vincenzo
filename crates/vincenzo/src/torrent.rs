@@ -62,8 +62,8 @@ pub enum TorrentMsg {
     /// When a peer request a piece of the info
     /// index, recipient
     RequestInfoPiece(u32, oneshot::Sender<Option<Vec<u8>>>),
-    IncrementDownloaded(u64),
-    IncrementUploaded(u64),
+    IncrementDownloaded(u32),
+    IncrementUploaded(u32),
     /// Toggle pause torrent and send Pause/Resume message to all Peers
     TogglePause,
     /// When torrent is being gracefully shutdown
@@ -481,7 +481,7 @@ impl Torrent {
                             let _ = recipient.send(bytes);
                         }
                         TorrentMsg::IncrementDownloaded(n) => {
-                            self.downloaded += n;
+                            self.downloaded += n as u64;
 
                             // check if the torrent download is complete
                             let is_download_complete = self.downloaded >= self.size;
@@ -493,7 +493,7 @@ impl Torrent {
                             }
                         }
                         TorrentMsg::IncrementUploaded(n) => {
-                            self.uploaded += n;
+                            self.uploaded += n as u64;
                             debug!("IncrementUploaded {}", self.uploaded);
                         }
                         TorrentMsg::TogglePause => {

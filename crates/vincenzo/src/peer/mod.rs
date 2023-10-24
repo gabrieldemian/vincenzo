@@ -799,10 +799,10 @@ impl Peer {
     {
         let local = self.ctx.local_addr;
 
-        if self.session.timed_out_request_count >= 10 {
-            self.free_pending_blocks().await;
-            return Ok(());
-        }
+        // if self.session.timed_out_request_count >= 10 {
+        //     self.free_pending_blocks().await;
+        //     return Ok(());
+        // }
 
         for (block, timeout) in self.outgoing_requests_timeout.iter_mut() {
             let elapsed_since_last_request = Instant::now().saturating_duration_since(*timeout);
