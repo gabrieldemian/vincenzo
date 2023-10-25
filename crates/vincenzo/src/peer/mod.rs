@@ -482,7 +482,7 @@ impl Peer {
 
                                 self.torrent_ctx.disk_tx.send(
                                     DiskMsg::ReadBlock {
-                                        b: block_info,
+                                        block_info,
                                         recipient: tx,
                                         info_hash: self.torrent_ctx.info_hash,
                                     }
@@ -753,18 +753,18 @@ impl Peer {
                 .await;
         }
 
-        let (tx, rx) = oneshot::channel();
+        // let (tx, rx) = oneshot::channel();
 
         self.torrent_ctx
             .disk_tx
             .send(DiskMsg::WriteBlock {
-                b: block,
-                recipient: tx,
+                block,
+                // recipient: tx,
                 info_hash: self.torrent_ctx.info_hash,
             })
             .await?;
 
-        rx.await??;
+        // rx.await??;
 
         // update stats
         self.session.update_download_stats(len as u32);
@@ -909,6 +909,9 @@ impl Peer {
                 .await;
 
             let r = orx.await?;
+
+            let f = r.front();
+            debug!("first block requested {f:?}");
 
             if r.is_empty() && !self.session.in_endgame && self.outgoing_requests.len() <= 20 {
                 // self.start_endgame().await;

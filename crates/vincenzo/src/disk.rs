@@ -10,7 +10,7 @@ use hashbrown::HashMap;
 use rand::seq::SliceRandom;
 use tokio::{
     fs::{create_dir_all, File, OpenOptions},
-    io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
+    io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufWriter},
     sync::{mpsc::Receiver, oneshot::Sender},
 };
 use tracing::debug;
@@ -33,7 +33,7 @@ pub enum DiskMsg {
     /// this message will be sent immediately to add the peer context.
     NewPeer(Arc<PeerCtx>),
     ReadBlock {
-        b: BlockInfo,
+        block_info: BlockInfo,
         recipient: Sender<Result<Vec<u8>, Error>>,
         info_hash: [u8; 20],
     },
@@ -46,8 +46,8 @@ pub enum DiskMsg {
     /// Write the given block to disk, the Disk struct will get the seeked file
     /// automatically.
     WriteBlock {
-        b: Block,
-        recipient: Sender<Result<(), Error>>,
+        block: Block,
+        // recipient: Sender<Result<(), Error>>,
         info_hash: [u8; 20],
     },
     /// Request block infos that the peer has, that we do not have ir nor requested it.
@@ -72,12 +72,12 @@ pub enum DiskMsg {
 #[derive(Clone, Copy, Hash, PartialEq, Eq, Default, Debug)]
 pub enum PieceOrder {
     /// Random First, select random pieces to download
+    #[default]
     Random,
     /// Rarest First, select the rarest pieces to download,
     /// and the most common to download at the end.
     Rarest,
     /// Sequential downloads, only used in streaming.
-    #[default]
     Sequential,
 }
 
@@ -106,8 +106,10 @@ pub struct Disk {
     /// k: peer_id
     pub peer_ctxs: HashMap<[u8; 20], Arc<PeerCtx>>,
     /// k: info_hash
+    cache: HashMap<[u8; 20], Block>,
+    /// k: info_hash
     torrent_info: HashMap<[u8; 20], TorrentInfo>,
-    /// The block infos of each piece of a torrent.
+    /// The block infos of each piece of a torrent, ordered from 0 to last.
     /// where the index of the VecDeque is a piece.
     /// k: info_hash
     pieces_blocks: HashMap<[u8; 20], Vec<VecDeque<BlockInfo>>>,
@@ -132,6 +134,7 @@ impl Disk {
         Self {
             rx,
             download_dir,
+            cache: HashMap::new(),
             peer_ctxs: HashMap::new(),
             torrent_ctxs: HashMap::new(),
             downloaded_pieces_len: HashMap::new(),
@@ -153,22 +156,22 @@ impl Disk {
                     let _ = self.new_torrent(torrent).await;
                 }
                 DiskMsg::ReadBlock {
-                    b,
+                    block_info,
                     recipient,
                     info_hash,
                 } => {
                     debug!("ReadBlock");
-                    let result = self.read_block(b, info_hash).await;
+                    let result = self.read_block(block_info, info_hash).await;
                     let _ = recipient.send(result);
                 }
                 DiskMsg::WriteBlock {
-                    b,
-                    recipient,
+                    block,
+                    // recipient,
                     info_hash,
                 } => {
                     debug!("WriteBlock");
-                    let _ = recipient.send(self.write_block(b, info_hash).await);
-                    // let _ = recipient.send(Ok(()));
+                    self.write_block(block, info_hash).await?;
+                    // let _ = recipient.send(self.write_block(b, info_hash).await);
                 }
                 DiskMsg::OpenFile(path, tx) => {
                     debug!("OpenFile");
@@ -330,18 +333,22 @@ impl Disk {
             return None;
         }
         let peer_pieces = peer_ctx.unwrap().pieces.read().await;
+        let downloaded_pieces = self.downloaded_pieces.get(&info_hash).unwrap();
         self.pieces
             .get(&info_hash)
             .unwrap()
             .iter()
             .enumerate()
-            .find(|(_local_piece_idx, local_piece)| {
-                peer_pieces
-                    .clone()
-                    .into_iter()
-                    .enumerate()
-                    .find(|(piece_idx, piece)| *piece_idx == **local_piece as usize && *piece)
-                    .is_some()
+            .find(|(_, piece)| {
+                if let Some(has_piece) = peer_pieces.get(**piece as usize) {
+                    if *has_piece
+                        && *downloaded_pieces.get(**piece as usize).unwrap()
+                            < self.piece_size(info_hash, **piece as usize) as u64
+                    {
+                        return true;
+                    }
+                }
+                return false;
             })
             .map(|(i, x)| (i, x.to_owned()))
     }
@@ -431,34 +438,29 @@ impl Disk {
         let mut result: VecDeque<BlockInfo> = VecDeque::new();
 
         for _ in 0..qnt {
-            if result.len() >= qnt {
-                break;
-            };
-
             let next_piece = self.next_piece(peer_id, info_hash).await;
 
             if let Some(piece) = next_piece {
-                let blocks = self
-                    .pieces_blocks
-                    .get_mut(&info_hash)
-                    .unwrap()
-                    .get_mut(piece.1 as usize);
+                let pieces_blocks = self.pieces_blocks.get_mut(&info_hash).unwrap();
+                let blocks = pieces_blocks.get_mut(piece.1 as usize);
 
                 if let Some(blocks) = blocks {
+                    if blocks.is_empty() {
+                        debug!("piece {} is empty, removing by index {}", piece.1, piece.0);
+                        // pieces_blocks.remove(piece.1 as usize);
+                        self.pieces.get_mut(&info_hash).unwrap().remove(piece.0);
+                    }
                     // how many blocks are left to request
                     let left = qnt - result.len();
                     result.extend(blocks.drain(0..left.min(blocks.len())));
-                    if blocks.is_empty() {
-                        self.pieces_blocks
-                            .get_mut(&info_hash)
-                            .unwrap()
-                            .remove(piece.1 as usize);
-                    }
                 }
-            } else {
-                break;
             }
+
+            if result.len() >= qnt {
+                break;
+            };
         }
+        debug!("result len {:?}", result.len());
 
         Ok(result)
     }
@@ -520,6 +522,7 @@ impl Disk {
             .await
             .unwrap();
 
+        // BufWriter::new(fs_file).write_all(&block.block).await?;
         fs_file.write_all(&block.block).await.unwrap();
 
         let torrent_ctx = self
@@ -1091,7 +1094,19 @@ mod tests {
         let block = Block {
             index: 1,
             begin: 2,
-            block: vec![9],
+            block: "9".as_bytes().to_owned(),
+        };
+        disk.write_block(block, info_hash).await.unwrap();
+        let block = Block {
+            index: 1,
+            begin: 1,
+            block: "w".as_bytes().to_owned(),
+        };
+        disk.write_block(block, info_hash).await.unwrap();
+        let block = Block {
+            index: 1,
+            begin: 0,
+            block: "x".as_bytes().to_owned(),
         };
         disk.write_block(block, info_hash).await.unwrap();
 
@@ -1099,19 +1114,19 @@ mod tests {
         let block = Block {
             index: 0,
             begin: 2,
-            block: vec![3],
+            block: "3".as_bytes().to_owned(),
         };
         disk.write_block(block, info_hash).await.unwrap();
         let block = Block {
             index: 0,
             begin: 1,
-            block: vec![1],
+            block: "1".as_bytes().to_owned(),
         };
         disk.write_block(block, info_hash).await.unwrap();
         let block = Block {
             index: 0,
             begin: 0,
-            block: vec![2],
+            block: "2".as_bytes().to_owned(),
         };
         disk.write_block(block, info_hash).await.unwrap();
 
@@ -1120,11 +1135,11 @@ mod tests {
             .await
             .unwrap();
 
-        let mut buf = Vec::new();
-        d.read_to_end(&mut buf).await.unwrap();
+        let mut buf = String::new();
+        d.read_to_string(&mut buf).await.unwrap();
         // println!("buf out.txt {buf:?}");
 
-        assert_eq!(buf, vec![2, 1, 3]);
+        assert_eq!(buf, "213");
 
         let mut d = disk
             .open_file(format!("{download_dir}/arch/last.txt"))
@@ -1135,7 +1150,7 @@ mod tests {
         d.read_to_end(&mut buf).await.unwrap();
         // println!("buf last.txt {buf:?}");
 
-        assert_eq!(buf, vec![0, 0, 9]);
+        assert_eq!(buf, vec![120, 119, 57]);
         tokio::fs::remove_dir_all(&download_dir).await.unwrap();
     }
 
