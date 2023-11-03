@@ -139,7 +139,7 @@ impl Info {
 
 /// Files in the [`Info`] are relative to the root folder name,
 /// but do not contain them as the first item in the vector.
-#[derive(Debug, PartialEq, Clone, Default)]
+#[derive(Debug, PartialEq, Clone, Default, Hash, Eq)]
 pub struct File {
     /// Length of the file in bytes.
     pub length: u32,
@@ -1024,6 +1024,72 @@ mod tests {
         );
 
         Ok(())
+    }
+
+    #[test]
+    fn get_block_infos_long_torrent() {
+        let info = Info {
+            piece_length: 32768,
+            pieces: vec![0; 5480], // 274 pieces * 20 bytes each
+            name: "name".to_string(),
+            file_length: None,
+            files: Some(vec![
+                // 308 blocks
+                File {
+                    length: 5034059,
+                    path: vec!["dir".to_string(), "file_a.pdf".to_string()],
+                },
+                // 1 block
+                File {
+                    length: 62,
+                    path: vec!["file_1.txt".to_string()],
+                },
+                // 1 block
+                File {
+                    length: 237,
+                    path: vec!["file_2.txt".to_string()],
+                },
+            ]),
+        };
+
+        let block_infos = info.get_block_infos().unwrap();
+
+        let last_first_file = &block_infos[307];
+        let last_second_file = &block_infos[308];
+        let last_third_file = &block_infos[309];
+
+        let last = block_infos.back().unwrap();
+        let len = block_infos.len(); // 306 blocks
+
+        println!("last {last:#?}");
+        println!("len {len:#?}");
+
+        assert_eq!(
+            *last_first_file,
+            BlockInfo {
+                index: 153,
+                begin: 16384,
+                len: 4171,
+            }
+        );
+
+        assert_eq!(
+            *last_second_file,
+            BlockInfo {
+                index: 153,
+                begin: 20555,
+                len: 62,
+            }
+        );
+
+        assert_eq!(
+            *last_third_file,
+            BlockInfo {
+                index: 153,
+                begin: 20617,
+                len: 237,
+            }
+        );
     }
 
     /// Confirm that the [`MetaInfo`] [`ToBencode`] and [`FromBencode`] implementations work as expected for a multi-file torrent

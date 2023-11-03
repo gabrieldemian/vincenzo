@@ -127,7 +127,7 @@ async fn peer_request() {
                 let local = socket.local_addr().unwrap();
 
                 let (socket, handshake) =
-                    Peer::start(socket, Direction::Inbound, info_hash, local_peer_id)
+                    Peer::handshake(socket, Direction::Inbound, info_hash, local_peer_id)
                         .await
                         .unwrap();
 
@@ -212,7 +212,7 @@ async fn peer_request() {
     let local_peer_id = Tracker::gen_peer_id();
 
     let (socket, handshake) =
-        Peer::start(socket, Direction::Outbound, info_hash, local_peer_id)
+        Peer::handshake(socket, Direction::Outbound, info_hash, local_peer_id)
             .await
             .unwrap();
 

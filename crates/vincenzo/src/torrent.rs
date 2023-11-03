@@ -223,7 +223,7 @@ impl Torrent {
         Ok(())
     }
 
-    /// Spawn an event loop for each peer to listen/send messages.
+    /// Spawn an event loop for each peer
     #[tracing::instrument(skip_all, name = "torrent::start_outbound_peers")]
     pub async fn spawn_outbound_peers(&self, peers: Vec<SocketAddr>) -> Result<(), Error> {
         for peer in peers {
@@ -239,6 +239,17 @@ impl Torrent {
                     }
                     Err(e) => {
                         debug!("error with peer: {:?} {e:#?}", peer);
+                        debug!("trying again");
+
+                        if let Ok(socket) = TcpStream::connect(peer).await {
+                            Self::start_and_run_peer(
+                                ctx,
+                                socket,
+                                local_peer_id,
+                                Direction::Outbound,
+                            )
+                            .await?;
+                        }
                     }
                 }
                 Ok::<(), Error>(())
@@ -255,7 +266,7 @@ impl Torrent {
         direction: Direction,
     ) -> Result<Peer, Error> {
         let (socket, handshake) =
-            Peer::start(socket, direction, ctx.info_hash, local_peer_id).await?;
+            Peer::handshake(socket, direction, ctx.info_hash, local_peer_id).await?;
 
         let local = socket.get_ref().local_addr()?;
         let remote = socket.get_ref().peer_addr()?;
@@ -312,13 +323,15 @@ impl Torrent {
                 }
             }
         });
+
         Ok(())
     }
 
     /// Run the Torrent main event loop to listen to internal [`TorrentMsg`].
     #[tracing::instrument(skip_all)]
     pub async fn run(&mut self) -> Result<(), Error> {
-        debug!("torrent {:?} run", self.ctx.info_hash);
+        debug!("running torrent: {:?}", self.name);
+
         let tracker_tx = self.tracker_ctx.tx.clone();
 
         let mut announce_interval = interval_at(
@@ -461,8 +474,11 @@ impl Torrent {
 
                                     let mut info_l = self.ctx.info.write().await;
 
-                                    debug!("new info files {:?}", info.files);
+                                    debug!("new info piece length {:?}", info.piece_length);
+                                    debug!("new info pieces_len {:?}", info.pieces.len());
+                                    debug!("new info pieces_len {:?}", info.pieces.len());
                                     debug!("new info file_length {:?}", info.file_length);
+                                    debug!("new info files {:#?}", info.files);
 
                                     *info_l = info;
                                     drop(info_l);

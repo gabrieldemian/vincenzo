@@ -131,7 +131,75 @@ pub struct PeerCtx {
 }
 
 impl Peer {
-    /// Create a new [`Peer`]. This should be called AFTER [start].
+    /// Do a handshake with a remote peer and return the remote peer's handshake.
+    ///
+    /// # Important
+    /// A peer cannot exist on it's own, it needs to be handshaked with another peer
+    /// in order to "exist". Only in this moment it gains it's peer_id and other data.
+    ///
+    /// The right order to create and run a Peer is the following:
+    /// handshake -> new -> run
+    pub async fn handshake(
+        socket: TcpStream,
+        direction: Direction,
+        info_hash: [u8; 20],
+        local_peer_id: [u8; 20],
+    ) -> Result<(Framed<TcpStream, PeerCodec>, Handshake), Error> {
+        let local = socket.local_addr()?;
+        let remote = socket.peer_addr()?;
+        let mut socket = Framed::new(socket, HandshakeCodec);
+        let our_handshake = Handshake::new(info_hash, local_peer_id);
+        let peer_handshake: Handshake;
+
+        // we are connecting, send the first handshake
+        if direction == Direction::Outbound {
+            debug!("{local} sending the first handshake to {remote}");
+            socket.send(our_handshake.clone()).await?;
+        }
+
+        // wait for, and validate, their handshake
+        if let Some(Ok(their_handshake)) = socket.next().await {
+            debug!("{local} received their handshake {remote}");
+            peer_handshake = their_handshake.clone();
+
+            if !their_handshake.validate(&our_handshake) {
+                return Err(Error::HandshakeInvalid);
+            }
+
+            // receive the second handshake, if outbound
+            if direction == Direction::Outbound {
+                let old_parts = socket.into_parts();
+                let mut new_parts = FramedParts::new(old_parts.io, PeerCodec);
+                new_parts.read_buf = old_parts.read_buf;
+                new_parts.write_buf = old_parts.write_buf;
+                let socket = Framed::from_parts(new_parts);
+                return Ok((socket, peer_handshake));
+            }
+        } else {
+            warn!("{remote} did not send a handshake");
+            return Err(Error::HandshakeInvalid);
+        }
+
+        // if inbound, he have already received their first handshake,
+        // send our second handshake here.
+        if direction == Direction::Inbound {
+            debug!("{local} sending the second handshake to {remote}");
+            socket.send(our_handshake.clone()).await?;
+        }
+
+        let old_parts = socket.into_parts();
+        let mut new_parts = FramedParts::new(old_parts.io, PeerCodec);
+        new_parts.read_buf = old_parts.read_buf;
+        new_parts.write_buf = old_parts.write_buf;
+        let socket = Framed::from_parts(new_parts);
+
+        Ok((socket, peer_handshake))
+    }
+
+    /// Create a new [`Peer`] given it's handshake.
+    ///
+    /// # Important
+    /// This MUST be called AFTER the method `handshake`.
     pub fn new(
         remote_addr: SocketAddr,
         torrent_ctx: Arc<TorrentCtx>,
@@ -165,60 +233,6 @@ impl Peer {
         }
     }
 
-    /// A peer cannot exist on it's own, it needs to be handshaked with another peer
-    /// in order to "exist". Only in this moment it gains it's peer_id and other data.
-    ///
-    /// The right order to create and run a Peer is the following:
-    /// start -> new -> run
-    pub async fn start(
-        socket: TcpStream,
-        direction: Direction,
-        info_hash: [u8; 20],
-        local_peer_id: [u8; 20],
-    ) -> Result<(Framed<TcpStream, PeerCodec>, Handshake), Error> {
-        let local = socket.local_addr()?;
-        let remote = socket.peer_addr()?;
-        let mut socket = Framed::new(socket, HandshakeCodec);
-        let our_handshake = Handshake::new(info_hash, local_peer_id);
-
-        // we are connecting, send the first handshake
-        if direction == Direction::Outbound {
-            debug!("{local} sending the first handshake to {remote}");
-            socket.send(our_handshake.clone()).await?;
-        }
-
-        // wait for, and validate, their handshake
-        if let Some(their_handshake) = socket.next().await {
-            let their_handshake = their_handshake?;
-            debug!("{local} received their handshake {remote}");
-
-            if !their_handshake.validate(&our_handshake) {
-                return Err(Error::HandshakeInvalid);
-            }
-            if direction == Direction::Outbound {
-                let old_parts = socket.into_parts();
-                let mut new_parts = FramedParts::new(old_parts.io, PeerCodec);
-                new_parts.read_buf = old_parts.read_buf;
-                new_parts.write_buf = old_parts.write_buf;
-                let socket = Framed::from_parts(new_parts);
-                return Ok((socket, their_handshake));
-            }
-        }
-
-        // if they are connecting, answer with our handshake
-        if direction == Direction::Inbound {
-            debug!("{local} sending the second handshake to {remote}");
-            socket.send(our_handshake.clone()).await?;
-        }
-
-        let old_parts = socket.into_parts();
-        let mut new_parts = FramedParts::new(old_parts.io, PeerCodec);
-        new_parts.read_buf = old_parts.read_buf;
-        new_parts.write_buf = old_parts.write_buf;
-        let socket = Framed::from_parts(new_parts);
-
-        Ok((socket, our_handshake))
-    }
 
     /// Start the event loop of the Peer, listen to messages sent by others
     /// on the peer wire protocol.
@@ -286,8 +300,10 @@ impl Peer {
         // send Unchoke
         self.session.state.am_choking = false;
         sink.send(Message::Unchoke).await?;
-        sink.send(Message::Interested).await?;
+        // sink.send(Message::Interested).await?;
 
+        // when running a new Peer, we might
+        // already have the info downloaded.
         let have = self
             .torrent_ctx
             .has_at_least_one_piece
@@ -299,11 +315,13 @@ impl Peer {
 
         let info = self.torrent_ctx.info.read().await;
         let mut peer_pieces = self.ctx.pieces.write().await;
+
         // if local peer has info, initialize the bitfield
         // of this peer.
         if peer_pieces.is_empty() && info.piece_length != 0 {
             *peer_pieces = bitvec![u8, Msb0; 0; info.pieces() as usize];
         }
+
         drop(peer_pieces);
         drop(info);
 
