@@ -66,6 +66,8 @@ pub enum TorrentMsg {
     IncrementUploaded(u32),
     /// Toggle pause torrent and send Pause/Resume message to all Peers
     TogglePause,
+    /// When we can't do a TCP connection with the ip of the Peer.
+    FailedPeer(SocketAddr),
     /// When torrent is being gracefully shutdown
     Quit,
 }
@@ -79,6 +81,7 @@ pub struct Torrent {
     pub rx: mpsc::Receiver<TorrentMsg>,
     /// key: peer_id
     pub peer_ctxs: HashMap<[u8; 20], Arc<PeerCtx>>,
+    pub failed_peers: Vec<SocketAddr>,
     /// If using a Magnet link, the info will be downloaded in pieces
     /// and those pieces may come in different order,
     /// hence the HashMap (dictionary), and not a vec.
@@ -179,6 +182,7 @@ impl Torrent {
             rx,
             peer_ctxs: HashMap::new(),
             have_info: false,
+            failed_peers: Vec::new(),
         }
     }
 
@@ -239,17 +243,7 @@ impl Torrent {
                     }
                     Err(e) => {
                         debug!("error with peer: {:?} {e:#?}", peer);
-                        debug!("trying again");
-
-                        if let Ok(socket) = TcpStream::connect(peer).await {
-                            Self::start_and_run_peer(
-                                ctx,
-                                socket,
-                                local_peer_id,
-                                Direction::Outbound,
-                            )
-                            .await?;
-                        }
+                        ctx.tx.send(TorrentMsg::FailedPeer(peer)).await?;
                     }
                 }
                 Ok::<(), Error>(())
@@ -337,6 +331,11 @@ impl Torrent {
         let mut announce_interval = interval_at(
             Instant::now() + Duration::from_secs(self.stats.interval.max(500).into()),
             Duration::from_secs((self.stats.interval as u64).max(500)),
+        );
+
+        let mut reconnect_failed_peers = interval_at(
+            Instant::now() + Duration::from_secs(5),
+            Duration::from_secs(5),
         );
 
         let mut frontend_interval = interval(Duration::from_secs(1));
@@ -535,6 +534,9 @@ impl Torrent {
                                 }
                             }
                         }
+                        TorrentMsg::FailedPeer(addr) => {
+                            self.failed_peers.push(addr);
+                        },
                         TorrentMsg::Quit => {
                             info!("Quitting torrent {:?}", self.name);
                             let (otx, orx) = oneshot::channel();
@@ -632,6 +634,22 @@ impl Torrent {
                         );
                     }
                     drop(info);
+                }
+                // At every 5 seconds, try to reconnect to peers in which
+                // the TCP connection failed.
+                _ = reconnect_failed_peers.tick() => {
+                    for peer in self.failed_peers.clone() {
+                        let ctx = self.ctx.clone();
+                        let local_peer_id = self.tracker_ctx.peer_id;
+
+                        spawn(async move {
+                            if let Ok(socket) = TcpStream::connect(peer).await {
+                                Self::start_and_run_peer(ctx, socket, local_peer_id, Direction::Outbound)
+                                    .await?;
+                            }
+                            Ok::<(), Error>(())
+                        });
+                    }
                 }
             }
         }
