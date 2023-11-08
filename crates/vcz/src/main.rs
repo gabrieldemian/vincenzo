@@ -2,6 +2,7 @@ use clap::Parser;
 use tokio::{runtime::Runtime, spawn, sync::mpsc};
 
 use tracing::debug;
+use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt;
 use vincenzo::daemon::Daemon;
 use vincenzo::error::Error;
 use vincenzo::{config::Config, daemon::Args};
@@ -10,6 +11,26 @@ use vcz_ui::{UIMsg, UI};
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
+    let console_layer = console_subscriber::spawn();
+    let r = tracing_subscriber::registry();
+    r.with(console_layer);
+
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("../../log.txt")
+        .expect("Failed to open log file");
+
+    tracing_subscriber::fmt()
+        .with_env_filter("tokio=trace,runtime=trace")
+        .with_max_level(tracing::Level::DEBUG)
+        .with_target(false)
+        .with_writer(file)
+        .compact()
+        .with_file(false)
+        .without_time()
+        .init();
+
     let args = Args::parse();
     let config = Config::load().await.unwrap();
 

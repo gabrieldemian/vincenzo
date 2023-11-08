@@ -6,6 +6,7 @@ use bendy::{
     decoding::{self, FromBencode, Object, ResultExt},
     encoding::{self, AsString, Error, SingleItemEncoder, ToBencode},
 };
+use tracing::warn;
 
 use crate::{
     error,
@@ -62,26 +63,47 @@ impl Info {
     /// Get all block_infos of a torrent
     /// Returns an Err if the Info is malformed, if it does not have `files` or `file_length`.
     pub fn get_block_infos(&self) -> Result<VecDeque<BlockInfo>, error::Error> {
-        // multi file torrent
-        if let Some(files) = &self.files {
-            let mut infos: VecDeque<BlockInfo> = VecDeque::new();
-            for (_, file) in files.iter().enumerate() {
-                let back = infos.back();
-                let r = file.get_block_infos(self.piece_length, back);
-                infos.extend(r);
+        let total_size = self.get_size() as u32;
+        let mut block_infos = Vec::new();
+        let mut processed_bytes = 0;
+        let mut offset_within_file = 0;
+        let mut file_index = 0;
+
+        while processed_bytes < total_size {
+            let remaining_in_file = self
+                .files
+                .as_ref()
+                .map_or(total_size - processed_bytes, |f| {
+                    f[file_index].length - offset_within_file
+                });
+            let len = [
+                remaining_in_file,
+                self.piece_length - processed_bytes % self.piece_length,
+                BLOCK_LEN,
+            ]
+            .iter()
+            .cloned()
+            .min()
+            .unwrap();
+
+            block_infos.push(BlockInfo {
+                index: (processed_bytes / self.piece_length),
+                begin: processed_bytes % self.piece_length,
+                len,
+            });
+
+            processed_bytes += len;
+            offset_within_file += len;
+
+            if let Some(files) = &self.files {
+                while file_index < files.len() && offset_within_file >= files[file_index].length {
+                    offset_within_file -= files[file_index].length;
+                    file_index += 1;
+                }
             }
-            return Ok(infos);
         }
 
-        // single file torrent
-        if let Some(length) = self.file_length {
-            let file = File {
-                length,
-                path: vec![self.name.to_owned()],
-            };
-            return Ok(file.get_block_infos(self.piece_length, None));
-        }
-        Err(error::Error::FileOpenError("".to_owned()))
+        Ok(block_infos.into())
     }
     /// Get the total size of the torrent, in bytes.
     pub fn get_size(&self) -> u64 {
@@ -95,13 +117,29 @@ impl Info {
             return f as u64;
         }
 
+        warn!("tried to call get_size of malformed Info {self:#?}");
         0
+    }
+
+    /// Get the size (in bytes) of a piece.
+    pub fn piece_size(&self, piece_index: usize) -> u32 {
+        let total_size = self.get_size() as u32;
+        if piece_index == self.pieces() as usize - 1 {
+            let remainder = total_size % self.piece_length;
+            if remainder == 0 {
+                self.piece_length
+            } else {
+                remainder
+            }
+        } else {
+            self.piece_length
+        }
     }
 }
 
 /// Files in the [`Info`] are relative to the root folder name,
 /// but do not contain them as the first item in the vector.
-#[derive(Debug, PartialEq, Clone, Default)]
+#[derive(Debug, PartialEq, Clone, Default, Hash, Eq)]
 pub struct File {
     /// Length of the file in bytes.
     pub length: u32,
@@ -123,109 +161,6 @@ impl File {
     pub fn pieces(&self, piece_length: u32) -> u32 {
         let pieces = self.length as f32 / piece_length as f32;
         pieces.ceil() as u32
-    }
-    /// Get all block infos of the File.
-    pub fn get_block_infos(
-        &self,
-        piece_length: u32,
-        prev_block_file: Option<&BlockInfo>,
-    ) -> VecDeque<BlockInfo> {
-        #[decurse::decurse_unsound]
-        fn partition(
-            file: &File,
-            piece_length: u32,
-            infos: &mut VecDeque<BlockInfo>,
-            prev_block_file: Option<&BlockInfo>,
-            file_length: u32,
-        ) -> VecDeque<BlockInfo> {
-            let prev_block = infos.back();
-            if let Some(prev) = prev_block {
-                // global cursor, where we are in the torrent (all files)
-                let mut cursor: u64 = (prev.index * piece_length + prev.begin + prev.len).into();
-
-                // transform global cursor into a
-                // local cursor, where we are in the file
-                if let Some(b) = prev_block_file {
-                    let prev_bytes: u64 =
-                        b.index as u64 * piece_length as u64 + b.len as u64 + b.begin as u64;
-                    cursor -= prev_bytes;
-                }
-
-                if cursor >= file_length as u64 {
-                    return std::mem::take(infos);
-                }
-
-                let begin = if prev.begin + prev.len >= piece_length {
-                    0
-                } else {
-                    prev.begin + prev.len
-                };
-
-                // free space available in the file
-                let available = file_length as u64 - cursor;
-
-                // align len with file boundary
-                let mut len = BLOCK_LEN.min(available as u32);
-
-                // align len with piece boundary
-                if (begin + len) > piece_length {
-                    len -= (begin + len) % piece_length;
-                }
-
-                let index = if prev.begin + prev.len >= piece_length {
-                    prev.index + 1
-                } else {
-                    prev.index
-                };
-
-                infos.push_back(BlockInfo { index, begin, len });
-                partition(file, piece_length, infos, prev_block_file, file_length)
-            } else {
-                let len = if file_length >= BLOCK_LEN {
-                    BLOCK_LEN
-                } else {
-                    file_length % BLOCK_LEN
-                };
-                let mut b = BlockInfo {
-                    index: 0,
-                    begin: 0,
-                    len,
-                };
-                if let Some(prev) = prev_block_file {
-                    let begin = if prev.begin + prev.len >= piece_length {
-                        0
-                    } else {
-                        prev.begin + prev.len
-                    };
-
-                    // file boundary
-                    let mut len = if file_length >= BLOCK_LEN {
-                        BLOCK_LEN
-                    } else {
-                        file_length % BLOCK_LEN
-                    };
-
-                    // piece boundary
-                    if (begin + len) > piece_length {
-                        len -= (begin + len) % piece_length;
-                    }
-
-                    b = BlockInfo {
-                        index: if prev.begin + prev.len >= piece_length {
-                            prev.index + 1
-                        } else {
-                            prev.index
-                        },
-                        begin,
-                        len,
-                    };
-                };
-                infos.push_back(b);
-                return partition(file, piece_length, infos, prev_block_file, file_length);
-            }
-        }
-        let mut infos = VecDeque::new();
-        partition(self, piece_length, &mut infos, prev_block_file, self.length)
     }
 }
 
@@ -441,6 +376,37 @@ impl FromBencode for Info {
 mod tests {
     use super::*;
 
+    /// piece_length: 15
+    /// -------------------
+    /// | f: 30           |
+    /// ---------p---------
+    /// | b: 15  | b: 15  |
+    /// -------------------
+    #[test]
+    fn get_block_infos_smaller_than_block_info() {
+        let info = Info {
+            file_length: Some(30),
+            piece_length: 15,
+            pieces: vec![0; 40],
+            ..Default::default()
+        };
+        assert_eq!(
+            info.get_block_infos().unwrap(),
+            VecDeque::from([
+                BlockInfo {
+                    index: 0,
+                    begin: 0,
+                    len: 15,
+                },
+                BlockInfo {
+                    index: 1,
+                    begin: 0,
+                    len: 15,
+                },
+            ]),
+        );
+    }
+
     /// piece_length: 16384
     /// -------------------------------------
     /// | f: 32868                          |
@@ -452,6 +418,7 @@ mod tests {
         let info = Info {
             file_length: Some(32868),
             piece_length: BLOCK_LEN,
+            pieces: vec![0; 60],
             ..Default::default()
         };
         let blocks = info.get_block_infos().unwrap();
@@ -491,6 +458,7 @@ mod tests {
                 path: vec!["a.txt".to_owned()],
             }]),
             piece_length: BLOCK_LEN,
+            pieces: vec![0; 40],
             ..Default::default()
         };
         let blocks = info.get_block_infos().unwrap();
@@ -525,6 +493,7 @@ mod tests {
                 path: vec!["a.txt".to_owned()],
             }]),
             piece_length: 32668,
+            pieces: vec![0; 40],
             ..Default::default()
         };
         let blocks = info.get_block_infos().unwrap();
@@ -550,6 +519,60 @@ mod tests {
         );
     }
 
+    /// piece_length: 45152
+    /// ---------------------------------------
+    /// | f: 16384   | f: 12384 | f: 16384    |
+    /// p------------f----------f-------------|
+    /// | b: 16384   | b: 12384 | b: 16384    |
+    /// --------------------------------------|
+    #[test]
+    fn get_block_infos_file_boundary() {
+        let info = Info {
+            files: Some(vec![
+                File {
+                    length: BLOCK_LEN,
+                    path: vec!["a.txt".to_owned()],
+                },
+                File {
+                    length: 12384,
+                    path: vec!["b.txt".to_owned()],
+                },
+                File {
+                    length: BLOCK_LEN,
+                    path: vec!["c.txt".to_owned()],
+                },
+            ]),
+            piece_length: 45152,
+            pieces: vec![0; 20],
+            ..Default::default()
+        };
+        let blocks = info.get_block_infos().unwrap();
+
+        // check the pieces size
+        assert_eq!(info.piece_size(0), 45152);
+
+        assert_eq!(
+            blocks,
+            VecDeque::from([
+                BlockInfo {
+                    index: 0,
+                    begin: 0,
+                    len: BLOCK_LEN,
+                },
+                BlockInfo {
+                    index: 0,
+                    begin: BLOCK_LEN,
+                    len: 12384,
+                },
+                BlockInfo {
+                    index: 0,
+                    begin: BLOCK_LEN + 12384,
+                    len: BLOCK_LEN,
+                },
+            ])
+        );
+    }
+
     /// piece_length: 32668
     /// --------------------------------------
     /// | f: 10 | f: 32768                   |
@@ -570,9 +593,15 @@ mod tests {
                 },
             ]),
             piece_length: 32668, // -100 of block_len
+            pieces: vec![0; 40],
             ..Default::default()
         };
         let blocks = info.get_block_infos().unwrap();
+
+        // check the pieces size
+        assert_eq!(info.piece_size(0), 32668);
+        assert_eq!(info.piece_size(1), 110);
+
         assert_eq!(
             blocks,
             VecDeque::from([
@@ -620,9 +649,16 @@ mod tests {
                 },
             ]),
             piece_length: 32668, // -100 of block_len
+            pieces: vec![0u8; 40],
             ..Default::default()
         };
+
         let blocks = info.get_block_infos().unwrap();
+
+        // check the pieces size
+        assert_eq!(info.piece_size(0), 32668);
+        assert_eq!(info.piece_size(1), 110);
+
         assert_eq!(
             blocks,
             VecDeque::from([
@@ -683,9 +719,7 @@ mod tests {
         let files = info.files.clone().unwrap();
 
         let file0 = &files[0];
-        let infos0 = file0.get_block_infos(info.piece_length, None);
 
-        let file_bytes = infos0.iter().fold(0, |acc, x| acc + x.len);
         let pieces_file = file0.pieces(info.piece_length);
         let blocks_file = pieces_file * per_piece;
 
@@ -693,17 +727,11 @@ mod tests {
         println!("--- file[0] ---");
         println!("{:#?}", files[0]);
 
-        // validations on file[0]
-        let file_infos = file0.get_block_infos(info.piece_length, None);
-        let file0_len = file_infos.iter().fold(0, |acc, x| acc + x.len);
         // 611
         // assert_eq!(1664, blocks_file);
         assert_eq!(26, pieces_file);
-        assert_eq!(26384160, file_bytes);
         assert_eq!(26384160, file0.length);
-        assert_eq!(file0_len as u64, file0.length as u64);
 
-        println!("infos_file {:#?}", file_infos.len());
         println!("blocks {:#?}", blocks_file);
         println!("pieces {:#?}", pieces_file);
         println!("blocks per piece {:#?}", pieces_file);
@@ -790,11 +818,9 @@ mod tests {
         // file0 ended /\
 
         let file1 = &files[1];
-        let infos1 = file1.get_block_infos(info.piece_length, infos0.back());
 
         let pieces_file = file1.pieces(info.piece_length);
         let blocks_file = pieces_file * per_piece;
-        let file_len = infos1.iter().fold(0, |acc, x| acc + x.len);
         println!("--- file[1] ---");
         println!("{file1:#?}");
 
@@ -802,11 +828,9 @@ mod tests {
         assert_eq!(512, blocks_file);
         assert_eq!(8, pieces_file);
         assert_eq!(8281625, file1.length);
-        assert_eq!(file_len, file1.length);
 
         // file1 has 8 pieces (0 idx based)
         // 507
-        println!("blocks_infos_len {:?}", infos1.len());
         println!("pieces {pieces_file}");
         println!("blocks {blocks_file}");
 
@@ -1000,6 +1024,72 @@ mod tests {
         );
 
         Ok(())
+    }
+
+    #[test]
+    fn get_block_infos_long_torrent() {
+        let info = Info {
+            piece_length: 32768,
+            pieces: vec![0; 5480], // 274 pieces * 20 bytes each
+            name: "name".to_string(),
+            file_length: None,
+            files: Some(vec![
+                // 308 blocks
+                File {
+                    length: 5034059,
+                    path: vec!["dir".to_string(), "file_a.pdf".to_string()],
+                },
+                // 1 block
+                File {
+                    length: 62,
+                    path: vec!["file_1.txt".to_string()],
+                },
+                // 1 block
+                File {
+                    length: 237,
+                    path: vec!["file_2.txt".to_string()],
+                },
+            ]),
+        };
+
+        let block_infos = info.get_block_infos().unwrap();
+
+        let last_first_file = &block_infos[307];
+        let last_second_file = &block_infos[308];
+        let last_third_file = &block_infos[309];
+
+        let last = block_infos.back().unwrap();
+        let len = block_infos.len(); // 306 blocks
+
+        println!("last {last:#?}");
+        println!("len {len:#?}");
+
+        assert_eq!(
+            *last_first_file,
+            BlockInfo {
+                index: 153,
+                begin: 16384,
+                len: 4171,
+            }
+        );
+
+        assert_eq!(
+            *last_second_file,
+            BlockInfo {
+                index: 153,
+                begin: 20555,
+                len: 62,
+            }
+        );
+
+        assert_eq!(
+            *last_third_file,
+            BlockInfo {
+                index: 153,
+                begin: 20617,
+                len: 237,
+            }
+        );
     }
 
     /// Confirm that the [`MetaInfo`] [`ToBencode`] and [`FromBencode`] implementations work as expected for a multi-file torrent

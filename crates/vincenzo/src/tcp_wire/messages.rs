@@ -69,7 +69,7 @@ impl TryFrom<u8> for MessageId {
 #[derive(Debug)]
 pub struct PeerCodec;
 
-// Encode bytes into messages
+// bytes -> messages
 impl Encoder<Message> for PeerCodec {
     type Error = io::Error;
 
@@ -79,9 +79,10 @@ impl Encoder<Message> for PeerCodec {
                 buf.put_u32(0);
             }
             Message::Bitfield(bitfield) => {
-                buf.put_u32(1 + bitfield.len_bytes() as u32);
+                let v = bitfield.into_vec();
+                buf.put_u32(1 + v.len() as u32);
                 buf.put_u8(MessageId::Bitfield as u8);
-                buf.extend_from_slice(bitfield.inner.as_slice());
+                buf.extend_from_slice(&v);
             }
             Message::Choke => {
                 buf.put_u32(1);
@@ -216,7 +217,7 @@ impl Decoder for PeerCodec {
             MessageId::Bitfield => {
                 let mut bitfield = vec![0; msg_len - 1];
                 buf.copy_to_slice(&mut bitfield);
-                Message::Bitfield(Bitfield::from(bitfield))
+                Message::Bitfield(Bitfield::from_vec(bitfield))
             }
             // <len=0013><id=6><index><begin><length>
             MessageId::Request => {
@@ -381,6 +382,7 @@ impl Handshake {
         let mut reserved = [0u8; 8];
 
         // we support the `extension protocol`
+        // set the bit 44 to the left
         reserved[5] |= 0x10;
 
         Self {
@@ -430,7 +432,7 @@ mod tests {
     use crate::tcp_wire::BLOCK_LEN;
 
     use super::*;
-    use bitlab::SingleBits;
+    use bitvec::{bitvec, prelude::Msb0};
     use bytes::{Buf, BytesMut};
     use tokio_util::codec::{Decoder, Encoder};
 
@@ -456,6 +458,38 @@ mod tests {
         match msg {
             Message::Extended((ext_id, _payload)) => {
                 assert_eq!(ext_id, 0);
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn bitfield() {
+        let mut buf = BytesMut::new();
+        let mut original = bitvec![u8, Msb0; 0; 10];
+        original.set(8, true);
+        original.set(9, true);
+        // let original = Bitfield::from_vec(vec![255]);
+        let msg = Message::Bitfield(original.clone());
+
+        PeerCodec.encode(msg.clone(), &mut buf).unwrap();
+
+        // len
+        assert_eq!(buf.get_u32(), 1 + original.clone().into_vec().len() as u32);
+        // ext id
+        assert_eq!(buf.get_u8(), MessageId::Bitfield as u8);
+
+        let mut buf = BytesMut::new();
+        PeerCodec.encode(msg, &mut buf).unwrap();
+        let msg = PeerCodec.decode(&mut buf).unwrap().unwrap();
+
+        match msg {
+            Message::Bitfield(mut bitfield) => {
+                // remove excess bits
+                unsafe {
+                    bitfield.set_len(original.len());
+                }
+                assert_eq!(bitfield, original);
             }
             _ => panic!(),
         }
@@ -555,12 +589,13 @@ mod tests {
 
     #[test]
     fn reserved_bytes() {
-        let mut reserved = [0u8; 8];
-        reserved[5] |= 0x10;
+        let reserved = Bitfield::from_vec(vec![0, 0, 0, 0, 0, 16, 0, 0]);
+        // let mut a = bitarr![u8, Msb0; 0; 64];
+        // reserved.set(43, true);
 
-        assert_eq!(reserved, [0, 0, 0, 0, 0, 16, 0, 0]);
+        assert_eq!(reserved.clone().into_vec(), [0, 0, 0, 0, 0, 16, 0, 0]);
 
-        let support_extension_protocol = reserved[5].get_bit(3).unwrap();
+        let support_extension_protocol = reserved[43];
 
         assert!(support_extension_protocol)
     }

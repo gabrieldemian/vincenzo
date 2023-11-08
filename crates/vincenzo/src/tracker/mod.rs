@@ -15,11 +15,11 @@ use crate::error::Error;
 use rand::Rng;
 use tokio::{
     net::{ToSocketAddrs, UdpSocket},
-    select, spawn,
+    select,
     sync::{mpsc, oneshot},
     time::timeout,
 };
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 use self::event::Event;
 
@@ -28,29 +28,36 @@ pub struct Tracker {
     /// UDP Socket of the `tracker_addr`
     /// Peers announcing will send handshakes
     /// to this addr
-    // pub socket: UdpSocket,
     pub local_addr: SocketAddr,
     pub peer_addr: SocketAddr,
     pub ctx: TrackerCtx,
-    pub tx: mpsc::Sender<TrackerMsg>,
     pub rx: mpsc::Receiver<TrackerMsg>,
 }
 
 impl Default for Tracker {
     fn default() -> Self {
         let (tx, rx) = mpsc::channel::<TrackerMsg>(300);
+
+        let peer_id = Self::gen_peer_id();
+
         Self {
-            tx,
             rx,
             local_addr: "0.0.0.0:0".parse().unwrap(),
             peer_addr: "0.0.0.0:0".parse().unwrap(),
-            ctx: TrackerCtx::default(),
+            ctx: TrackerCtx {
+                tx: tx.into(),
+                peer_id,
+                tracker_addr: "".to_owned(),
+                connection_id: None,
+                local_peer_addr: "0.0.0.0:0".parse().unwrap(),
+            },
         }
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct TrackerCtx {
+    pub tx: Option<mpsc::Sender<TrackerMsg>>,
     /// Our ID for this connected Tracker
     pub peer_id: [u8; 20],
     /// UDP Socket of the `socket` in Tracker struct
@@ -63,16 +70,12 @@ pub struct TrackerCtx {
 
 impl Default for TrackerCtx {
     fn default() -> Self {
-        // Peer ids should be prefixed with "vcz".
-        let mut peer_id = [0; 20];
-        peer_id[..3].copy_from_slice(b"vcz");
-        peer_id[3..].copy_from_slice(&rand::random::<[u8; 17]>());
-
-        Self {
-            peer_id,
-            tracker_addr: "".to_owned(),
+        TrackerCtx {
             local_peer_addr: "0.0.0.0:0".parse().unwrap(),
+            peer_id: Tracker::gen_peer_id(),
+            tx: None,
             connection_id: None,
+            tracker_addr: "".to_owned(),
         }
     }
 }
@@ -105,50 +108,40 @@ impl Tracker {
         A: ToSocketAddrs + Debug + Send + Sync + 'static + std::fmt::Display + Clone,
         A::Iter: Send,
     {
-        info!("...trying to connect to {:?} trackers", trackers.len());
-
-        let (tx, mut rx) = mpsc::channel::<Tracker>(30);
+        debug!("...trying to connect to {:?} trackers", trackers.len());
 
         // Connect to all trackers, return on the first
         // successful handshake.
         for tracker_addr in trackers {
             debug!("trying to connect {tracker_addr:?}");
-            let tx = tx.clone();
 
-            spawn(async move {
-                let socket = match Self::new_udp_socket(tracker_addr.clone()).await {
-                    Ok(socket) => socket,
-                    Err(_) => {
-                        warn!("could not connect to tracker");
-                        return Ok::<(), Error>(());
-                    }
-                };
-                let (tracker_tx, tracker_rx) = mpsc::channel::<TrackerMsg>(300);
-                let mut tracker = Tracker {
-                    ctx: TrackerCtx {
-                        tracker_addr: tracker_addr.to_string(),
-                        ..Default::default()
-                    },
-                    tx: tracker_tx,
-                    rx: tracker_rx,
-                    local_addr: socket.local_addr().unwrap(),
-                    peer_addr: socket.peer_addr().unwrap(),
-                };
-                if tracker.connect_exchange(socket).await.is_ok() {
-                    info!("announced to tracker {tracker_addr}");
-                    if tx.send(tracker).await.is_err() {
-                        return Ok(());
-                    };
+            let socket = match Self::new_udp_socket(tracker_addr.clone()).await {
+                Ok(socket) => socket,
+                Err(_) => {
+                    debug!("could not connect to tracker");
+                    continue;
                 }
-                Ok(())
-            });
+            };
+            let (tracker_tx, tracker_rx) = mpsc::channel::<TrackerMsg>(300);
+            let mut tracker = Tracker {
+                ctx: TrackerCtx {
+                    tracker_addr: tracker_addr.to_string(),
+                    tx: tracker_tx.into(),
+                    peer_id: Tracker::gen_peer_id(),
+                    local_peer_addr: "0.0.0.0:0".parse().unwrap(),
+                    connection_id: None,
+                },
+                rx: tracker_rx,
+                local_addr: socket.local_addr().unwrap(),
+                peer_addr: socket.peer_addr().unwrap(),
+            };
+            if tracker.connect_exchange(socket).await.is_ok() {
+                debug!("announced to tracker {tracker_addr}");
+                return Ok(tracker);
+            }
         }
 
-        if let Some(tracker) = rx.recv().await {
-            debug!("Connected and announced to tracker {tracker:#?}");
-            return Ok(tracker);
-        }
-
+        warn!("Could not connect to any tracker");
         Err(Error::TrackerNoHosts)
     }
 
@@ -182,7 +175,7 @@ impl Tracker {
 
         let (res, _) = connect::Response::deserialize(&buf)?;
 
-        info!("received res from tracker {res:#?}");
+        debug!("received res from tracker {res:#?}");
 
         if res.transaction_id != req.transaction_id || res.action != req.action {
             warn!("response not valid!");
@@ -227,11 +220,11 @@ impl Tracker {
             Event::Started,
         );
 
-        info!("announce req {req:?}");
+        debug!("announce req {req:?}");
 
         self.ctx.local_peer_addr = local_peer_socket;
 
-        info!("local_peer_addr {:?}", self.ctx.local_peer_addr);
+        debug!("local_peer_addr {:?}", self.ctx.local_peer_addr);
 
         debug!("local ip is {}", socket.local_addr()?);
 
@@ -241,7 +234,7 @@ impl Tracker {
         // will try to connect up to 3 times
         // breaking if succesfull
         for i in 0..=2 {
-            info!("trying to send announce number {i}...");
+            debug!("trying to send announce number {i}...");
             socket.send(&req.serialize()).await?;
             match timeout(Duration::new(3, 0), socket.recv(&mut res)).await {
                 Ok(Ok(lenn)) => {
@@ -270,8 +263,8 @@ impl Tracker {
             return Err(Error::TrackerResponse);
         }
 
-        info!("* announce successful");
-        info!("res from announce {:#?}", res);
+        debug!("* announce successful");
+        debug!("res from announce {:#?}", res);
 
         let peers = Self::parse_compact_peer_list(payload, socket.peer_addr()?.is_ipv6())?;
 
@@ -325,7 +318,7 @@ impl Tracker {
             peer_list.push((ip, port).into());
         }
 
-        info!("ips of peers addrs {peer_list:#?}");
+        debug!("ips of peers addrs {peer_list:#?}");
         let peers: Vec<SocketAddr> = peer_list.into_iter().collect();
 
         Ok(peers)
@@ -339,7 +332,7 @@ impl Tracker {
         uploaded: u64,
         left: u64,
     ) -> Result<announce::Response, Error> {
-        info!("announcing {event:#?} to tracker");
+        debug!("announcing {event:#?} to tracker");
         let socket = UdpSocket::bind(self.local_addr).await?;
         socket.connect(self.peer_addr).await?;
 
@@ -386,7 +379,7 @@ impl Tracker {
 
     #[tracing::instrument(skip(self))]
     pub async fn run(&mut self) -> Result<(), Error> {
-        info!("running tracker");
+        debug!("running tracker");
         loop {
             select! {
                 Some(msg) = self.rx.recv() => {
@@ -416,19 +409,25 @@ impl Tracker {
             }
         }
     }
+    /// Peer ids should be prefixed with "vcz".
+    pub fn gen_peer_id() -> [u8; 20] {
+        let mut peer_id = [0; 20];
+        peer_id[..3].copy_from_slice(b"vcz");
+        peer_id[3..].copy_from_slice(&rand::random::<[u8; 17]>());
+        peer_id
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::tracker::TrackerCtx;
+    use super::Tracker;
 
     #[test]
     fn peer_ids_prefixed_with_vcz() {
         // Poor man's fuzzing.
+        let peer_id = Tracker::gen_peer_id();
         for _ in 0..10 {
-            assert!(TrackerCtx::default()
-                .peer_id
-                .starts_with(&[b'v', b'c', b'z']));
+            assert!(peer_id.starts_with(&[b'v', b'c', b'z']));
         }
     }
 }
