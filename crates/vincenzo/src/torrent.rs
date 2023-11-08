@@ -641,14 +641,13 @@ impl Torrent {
                     for peer in self.failed_peers.clone() {
                         let ctx = self.ctx.clone();
                         let local_peer_id = self.tracker_ctx.peer_id;
+                        debug!("reconnecting_peer {peer:?}");
 
-                        spawn(async move {
-                            if let Ok(socket) = TcpStream::connect(peer).await {
-                                Self::start_and_run_peer(ctx, socket, local_peer_id, Direction::Outbound)
-                                    .await?;
-                            }
-                            Ok::<(), Error>(())
-                        });
+                        if let Ok(socket) = TcpStream::connect(peer).await {
+                            self.failed_peers.retain(|v| *v != peer);
+                            Self::start_and_run_peer(ctx, socket, local_peer_id, Direction::Outbound)
+                                .await?;
+                        }
                     }
                 }
             }

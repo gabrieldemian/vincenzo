@@ -17,7 +17,5 @@ mod tests {
         // a.set(9, true);
         println!("a {a:#?}");
         println!("len {:#?}", a.len());
-
-        assert!(true);
     }
 }

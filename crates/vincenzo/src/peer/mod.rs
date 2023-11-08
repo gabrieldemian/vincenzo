@@ -233,7 +233,6 @@ impl Peer {
         }
     }
 
-
     /// Start the event loop of the Peer, listen to messages sent by others
     /// on the peer wire protocol.
     #[tracing::instrument(skip_all, name = "peer::run")]
@@ -426,7 +425,7 @@ impl Peer {
                             if pieces.clone().get(piece).is_none() {
                                 warn!("{local} sent Have but it's bitfield is out of bounds");
                                 warn!("initializing an empty bitfield with the len of the piece {piece}");
-                                *pieces = Bitfield::from_vec(vec![0u8; piece as usize]);
+                                *pieces = Bitfield::from_vec(vec![0u8; piece]);
                             }
 
                             pieces.set(piece, true);
@@ -507,7 +506,7 @@ impl Peer {
                                 )
                                 .await?;
 
-                                let bytes = rx.await??;
+                                let bytes = rx.await?;
 
                                 let block = Block {
                                     index,
@@ -1041,7 +1040,7 @@ impl Peer {
                 return true;
             }
         }
-        return false;
+        false
     }
 
     /// Calculate the maximum number of block infos to request,
@@ -1060,12 +1059,12 @@ impl Peer {
             debug!("has one piece, changing it to {:?}", self.extension.reqq);
             self.extension
                 .reqq
-                .unwrap_or(Session::DEFAULT_REQUEST_QUEUE_LEN) as u16
+                .unwrap_or(Session::DEFAULT_REQUEST_QUEUE_LEN)
         } else {
             // self.torrent_ctx.info.read().await.pieces() as u16
             self.extension
                 .reqq
-                .unwrap_or(Session::DEFAULT_REQUEST_QUEUE_LEN) as u16
+                .unwrap_or(Session::DEFAULT_REQUEST_QUEUE_LEN)
         };
 
         if n > 0 {

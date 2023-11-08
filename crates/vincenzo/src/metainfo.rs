@@ -87,7 +87,7 @@ impl Info {
             .unwrap();
 
             block_infos.push(BlockInfo {
-                index: (processed_bytes / self.piece_length) as u32,
+                index: (processed_bytes / self.piece_length),
                 begin: processed_bytes % self.piece_length,
                 len,
             });
