@@ -2,7 +2,6 @@ use tracing::debug;
 pub mod error;
 pub mod torrent_list;
 use futures::{stream::SplitStream, FutureExt, SinkExt, StreamExt};
-use hashbrown::HashMap;
 use tokio_util::codec::Framed;
 
 use std::{
@@ -29,7 +28,7 @@ use torrent_list::TorrentList;
 use vincenzo::{
     daemon_wire::{DaemonCodec, Message},
     error::Error,
-    torrent::{TorrentMsg, TorrentState},
+    torrent::TorrentState,
 };
 
 /// Messages used by [`UI`] for internal communication.
@@ -77,7 +76,6 @@ pub struct UI<'a> {
     pub style: AppStyle,
     pub ctx: Arc<UICtx>,
     pub torrent_list: TorrentList<'a>,
-    torrent_txs: HashMap<[u8; 20], mpsc::Sender<TorrentMsg>>,
     terminal: Terminal<CrosstermBackend<Stdout>>,
     /// If this UI process is running detached from the Daemon,
     /// in it's own process.
@@ -105,7 +103,6 @@ impl<'a> UI<'a> {
         UI {
             terminal,
             torrent_list,
-            torrent_txs: HashMap::new(),
             ctx,
             style,
             is_detached: false,
@@ -120,7 +117,7 @@ impl<'a> UI<'a> {
         fr_tx: mpsc::Sender<UIMsg>,
         mut sink: SplitStream<Framed<TcpStream, DaemonCodec>>,
     ) -> Result<(), Error> {
-        debug!("ui liste_daemon");
+        debug!("ui listen_daemon");
         loop {
             select! {
                 Some(Ok(msg)) = sink.next() => {
@@ -194,6 +191,7 @@ impl<'a> UI<'a> {
                 Some(msg) = fr_rx.recv() => {
                     match msg {
                         UIMsg::Quit => {
+                            debug!("ui received Quit");
                             self.stop(&mut sink).await?;
                             break 'outer;
                         },
@@ -205,11 +203,12 @@ impl<'a> UI<'a> {
                             self.torrent_list.draw(&mut self.terminal).await;
                         },
                         UIMsg::NewTorrent(magnet) => {
+                            debug!("ui received NewTorrent {magnet}");
                             self.new_torrent(&magnet, &mut sink).await?;
                         }
                         UIMsg::TogglePause(id) => {
-                            let tx = self.torrent_txs.get(&id).ok_or(Error::TorrentDoesNotExist)?;
-                            tx.send(TorrentMsg::TogglePause).await?;
+                            debug!("ui received TogglePause {id:?}");
+                            sink.send(Message::TogglePause(id)).await?;
                         }
                     }
                 }
@@ -236,6 +235,7 @@ impl<'a> UI<'a> {
         T: SinkExt<Message> + Sized + std::marker::Unpin,
     {
         if !self.is_detached {
+            debug!("ui sending quit to daemon");
             sink.send(Message::Quit)
                 .await
                 .map_err(|_| Error::SendErrorTcp)?;

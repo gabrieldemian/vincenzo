@@ -2,9 +2,6 @@
 //! Peers will follow this protocol to exchange information about torrents.
 pub mod messages;
 
-use std::ops::DerefMut;
-use std::time::Instant;
-
 use bytes::BufMut;
 use bytes::BytesMut;
 use tokio::io;
@@ -124,33 +121,5 @@ impl BlockInfo {
     /// data <= 16kiB.
     pub fn is_valid(&self) -> bool {
         self.len <= BLOCK_LEN && self.begin <= BLOCK_LEN && self.len > 0
-    }
-}
-
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub struct BlockInfoTime(pub Instant, pub BlockInfo);
-
-impl std::ops::Deref for BlockInfoTime {
-    type Target = BlockInfo;
-    fn deref(&self) -> &Self::Target {
-        &self.1
-    }
-}
-
-impl DerefMut for BlockInfoTime {
-    fn deref_mut(&mut self) -> &mut BlockInfo {
-        &mut self.1
-    }
-}
-
-impl From<BlockInfo> for BlockInfoTime {
-    fn from(value: BlockInfo) -> Self {
-        Self(std::time::Instant::now(), value)
-    }
-}
-
-impl From<BlockInfoTime> for BlockInfo {
-    fn from(val: BlockInfoTime) -> Self {
-        val.1
     }
 }

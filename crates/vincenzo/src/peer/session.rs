@@ -1,4 +1,6 @@
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use tokio::time::Instant;
 
 use crate::{avg::SlidingDurationAvg, counter::ThruputCounters};
 
@@ -41,7 +43,6 @@ pub struct State {
     pub peer_choking: bool,
     /// If peer is interested in us, they mean to download pieces that we have.
     pub peer_interested: bool,
-
     // when the torrent is paused, those values will be set, so we can
     // assign them again when the torrent is resumed.
     // peer interested will be calculated by parsing the peers pieces
@@ -64,21 +65,17 @@ impl Default for State {
 }
 
 /// Holds and provides facilities to modify the state of a peer session.
-#[derive(Default, Debug)]
+#[derive(Debug)]
 pub struct Session {
     /// The session state.
     pub state: State,
-
     /// Measures various transfer statistics.
     pub counters: ThruputCounters,
-
     /// Whether we're in endgame mode.
     pub in_endgame: bool,
-
     /// The target request queue size is the number of block requests we keep
     /// outstanding
     pub target_request_queue_len: u16,
-
     /// The last time some requests were sent to the peer.
     pub last_outgoing_request_time: Option<Instant>,
     /// Updated with the time of receipt of the most recently received requested
@@ -95,17 +92,44 @@ pub struct Session {
     pub avg_request_rtt: SlidingDurationAvg,
     pub request_timed_out: bool,
     pub timed_out_request_count: usize,
-
     /// The time the BitTorrent connection was established (i.e. after
     /// handshaking)
     pub connected_time: Option<Instant>,
+    /// If the torrent was fully downloaded, all peers will become seed only.
+    /// They will only seed but not download anything anymore.
+    pub seed_only: bool,
+}
+
+impl Default for Session {
+    fn default() -> Self {
+        Self {
+            state: State::default(),
+            counters: ThruputCounters::default(),
+            in_endgame: false,
+            target_request_queue_len: Session::DEFAULT_REQUEST_QUEUE_LEN,
+            connected_time: None,
+            avg_request_rtt: SlidingDurationAvg::default(),
+            request_timed_out: false,
+            timed_out_request_count: 0,
+            last_incoming_block_time: None,
+            last_outgoing_block_time: None,
+            last_outgoing_request_time: None,
+            seed_only: false,
+        }
+    }
 }
 
 impl Session {
-    /// The target request queue size is set to this value once we are able to start
-    /// downloading, unless the peer extension has the `reqq` field, in this case, we
-    /// mutate this const to it's value.
-    const START_REQUEST_QUEUE_LEN: u16 = 50;
+    /// The value of outstanding blocks for a peer.
+    ///
+    /// Before we do an extended handshake,
+    /// we do not have access to `reqq`.
+    /// And so this value is initialized with a sane default,
+    /// most clients support 250+ inflight requests.
+    ///
+    /// After the extended handshake, this value is not used
+    /// in favour of the `reqq`, if the peer has it.
+    pub const DEFAULT_REQUEST_QUEUE_LEN: u16 = 150;
 
     /// The smallest timeout value we can give a peer. Very fast peers will have
     /// an average round-trip-times, so a slight deviation would punish them
@@ -129,19 +153,6 @@ impl Session {
         // self.target_request_queue_len -= 1;
         self.timed_out_request_count += 1;
         self.request_timed_out = true;
-    }
-
-    /// Prepares for requesting blocks.
-    /// This should be called after being unchoked and becoming interested.
-    /// If the peer extension has a `reqq` field, we don't start slow_start.
-    /// And we'll use it this value as a maximum number of outstanding blocks.
-    pub fn prepare_for_download(&mut self, reqq: Option<u16>) {
-        debug_assert!(self.state.am_interested);
-        debug_assert!(!self.state.am_choking);
-
-        // reset the target request queue size, which will be adjusted as the
-        // download progresses
-        self.target_request_queue_len = reqq.unwrap_or(Self::START_REQUEST_QUEUE_LEN);
     }
 
     /// Updates various statistics around a block download.

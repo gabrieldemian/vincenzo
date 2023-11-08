@@ -6,7 +6,7 @@ permissions:
 on:
   push:
     tags:
-      - v[0-9]+.*
+      - "v[0-9]+.[0-9]+.[0-9]+"
 
 jobs:
   create-release:
@@ -21,7 +21,6 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
 
   upload-assets:
-    needs: create-release
     strategy:
       matrix:
         include:
@@ -33,10 +32,6 @@ jobs:
             os: ubuntu-latest
           - target: x86_64-apple-darwin
             os: macos-latest
-          - target: x86_64-unknown-freebsd
-            os: ubuntu-latest
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -49,8 +44,7 @@ jobs:
         with:
           # (required) Comma-separated list of binary names (non-extension portion of filename) to build and upload.
           # Note that glob pattern is not supported yet.
-          bin: vcz,vcz_ui,vczd
-          archive: vcz-$target
+          bin: vcz,vcz_daemon,vcz_ui
           # (optional) Target triple, default is host triple.
           target: ${{ matrix.target }}
           # (required) GitHub token for uploading assets to GitHub Releases.

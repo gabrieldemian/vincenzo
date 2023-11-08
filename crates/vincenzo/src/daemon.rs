@@ -4,7 +4,7 @@ use futures::{SinkExt, StreamExt};
 use hashbrown::HashMap;
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 use tokio_util::codec::Framed;
-use tracing::debug;
+use tracing::{debug, info, warn};
 
 use tokio::{
     net::{TcpListener, TcpStream},
@@ -18,10 +18,10 @@ use crate::{
     disk::{Disk, DiskMsg},
     error::Error,
     magnet::Magnet,
-    torrent::{Torrent, TorrentMsg, TorrentState},
+    torrent::{Torrent, TorrentMsg, TorrentState, TorrentStatus},
+    utils::to_human_readable,
 };
 use clap::Parser;
-use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt;
 
 /// CLI flags used by the Daemon binary. These values
 /// will take preference over values of the config file.
@@ -42,12 +42,12 @@ pub struct Args {
     pub magnet: Option<String>,
 
     /// If the program should quit after all torrents are fully downloaded
-    #[clap(long)]
+    #[clap(short, long)]
     pub quit_after_complete: bool,
 
-    /// Quit the Daemon and announce to trackers
+    /// Print all torrent status on stdout
     #[clap(short, long)]
-    pub quit: bool,
+    pub stats: bool,
 }
 
 /// The daemon is the most high-level API in all backend libs.
@@ -104,8 +104,12 @@ pub enum DaemonMsg {
     /// Ask the Daemon to send a [`TorrentState`] of the torrent with the given
     /// hash_info.
     RequestTorrentState([u8; 20], oneshot::Sender<Option<TorrentState>>),
+    /// Pause/Resume a torrent.
+    TogglePause([u8; 20]),
     /// Gracefully shutdown the Daemon
     Quit,
+    /// Print the status of all Torrents to stdout
+    PrintTorrentStatus,
 }
 
 impl Daemon {
@@ -114,26 +118,6 @@ impl Daemon {
     /// check [`Config`] for more details about the validation.
     pub fn new(download_dir: String) -> Self {
         let (tx, rx) = mpsc::channel::<DaemonMsg>(300);
-
-        let console_layer = console_subscriber::spawn();
-        let r = tracing_subscriber::registry();
-        r.with(console_layer);
-
-        let file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open("../../log.txt")
-            .expect("Failed to open log file");
-
-        tracing_subscriber::fmt()
-            .with_env_filter("tokio=trace,runtime=trace")
-            .with_max_level(tracing::Level::DEBUG)
-            .with_target(false)
-            .with_writer(file)
-            .compact()
-            .with_file(false)
-            .without_time()
-            .init();
 
         let daemon_config = DaemonConfig {
             download_dir,
@@ -179,6 +163,8 @@ impl Daemon {
 
         let ctx = self.ctx.clone();
 
+        info!("Vincenzo daemon is listening on: {}", self.config.listen);
+
         // Listen to remote TCP messages
         let handle = spawn(async move {
             loop {
@@ -192,6 +178,8 @@ impl Daemon {
             }
         });
 
+        let ctx = self.ctx.clone();
+
         // Listen to internal mpsc messages
         loop {
             select! {
@@ -202,16 +190,36 @@ impl Daemon {
 
                             torrent_states.insert(torrent_state.info_hash, torrent_state.clone());
 
+                            if self.config.quit_after_complete && torrent_states.values().all(|v| v.status == TorrentStatus::Seeding) {
+                                let _ = ctx.tx.send(DaemonMsg::Quit).await;
+                            }
+
                             drop(torrent_states);
                         }
                         DaemonMsg::NewTorrent(magnet) => {
                             let _ = self.new_torrent(magnet).await;
+                            // todo: how to imemdiately draw?
                             // Self::draw(&mut sink).await?;
+                        }
+                        DaemonMsg::TogglePause(info_hash) => {
+                            let _ = self.toggle_pause(info_hash).await;
                         }
                         DaemonMsg::RequestTorrentState(info_hash, recipient) => {
                             let torrent_states = self.ctx.torrent_states.read().await;
                             let torrent_state = torrent_states.get(&info_hash);
                             let _ = recipient.send(torrent_state.cloned());
+                        }
+                        DaemonMsg::PrintTorrentStatus => {
+                            let torrent_states = self.ctx.torrent_states.read().await;
+                            for state in torrent_states.values() {
+                                println!(
+                                    "{} {} of {}. Download rate: {}",
+                                    state.name,
+                                    to_human_readable(state.size as f64),
+                                    to_human_readable(state.downloaded as f64),
+                                    to_human_readable(state.download_rate as f64),
+                                );
+                            }
                         }
                         DaemonMsg::Quit => {
                             let _ = self.quit().await;
@@ -260,6 +268,10 @@ impl Daemon {
 
                             let _ = sink.send(Message::TorrentState(r)).await;
                         }
+                        Message::TogglePause(id) => {
+                            debug!("daemon received TogglePause {id:?}");
+                            let _ = ctx.tx.send(DaemonMsg::TogglePause(id)).await;
+                        }
                         Message::Quit => {
                             debug!("daemon received quit");
                             let _ = ctx.tx.send(DaemonMsg::Quit).await;
@@ -276,13 +288,24 @@ impl Daemon {
         }
     }
 
+    /// Pause/resume the torrent, making the download an upload stale.
+    pub async fn toggle_pause(&self, info_hash: [u8; 20]) -> Result<(), Error> {
+        let tx = self
+            .torrent_txs
+            .get(&info_hash)
+            .ok_or(Error::TorrentDoesNotExist)?;
+
+        tx.send(TorrentMsg::TogglePause).await?;
+
+        Ok(())
+    }
+
     /// Sends a Draw message to the [`UI`] with the updated state of a torrent.
     async fn draw<T>(sink: &mut T, ctx: Arc<DaemonCtx>) -> Result<(), Error>
     where
         T: SinkExt<Message> + Sized + std::marker::Unpin + Send,
     {
         let torrent_states = ctx.torrent_states.read().await;
-        debug!("daemon sending draw");
 
         for state in torrent_states.values().cloned() {
             // debug!("{state:#?}");
@@ -306,12 +329,12 @@ impl Daemon {
     ///
     /// This fn will panic if it is being called BEFORE run
     pub async fn new_torrent(&mut self, magnet: Magnet) -> Result<(), Error> {
-        debug!("new_torrent");
         let info_hash = magnet.parse_xt();
 
         let mut torrent_states = self.ctx.torrent_states.write().await;
 
         if torrent_states.get(&info_hash).is_some() {
+            warn!("This torrent is already present on the Daemon");
             return Err(Error::NoDuplicateTorrent);
         }
 
@@ -330,9 +353,11 @@ impl Daemon {
         let mut torrent = Torrent::new(disk_tx, self.ctx.tx.clone(), magnet);
 
         self.torrent_txs.insert(info_hash, torrent.ctx.tx.clone());
+        info!("Downloading {}", torrent.name);
 
         spawn(async move {
-            torrent.start_and_run(None).await.unwrap();
+            torrent.start_and_run(None).await?;
+            Ok::<(), Error>(())
         });
 
         Ok(())

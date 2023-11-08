@@ -31,9 +31,13 @@ pub enum Message {
     ///
     /// <len=1+torrent_state_len><id=2><torrent_state>
     TorrentState(Option<TorrentState>),
+    /// Pause/Resume the torrent with the given info_hash.
+    TogglePause([u8; 20]),
     /// Ask the Daemon to send a [`TorrentState`] of the torrent with the given
     /// hash_info.
     RequestTorrentState([u8; 20]),
+    /// Print the status of all Torrents to stdout
+    PrintTorrentStatus,
 }
 
 #[repr(u8)]
@@ -42,6 +46,8 @@ pub enum MessageId {
     NewTorrent = 1,
     TorrentState = 2,
     GetTorrentState = 3,
+    TogglePause = 4,
+    PrintTorrentStatus = 5,
 }
 
 impl TryFrom<u8> for MessageId {
@@ -53,6 +59,8 @@ impl TryFrom<u8> for MessageId {
             k if k == NewTorrent as u8 => Ok(NewTorrent),
             k if k == TorrentState as u8 => Ok(TorrentState),
             k if k == GetTorrentState as u8 => Ok(GetTorrentState),
+            k if k == PrintTorrentStatus as u8 => Ok(PrintTorrentStatus),
+            k if k == TogglePause as u8 => Ok(TogglePause),
             _ => Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "Unknown message id",
@@ -132,6 +140,19 @@ impl Encoder<Message> for DaemonCodec {
                 buf.put_u8(MessageId::GetTorrentState as u8);
                 buf.extend_from_slice(&info_hash);
             }
+            Message::TogglePause(info_hash) => {
+                let msg_len = 1 + info_hash.len() as u32;
+
+                buf.put_u32(msg_len);
+                buf.put_u8(MessageId::TogglePause as u8);
+                buf.extend_from_slice(&info_hash);
+            }
+            Message::PrintTorrentStatus => {
+                let msg_len = 1;
+
+                buf.put_u32(msg_len);
+                buf.put_u8(MessageId::PrintTorrentStatus as u8);
+            }
             Message::Quit => {
                 buf.put_u32(0);
             }
@@ -200,6 +221,13 @@ impl Decoder for DaemonCodec {
                 }
                 Message::TorrentState(info)
             }
+            MessageId::TogglePause => {
+                let mut payload = [0u8; 20_usize];
+                buf.copy_to_slice(&mut payload);
+
+                Message::TogglePause(payload)
+            }
+            MessageId::PrintTorrentStatus => Message::PrintTorrentStatus,
             MessageId::GetTorrentState => {
                 let mut payload = [0u8; 20_usize];
                 buf.copy_to_slice(&mut payload);
