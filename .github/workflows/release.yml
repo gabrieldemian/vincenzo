@@ -44,7 +44,7 @@ jobs:
         with:
           # (required) Comma-separated list of binary names (non-extension portion of filename) to build and upload.
           # Note that glob pattern is not supported yet.
-          bin: vcz,vcz_ui,vcz_daemon
+          bin: vcz,vcz_ui,vczd
           archive: vincenzo-$target
           # (optional) Target triple, default is host triple.
           # target: ${{ matrix.target }}
