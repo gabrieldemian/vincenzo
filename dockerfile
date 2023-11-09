@@ -9,7 +9,20 @@ LABEL maintainer="gabrielgcr45@gmail.com"
 
 # Install curl, build-essentials, and other dependencies
 RUN apt-get update && \
-    apt-get install -y curl build-essential git pkg-config libssl-dev
+    apt-get install -y \
+    curl \
+    build-essential \
+    git \
+    pkg-config \
+    libssl-dev \
+    sudo \
+    zip \
+    qemu \
+    qemu-user-static
+
+# Install Node.js
+RUN curl -fsSL https://deb.nodesource.com/setup_21.x | bash - && \
+    apt-get install -y nodejs
 
 # Install Rust using rustup
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
@@ -34,7 +47,8 @@ RUN apt-get install -y apt-transport-https ca-certificates curl software-propert
 RUN rustc --version && \
     cargo --version && \
     docker --version && \
-    gh --version
+    gh --version && \
+    node --version
 
 # Set the default command
 CMD [ "/bin/bash" ]
