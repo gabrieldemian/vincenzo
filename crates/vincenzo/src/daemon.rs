@@ -228,13 +228,27 @@ impl Daemon {
                         }
                         DaemonMsg::PrintTorrentStatus => {
                             let torrent_states = self.ctx.torrent_states.read().await;
+
+                            println!("Showing stats of {} torrents.", torrent_states.len());
+
                             for state in torrent_states.values() {
+                                let status_line: String = match state.status {
+                                    TorrentStatus::Downloading => {
+                                        format!(
+                                            "{} - {}",
+                                            to_human_readable(state.downloaded as f64),
+                                            to_human_readable(state.download_rate as f64),
+                                        )
+                                    }
+                                    _ => state.status.clone().into()
+                                };
+
                                 println!(
-                                    "{} {} of {}. Download rate: {}",
+                                    "\n{}\n{}\nSeeders {} Leechers {}\n{status_line}",
                                     state.name,
                                     to_human_readable(state.size as f64),
-                                    to_human_readable(state.downloaded as f64),
-                                    to_human_readable(state.download_rate as f64),
+                                    state.stats.seeders,
+                                    state.stats.leechers,
                                 );
                             }
                         }
@@ -272,13 +286,14 @@ impl Daemon {
                 Some(Ok(msg)) = stream.next() => {
                     match msg {
                         Message::NewTorrent(magnet_link) => {
-                            trace!("daemon received newTorrent");
+                            trace!("daemon received NewTorrent {magnet_link}");
                             let magnet = Magnet::new(&magnet_link);
                             if let Ok(magnet) = magnet {
                                 let _ = ctx.tx.send(DaemonMsg::NewTorrent(magnet)).await;
                             }
                         }
                         Message::RequestTorrentState(info_hash) => {
+                            trace!("daemon RequestTorrentState {info_hash:?}");
                             let (tx, rx) = oneshot::channel();
                             let _ = ctx.tx.send(DaemonMsg::RequestTorrentState(info_hash, tx)).await;
                             let r = rx.await?;
@@ -290,11 +305,12 @@ impl Daemon {
                             let _ = ctx.tx.send(DaemonMsg::TogglePause(id)).await;
                         }
                         Message::Quit => {
-                            trace!("daemon received quit");
+                            trace!("daemon received Quit");
                             let _ = ctx.tx.send(DaemonMsg::Quit).await;
                         }
                         Message::PrintTorrentStatus => {
-                            //
+                            trace!("daemon received PrintTorrentStatus");
+                            let _ = ctx.tx.send(DaemonMsg::PrintTorrentStatus).await;
                         }
                         _ => {}
                     }
