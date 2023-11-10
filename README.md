@@ -1,39 +1,78 @@
 # Vincenzo
-Vincenzo is a BitTorrent client with vim-like keybindings and a terminal based UI. Torrents can be downloaded using the CLI or UI.
+Vincenzo is a BitTorrent client with vim-like keybindings and a terminal based UI.
+
+[![Latest Version](https://img.shields.io/crates/v/vincenzo.svg)](https://crates.io/crates/vincenzo) ![MIT](https://img.shields.io/badge/license-MIT-blue.svg)
 
 ![image](tape.gif)
 
+## Introduction
+Vincenzo aims to be a fast, lightweight, and multi-platform client.
+
+Another goal is for users to be able to use the [library](crates/vincenzo) to create any other kind of software, that is powered by the BitTorrent protocol.
+
+The official UI binary is very niched, targeting a very specific type of user: someone who loves using the terminal, and vim keybindings. Altough users could create other UIs using the library.
+
+Vincenzo offers 3 binaries and 1 library:
+
+- [vcz](crates/vcz) - Main binary with both UI and daemon.
+- [vcz_ui](crates/vcz_ui) - UI binary.
+- [vczd](crates/vcz_daemon) - Daemon binary.
+- [vincenzo](crates/vincenzo) - Library
+
 ## Features
-- Terminal based UI <br />
-- Vim-like keybindings <br />
-- Multi-platform <br />
-- Detached Daemon for the UI <br />
-- Magnet links support <br />
-- UDP connections with trackers, TCP connections with peers <br />
-- Multithreaded. One OS thread specific for I/O <br />
-
-## Structure
-Vincenzo offers 3 binaries: one for the daemon, one for the UI, and another one
-for both. Most people will use the latter.
-
-`crates/vcz` - Main binary with both UI and Daemon. <br />
-`crates/vincenzo` - Library. <br />
-`crates/vcz_ui` - UI binary. <br />
-`crates/vcz_daemon` - Daemon binary. <br />
+- Multi-platform.
+- Multithreaded. One OS thread specific for I/O.
+- Async I/O with tokio.
+- Communication with daemon using CLI flags, TCP messages or remotely via UI binary.
+- Detached daemon from the UI.
+- Support for magnet links.
 
 ## How to use
-An example on how to download a torrent using the CLI. Please use the "--help" flag to read the descriptions of the CLI flags.
+Downloading a torrent using the main binary (the flags are optional and could be omitted in favour of the configuration file).
 
 ```bash
-vcz -d "/tmp/btr" -m "<insert magnet link here>" -q
+vcz -d "/tmp/download_dir" -m "<magnet link here>" -q
 ```
 
-## Configuration File
-During the first startup, a default configuration file is created.
-The configuration file is located at the default config folder of your OS. At the moment, the only configuration option is: `download_dir`
-Linux:   ~/.config/vincenzo/config.toml
-Windows: C:\Users\Alice\AppData\Roaming\Vincenzo\config.toml
-macOS:   /Users/Alice/Library/Application Support/Vincenzo/config.toml
+## Configuration
+The binaries read a toml config file.
+It is located at the default config folder of your OS.
+- Linux:   ~/.config/vincenzo/config.toml
+- Windows: C:\Users\Alice\AppData\Roaming\Vincenzo\config.toml
+- MacOS:   /Users/Alice/Library/Application Support/Vincenzo/config.toml
+  
+### Default config file:
+```toml
+download_dir = "/home/alice/Downloads"
+# default
+daemon_addr = "127.0.0.1:3030"
+```
+
+## Daemon and UI binaries
+Users can control the Daemon by using CLI flags that work as messages.
+
+Let's say on one terminal you initiate the daemon: `vczd`. Or spawn as a background process so you can do everything on one terminal: `vczd &`.
+
+And you open a second terminal to send messages to the daemon, add a torrent: `vczd -m "magnet:..."` and then print the stats to stdout `vczd --stats`.
+
+You can also run the UI binary (maybe remotely from another machine) to control the Daemon: `vcz_ui --daemon-addr 127.0.0.1:3030`.
+
+<details>
+<summary>CLI flags of Daemon</summary>
+  
+```
+Usage: vczd [OPTIONS]
+
+Options:
+      --daemon-addr <DAEMON_ADDR>    The Daemon will accept TCP connections on this address
+  -d, --download-dir <DOWNLOAD_DIR>  The directory in which torrents will be downloaded
+  -m, --magnet <MAGNET>              Download a torrent using it's magnet link, wrapped in quotes
+  -q, --quit-after-complete          If the program should quit after all torrents are fully downloaded
+  -s, --stats                        Print all torrent status on stdout
+  -h, --help                         Print help
+  -V, --version                      Print version
+  ```
+</details>
 
 ## Supported BEPs
 - [BEP 0003](http://www.bittorrent.org/beps/bep_0003.html) - The BitTorrent Protocol Specification
@@ -43,19 +82,19 @@ macOS:   /Users/Alice/Library/Application Support/Vincenzo/config.toml
 - [BEP 0023](http://www.bittorrent.org/beps/bep_0023.html) - Tracker Returns Compact Peer Lists
 
 ## Roadmap
-[x] - Initial version of UI. <br />
-[x] - Download pipelining. <br />
-[x] - Endgame mode. <br />
-[x] - Pause and resume torrents. <br />
-[x] - Separate main binary into 3 binaries (ui, daemon, and both). <br />
-[ ] - Use a buffered I/O strategy to reduce the number of writes on disk. <br />
-[ ] - Choking algorithm. <br />
-[ ] - Anti-snubbing. <br />
-[ ] - Resume torrent download from a file. <br />
-[ ] - Change piece selection strategy. <br />
-[ ] - Select files to download. <br />
-[ ] - Support streaming of videos/music on MPV. <br />
-[ ] - ... <br />
+- [x] Initial version of UI. <br />
+- [x] Download pipelining. <br />
+- [x] Endgame mode. <br />
+- [x] Pause and resume torrents. <br />
+- [x] Separate main binary into 3 binaries and 1 library. <br />
+- [x] Cache bytes to reduce the number of writes on disk. <br />
+- [x] Change piece selection strategy. <br />
+- [ ] Choking algorithm. <br />
+- [ ] Anti-snubbing. <br />
+- [ ] Resume torrent download from a file. <br />
+- [ ] Select files to download. <br />
+- [ ] Support streaming of videos/music on MPV. <br />
 
-## Tests
-This program is well-tested and I'm always improving the tests.
+## Donations
+I'm working on this alone, if you enjoy my work, please consider a donation [here](https://www.glombardo.dev/sponsor).
+

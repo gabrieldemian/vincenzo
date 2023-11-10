@@ -12,6 +12,7 @@ use tokio::fs::create_dir_all;
 use tokio::fs::File;
 use tokio::fs::OpenOptions;
 
+use crate::daemon::Daemon;
 use crate::error::Error;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -82,7 +83,7 @@ impl Config {
         if c.is_err() {
             let default_config = Config {
                 download_dir,
-                daemon_addr: Some("127.0.0.1:3030".parse().unwrap()),
+                daemon_addr: Some(Daemon::DEFAULT_LISTENER),
             };
 
             let config_str = toml::to_string(&default_config).unwrap();

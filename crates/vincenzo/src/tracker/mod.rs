@@ -19,7 +19,7 @@ use tokio::{
     sync::{mpsc, oneshot},
     time::timeout,
 };
-use tracing::{debug, warn};
+use tracing::{debug, warn, error};
 
 use self::event::Event;
 
@@ -102,7 +102,7 @@ impl Tracker {
     /// Bind UDP socket and send a connect handshake,
     /// to one of the trackers.
     // todo: get a new tracker if download is stale
-    #[tracing::instrument(skip(trackers))]
+    #[tracing::instrument(skip(trackers), name = "tracker::connect")]
     pub async fn connect<A>(trackers: Vec<A>) -> Result<Self, Error>
     where
         A: ToSocketAddrs + Debug + Send + Sync + 'static + std::fmt::Display + Clone,
@@ -141,7 +141,7 @@ impl Tracker {
             }
         }
 
-        warn!("Could not connect to any tracker");
+        error!("Could not connect to any tracker, all trackers rejected the connection.");
         Err(Error::TrackerNoHosts)
     }
 
@@ -178,7 +178,7 @@ impl Tracker {
         debug!("received res from tracker {res:#?}");
 
         if res.transaction_id != req.transaction_id || res.action != req.action {
-            warn!("response not valid!");
+            error!("response is not valid {res:?}");
             return Err(Error::TrackerResponse);
         }
 
