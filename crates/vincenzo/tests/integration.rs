@@ -46,9 +46,9 @@
 //     let original_hook = std::panic::take_hook();
 //
 //     let mut rng = rand::thread_rng();
-//     let name: String = (0..20).map(|_| rng.sample(Alphanumeric) as char).collect();
-//     let download_dir: String = (0..20).map(|_| rng.sample(Alphanumeric) as char).collect();
-//     let info_hash = [0u8; 20];
+//     let name: String = (0..20).map(|_| rng.sample(Alphanumeric) as
+// char).collect();     let download_dir: String = (0..20).map(|_|
+// rng.sample(Alphanumeric) as char).collect();     let info_hash = [0u8; 20];
 //     let local_peer_id = Tracker::gen_peer_id();
 //     let download_dir_2 = download_dir.clone();
 //
@@ -70,8 +70,17 @@
 //     let bytes = [3u8; 30_usize];
 //     file.write_all(&bytes).await.unwrap();
 //
-//     let magnet = format!("magnet:?xt=urn:btih:9999999999999999999999999999999999999999&amp;dn={name}&amp;tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.openbittorrent.com%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.bittor.pw%3A1337%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&amp;tr=udp%3A%2F%2Fbt.xxx-tracker.com%3A2710%2Fannounce&amp;tr=udp%3A%2F%2Fpublic.popcorn-tracker.org%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Feddie4.nl%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451%2Fannounce&amp;tr=udp%3A%2F%2Fp4p.arenabg.com%3A1337%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.tiny-vps.com%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Fopen.stealth.si%3A80%2Fannounce");
-//     let info = Info {
+//     let magnet =
+// format!("magnet:?xt=urn:btih:9999999999999999999999999999999999999999&amp;
+// dn={name}&amp;tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%2Fannounce&amp;
+// tr=udp%3A%2F%2Ftracker.openbittorrent.com%3A6969%2Fannounce&amp;tr=udp%3A%2F%
+// 2Ftracker.bittor.pw%3A1337%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.opentrackr.
+// org%3A1337&amp;tr=udp%3A%2F%2Fbt.xxx-tracker.com%3A2710%2Fannounce&amp;
+// tr=udp%3A%2F%2Fpublic.popcorn-tracker.org%3A6969%2Fannounce&amp;tr=udp%3A%2F%
+// 2Feddie4.nl%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.torrent.eu.org%
+// 3A451%2Fannounce&amp;tr=udp%3A%2F%2Fp4p.arenabg.com%3A1337%2Fannounce&amp;
+// tr=udp%3A%2F%2Ftracker.tiny-vps.com%3A6969%2Fannounce&amp;tr=udp%3A%2F%
+// 2Fopen.stealth.si%3A80%2Fannounce");     let info = Info {
 //         file_length: Some(30),
 //         name,
 //         piece_length: 15,
@@ -85,8 +94,8 @@
 //     let (disk_tx, disk_rx) = mpsc::channel::<DiskMsg>(1000);
 //     let mut disk = Disk::new(disk_rx, download_dir.clone());
 //
-//     let mut torrent = Torrent::new(disk_tx.clone(), daemon_tx.clone(), magnet.clone());
-//     torrent.stats.seeders = 1;
+//     let mut torrent = Torrent::new(disk_tx.clone(), daemon_tx.clone(),
+// magnet.clone());     torrent.stats.seeders = 1;
 //     torrent.stats.leechers = 1;
 //     torrent.size = info.get_size();
 //     torrent.have_info = true;
@@ -127,12 +136,12 @@
 //                 let local = socket.local_addr().unwrap();
 //
 //                 let (socket, handshake) =
-//                     Peer::handshake(socket, Direction::Inbound, info_hash, local_peer_id)
-//                         .await
+//                     Peer::handshake(socket, Direction::Inbound, info_hash,
+// local_peer_id)                         .await
 //                         .unwrap();
 //
-//                 let mut peer = Peer::new(remote, torrent_ctx.clone(), handshake, local);
-//                 peer.session.state.peer_choking = false;
+//                 let mut peer = Peer::new(remote, torrent_ctx.clone(),
+// handshake, local);                 peer.session.state.peer_choking = false;
 //                 peer.session.state.am_interested = false;
 //                 peer.have_info = true;
 //
@@ -141,8 +150,8 @@
 //                 let _ = peer
 //                     .torrent_ctx
 //                     .tx
-//                     .send(TorrentMsg::PeerConnected(peer.ctx.id, peer.ctx.clone()))
-//                     .await;
+//                     .send(TorrentMsg::PeerConnected(peer.ctx.id,
+// peer.ctx.clone()))                     .await;
 //
 //                 let (mut sink, mut stream) = socket.split();
 //
@@ -156,7 +165,8 @@
 //                         Some(Ok(msg)) = stream.next() => {
 //                             match msg {
 //                                 Message::Request(block) => {
-//                                     debug!("{local} received \n {block:#?} \n from {remote}");
+//                                     debug!("{local} received \n {block:#?} \n
+// from {remote}");
 //
 //                                     // only answer on the second request
 //                                     if n == 1 {
@@ -181,8 +191,8 @@
 //                                     n += 1;
 //                                 }
 //                                 Message::Bitfield(field) => {
-//                                     debug!("{local} bitfield {field:?} {remote}");
-//                                 }
+//                                     debug!("{local} bitfield {field:?}
+// {remote}");                                 }
 //                                 _ => {}
 //                             }
 //                         }
@@ -212,8 +222,8 @@
 //     let local_peer_id = Tracker::gen_peer_id();
 //
 //     let (socket, handshake) =
-//         Peer::handshake(socket, Direction::Outbound, info_hash, local_peer_id)
-//             .await
+//         Peer::handshake(socket, Direction::Outbound, info_hash,
+// local_peer_id)             .await
 //             .unwrap();
 //
 //     // do not change the pieces here,

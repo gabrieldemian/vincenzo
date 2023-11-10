@@ -73,7 +73,11 @@ pub struct PeerCodec;
 impl Encoder<Message> for PeerCodec {
     type Error = io::Error;
 
-    fn encode(&mut self, item: Message, buf: &mut BytesMut) -> Result<(), Self::Error> {
+    fn encode(
+        &mut self,
+        item: Message,
+        buf: &mut BytesMut,
+    ) -> Result<(), Self::Error> {
         match item {
             Message::KeepAlive => {
                 buf.put_u32(0);
@@ -104,9 +108,9 @@ impl Encoder<Message> for PeerCodec {
                 let msg_len = 1 + 4;
                 buf.put_u32(msg_len);
                 buf.put_u8(MessageId::Have as u8);
-                let piece_index = piece_index
-                    .try_into()
-                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+                let piece_index = piece_index.try_into().map_err(|e| {
+                    io::Error::new(io::ErrorKind::InvalidInput, e)
+                })?;
                 buf.put_u32(piece_index);
             }
             // <len=0013><id=6><index><begin><length>
@@ -117,20 +121,16 @@ impl Encoder<Message> for PeerCodec {
                 block.encode(buf)?;
             }
             Message::Piece(block) => {
-                let Block {
-                    index,
-                    begin,
-                    block,
-                } = block;
+                let Block { index, begin, block } = block;
 
                 let msg_len = 1 + 4 + 4 + block.len() as u32;
 
                 buf.put_u32(msg_len);
                 buf.put_u8(MessageId::Piece as u8);
 
-                let index = index
-                    .try_into()
-                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+                let index = index.try_into().map_err(|e| {
+                    io::Error::new(io::ErrorKind::InvalidInput, e)
+                })?;
 
                 buf.put_u32(index);
                 buf.put_u32(begin);
@@ -163,7 +163,10 @@ impl Decoder for PeerCodec {
     type Item = Message;
     type Error = io::Error;
 
-    fn decode(&mut self, buf: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
+    fn decode(
+        &mut self,
+        buf: &mut BytesMut,
+    ) -> Result<Option<Self::Item>, Self::Error> {
         // the message length header must be present at the minimum, otherwise
         // we can't determine the message type
         if buf.remaining() < 4 {
@@ -235,11 +238,7 @@ impl Decoder for PeerCodec {
                 let mut block = vec![0; msg_len - 9];
                 buf.copy_to_slice(&mut block);
 
-                Message::Piece(Block {
-                    index,
-                    begin,
-                    block,
-                })
+                Message::Piece(Block { index, begin, block })
             }
             // <len=0013><id=8><index><begin><length>
             MessageId::Cancel => {
@@ -280,14 +279,13 @@ pub struct HandshakeCodec;
 impl Encoder<Handshake> for HandshakeCodec {
     type Error = io::Error;
 
-    fn encode(&mut self, handshake: Handshake, buf: &mut BytesMut) -> io::Result<()> {
-        let Handshake {
-            pstr_len,
-            pstr,
-            reserved,
-            info_hash,
-            peer_id,
-        } = handshake;
+    fn encode(
+        &mut self,
+        handshake: Handshake,
+        buf: &mut BytesMut,
+    ) -> io::Result<()> {
+        let Handshake { pstr_len, pstr, reserved, info_hash, peer_id } =
+            handshake;
 
         // protocol length prefix
         debug_assert_eq!(pstr_len, 19);
@@ -364,10 +362,11 @@ impl Decoder for HandshakeCodec {
 
 /// pstrlen = 19
 /// pstr = "BitTorrent protocol"
-/// This is the very first message exchanged. If the peer's protocol string (`BitTorrent
-/// protocol`) or the info hash differs from ours, the connection is severed. The
-/// reserved field is 8 zero bytes, but will later be used to set which extensions
-/// the peer supports. The peer id is usually the client name and version.
+/// This is the very first message exchanged. If the peer's protocol string
+/// (`BitTorrent protocol`) or the info hash differs from ours, the connection
+/// is severed. The reserved field is 8 zero bytes, but will later be used to
+/// set which extensions the peer supports. The peer id is usually the client
+/// name and version.
 #[derive(Clone, Debug, Writable, Readable)]
 pub struct Handshake {
     pub pstr_len: u8,
@@ -404,7 +403,8 @@ impl Handshake {
         Ok(buf)
     }
     pub fn deserialize(buf: &[u8]) -> Result<Self, Error> {
-        Self::read_from_buffer_with_ctx(BigEndian {}, buf).map_err(Error::SpeedyError)
+        Self::read_from_buffer_with_ctx(BigEndian {}, buf)
+            .map_err(Error::SpeedyError)
     }
     pub fn validate(&self, target: &Self) -> bool {
         if target.peer_id.len() != 20 {
@@ -531,11 +531,7 @@ mod tests {
     #[test]
     fn piece() {
         let mut buf = BytesMut::new();
-        let msg = Message::Piece(Block {
-            index: 0,
-            begin: 0,
-            block: vec![0],
-        });
+        let msg = Message::Piece(Block { index: 0, begin: 0, block: vec![0] });
         PeerCodec.encode(msg.clone(), &mut buf).unwrap();
 
         // len
@@ -576,13 +572,15 @@ mod tests {
         assert_eq!(our_handshake.peer_id, peer_id);
         assert_eq!(our_handshake.info_hash, info_hash);
 
-        let our_handshake = Handshake::new(info_hash, peer_id).serialize().unwrap();
+        let our_handshake =
+            Handshake::new(info_hash, peer_id).serialize().unwrap();
         assert_eq!(
             our_handshake,
             [
-                19, 66, 105, 116, 84, 111, 114, 114, 101, 110, 116, 32, 112, 114, 111, 116, 111,
-                99, 111, 108, 0, 0, 0, 0, 0, 16, 0, 0, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
-                5, 5, 5, 5, 5, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7
+                19, 66, 105, 116, 84, 111, 114, 114, 101, 110, 116, 32, 112,
+                114, 111, 116, 111, 99, 111, 108, 0, 0, 0, 0, 0, 16, 0, 0, 5,
+                5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 7, 7,
+                7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7
             ]
         );
     }
@@ -665,42 +663,42 @@ mod tests {
 // Bitfield
 // <len=0001+X><id=5><bitfield>
 // Only ever sent as the first message after the handshake. The payload of this
-// message is a bitfield whose indices represent the file pieces in the torrent and
-// is used to tell the other peer which pieces the sender has available (each
-// available piece's bitfield value is 1). Byte 0 corresponds to indices 0-7, from
-// most significant bit to least significant bit, respectively, byte 1 corresponds
-// to indices 8-15, and so on. E.g. given the first byte `0b1100'0001` in the
-// bitfield means we have pieces 0, 1, and 7.
+// message is a bitfield whose indices represent the file pieces in the torrent
+// and is used to tell the other peer which pieces the sender has available
+// (each available piece's bitfield value is 1). Byte 0 corresponds to indices
+// 0-7, from most significant bit to least significant bit, respectively, byte 1
+// corresponds to indices 8-15, and so on. E.g. given the first byte
+// `0b1100'0001` in the bitfield means we have pieces 0, 1, and 7.
 //
 // If a peer doesn't have any pieces downloaded, they need not send
 // this message.
 
 // Request
 // <len=0013><id=6><index><begin><length>
-// This message is sent when a downloader requests a chunk of a file piece from its
-// peer. It specifies the piece index, the offset into that piece, and the length
-// of the block. As noted above, due to nearly all clients in the wild reject
-// requests that are not 16 KiB, we can assume the length field to always be 16
-// KiB.
+// This message is sent when a downloader requests a chunk of a file piece from
+// its peer. It specifies the piece index, the offset into that piece, and the
+// length of the block. As noted above, due to nearly all clients in the wild
+// reject requests that are not 16 KiB, we can assume the length field to always
+// be 16 KiB.
 //
 // Whether we should also reject requests for different values is an
 // open-ended question, as only allowing 16 KiB blocks allows for certain
 // optimizations.
 // <len=0009+X><id=7><index><begin><block>
-// `piece` messages are the responses to `request` messages, containing the request
-// block's payload. It is possible for an unexpected piece to arrive if choke and
-// unchoke messages are sent in quick succession, if transfer is going slowly, or
-// both.
+// `piece` messages are the responses to `request` messages, containing the
+// request block's payload. It is possible for an unexpected piece to arrive if
+// choke and unchoke messages are sent in quick succession, if transfer is going
+// slowly, or both.
 
 // Cancel
 // <len=0013><id=8><index><begin><length>
-// Used to cancel an outstanding download request. Generally used towards the end
-// of a download in `endgame mode`.
+// Used to cancel an outstanding download request. Generally used towards the
+// end of a download in `endgame mode`.
 //
-// When a download is almost complete, there's a tendency for the last few pieces
-// to all be downloaded off a single hosed modem line, taking a very long time. To
-// make sure the last few pieces come in quickly, once requests for all pieces a
-// given downloader doesn't have yet are currently pending, it sends requests for
-// everything to everyone it's downloading from. To keep this from becoming
-// horribly inefficient, it sends cancels to everyone else every time a piece
-// arrives.
+// When a download is almost complete, there's a tendency for the last few
+// pieces to all be downloaded off a single hosed modem line, taking a very long
+// time. To make sure the last few pieces come in quickly, once requests for all
+// pieces a given downloader doesn't have yet are currently pending, it sends
+// requests for everything to everyone it's downloading from. To keep this from
+// becoming horribly inefficient, it sends cancels to everyone else every time a
+// piece arrives.

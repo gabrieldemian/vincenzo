@@ -3,27 +3,17 @@
 use futures::{SinkExt, StreamExt};
 use hashbrown::HashMap;
 use std::{
-    net::{IpAddr, Ipv4Addr, SocketAddr},
-    sync::Arc,
-    time::Duration,
+    net::{IpAddr, Ipv4Addr, SocketAddr}, sync::Arc, time::Duration
 };
 use tokio_util::codec::Framed;
 use tracing::{error, info, trace, warn};
 
 use tokio::{
-    net::{TcpListener, TcpStream},
-    select, spawn,
-    sync::{mpsc, oneshot, RwLock},
-    time::interval,
+    net::{TcpListener, TcpStream}, select, spawn, sync::{mpsc, oneshot, RwLock}, time::interval
 };
 
 use crate::{
-    daemon_wire::{DaemonCodec, Message},
-    disk::{Disk, DiskMsg},
-    error::Error,
-    magnet::Magnet,
-    torrent::{Torrent, TorrentMsg, TorrentState, TorrentStatus},
-    utils::to_human_readable,
+    daemon_wire::{DaemonCodec, Message}, disk::{Disk, DiskMsg}, error::Error, magnet::Magnet, torrent::{Torrent, TorrentMsg, TorrentState, TorrentStatus}, utils::to_human_readable
 };
 use clap::Parser;
 
@@ -120,9 +110,7 @@ impl Daemon {
     pub const DEFAULT_LISTENER: SocketAddr =
         SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 3030);
 
-    /// Tries to create a Daemon struct.
-    /// Can error if the configuration validation fails,
-    /// check [`Config`] for more details about the validation.
+    /// Initialize the Daemon struct with the default [`DaemonConfig`].
     pub fn new(download_dir: String) -> Self {
         let (tx, rx) = mpsc::channel::<DaemonMsg>(300);
 

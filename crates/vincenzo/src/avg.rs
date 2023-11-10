@@ -14,26 +14,28 @@ use std::{convert::TryInto, time::Duration};
 /// inverted gain is reached.  This way, even early samples have a reasonable
 /// impact on the average, which is important in a torrent app.
 ///
-/// Ported from libtorrent: https://blog.libtorrent.org/2014/09/running-averages/
+/// Ported from libtorrent: `<https://blog.libtorrent.org/2014/09/running-averages>``
 #[derive(Debug)]
 pub struct SlidingAvg {
     /// The current running average, effectively the mean.
     ///
     /// This is a fixed-point value. The sample is multiplied by 64 before
-    /// adding it. When the mean is returned, 32 is added and the sum is divided
-    /// back by 64, to eliminate integer truncation that would result in a bias.
-    /// Fixed-point calculation is used as the alternative is using floats which
-    /// is slower as well as more cumbersome to perform conversions on (the main
-    /// use case is with integers).
+    /// adding it. When the mean is returned, 32 is added and the sum is
+    /// divided back by 64, to eliminate integer truncation that would
+    /// result in a bias. Fixed-point calculation is used as the
+    /// alternative is using floats which is slower as well as more
+    /// cumbersome to perform conversions on (the main use case is with
+    /// integers).
     mean: i64,
     /// The average deviation.
     ///
     /// This is a fixed-point value. The sample is multiplied by 64 before
-    /// adding it. When the mean is returned, 32 is added and the sum is divided
-    /// back by 64, to eliminate integer truncation that would result in a bias.
-    /// Fixed-point calculation is used as the alternative is using floats which
-    /// is slower as well as more cumbersome to perform conversions on (the main
-    /// use case is with integers).
+    /// adding it. When the mean is returned, 32 is added and the sum is
+    /// divided back by 64, to eliminate integer truncation that would
+    /// result in a bias. Fixed-point calculation is used as the
+    /// alternative is using floats which is slower as well as more
+    /// cumbersome to perform conversions on (the main use case is with
+    /// integers).
     deviation: i64,
     /// The number of samples received, but no more than `inverted_gain`.
     sample_count: usize,
@@ -45,23 +47,15 @@ pub struct SlidingAvg {
 
 impl SlidingAvg {
     pub fn new(inverted_gain: usize) -> Self {
-        Self {
-            mean: 0,
-            deviation: 0,
-            sample_count: 0,
-            inverted_gain,
-        }
+        Self { mean: 0, deviation: 0, sample_count: 0, inverted_gain }
     }
 
     pub fn update(&mut self, mut sample: i64) {
         // see comment in `Self::mean`
         sample *= 64;
 
-        let deviation = if self.sample_count > 0 {
-            (self.mean - sample).abs()
-        } else {
-            0
-        };
+        let deviation =
+            if self.sample_count > 0 { (self.mean - sample).abs() } else { 0 };
 
         if self.sample_count < self.inverted_gain {
             self.sample_count += 1;
@@ -70,7 +64,8 @@ impl SlidingAvg {
         self.mean += (sample - self.mean) / self.sample_count as i64;
 
         if self.sample_count > 1 {
-            self.deviation += (deviation - self.deviation) / (self.sample_count - 1) as i64;
+            self.deviation +=
+                (deviation - self.deviation) / (self.sample_count - 1) as i64;
         }
     }
 

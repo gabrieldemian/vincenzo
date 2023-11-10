@@ -5,9 +5,7 @@ use tokio_util::codec::Framed;
 use tracing::Level;
 use tracing_subscriber::FmtSubscriber;
 use vincenzo::{
-    config::Config,
-    daemon::{Args, Daemon},
-    daemon_wire::{DaemonCodec, Message},
+    config::Config, daemon::{Args, Daemon}, daemon_wire::{DaemonCodec, Message}
 };
 mod args;
 
@@ -23,9 +21,10 @@ async fn main() {
         listen = args.daemon_addr;
     }
 
-    let is_daemon_running = TcpListener::bind(listen.unwrap_or(Daemon::DEFAULT_LISTENER))
-        .await
-        .is_err();
+    let is_daemon_running =
+        TcpListener::bind(listen.unwrap_or(Daemon::DEFAULT_LISTENER))
+            .await
+            .is_err();
 
     // if the daemon is not running, run it
     if !is_daemon_running {

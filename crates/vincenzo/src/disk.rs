@@ -1,36 +1,28 @@
 //! Disk is responsible for file I/O of all Torrents.
 use std::{
-    collections::VecDeque,
-    io::SeekFrom,
-    path::{Path, PathBuf},
-    sync::Arc,
+    collections::VecDeque, io::SeekFrom, path::{Path, PathBuf}, sync::Arc
 };
 
 use hashbrown::HashMap;
 use rand::seq::SliceRandom;
 use tokio::{
-    fs::{create_dir_all, File, OpenOptions},
-    io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
-    sync::{mpsc::Receiver, oneshot::Sender},
+    fs::{create_dir_all, File, OpenOptions}, io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt}, sync::{mpsc::Receiver, oneshot::Sender}
 };
 use tracing::{debug, warn};
 
 use crate::{
-    error::Error,
-    metainfo,
-    peer::{PeerCtx, PeerMsg},
-    tcp_wire::{Block, BlockInfo},
-    torrent::{TorrentCtx, TorrentMsg},
+    error::Error, metainfo, peer::{PeerCtx, PeerMsg}, tcp_wire::{Block, BlockInfo}, torrent::{TorrentCtx, TorrentMsg}
 };
 
 #[derive(Debug)]
 pub enum DiskMsg {
-    /// After the client downloaded the Info from peers, this message will be sent,
-    /// to create the skeleton of the torrent on disk (empty files and folders),
-    /// and to add the torrent ctx.
+    /// After the client downloaded the Info from peers, this message will be
+    /// sent, to create the skeleton of the torrent on disk (empty files
+    /// and folders), and to add the torrent ctx.
     NewTorrent(Arc<TorrentCtx>),
-    /// The Peer does not have an ID until the handshake (that is why it's an option), when that happens,
-    /// this message will be sent immediately to add the peer context.
+    /// The Peer does not have an ID until the handshake (that is why it's an
+    /// option), when that happens, this message will be sent immediately
+    /// to add the peer context.
     NewPeer(Arc<PeerCtx>),
     ReadBlock {
         info_hash: [u8; 20],
@@ -53,22 +45,23 @@ pub enum DiskMsg {
         info_hash: [u8; 20],
         block: Block,
     },
-    /// Request block infos that the peer has, that we do not have ir nor requested it.
+    /// Request block infos that the peer has, that we do not have ir nor
+    /// requested it.
     RequestBlocks {
         info_hash: [u8; 20],
         peer_id: [u8; 20],
         recipient: Sender<VecDeque<BlockInfo>>,
         qnt: usize,
     },
-    /// When a peer is Choked, or receives an error and must close the connection,
-    /// the outgoing/pending blocks of this peer must be appended back
-    /// to the list of available block_infos.
+    /// When a peer is Choked, or receives an error and must close the
+    /// connection, the outgoing/pending blocks of this peer must be
+    /// appended back to the list of available block_infos.
     ReturnBlockInfos([u8; 20], VecDeque<BlockInfo>),
     Quit,
 }
 
 /// The algorithm that determines how pieces are downloaded.
-/// The recommended is [Random]. But [Sequential] is used for streaming.
+/// The recommended is Random. But Sequential is used for streaming.
 ///
 /// The default algorithm to use is random-first until we have
 /// a complete piece, after that, we switch to rarest-first.
@@ -162,11 +155,7 @@ impl Disk {
                     debug!("NewTorrent");
                     let _ = self.new_torrent(torrent).await;
                 }
-                DiskMsg::ReadBlock {
-                    block_info,
-                    recipient,
-                    info_hash,
-                } => {
+                DiskMsg::ReadBlock { block_info, recipient, info_hash } => {
                     debug!("ReadBlock");
 
                     let len = block_info.len;
@@ -201,11 +190,7 @@ impl Disk {
                     debug!("disk sending {}", infos.len());
                     let _ = recipient.send(infos);
                 }
-                DiskMsg::ValidatePiece {
-                    info_hash,
-                    recipient,
-                    piece,
-                } => {
+                DiskMsg::ValidatePiece { info_hash, recipient, piece } => {
                     debug!("ValidatePiece");
                     let r = self.validate_piece(info_hash, piece).await;
                     let _ = recipient.send(r);
@@ -244,7 +229,10 @@ impl Disk {
     /// # Important
     /// Must only be called after torrent has Info downloaded
     #[tracing::instrument(skip(self, torrent_ctx), name = "new_torrent")]
-    pub async fn new_torrent(&mut self, torrent_ctx: Arc<TorrentCtx>) -> Result<(), Error> {
+    pub async fn new_torrent(
+        &mut self,
+        torrent_ctx: Arc<TorrentCtx>,
+    ) -> Result<(), Error> {
         let info_hash = torrent_ctx.info_hash;
         debug!("new_torrent {info_hash:?}");
 
@@ -262,10 +250,8 @@ impl Disk {
             debug!("info.files {files:?}");
 
             for f in files {
-                disk_files.push(DiskFile {
-                    path: f.path.clone(),
-                    length: counter,
-                });
+                disk_files
+                    .push(DiskFile { path: f.path.clone(), length: counter });
                 counter += f.length as u64;
             }
         } else {
@@ -314,8 +300,7 @@ impl Disk {
 
         let pieces_len = info.pieces();
 
-        self.piece_strategy
-            .insert(info_hash, PieceStrategy::default());
+        self.piece_strategy.insert(info_hash, PieceStrategy::default());
         let piece_order = self.piece_strategy.get(&info_hash).cloned().unwrap();
 
         let mut r: Vec<u32> = (0..pieces_len).collect();
@@ -326,7 +311,8 @@ impl Disk {
         }
 
         // each index of Vec is a piece index, that is a VecDeque of blocks
-        let mut pieces_blocks: Vec<VecDeque<BlockInfo>> = Vec::with_capacity(r.len());
+        let mut pieces_blocks: Vec<VecDeque<BlockInfo>> =
+            Vec::with_capacity(r.len());
         debug!("self.pieces {:?}", r);
         self.pieces.insert(info_hash, r);
 
@@ -361,7 +347,10 @@ impl Disk {
     }
 
     /// Add a new peer to `peer_ctxs`.
-    pub async fn new_peer(&mut self, peer_ctx: Arc<PeerCtx>) -> Result<(), Error> {
+    pub async fn new_peer(
+        &mut self,
+        peer_ctx: Arc<PeerCtx>,
+    ) -> Result<(), Error> {
         self.peer_ctxs.insert(peer_ctx.id, peer_ctx);
         Ok(())
     }
@@ -374,8 +363,13 @@ impl Disk {
     /// - the local peer (client) doesn't have the piece downloaded.
     ///
     /// # Return
-    /// if `Disk` does not have the peer_ctx of the given peer_id, it will return None.
-    async fn next_piece(&self, info_hash: [u8; 20], peer_id: [u8; 20]) -> Option<(usize, u32)> {
+    /// if `Disk` does not have the peer_ctx of the given peer_id, it will
+    /// return None.
+    async fn next_piece(
+        &self,
+        info_hash: [u8; 20],
+        peer_id: [u8; 20],
+    ) -> Option<(usize, u32)> {
         let peer_ctx = self.peer_ctxs.get(&peer_id);
         peer_ctx?;
         let peer_pieces = peer_ctx.unwrap().pieces.read().await;
@@ -389,7 +383,8 @@ impl Disk {
                 if let Some(has_piece) = peer_pieces.get(**piece as usize) {
                     if *has_piece
                         && *downloaded_pieces.get(**piece as usize).unwrap()
-                            < self.piece_size(info_hash, **piece as usize) as u64
+                            < self.piece_size(info_hash, **piece as usize)
+                                as u64
                     {
                         return true;
                     }
@@ -434,7 +429,8 @@ impl Disk {
 
         // traverse pieces of the peers
         for ctx in peer_ctxs {
-            let pieces = ctx.pieces.read().await.clone().into_iter().enumerate();
+            let pieces =
+                ctx.pieces.read().await.clone().into_iter().enumerate();
             for (i, item) in pieces {
                 // increment each occurence of a piece
                 if item {
@@ -486,14 +482,21 @@ impl Disk {
             let next_piece = self.next_piece(info_hash, peer_id).await;
 
             if let Some(piece) = next_piece {
-                let pieces_blocks = self.pieces_blocks.get_mut(&info_hash).unwrap();
+                let pieces_blocks =
+                    self.pieces_blocks.get_mut(&info_hash).unwrap();
                 let blocks = pieces_blocks.get_mut(piece.1 as usize);
 
                 if let Some(blocks) = blocks {
                     if blocks.is_empty() {
-                        debug!("piece {} is empty, removing by index {}", piece.1, piece.0);
+                        debug!(
+                            "piece {} is empty, removing by index {}",
+                            piece.1, piece.0
+                        );
                         // pieces_blocks.remove(piece.1 as usize);
-                        self.pieces.get_mut(&info_hash).unwrap().remove(piece.0);
+                        self.pieces
+                            .get_mut(&info_hash)
+                            .unwrap()
+                            .remove(piece.0);
                     }
                     // how many blocks are left to request
                     let left = qnt - result.len();
@@ -523,7 +526,9 @@ impl Disk {
             .create(true)
             .open(&path)
             .await
-            .map_err(|_| Error::FileOpenError(path.to_str().unwrap().to_owned()))
+            .map_err(|_| {
+                Error::FileOpenError(path.to_str().unwrap().to_owned())
+            })
     }
 
     pub async fn read_block(
@@ -531,9 +536,8 @@ impl Disk {
         info_hash: [u8; 20],
         block_info: BlockInfo,
     ) -> Result<Vec<u8>, Error> {
-        let mut file = self
-            .get_file_from_block_info(&block_info, info_hash)
-            .await?;
+        let mut file =
+            self.get_file_from_block_info(&block_info, info_hash).await?;
 
         // how many bytes to read, after offset (begin)
         let mut buf = vec![0; block_info.len as usize];
@@ -551,13 +555,18 @@ impl Disk {
     /// It is only after all blocks of the piece has been downloaded on `cache`,
     /// that the function will write all the bytes into disk.
     ///
-    /// Whenever a full piece is downloaded, this function will call `validate_piece`
-    /// to validate the full piece hash.
+    /// Whenever a full piece is downloaded, this function will call
+    /// `validate_piece` to validate the full piece hash.
     ///
-    /// If the download algorithm of the pieces is set to "Random", and this function
-    /// has downloaded it's first full piece, it will change the algorithm to rarest-first.
+    /// If the download algorithm of the pieces is set to "Random", and this
+    /// function has downloaded it's first full piece, it will change the
+    /// algorithm to rarest-first.
     #[tracing::instrument(skip(self, block))]
-    pub async fn write_block(&mut self, info_hash: [u8; 20], block: Block) -> Result<(), Error> {
+    pub async fn write_block(
+        &mut self,
+        info_hash: [u8; 20],
+        block: Block,
+    ) -> Result<(), Error> {
         // Write the block's data to the correct position in the file
         let len = block.block.len();
         let index = block.index;
@@ -570,14 +579,12 @@ impl Disk {
 
         let torrent_tx = torrent_ctx.tx.clone();
 
-        self.cache
-            .get_mut(&info_hash)
-            .ok_or(Error::TorrentDoesNotExist)?[index]
+        self.cache.get_mut(&info_hash).ok_or(Error::TorrentDoesNotExist)?
+            [index]
             .push(block);
 
-        let _ = torrent_tx
-            .send(TorrentMsg::IncrementDownloaded(len as u32))
-            .await;
+        let _ =
+            torrent_tx.send(TorrentMsg::IncrementDownloaded(len as u32)).await;
 
         let downloaded_piece_bytes = self
             .downloaded_pieces
@@ -619,7 +626,9 @@ impl Disk {
                     let mut bitfield = torrent_ctx.bitfield.write().await;
                     bitfield.set(index, true);
 
-                    let _ = torrent_tx.send(TorrentMsg::DownloadedPiece(index)).await;
+                    let _ = torrent_tx
+                        .send(TorrentMsg::DownloadedPiece(index))
+                        .await;
                 }
                 Err(_) => {
                     warn!("Piece {index} is corrupted.");
@@ -649,15 +658,14 @@ impl Disk {
         block_info: &BlockInfo,
         info_hash: [u8; 20],
     ) -> Result<(File, metainfo::File), Error> {
-        let torrent = self
-            .torrent_ctxs
-            .get(&info_hash)
-            .ok_or(Error::InfoHashInvalid)?;
+        let torrent =
+            self.torrent_ctxs.get(&info_hash).ok_or(Error::InfoHashInvalid)?;
 
         let info = torrent.info.read().await;
 
-        let absolute_offset =
-            block_info.index as u64 * info.piece_length as u64 + block_info.begin as u64;
+        let absolute_offset = block_info.index as u64
+            * info.piece_length as u64
+            + block_info.begin as u64;
 
         let mut path = self.base_path(info_hash);
 
@@ -665,12 +673,15 @@ impl Disk {
             let mut accumulated_length = 0_u64;
 
             for file_info in files.iter() {
-                if accumulated_length + file_info.length as u64 > absolute_offset {
+                if accumulated_length + file_info.length as u64
+                    > absolute_offset
+                {
                     path.extend(&file_info.path);
 
                     let mut file = Self::open_file(&path).await?;
 
-                    let file_relative_offset = absolute_offset - accumulated_length;
+                    let file_relative_offset =
+                        absolute_offset - accumulated_length;
 
                     file.seek(SeekFrom::Start(file_relative_offset)).await?;
 
@@ -700,10 +711,8 @@ impl Disk {
         piece: u32,
         info_hash: [u8; 20],
     ) -> Result<metainfo::File, Error> {
-        let torrent = self
-            .torrent_ctxs
-            .get(&info_hash)
-            .ok_or(Error::InfoHashInvalid)?;
+        let torrent =
+            self.torrent_ctxs.get(&info_hash).ok_or(Error::InfoHashInvalid)?;
 
         let info = torrent.info.read().await;
         let piece_len = info.piece_length;
@@ -740,7 +749,8 @@ impl Disk {
     ) -> Result<Block, Error> {
         // todo: try to get the block from cache first,
         // if not in cache, read from disk.
-        let mut file = self.get_file_from_block_info(block_info, info_hash).await?;
+        let mut file =
+            self.get_file_from_block_info(block_info, info_hash).await?;
 
         let mut buf = vec![0; block_info.len as usize];
 
@@ -761,7 +771,11 @@ impl Disk {
     /// The function will get the blocks in cache,
     /// if the cache was cleared, the function will not work.
     #[tracing::instrument(skip(self, info_hash))]
-    pub async fn validate_piece(&self, info_hash: [u8; 20], index: usize) -> Result<(), Error> {
+    pub async fn validate_piece(
+        &self,
+        info_hash: [u8; 20],
+        index: usize,
+    ) -> Result<(), Error> {
         let b = index * 20;
         let e = b + 20;
 
@@ -778,7 +792,8 @@ impl Disk {
 
         let mut hash = sha1_smol::Sha1::new();
 
-        let mut blocks: Vec<Block> = self.cache.get(&info_hash).unwrap()[index].clone();
+        let mut blocks: Vec<Block> =
+            self.cache.get(&info_hash).unwrap()[index].clone();
         blocks.sort();
 
         for block in &blocks {
@@ -796,10 +811,13 @@ impl Disk {
 
     /// Write all cached blocks of `piece` to disk.
     /// It will free the blocks in the cache.
-    async fn write_pieces(&mut self, info_hash: [u8; 20], piece: usize) -> Result<(), Error> {
-        let mut blocks: Vec<Block> = self.cache.get_mut(&info_hash).unwrap()[piece]
-            .drain(..)
-            .collect();
+    async fn write_pieces(
+        &mut self,
+        info_hash: [u8; 20],
+        piece: usize,
+    ) -> Result<(), Error> {
+        let mut blocks: Vec<Block> =
+            self.cache.get_mut(&info_hash).unwrap()[piece].drain(..).collect();
 
         blocks.sort();
 
@@ -819,9 +837,8 @@ impl Disk {
             };
 
             // get the file path of this block
-            let (mut _file, mt_file) = self
-                .get_file_from_block_info(&block_info, info_hash)
-                .await?;
+            let (mut _file, mt_file) =
+                self.get_file_from_block_info(&block_info, info_hash).await?;
 
             let mut file_path = PathBuf::new();
             file_path.extend(mt_file.path);
@@ -857,11 +874,13 @@ impl Disk {
 
             let file_offset = if acc_length <= piece_offset {
                 // The piece starts within this file or a previous file,
-                // subtract the accumulated length of previous files from piece offset.
+                // subtract the accumulated length of previous files from piece
+                // offset.
                 piece_offset - acc_length
             } else {
-                // The piece starts within this file and we are within the piece,
-                // calculate the offset from the start of this file.
+                // The piece starts within this file and we are within the
+                // piece, calculate the offset from the start of
+                // this file.
                 0
             };
 
@@ -905,12 +924,7 @@ mod tests {
     use rand::{distributions::Alphanumeric, Rng};
 
     use crate::{
-        bitfield::Bitfield,
-        daemon::DaemonMsg,
-        magnet::Magnet,
-        metainfo::{self, Info},
-        tcp_wire::{Block, BLOCK_LEN},
-        torrent::Torrent,
+        bitfield::Bitfield, daemon::DaemonMsg, magnet::Magnet, metainfo::{self, Info}, tcp_wire::{Block, BLOCK_LEN}, torrent::Torrent
     };
 
     use super::*;
@@ -932,7 +946,8 @@ mod tests {
         let torrent_ctx = torrent.ctx.clone();
 
         let mut rng = rand::thread_rng();
-        let download_dir: String = (0..20).map(|_| rng.sample(Alphanumeric) as char).collect();
+        let download_dir: String =
+            (0..20).map(|_| rng.sample(Alphanumeric) as char).collect();
 
         let dd = download_dir.clone();
         std::panic::set_hook(Box::new(move |panic| {
@@ -958,13 +973,16 @@ mod tests {
                 },
                 metainfo::File {
                     length: BLOCK_LEN * 2,
-                    path: vec!["bar".to_owned(), "buzz".to_owned(), "bee.txt".to_owned()],
+                    path: vec![
+                        "bar".to_owned(),
+                        "buzz".to_owned(),
+                        "bee.txt".to_owned(),
+                    ],
                 },
             ]),
         };
 
-        disk.torrent_ctxs
-            .insert(torrent_ctx.info_hash, torrent_ctx.clone());
+        disk.torrent_ctxs.insert(torrent_ctx.info_hash, torrent_ctx.clone());
 
         let mut info_ctx = torrent.ctx.info.write().await;
         *info_ctx = info.clone();
@@ -996,7 +1014,8 @@ mod tests {
 
         assert!(Path::new(&format!("{download_dir}/bla/foo.txt")).is_file());
         assert!(Path::new(&format!("{download_dir}/bla/bar/baz.txt")).is_file());
-        assert!(Path::new(&format!("{download_dir}/bla/bar/buzz/bee.txt")).is_file());
+        assert!(Path::new(&format!("{download_dir}/bla/bar/buzz/bee.txt"))
+            .is_file());
 
         tokio::fs::remove_dir_all(download_dir).await.unwrap();
     }
@@ -1008,7 +1027,8 @@ mod tests {
         //
         let original_hook = std::panic::take_hook();
         let mut rng = rand::thread_rng();
-        let download_dir: String = (0..20).map(|_| rng.sample(Alphanumeric) as char).collect();
+        let download_dir: String =
+            (0..20).map(|_| rng.sample(Alphanumeric) as char).collect();
         let name = "name_of_torrent_folder".to_owned();
         let file_a = "file_a";
         let file_b = "file_b";
@@ -1034,10 +1054,7 @@ mod tests {
                     length: 8281625,
                     path: vec![file_b.to_owned()],
                 },
-                metainfo::File {
-                    length: 46,
-                    path: vec![file_c.to_owned()],
-                },
+                metainfo::File { length: 46, path: vec![file_c.to_owned()] },
             ]),
         };
 
@@ -1068,19 +1085,12 @@ mod tests {
 
             let mut fs_file = fs::File::create(path).await.unwrap();
 
-            fs_file
-                .write_all(&vec![0_u8; file.length as usize])
-                .await
-                .unwrap();
+            fs_file.write_all(&vec![0_u8; file.length as usize]).await.unwrap();
         }
 
         let (_, meta_file) = disk
             .get_file_from_block_info(
-                &BlockInfo {
-                    index: 0,
-                    begin: 0,
-                    len: BLOCK_LEN,
-                },
+                &BlockInfo { index: 0, begin: 0, len: BLOCK_LEN },
                 info_hash,
             )
             .await
@@ -1089,25 +1099,15 @@ mod tests {
         assert_eq!(meta_file, info.files.as_ref().unwrap()[0]);
 
         // first block of the last piece
-        let block = BlockInfo {
-            index: 25,
-            begin: 0,
-            len: 16384,
-        };
+        let block = BlockInfo { index: 25, begin: 0, len: 16384 };
 
-        let (_, meta_file) = disk
-            .get_file_from_block_info(&block, info_hash)
-            .await
-            .unwrap();
+        let (_, meta_file) =
+            disk.get_file_from_block_info(&block, info_hash).await.unwrap();
 
         assert_eq!(meta_file, info.files.as_ref().unwrap()[0]);
 
         // last block of the first file
-        let last_block = BlockInfo {
-            index: 25,
-            begin: 163840,
-            len: 5920,
-        };
+        let last_block = BlockInfo { index: 25, begin: 163840, len: 5920 };
 
         let (_, meta_file) = disk
             .get_file_from_block_info(&last_block, info_hash)
@@ -1117,58 +1117,35 @@ mod tests {
         assert_eq!(meta_file, info.files.as_ref().unwrap()[0]);
 
         // first block of second file
-        let block = BlockInfo {
-            index: 25,
-            begin: 169760,
-            len: BLOCK_LEN,
-        };
+        let block = BlockInfo { index: 25, begin: 169760, len: BLOCK_LEN };
 
-        let (_, meta_file) = disk
-            .get_file_from_block_info(&block, info_hash)
-            .await
-            .unwrap();
+        let (_, meta_file) =
+            disk.get_file_from_block_info(&block, info_hash).await.unwrap();
 
         assert_eq!(meta_file, info.files.as_ref().unwrap()[1]);
 
         // second block of second file
-        let block = BlockInfo {
-            index: 25,
-            begin: 169760 + BLOCK_LEN,
-            len: BLOCK_LEN,
-        };
+        let block =
+            BlockInfo { index: 25, begin: 169760 + BLOCK_LEN, len: BLOCK_LEN };
 
-        let (_, meta_file) = disk
-            .get_file_from_block_info(&block, info_hash)
-            .await
-            .unwrap();
+        let (_, meta_file) =
+            disk.get_file_from_block_info(&block, info_hash).await.unwrap();
 
         assert_eq!(meta_file, info.files.as_ref().unwrap()[1]);
 
         // last of second file
-        let block = BlockInfo {
-            index: 33,
-            begin: 49152,
-            len: 13625,
-        };
+        let block = BlockInfo { index: 33, begin: 49152, len: 13625 };
 
-        let (_, meta_file) = disk
-            .get_file_from_block_info(&block, info_hash)
-            .await
-            .unwrap();
+        let (_, meta_file) =
+            disk.get_file_from_block_info(&block, info_hash).await.unwrap();
 
         assert_eq!(meta_file, info.files.as_ref().unwrap()[1]);
 
         // last file of torrent
-        let block = BlockInfo {
-            index: 33,
-            begin: 62777,
-            len: 46,
-        };
+        let block = BlockInfo { index: 33, begin: 62777, len: 46 };
 
-        let (_, meta_file) = disk
-            .get_file_from_block_info(&block, info_hash)
-            .await
-            .unwrap();
+        let (_, meta_file) =
+            disk.get_file_from_block_info(&block, info_hash).await.unwrap();
 
         assert_eq!(meta_file, info.files.as_ref().unwrap()[2]);
 
@@ -1185,25 +1162,20 @@ mod tests {
             name: name.to_owned(),
             piece_length: 3,
             pieces: vec![
-                25, 24, 125, 201, 141, 206, 82, 250, 76, 78, 142, 5, 179, 65, 169, 183, 122, 81,
-                253, 38, 138, 247, 91, 50, 219, 108, 241, 131, 238, 114, 179, 138, 39, 171, 85,
-                195, 131, 111, 27, 237,
+                25, 24, 125, 201, 141, 206, 82, 250, 76, 78, 142, 5, 179, 65,
+                169, 183, 122, 81, 253, 38, 138, 247, 91, 50, 219, 108, 241,
+                131, 238, 114, 179, 138, 39, 171, 85, 195, 131, 111, 27, 237,
             ],
             files: Some(vec![
-                metainfo::File {
-                    length: 3,
-                    path: vec!["out.txt".to_owned()],
-                },
-                metainfo::File {
-                    length: 3,
-                    path: vec!["last.txt".to_owned()],
-                },
+                metainfo::File { length: 3, path: vec!["out.txt".to_owned()] },
+                metainfo::File { length: 3, path: vec!["last.txt".to_owned()] },
             ]),
         };
 
         let magnet = format!("magnet:?xt=urn:btih:9999999999999999999999999999999999999999&amp;dn={name}&amp;tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.openbittorrent.com%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.bittor.pw%3A1337%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&amp;tr=udp%3A%2F%2Fbt.xxx-tracker.com%3A2710%2Fannounce&amp;tr=udp%3A%2F%2Fpublic.popcorn-tracker.org%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Feddie4.nl%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451%2Fannounce&amp;tr=udp%3A%2F%2Fp4p.arenabg.com%3A1337%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.tiny-vps.com%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Fopen.stealth.si%3A80%2Fannounce");
         let mut rng = rand::thread_rng();
-        let download_dir: String = (0..20).map(|_| rng.sample(Alphanumeric) as char).collect();
+        let download_dir: String =
+            (0..20).map(|_| rng.sample(Alphanumeric) as char).collect();
 
         let dd = download_dir.clone();
         std::panic::set_hook(Box::new(move |panic| {
@@ -1227,7 +1199,8 @@ mod tests {
 
         disk.new_torrent(torrent.ctx.clone()).await.unwrap();
 
-        *disk.piece_strategy.get_mut(&info_hash).unwrap() = PieceStrategy::Sequential;
+        *disk.piece_strategy.get_mut(&info_hash).unwrap() =
+            PieceStrategy::Sequential;
 
         let mut p = torrent.ctx.bitfield.write().await;
         *p = Bitfield::from_vec(vec![255]);
@@ -1239,43 +1212,25 @@ mod tests {
         //
 
         // second file
-        let block = Block {
-            index: 1,
-            begin: 2,
-            block: "9".as_bytes().to_owned(),
-        };
+        let block =
+            Block { index: 1, begin: 2, block: "9".as_bytes().to_owned() };
         disk.write_block(info_hash, block).await.unwrap();
-        let block = Block {
-            index: 1,
-            begin: 1,
-            block: "w".as_bytes().to_owned(),
-        };
+        let block =
+            Block { index: 1, begin: 1, block: "w".as_bytes().to_owned() };
         disk.write_block(info_hash, block).await.unwrap();
-        let block = Block {
-            index: 1,
-            begin: 0,
-            block: "x".as_bytes().to_owned(),
-        };
+        let block =
+            Block { index: 1, begin: 0, block: "x".as_bytes().to_owned() };
         disk.write_block(info_hash, block).await.unwrap();
 
         // first file
-        let block = Block {
-            index: 0,
-            begin: 2,
-            block: "3".as_bytes().to_owned(),
-        };
+        let block =
+            Block { index: 0, begin: 2, block: "3".as_bytes().to_owned() };
         disk.write_block(info_hash, block).await.unwrap();
-        let block = Block {
-            index: 0,
-            begin: 1,
-            block: "1".as_bytes().to_owned(),
-        };
+        let block =
+            Block { index: 0, begin: 1, block: "1".as_bytes().to_owned() };
         disk.write_block(info_hash, block).await.unwrap();
-        let block = Block {
-            index: 0,
-            begin: 0,
-            block: "2".as_bytes().to_owned(),
-        };
+        let block =
+            Block { index: 0, begin: 0, block: "2".as_bytes().to_owned() };
         disk.write_block(info_hash, block).await.unwrap();
 
         let mut d = Disk::open_file(format!("{download_dir}/arch/out.txt"))
@@ -1308,30 +1263,33 @@ mod tests {
             name: name.to_owned(),
             piece_length: 12,
             pieces: vec![
-                38, 217, 37, 110, 112, 21, 210, 221, 197, 150, 173, 23, 34, 152, 198, 113, 27, 205,
-                25, 45, 194, 40, 51, 230, 54, 11, 105, 175, 141, 19, 33, 54, 17, 20, 203, 34, 160,
-                241, 116, 6, 203, 60, 156, 40, 208, 56, 192, 60, 224, 249, 43, 30, 49, 0, 62, 13,
+                38, 217, 37, 110, 112, 21, 210, 221, 197, 150, 173, 23, 34,
+                152, 198, 113, 27, 205, 25, 45, 194, 40, 51, 230, 54, 11, 105,
+                175, 141, 19, 33, 54, 17, 20, 203, 34, 160, 241, 116, 6, 203,
+                60, 156, 40, 208, 56, 192, 60, 224, 249, 43, 30, 49, 0, 62, 13,
                 220, 56, 176, 42,
             ],
             files: Some(vec![
-                metainfo::File {
-                    length: 12,
-                    path: vec!["foo.txt".to_owned()],
-                },
+                metainfo::File { length: 12, path: vec!["foo.txt".to_owned()] },
                 metainfo::File {
                     length: 12,
                     path: vec!["bar".to_owned(), "baz.txt".to_owned()],
                 },
                 metainfo::File {
                     length: 12,
-                    path: vec!["bar".to_owned(), "buzz".to_owned(), "bee.txt".to_owned()],
+                    path: vec![
+                        "bar".to_owned(),
+                        "buzz".to_owned(),
+                        "bee.txt".to_owned(),
+                    ],
                 },
             ]),
         };
 
         let magnet = format!("magnet:?xt=urn:btih:9999999999999999999999999999999999999999&amp;dn={name}&amp;tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.openbittorrent.com%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.bittor.pw%3A1337%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&amp;tr=udp%3A%2F%2Fbt.xxx-tracker.com%3A2710%2Fannounce&amp;tr=udp%3A%2F%2Fpublic.popcorn-tracker.org%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Feddie4.nl%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451%2Fannounce&amp;tr=udp%3A%2F%2Fp4p.arenabg.com%3A1337%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.tiny-vps.com%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Fopen.stealth.si%3A80%2Fannounce");
         let mut rng = rand::thread_rng();
-        let download_dir: String = (0..20).map(|_| rng.sample(Alphanumeric) as char).collect();
+        let download_dir: String =
+            (0..20).map(|_| rng.sample(Alphanumeric) as char).collect();
 
         let dd = download_dir.clone();
         std::panic::set_hook(Box::new(move |panic| {
@@ -1354,7 +1312,8 @@ mod tests {
         disk.new_torrent(torrent.ctx.clone()).await.unwrap();
 
         let info_hash = torrent.ctx.info_hash;
-        *disk.piece_strategy.get_mut(&info_hash).unwrap() = PieceStrategy::Sequential;
+        *disk.piece_strategy.get_mut(&info_hash).unwrap() =
+            PieceStrategy::Sequential;
 
         let mut p = torrent.ctx.bitfield.write().await;
         *p = Bitfield::from_vec(vec![255, 255, 255, 255]);
@@ -1377,11 +1336,8 @@ mod tests {
         assert!(result.is_ok());
 
         // validate that the first file contains the bytes that we wrote
-        let block_info = BlockInfo {
-            index: 0,
-            begin: 0,
-            len: block.block.len() as u32,
-        };
+        let block_info =
+            BlockInfo { index: 0, begin: 0, len: block.block.len() as u32 };
         let result = disk.read_block(info_hash, block_info).await;
         assert_eq!(result.unwrap(), block.block);
 
@@ -1397,11 +1353,7 @@ mod tests {
         assert!(result.is_ok());
 
         // validate that the second file contains the bytes that we wrote
-        let block_info = BlockInfo {
-            index: 1,
-            begin: 0,
-            len: 12,
-        };
+        let block_info = BlockInfo { index: 1, begin: 0, len: 12 };
         let result = disk.read_block(info_hash, block_info).await;
         assert_eq!(result.unwrap(), block.block);
 
@@ -1417,11 +1369,7 @@ mod tests {
         assert!(result.is_ok());
 
         // validate that the third file contains the bytes that we wrote
-        let block_info = BlockInfo {
-            index: 2,
-            begin: 0,
-            len: 12,
-        };
+        let block_info = BlockInfo { index: 2, begin: 0, len: 12 };
         let result = disk.read_block(info_hash, block_info).await;
         assert_eq!(result.unwrap(), block.block);
 
@@ -1429,52 +1377,32 @@ mod tests {
         //  READ BLOCKS with offsets
         //
 
-        let block_info = BlockInfo {
-            index: 0,
-            begin: 1,
-            len: 3,
-        };
+        let block_info = BlockInfo { index: 0, begin: 1, len: 3 };
 
         // read piece 1 block from first file
         let result = disk.read_block(info_hash, block_info).await;
         assert_eq!(result.unwrap(), vec![2, 3, 4]);
 
-        let block_info = BlockInfo {
-            index: 0,
-            begin: 9,
-            len: 3,
-        };
+        let block_info = BlockInfo { index: 0, begin: 9, len: 3 };
 
         // read piece 0 block from first file
         let result = disk.read_block(info_hash, block_info).await;
         assert_eq!(result.unwrap(), vec![10, 11, 12]);
 
         // last three bytes of file
-        let block_info = BlockInfo {
-            index: 1,
-            begin: 9,
-            len: 3,
-        };
+        let block_info = BlockInfo { index: 1, begin: 9, len: 3 };
 
         // read piece 2 block from second file
         let result = disk.read_block(info_hash, block_info).await;
         assert_eq!(result.unwrap(), vec![22, 23, 24]);
 
-        let block_info = BlockInfo {
-            index: 1,
-            begin: 1,
-            len: 6,
-        };
+        let block_info = BlockInfo { index: 1, begin: 1, len: 6 };
 
         // read piece 2 block from second file
         let result = disk.read_block(info_hash, block_info).await;
         assert_eq!(result.unwrap(), vec![14, 15, 16, 17, 18, 19]);
 
-        let block_info = BlockInfo {
-            index: 2,
-            begin: 0,
-            len: 6,
-        };
+        let block_info = BlockInfo { index: 2, begin: 0, len: 6 };
 
         // read piece 3 block from third file
         let result = disk.read_block(info_hash, block_info).await;
@@ -1514,7 +1442,8 @@ mod tests {
 
         let magnet = format!("magnet:?xt=urn:btih:9999999999999999999999999999999999999999&amp;dn={name}&amp;tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.openbittorrent.com%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.bittor.pw%3A1337%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&amp;tr=udp%3A%2F%2Fbt.xxx-tracker.com%3A2710%2Fannounce&amp;tr=udp%3A%2F%2Fpublic.popcorn-tracker.org%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Feddie4.nl%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451%2Fannounce&amp;tr=udp%3A%2F%2Fp4p.arenabg.com%3A1337%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.tiny-vps.com%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Fopen.stealth.si%3A80%2Fannounce");
         let mut rng = rand::thread_rng();
-        let download_dir: String = (0..20).map(|_| rng.sample(Alphanumeric) as char).collect();
+        let download_dir: String =
+            (0..20).map(|_| rng.sample(Alphanumeric) as char).collect();
 
         let dd = download_dir.clone();
         std::panic::set_hook(Box::new(move |panic| {
@@ -1537,10 +1466,13 @@ mod tests {
         disk.new_torrent(torrent.ctx.clone()).await.unwrap();
 
         let info_hash = torrent.ctx.info_hash;
-        *disk.piece_strategy.get_mut(&info_hash).unwrap() = PieceStrategy::Sequential;
+        *disk.piece_strategy.get_mut(&info_hash).unwrap() =
+            PieceStrategy::Sequential;
 
         let mut p = torrent.ctx.bitfield.write().await;
-        *p = Bitfield::from_vec(vec![255, 255, 255, 255, 255, 255, 255, 255, 255]);
+        *p = Bitfield::from_vec(vec![
+            255, 255, 255, 255, 255, 255, 255, 255, 255,
+        ]);
         drop(info);
         drop(p);
 
@@ -1549,21 +1481,13 @@ mod tests {
         //
 
         // write a block before reading it
-        let block = Block {
-            index: 0,
-            begin: 0,
-            block: vec![0; 5034059],
-        };
+        let block = Block { index: 0, begin: 0, block: vec![0; 5034059] };
 
         let result = disk.write_block(info_hash, block.clone()).await;
         assert!(result.is_ok());
 
         // write a block before reading it
-        let block = Block {
-            index: 153,
-            begin: 20555,
-            block: vec![0; 62],
-        };
+        let block = Block { index: 153, begin: 20555, block: vec![0; 62] };
 
         let result = disk.write_block(info_hash, block.clone()).await;
         assert!(result.is_ok());

@@ -17,16 +17,17 @@ pub enum ConnectionState {
     /// initial BitTorrent handshake.
     Handshaking,
     // This state is optional, it is used to verify that the bitfield exchange
-    // occurrs after the handshake and not later. It is set once the handshakes
-    // are exchanged and changed as soon as we receive the bitfield or the the
-    // first message that is not a bitfield. Any subsequent bitfield messages
-    // are rejected and the connection is dropped, as per the standard.
-    // AvailabilityExchange,
-    /// This is the normal state of a peer session, in which any messages, apart
-    /// from the 'handshake' and 'bitfield', may be exchanged.
+    // occurrs after the handshake and not later. It is set once the
+    // handshakes are exchanged and changed as soon as we receive the
+    // bitfield or the the first message that is not a bitfield. Any
+    // subsequent bitfield messages are rejected and the connection is
+    // dropped, as per the standard. AvailabilityExchange,
+    /// This is the normal state of a peer session, in which any messages,
+    /// apart from the 'handshake' and 'bitfield', may be exchanged.
     Connected,
     /// This state is set when the program is gracefully shutting down,
-    /// In this state, we don't send the outgoing blocks to the tracker on shutdown.
+    /// In this state, we don't send the outgoing blocks to the tracker on
+    /// shutdown.
     Quitting,
 }
 
@@ -78,8 +79,8 @@ pub struct Session {
     pub target_request_queue_len: u16,
     /// The last time some requests were sent to the peer.
     pub last_outgoing_request_time: Option<Instant>,
-    /// Updated with the time of receipt of the most recently received requested
-    /// block.
+    /// Updated with the time of receipt of the most recently received
+    /// requested block.
     pub last_incoming_block_time: Option<Instant>,
     /// Updated with the time of receipt of the most recently uploaded block.
     pub last_outgoing_block_time: Option<Instant>,
@@ -141,8 +142,8 @@ impl Session {
     /// of past request round trip times.
     pub fn request_timeout(&self) -> Duration {
         // we allow up to four times the average deviation from the mean
-        // let t = self.avg_request_rtt.mean() + 4 * self.avg_request_rtt.deviation();
-        // t.max(Self::MIN_TIMEOUT)
+        // let t = self.avg_request_rtt.mean() + 4 *
+        // self.avg_request_rtt.deviation(); t.max(Self::MIN_TIMEOUT)
         Self::MIN_TIMEOUT
     }
 
@@ -161,7 +162,9 @@ impl Session {
         let now = Instant::now();
 
         // update request time
-        if let Some(last_outgoing_request_time) = &mut self.last_outgoing_request_time {
+        if let Some(last_outgoing_request_time) =
+            &mut self.last_outgoing_request_time
+        {
             // Due to what is presumed to be inconsistencies with the
             // `Instant::now()` API, it happens in rare circumstances that using
             // the regular `duration_since` here panics (#48). I suspect this
@@ -174,7 +177,9 @@ impl Session {
             // If we timed out before, check if this request arrived within the
             // timeout window, or outside of it. If it arrived within the
             // window, we can mark peer as having recovered from the timeout.
-            if self.request_timed_out && elapsed_since_last_request <= self.request_timeout() {
+            if self.request_timed_out
+                && elapsed_since_last_request <= self.request_timeout()
+            {
                 self.request_timed_out = false;
             }
 

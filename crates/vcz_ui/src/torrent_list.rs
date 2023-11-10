@@ -3,12 +3,7 @@ use std::sync::Arc;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 use hashbrown::HashMap;
 use ratatui::{
-    layout::Constraint,
-    prelude::{Backend, Direction, Layout, Rect},
-    style::Stylize,
-    text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
-    Terminal,
+    layout::Constraint, prelude::{Backend, Direction, Layout, Rect}, style::Stylize, text::{Line, Span}, widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph}, Terminal
 };
 use vincenzo::{torrent::TorrentStatus, utils::to_human_readable};
 
@@ -72,34 +67,40 @@ impl<'a> TorrentList<'a> {
         }
     }
 
-    pub async fn keybindings<T: Backend>(&mut self, k_event: KeyEvent, terminal: &mut Terminal<T>) {
+    pub async fn keybindings<T: Backend>(
+        &mut self,
+        k_event: KeyEvent,
+        terminal: &mut Terminal<T>,
+    ) {
         let k = k_event.code;
         match k {
-            k if self.show_popup && k_event.kind == KeyEventKind::Press => match k {
-                KeyCode::Enter => self.submit_magnet_link(terminal).await,
-                KeyCode::Char(to_insert) => {
-                    self.enter_char(to_insert);
-                    self.draw(terminal).await;
+            k if self.show_popup && k_event.kind == KeyEventKind::Press => {
+                match k {
+                    KeyCode::Enter => self.submit_magnet_link(terminal).await,
+                    KeyCode::Char(to_insert) => {
+                        self.enter_char(to_insert);
+                        self.draw(terminal).await;
+                    }
+                    KeyCode::Backspace => {
+                        self.delete_char();
+                        self.draw(terminal).await;
+                    }
+                    KeyCode::Left => {
+                        self.move_cursor_left();
+                        self.draw(terminal).await;
+                    }
+                    KeyCode::Right => {
+                        self.move_cursor_right();
+                        self.draw(terminal).await;
+                    }
+                    KeyCode::Esc => {
+                        // self.input_mode = InputMode::Normal;
+                        self.quit(terminal).await;
+                        self.draw(terminal).await;
+                    }
+                    _ => {}
                 }
-                KeyCode::Backspace => {
-                    self.delete_char();
-                    self.draw(terminal).await;
-                }
-                KeyCode::Left => {
-                    self.move_cursor_left();
-                    self.draw(terminal).await;
-                }
-                KeyCode::Right => {
-                    self.move_cursor_right();
-                    self.draw(terminal).await;
-                }
-                KeyCode::Esc => {
-                    // self.input_mode = InputMode::Normal;
-                    self.quit(terminal).await;
-                    self.draw(terminal).await;
-                }
-                _ => {}
-            },
+            }
             KeyCode::Char('q') | KeyCode::Esc => {
                 self.reset_cursor();
                 self.input.clear();
@@ -165,7 +166,8 @@ impl<'a> TorrentList<'a> {
             let l = ctx.stats.leechers.to_string();
             let sl = format!("Seeders {s} Leechers {l}").into();
 
-            let mut line_top = Line::from("-".repeat(terminal.size().unwrap().width as usize));
+            let mut line_top =
+                Line::from("-".repeat(terminal.size().unwrap().width as usize));
             let mut line_bottom = line_top.clone();
 
             if self.state.selected() == Some(i) {
@@ -193,15 +195,17 @@ impl<'a> TorrentList<'a> {
             rows.push(ListItem::new(items));
         }
 
-        let torrent_list =
-            List::new(rows).block(Block::default().borders(Borders::ALL).title("Torrents"));
+        let torrent_list = List::new(rows)
+            .block(Block::default().borders(Borders::ALL).title("Torrents"));
 
         terminal
             .draw(|f| {
                 // Create two chunks, the body, and the footer
                 let chunks = Layout::default()
                     .direction(Direction::Vertical)
-                    .constraints([Constraint::Max(98), Constraint::Length(3)].as_ref())
+                    .constraints(
+                        [Constraint::Max(98), Constraint::Length(3)].as_ref(),
+                    )
                     .split(f.size());
 
                 if self.show_popup {
@@ -209,13 +213,24 @@ impl<'a> TorrentList<'a> {
 
                     let input = Paragraph::new(self.input.as_str())
                         .style(self.style.highlight_fg)
-                        .block(Block::default().borders(Borders::ALL).title("Add Torrent"));
+                        .block(
+                            Block::default()
+                                .borders(Borders::ALL)
+                                .title("Add Torrent"),
+                        );
 
                     f.render_widget(Clear, area);
                     f.render_widget(input, area);
-                    f.set_cursor(area.x + self.cursor_position as u16 + 1, area.y + 1);
+                    f.set_cursor(
+                        area.x + self.cursor_position as u16 + 1,
+                        area.y + 1,
+                    );
                 } else {
-                    f.render_stateful_widget(torrent_list, chunks[0], &mut self.state);
+                    f.render_stateful_widget(
+                        torrent_list,
+                        chunks[0],
+                        &mut self.state,
+                    );
                     f.render_widget(self.footer.clone(), chunks[1]);
                 }
             })
@@ -301,21 +316,25 @@ impl<'a> TorrentList<'a> {
     fn delete_char(&mut self) {
         let is_not_cursor_leftmost = self.cursor_position != 0;
         if is_not_cursor_leftmost {
-            // Method "remove" is not used on the saved text for deleting the selected char.
-            // Reason: Using remove on String works on bytes instead of the chars.
-            // Using remove would require special care because of char boundaries.
+            // Method "remove" is not used on the saved text for deleting the
+            // selected char. Reason: Using remove on String works
+            // on bytes instead of the chars. Using remove would
+            // require special care because of char boundaries.
 
             let current_index = self.cursor_position;
             let from_left_to_current_index = current_index - 1;
 
             // Getting all characters before the selected character.
-            let before_char_to_delete = self.input.chars().take(from_left_to_current_index);
+            let before_char_to_delete =
+                self.input.chars().take(from_left_to_current_index);
             // Getting all characters after selected character.
             let after_char_to_delete = self.input.chars().skip(current_index);
 
             // Put all characters together except the selected one.
-            // By leaving the selected one out, it is forgotten and therefore deleted.
-            self.input = before_char_to_delete.chain(after_char_to_delete).collect();
+            // By leaving the selected one out, it is forgotten and therefore
+            // deleted.
+            self.input =
+                before_char_to_delete.chain(after_char_to_delete).collect();
             self.move_cursor_left();
         }
     }
@@ -328,7 +347,10 @@ impl<'a> TorrentList<'a> {
         self.cursor_position = 0;
     }
 
-    async fn submit_magnet_link<T: Backend>(&mut self, terminal: &mut Terminal<T>) {
+    async fn submit_magnet_link<T: Backend>(
+        &mut self,
+        terminal: &mut Terminal<T>,
+    ) {
         let _ = self
             .ctx
             .fr_tx

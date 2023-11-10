@@ -3,14 +3,12 @@
 use std::collections::VecDeque;
 
 use bendy::{
-    decoding::{self, FromBencode, Object, ResultExt},
-    encoding::{self, AsString, Error, SingleItemEncoder, ToBencode},
+    decoding::{self, FromBencode, Object, ResultExt}, encoding::{self, AsString, Error, SingleItemEncoder, ToBencode}
 };
 use tracing::warn;
 
 use crate::{
-    error,
-    tcp_wire::{BlockInfo, BLOCK_LEN},
+    error, tcp_wire::{BlockInfo, BLOCK_LEN}
 };
 
 /// Metainfo is a .torrent file with information about the Torrent.
@@ -34,7 +32,8 @@ pub struct MetaInfo {
 pub struct Info {
     /// piece length - number of bytes in a piece
     pub piece_length: u32,
-    /// A (byte) string consisting of the concatenation of all 20-byte SHA1 hash values, one per piece.
+    /// A (byte) string consisting of the concatenation of all 20-byte SHA1
+    /// hash values, one per piece.
     pub pieces: Vec<u8>,
     /// name of the file
     pub name: String,
@@ -61,7 +60,8 @@ impl Info {
         self.piece_length / BLOCK_LEN
     }
     /// Get all block_infos of a torrent
-    /// Returns an Err if the Info is malformed, if it does not have `files` or `file_length`.
+    /// Returns an Err if the Info is malformed, if it does not have `files` or
+    /// `file_length`.
     pub fn get_block_infos(&self) -> Result<VecDeque<BlockInfo>, error::Error> {
         let total_size = self.get_size() as u32;
         let mut block_infos = Vec::new();
@@ -70,10 +70,8 @@ impl Info {
         let mut file_index = 0;
 
         while processed_bytes < total_size {
-            let remaining_in_file = self
-                .files
-                .as_ref()
-                .map_or(total_size - processed_bytes, |f| {
+            let remaining_in_file =
+                self.files.as_ref().map_or(total_size - processed_bytes, |f| {
                     f[file_index].length - offset_within_file
                 });
             let len = [
@@ -96,7 +94,9 @@ impl Info {
             offset_within_file += len;
 
             if let Some(files) = &self.files {
-                while file_index < files.len() && offset_within_file >= files[file_index].length {
+                while file_index < files.len()
+                    && offset_within_file >= files[file_index].length
+                {
                     offset_within_file -= files[file_index].length;
                     file_index += 1;
                 }
@@ -188,10 +188,12 @@ impl FromBencode for File {
         while let Some(pair) = dict_dec.next_pair()? {
             match pair {
                 (b"length", value) => {
-                    length = u32::decode_bencode_object(value).context("length")?;
+                    length =
+                        u32::decode_bencode_object(value).context("length")?;
                 }
                 (b"path", value) => {
-                    path = Vec::<String>::decode_bencode_object(value).context("path")?;
+                    path = Vec::<String>::decode_bencode_object(value)
+                        .context("path")?;
                 }
                 _ => {}
             }
@@ -204,7 +206,10 @@ impl FromBencode for File {
 impl ToBencode for MetaInfo {
     const MAX_DEPTH: usize = 5;
 
-    fn encode(&self, encoder: SingleItemEncoder) -> Result<(), encoding::Error> {
+    fn encode(
+        &self,
+        encoder: SingleItemEncoder,
+    ) -> Result<(), encoding::Error> {
         encoder.emit_dict(|mut e| {
             e.emit_pair(b"announce", &self.announce)?;
 
@@ -299,8 +304,10 @@ impl FromBencode for MetaInfo {
             }
         }
 
-        let announce = announce.ok_or_else(|| decoding::Error::missing_field("announce"))?;
-        let info = info.ok_or_else(|| decoding::Error::missing_field("info"))?;
+        let announce = announce
+            .ok_or_else(|| decoding::Error::missing_field("announce"))?;
+        let info =
+            info.ok_or_else(|| decoding::Error::missing_field("info"))?;
 
         Ok(MetaInfo {
             announce,
@@ -356,19 +363,15 @@ impl FromBencode for Info {
             }
         }
 
-        let name = name.ok_or_else(|| decoding::Error::missing_field("name"))?;
-        let piece_length =
-            piece_length.ok_or_else(|| decoding::Error::missing_field("piece_length"))?;
-        let pieces = pieces.ok_or_else(|| decoding::Error::missing_field("pieces"))?;
+        let name =
+            name.ok_or_else(|| decoding::Error::missing_field("name"))?;
+        let piece_length = piece_length
+            .ok_or_else(|| decoding::Error::missing_field("piece_length"))?;
+        let pieces =
+            pieces.ok_or_else(|| decoding::Error::missing_field("pieces"))?;
 
         // Check that we discovered all necessary fields
-        Ok(Info {
-            files,
-            file_length,
-            name,
-            piece_length,
-            pieces,
-        })
+        Ok(Info { files, file_length, name, piece_length, pieces })
     }
 }
 
@@ -393,16 +396,8 @@ mod tests {
         assert_eq!(
             info.get_block_infos().unwrap(),
             VecDeque::from([
-                BlockInfo {
-                    index: 0,
-                    begin: 0,
-                    len: 15,
-                },
-                BlockInfo {
-                    index: 1,
-                    begin: 0,
-                    len: 15,
-                },
+                BlockInfo { index: 0, begin: 0, len: 15 },
+                BlockInfo { index: 1, begin: 0, len: 15 },
             ]),
         );
     }
@@ -425,21 +420,9 @@ mod tests {
         assert_eq!(
             blocks,
             VecDeque::from([
-                BlockInfo {
-                    index: 0,
-                    begin: 0,
-                    len: BLOCK_LEN,
-                },
-                BlockInfo {
-                    index: 1,
-                    begin: 0,
-                    len: BLOCK_LEN,
-                },
-                BlockInfo {
-                    index: 2,
-                    begin: 0,
-                    len: 100,
-                }
+                BlockInfo { index: 0, begin: 0, len: BLOCK_LEN },
+                BlockInfo { index: 1, begin: 0, len: BLOCK_LEN },
+                BlockInfo { index: 2, begin: 0, len: 100 }
             ])
         );
     }
@@ -465,16 +448,8 @@ mod tests {
         assert_eq!(
             blocks,
             VecDeque::from([
-                BlockInfo {
-                    index: 0,
-                    begin: 0,
-                    len: BLOCK_LEN,
-                },
-                BlockInfo {
-                    index: 1,
-                    begin: 0,
-                    len: BLOCK_LEN,
-                },
+                BlockInfo { index: 0, begin: 0, len: BLOCK_LEN },
+                BlockInfo { index: 1, begin: 0, len: BLOCK_LEN },
             ])
         );
     }
@@ -500,21 +475,9 @@ mod tests {
         assert_eq!(
             blocks,
             VecDeque::from([
-                BlockInfo {
-                    index: 0,
-                    begin: 0,
-                    len: BLOCK_LEN,
-                },
-                BlockInfo {
-                    index: 0,
-                    begin: BLOCK_LEN,
-                    len: 16284,
-                },
-                BlockInfo {
-                    index: 1,
-                    begin: 0,
-                    len: 100,
-                },
+                BlockInfo { index: 0, begin: 0, len: BLOCK_LEN },
+                BlockInfo { index: 0, begin: BLOCK_LEN, len: 16284 },
+                BlockInfo { index: 1, begin: 0, len: 100 },
             ])
         );
     }
@@ -529,18 +492,9 @@ mod tests {
     fn get_block_infos_file_boundary() {
         let info = Info {
             files: Some(vec![
-                File {
-                    length: BLOCK_LEN,
-                    path: vec!["a.txt".to_owned()],
-                },
-                File {
-                    length: 12384,
-                    path: vec!["b.txt".to_owned()],
-                },
-                File {
-                    length: BLOCK_LEN,
-                    path: vec!["c.txt".to_owned()],
-                },
+                File { length: BLOCK_LEN, path: vec!["a.txt".to_owned()] },
+                File { length: 12384, path: vec!["b.txt".to_owned()] },
+                File { length: BLOCK_LEN, path: vec!["c.txt".to_owned()] },
             ]),
             piece_length: 45152,
             pieces: vec![0; 20],
@@ -554,16 +508,8 @@ mod tests {
         assert_eq!(
             blocks,
             VecDeque::from([
-                BlockInfo {
-                    index: 0,
-                    begin: 0,
-                    len: BLOCK_LEN,
-                },
-                BlockInfo {
-                    index: 0,
-                    begin: BLOCK_LEN,
-                    len: 12384,
-                },
+                BlockInfo { index: 0, begin: 0, len: BLOCK_LEN },
+                BlockInfo { index: 0, begin: BLOCK_LEN, len: 12384 },
                 BlockInfo {
                     index: 0,
                     begin: BLOCK_LEN + 12384,
@@ -583,10 +529,7 @@ mod tests {
     fn get_block_infos_odd_pre() {
         let info = Info {
             files: Some(vec![
-                File {
-                    length: 10,
-                    path: vec!["".to_owned()],
-                },
+                File { length: 10, path: vec!["".to_owned()] },
                 File {
                     length: 32768, // 2 blocks
                     path: vec!["".to_owned()],
@@ -605,26 +548,10 @@ mod tests {
         assert_eq!(
             blocks,
             VecDeque::from([
-                BlockInfo {
-                    index: 0,
-                    begin: 0,
-                    len: 10,
-                },
-                BlockInfo {
-                    index: 0,
-                    begin: 10,
-                    len: BLOCK_LEN,
-                },
-                BlockInfo {
-                    index: 0,
-                    begin: 10 + BLOCK_LEN,
-                    len: 16274,
-                },
-                BlockInfo {
-                    index: 1,
-                    begin: 0,
-                    len: 110,
-                },
+                BlockInfo { index: 0, begin: 0, len: 10 },
+                BlockInfo { index: 0, begin: 10, len: BLOCK_LEN },
+                BlockInfo { index: 0, begin: 10 + BLOCK_LEN, len: 16274 },
+                BlockInfo { index: 1, begin: 0, len: 110 },
             ])
         );
     }
@@ -643,10 +570,7 @@ mod tests {
                     length: 32768, // 2 blocks
                     path: vec!["".to_owned()],
                 },
-                File {
-                    length: 10,
-                    path: vec!["".to_owned()],
-                },
+                File { length: 10, path: vec!["".to_owned()] },
             ]),
             piece_length: 32668, // -100 of block_len
             pieces: vec![0u8; 40],
@@ -662,26 +586,10 @@ mod tests {
         assert_eq!(
             blocks,
             VecDeque::from([
-                BlockInfo {
-                    index: 0,
-                    begin: 0,
-                    len: BLOCK_LEN,
-                },
-                BlockInfo {
-                    index: 0,
-                    begin: BLOCK_LEN,
-                    len: 16284,
-                },
-                BlockInfo {
-                    index: 1,
-                    begin: 0,
-                    len: 100,
-                },
-                BlockInfo {
-                    index: 1,
-                    begin: 100,
-                    len: 10,
-                },
+                BlockInfo { index: 0, begin: 0, len: BLOCK_LEN },
+                BlockInfo { index: 0, begin: BLOCK_LEN, len: 16284 },
+                BlockInfo { index: 1, begin: 0, len: 100 },
+                BlockInfo { index: 1, begin: 100, len: 10 },
             ])
         );
     }
@@ -738,35 +646,20 @@ mod tests {
 
         let block = bi.get(0).unwrap();
         // println!("--- piece 0, block 0 (first) ---");
-        assert_eq!(
-            *block,
-            BlockInfo {
-                index: 0,
-                begin: 0,
-                len: BLOCK_LEN,
-            }
-        );
+        assert_eq!(*block, BlockInfo { index: 0, begin: 0, len: BLOCK_LEN });
 
         let block = bi.get(1).unwrap();
         // println!("--- piece 0, block 1 (second) ---");
         assert_eq!(
             *block,
-            BlockInfo {
-                index: 0,
-                begin: BLOCK_LEN,
-                len: BLOCK_LEN,
-            }
+            BlockInfo { index: 0, begin: BLOCK_LEN, len: BLOCK_LEN }
         );
 
         let block = bi.get(2).unwrap();
         // println!("--- piece 0, block 2 (third) ---");
         assert_eq!(
             *block,
-            BlockInfo {
-                index: 0,
-                begin: BLOCK_LEN * 2,
-                len: BLOCK_LEN,
-            }
+            BlockInfo { index: 0, begin: BLOCK_LEN * 2, len: BLOCK_LEN }
         );
 
         let block = bi.get(63).unwrap();
@@ -776,14 +669,7 @@ mod tests {
         let block = bi.get(64).unwrap();
         // println!("--- piece 0, block 64 ---");
         // println!("{block:#?}");
-        assert_eq!(
-            *block,
-            BlockInfo {
-                index: 1,
-                begin: 0,
-                len: 16384,
-            }
-        );
+        assert_eq!(*block, BlockInfo { index: 1, begin: 0, len: 16384 });
         let block = bi.get(1608).unwrap();
         println!("--- piece 25, block 1608 before before last ---");
         println!("{block:#?}");
@@ -791,14 +677,7 @@ mod tests {
         let block = bi.get(1609).unwrap();
         println!("--- piece 25, block 1609 ---");
         println!("{block:#?}");
-        assert_eq!(
-            *block,
-            BlockInfo {
-                index: 25,
-                begin: 147456,
-                len: 16384,
-            }
-        );
+        assert_eq!(*block, BlockInfo { index: 25, begin: 147456, len: 16384 });
         // last block of the last piece of this file
         let block = bi.get(1610).unwrap();
         println!("--- piece 25, block 1610 (last of file) ---");
@@ -807,14 +686,7 @@ mod tests {
         let bytes_so_far = bi.iter().take(1611).fold(0, |acc, x| acc + x.len);
         assert_eq!(bytes_so_far, file0.length);
 
-        assert_eq!(
-            *block,
-            BlockInfo {
-                index: 25,
-                begin: 163840,
-                len: 5920,
-            }
-        );
+        assert_eq!(*block, BlockInfo { index: 25, begin: 163840, len: 5920 });
         // file0 ended /\
 
         let file1 = &files[1];
@@ -839,27 +711,17 @@ mod tests {
         println!("{block:#?}");
         assert_eq!(
             *block,
-            BlockInfo {
-                index: 25,
-                begin: 169760,
-                len: BLOCK_LEN,
-            }
+            BlockInfo { index: 25, begin: 169760, len: BLOCK_LEN }
         );
 
         // 506 blocks
         let block = bi.get(1610 + 506).unwrap();
-        let bytes_so_far = bi.iter().take(1610 + 507).fold(0, |acc, x| acc + x.len);
+        let bytes_so_far =
+            bi.iter().take(1610 + 507).fold(0, |acc, x| acc + x.len);
         println!("--- file1 piece 25, block 1611 (last of file) ---");
         println!("bytes_so_far {bytes_so_far}");
         println!("{block:#?}");
-        assert_eq!(
-            *block,
-            BlockInfo {
-                index: 33,
-                begin: 49152,
-                len: 13625,
-            }
-        );
+        assert_eq!(*block, BlockInfo { index: 33, begin: 49152, len: 13625 });
 
         Ok(())
     }
@@ -905,38 +767,17 @@ mod tests {
         let block = bi.get(0).unwrap();
         println!("--- piece 0, block 0 (only one) ---");
         println!("{block:#?}");
-        assert_eq!(
-            *block,
-            BlockInfo {
-                index: 0,
-                begin: 0,
-                len: BLOCK_LEN,
-            }
-        );
+        assert_eq!(*block, BlockInfo { index: 0, begin: 0, len: BLOCK_LEN });
 
         let block = bi.get(1).unwrap();
         println!("--- piece 1, block 1 (only one) ---");
         println!("{block:#?}");
-        assert_eq!(
-            *block,
-            BlockInfo {
-                index: 1,
-                begin: 0,
-                len: BLOCK_LEN,
-            }
-        );
+        assert_eq!(*block, BlockInfo { index: 1, begin: 0, len: BLOCK_LEN });
 
         let block = bi.get(249).unwrap();
         println!("--- piece 249, block 249 (last, only one) ---");
         println!("{block:#?}");
-        assert_eq!(
-            *block,
-            BlockInfo {
-                index: 249,
-                begin: 0,
-                len: 12718,
-            }
-        );
+        assert_eq!(*block, BlockInfo { index: 249, begin: 0, len: 12718 });
 
         Ok(())
     }
@@ -946,7 +787,8 @@ mod tests {
         //
         // Simple multi file torrent, 16 blocks per piece
         //
-        let torrent_debian_bytes = include_bytes!("../../../test-files/debian.torrent");
+        let torrent_debian_bytes =
+            include_bytes!("../../../test-files/debian.torrent");
         let torrent = MetaInfo::from_bencode(torrent_debian_bytes).unwrap();
         let info = torrent.info;
         let bi = info.get_block_infos().unwrap();
@@ -978,25 +820,14 @@ mod tests {
         let block = bi.get(0).unwrap();
         println!("--- piece 0, block 0 (first) ---");
         println!("{block:#?}");
-        assert_eq!(
-            *block,
-            BlockInfo {
-                index: 0,
-                begin: 0,
-                len: BLOCK_LEN,
-            }
-        );
+        assert_eq!(*block, BlockInfo { index: 0, begin: 0, len: BLOCK_LEN });
 
         let block = bi.get(1).unwrap();
         println!("--- piece 0, block 1 ---");
         println!("{block:#?}");
         assert_eq!(
             *block,
-            BlockInfo {
-                index: 0,
-                begin: BLOCK_LEN,
-                len: BLOCK_LEN,
-            }
+            BlockInfo { index: 0, begin: BLOCK_LEN, len: BLOCK_LEN }
         );
 
         let block = bi.get(2).unwrap();
@@ -1004,11 +835,7 @@ mod tests {
         println!("{block:#?}");
         assert_eq!(
             *block,
-            BlockInfo {
-                index: 0,
-                begin: BLOCK_LEN * 2,
-                len: BLOCK_LEN,
-            }
+            BlockInfo { index: 0, begin: BLOCK_LEN * 2, len: BLOCK_LEN }
         );
 
         let block = bi.get(18623).unwrap();
@@ -1016,11 +843,7 @@ mod tests {
         println!("{block:#?}");
         assert_eq!(
             *block,
-            BlockInfo {
-                index: 1163,
-                begin: 245760,
-                len: BLOCK_LEN,
-            }
+            BlockInfo { index: 1163, begin: 245760, len: BLOCK_LEN }
         );
 
         Ok(())
@@ -1040,15 +863,9 @@ mod tests {
                     path: vec!["dir".to_string(), "file_a.pdf".to_string()],
                 },
                 // 1 block
-                File {
-                    length: 62,
-                    path: vec!["file_1.txt".to_string()],
-                },
+                File { length: 62, path: vec!["file_1.txt".to_string()] },
                 // 1 block
-                File {
-                    length: 237,
-                    path: vec!["file_2.txt".to_string()],
-                },
+                File { length: 237, path: vec!["file_2.txt".to_string()] },
             ]),
         };
 
@@ -1066,36 +883,26 @@ mod tests {
 
         assert_eq!(
             *last_first_file,
-            BlockInfo {
-                index: 153,
-                begin: 16384,
-                len: 4171,
-            }
+            BlockInfo { index: 153, begin: 16384, len: 4171 }
         );
 
         assert_eq!(
             *last_second_file,
-            BlockInfo {
-                index: 153,
-                begin: 20555,
-                len: 62,
-            }
+            BlockInfo { index: 153, begin: 20555, len: 62 }
         );
 
         assert_eq!(
             *last_third_file,
-            BlockInfo {
-                index: 153,
-                begin: 20617,
-                len: 237,
-            }
+            BlockInfo { index: 153, begin: 20617, len: 237 }
         );
     }
 
-    /// Confirm that the [`MetaInfo`] [`ToBencode`] and [`FromBencode`] implementations work as expected for a multi-file torrent
+    /// Confirm that the [`MetaInfo`] [`ToBencode`] and [`FromBencode`]
+    /// implementations work as expected for a multi-file torrent
     #[test]
     fn should_encode_multi_file_torrent() -> Result<(), encoding::Error> {
-        let torrent_book_bytes = include_bytes!("../../../test-files/book.torrent");
+        let torrent_book_bytes =
+            include_bytes!("../../../test-files/book.torrent");
 
         let torrent = MetaInfo::from_bencode(torrent_book_bytes).unwrap();
         let torrent_bytes = torrent.to_bencode().unwrap();
@@ -1106,7 +913,8 @@ mod tests {
         Ok(())
     }
 
-    /// Confirm that the [`MetaInfo`] [`FromBencode`] implementation works as expected for a multi-file torrent
+    /// Confirm that the [`MetaInfo`] [`FromBencode`] implementation works as
+    /// expected for a multi-file torrent
     #[test]
     fn should_decode_multi_file_torrent() -> Result<(), decoding::Error> {
         let torrent = include_bytes!("../../../test-files/book.torrent");
@@ -1117,18 +925,28 @@ mod tests {
                 creation_date: Some(1_662_883_480),
                 http_seeds: None,
                 comment: Some("dynamic metainfo from client".to_owned()),
-                announce: "udp://tracker.leechers-paradise.org:6969/announce".to_owned(),
+                announce: "udp://tracker.leechers-paradise.org:6969/announce"
+                    .to_owned(),
                 announce_list: Some(vec![
-                    vec!["udp://tracker.leechers-paradise.org:6969/announce".to_owned()],
-                    vec!["udp://tracker.internetwarriors.net:1337/announce".to_owned()],
-                    vec!["udp://tracker.opentrackr.org:1337/announce".to_owned()],
-                    vec!["udp://tracker.coppersurfer.tk:6969/announce".to_owned()],
-                    vec!["udp://tracker.pirateparty.gr:6969/announce".to_owned()],
+                    vec!["udp://tracker.leechers-paradise.org:6969/announce"
+                        .to_owned()],
+                    vec!["udp://tracker.internetwarriors.net:1337/announce"
+                        .to_owned()],
+                    vec![
+                        "udp://tracker.opentrackr.org:1337/announce".to_owned()
+                    ],
+                    vec!["udp://tracker.coppersurfer.tk:6969/announce"
+                        .to_owned()],
+                    vec![
+                        "udp://tracker.pirateparty.gr:6969/announce".to_owned()
+                    ],
                     vec!["udp://9.rarbg.to:2730/announce".to_owned()],
                     vec!["udp://9.rarbg.to:2710/announce".to_owned()],
                     vec!["udp://bt.xxx-tracker.com:2710/announce".to_owned()],
                     vec!["udp://tracker.cyberia.is:6969/announce".to_owned()],
-                    vec!["udp://retracker.lanta-net.ru:2710/announce".to_owned()],
+                    vec![
+                        "udp://retracker.lanta-net.ru:2710/announce".to_owned()
+                    ],
                     vec!["udp://9.rarbg.to:2770/announce".to_owned()],
                     vec!["udp://9.rarbg.me:2730/announce".to_owned()],
                     vec!["udp://eddie4.nl:6969/announce".to_owned()],
@@ -1139,7 +957,9 @@ mod tests {
                     vec!["udp://ipv6.tracker.harry.lu:80/announce".to_owned()],
                     vec!["udp://9.rarbg.me:2740/announce".to_owned()],
                     vec!["udp://9.rarbg.me:2770/announce".to_owned()],
-                    vec!["udp://denis.stalker.upeer.me:6969/announce".to_owned()],
+                    vec![
+                        "udp://denis.stalker.upeer.me:6969/announce".to_owned()
+                    ],
                     vec!["udp://tracker.port443.xyz:6969/announce".to_owned()],
                     vec!["udp://tracker.moeking.me:6969/announce".to_owned()],
                     vec!["udp://exodus.desync.com:6969/announce".to_owned()],
@@ -1148,7 +968,8 @@ mod tests {
                     vec!["udp://tracker.justseed.it:1337/announce".to_owned()],
                     vec!["udp://tracker.torrent.eu.org:451/announce".to_owned()],
                     vec!["udp://ipv4.tracker.harry.lu:80/announce".to_owned()],
-                    vec!["udp://tracker.open-internet.nl:6969/announce".to_owned()],
+                    vec!["udp://tracker.open-internet.nl:6969/announce"
+                        .to_owned()],
                     vec!["udp://torrentclub.tech:6969/announce".to_owned()],
                     vec!["udp://open.stealth.si:80/announce".to_owned()],
                     vec!["http://tracker.tfile.co:80/announce".to_owned()],
@@ -1169,7 +990,8 @@ mod tests {
         Ok(())
     }
 
-    /// Confirm that the [`MetaInfo`] [`FromBencode`] implementation works as expected for a single-file torrent
+    /// Confirm that the [`MetaInfo`] [`FromBencode`] implementation works as
+    /// expected for a single-file torrent
     #[test]
     fn should_decode_single_file_torrent() -> Result<(), decoding::Error> {
         let torrent = include_bytes!("../../../test-files/debian.torrent");
@@ -1198,7 +1020,8 @@ mod tests {
         Ok(())
     }
 
-    /// Confirm that the [`MetaInfo`] [`ToBencode`] implementation works as expected for a single-file torrent
+    /// Confirm that the [`MetaInfo`] [`ToBencode`] implementation works as
+    /// expected for a single-file torrent
     #[test]
     fn should_encode_single_file_torrent() -> Result<(), encoding::Error> {
         let torrent_disk = include_bytes!("../../../test-files/debian.torrent");
@@ -1228,7 +1051,8 @@ mod tests {
         Ok(())
     }
 
-    /// Confirm that the [`metainfo::File`](struct@File) [`ToBencode`] implementation works as expected
+    /// Confirm that the [`metainfo::File`](struct@File) [`ToBencode`]
+    /// implementation works as expected
     #[test]
     fn file_serialization() -> Result<(), encoding::Error> {
         let file = File {
@@ -1246,7 +1070,8 @@ mod tests {
         Ok(())
     }
 
-    /// Confirm that the [`metainfo::File`](struct@File) [`FromBencode`] implementation works as expected
+    /// Confirm that the [`metainfo::File`](struct@File) [`FromBencode`]
+    /// implementation works as expected
     #[test]
     fn file_deserialization() -> Result<(), decoding::Error> {
         let data = b"d6:lengthi222e4:pathl1:a1:b5:c.txtee";
@@ -1256,7 +1081,8 @@ mod tests {
         assert_eq!(
             file,
             File {
-                path: ["a".to_owned(), "b".to_owned(), "c.txt".to_owned()].into(),
+                path: ["a".to_owned(), "b".to_owned(), "c.txt".to_owned()]
+                    .into(),
                 length: 222,
             }
         );

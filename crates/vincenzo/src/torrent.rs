@@ -1,34 +1,16 @@
 //! Torrent that is spawned by the Daemon
-use crate::daemon::DaemonMsg;
-use crate::peer::session::ConnectionState;
-use crate::tcp_wire::BlockInfo;
 use crate::{
-    bitfield::Bitfield,
-    disk::DiskMsg,
-    error::Error,
-    magnet::Magnet,
-    metainfo::Info,
-    peer::{Direction, Peer, PeerCtx, PeerMsg},
-    tracker::{
-        event::Event,
-        {Tracker, TrackerCtx, TrackerMsg},
-    },
+    bitfield::Bitfield, daemon::DaemonMsg, disk::DiskMsg, error::Error, magnet::Magnet, metainfo::Info, peer::{session::ConnectionState, Direction, Peer, PeerCtx, PeerMsg}, tcp_wire::BlockInfo, tracker::{event::Event, Tracker, TrackerCtx, TrackerMsg}
 };
 use bendy::decoding::FromBencode;
-use bitvec::bitvec;
-use bitvec::prelude::Msb0;
+use bitvec::{bitvec, prelude::Msb0};
 use hashbrown::HashMap;
 use speedy::{Readable, Writable};
-use std::collections::BTreeMap;
-use std::net::SocketAddr;
-use std::sync::atomic::AtomicBool;
-use std::{sync::Arc, time::Duration};
-use tokio::time::interval;
+use std::{
+    collections::BTreeMap, net::SocketAddr, sync::{atomic::AtomicBool, Arc}, time::Duration
+};
 use tokio::{
-    net::{TcpListener, TcpStream},
-    select, spawn,
-    sync::{mpsc, oneshot, RwLock},
-    time::{interval_at, Instant},
+    net::{TcpListener, TcpStream}, select, spawn, sync::{mpsc, oneshot, RwLock}, time::{interval, interval_at, Instant}
 };
 use tracing::{debug, info, warn};
 
@@ -94,7 +76,8 @@ pub struct Torrent {
     pub downloaded: u64,
     pub daemon_tx: mpsc::Sender<DaemonMsg>,
     pub status: TorrentStatus,
-    /// Stats of the current Torrent, returned from tracker on announce requests.
+    /// Stats of the current Torrent, returned from tracker on announce
+    /// requests.
     pub stats: Stats,
     /// The downloaded bytes of the previous second,
     /// used to get the download rate in seconds.
@@ -189,8 +172,12 @@ impl Torrent {
     /// Start the Torrent, by sending `connect` and `announce_exchange`
     /// messages to one of the trackers, and returning a list of peers.
     #[tracing::instrument(skip(self), name = "torrent::start")]
-    pub async fn start(&mut self, listen: Option<SocketAddr>) -> Result<Vec<SocketAddr>, Error> {
-        let mut tracker = Tracker::connect(self.ctx.magnet.parse_trackers()).await?;
+    pub async fn start(
+        &mut self,
+        listen: Option<SocketAddr>,
+    ) -> Result<Vec<SocketAddr>, Error> {
+        let mut tracker =
+            Tracker::connect(self.ctx.magnet.parse_trackers()).await?;
         let info_hash = self.ctx.clone().info_hash;
         let (res, peers) = tracker.announce_exchange(info_hash, listen).await?;
 
@@ -217,7 +204,10 @@ impl Torrent {
 
     /// Start the Torrent and immediately spawns all the event loops.
     #[tracing::instrument(skip(self), name = "torrent::start_and_run")]
-    pub async fn start_and_run(&mut self, listen: Option<SocketAddr>) -> Result<(), Error> {
+    pub async fn start_and_run(
+        &mut self,
+        listen: Option<SocketAddr>,
+    ) -> Result<(), Error> {
         let peers = self.start(listen).await?;
 
         self.spawn_outbound_peers(peers).await?;
@@ -229,7 +219,10 @@ impl Torrent {
 
     /// Spawn an event loop for each peer
     #[tracing::instrument(skip_all, name = "torrent::start_outbound_peers")]
-    pub async fn spawn_outbound_peers(&self, peers: Vec<SocketAddr>) -> Result<(), Error> {
+    pub async fn spawn_outbound_peers(
+        &self,
+        peers: Vec<SocketAddr>,
+    ) -> Result<(), Error> {
         for peer in peers {
             let ctx = self.ctx.clone();
             let local_peer_id = self.tracker_ctx.peer_id;
@@ -238,8 +231,13 @@ impl Torrent {
             spawn(async move {
                 match TcpStream::connect(peer).await {
                     Ok(socket) => {
-                        Self::start_and_run_peer(ctx, socket, local_peer_id, Direction::Outbound)
-                            .await?;
+                        Self::start_and_run_peer(
+                            ctx,
+                            socket,
+                            local_peer_id,
+                            Direction::Outbound,
+                        )
+                        .await?;
                     }
                     Err(e) => {
                         debug!("error with peer: {:?} {e:#?}", peer);
@@ -260,7 +258,8 @@ impl Torrent {
         direction: Direction,
     ) -> Result<Peer, Error> {
         let (socket, handshake) =
-            Peer::handshake(socket, direction, ctx.info_hash, local_peer_id).await?;
+            Peer::handshake(socket, direction, ctx.info_hash, local_peer_id)
+                .await?;
 
         let local = socket.get_ref().local_addr()?;
         let remote = socket.get_ref().peer_addr()?;
@@ -291,12 +290,10 @@ impl Torrent {
     /// Spawn a new event loop every time a peer connect with us.
     #[tracing::instrument(skip(self))]
     pub async fn spawn_inbound_peers(&self) -> Result<(), Error> {
-        debug!(
-            "accepting requests in {:?}",
-            self.tracker_ctx.local_peer_addr
-        );
+        debug!("accepting requests in {:?}", self.tracker_ctx.local_peer_addr);
 
-        let local_peer_socket = TcpListener::bind(self.tracker_ctx.local_peer_addr).await?;
+        let local_peer_socket =
+            TcpListener::bind(self.tracker_ctx.local_peer_addr).await?;
         let local_peer_id = self.tracker_ctx.peer_id;
         let ctx = self.ctx.clone();
 
@@ -310,8 +307,13 @@ impl Torrent {
                     let ctx = ctx.clone();
 
                     spawn(async move {
-                        Self::start_and_run_peer(ctx, socket, local_peer_id, Direction::Inbound)
-                            .await?;
+                        Self::start_and_run_peer(
+                            ctx,
+                            socket,
+                            local_peer_id,
+                            Direction::Inbound,
+                        )
+                        .await?;
                         Ok::<(), Error>(())
                     });
                 }
@@ -329,7 +331,8 @@ impl Torrent {
         let tracker_tx = self.tracker_ctx.tx.clone();
 
         let mut announce_interval = interval_at(
-            Instant::now() + Duration::from_secs(self.stats.interval.max(500).into()),
+            Instant::now()
+                + Duration::from_secs(self.stats.interval.max(500).into()),
             Duration::from_secs((self.stats.interval as u64).max(500)),
         );
 
