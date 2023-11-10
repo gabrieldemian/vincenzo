@@ -47,7 +47,7 @@ impl<'a> TorrentList<'a> {
             Span::styled("t".to_string(), style.highlight_fg),
             " add torrent ".into(),
             Span::styled("p".to_string(), style.highlight_fg),
-            " toggle pause/resume ".into(),
+            " pause/resume ".into(),
             Span::styled("q".to_string(), style.highlight_fg),
             " quit".into(),
         ]
@@ -201,7 +201,7 @@ impl<'a> TorrentList<'a> {
                 // Create two chunks, the body, and the footer
                 let chunks = Layout::default()
                     .direction(Direction::Vertical)
-                    .constraints([Constraint::Percentage(90), Constraint::Min(2)].as_ref())
+                    .constraints([Constraint::Max(98), Constraint::Length(3)].as_ref())
                     .split(f.size());
 
                 if self.show_popup {
