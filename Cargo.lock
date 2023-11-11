@@ -1367,7 +1367,7 @@ checksum = "830b7e5d4d90034032940e4ace0d9a9a057e7a45cd94e6c007832e39edb82f6d"
 
 [[package]]
 name = "vcz"
-version = "0.0.1"
+version = "0.0.3"
 dependencies = [
  "bendy",
  "bytes",
@@ -1398,7 +1398,7 @@ dependencies = [
 
 [[package]]
 name = "vcz_daemon"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "bendy",
  "bytes",
@@ -1424,7 +1424,7 @@ dependencies = [
 
 [[package]]
 name = "vcz_ui"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "clap",
  "crossterm 0.27.0",
@@ -1449,7 +1449,7 @@ checksum = "49874b5167b65d7193b8aba1567f5c7d93d001cafc34600cee003eda787e483f"
 
 [[package]]
 name = "vincenzo"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "bendy",
  "bitvec",
