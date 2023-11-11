@@ -44,7 +44,8 @@ impl Request {
             return Err(Error::TrackerResponse);
         }
 
-        let req = Self::read_from_buffer_with_ctx(BigEndian {}, buf).map_err(Error::SpeedyError)?;
+        let req = Self::read_from_buffer_with_ctx(BigEndian {}, buf)
+            .map_err(Error::SpeedyError)?;
 
         Ok((req, &buf[Self::LENGTH..]))
     }
@@ -66,17 +67,15 @@ impl Response {
         }
 
         let action = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]);
-        let transaction_id = u32::from_be_bytes([buf[4], buf[5], buf[6], buf[7]]);
+        let transaction_id =
+            u32::from_be_bytes([buf[4], buf[5], buf[6], buf[7]]);
         let connection_id = u64::from_be_bytes([
-            buf[8], buf[9], buf[10], buf[11], buf[12], buf[13], buf[14], buf[15],
+            buf[8], buf[9], buf[10], buf[11], buf[12], buf[13], buf[14],
+            buf[15],
         ]);
 
         Ok((
-            Self {
-                action,
-                transaction_id,
-                connection_id,
-            },
+            Self { action, transaction_id, connection_id },
             &buf[Self::LENGTH..],
         ))
     }

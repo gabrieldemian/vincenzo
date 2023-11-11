@@ -6,20 +6,15 @@ pub mod event;
 
 use super::tracker::action::Action;
 use std::{
-    fmt::Debug,
-    net::{IpAddr, Ipv4Addr, SocketAddr},
-    time::Duration,
+    fmt::Debug, net::{IpAddr, Ipv4Addr, SocketAddr}, time::Duration
 };
 
 use crate::error::Error;
 use rand::Rng;
 use tokio::{
-    net::{ToSocketAddrs, UdpSocket},
-    select,
-    sync::{mpsc, oneshot},
-    time::timeout,
+    net::{ToSocketAddrs, UdpSocket}, select, sync::{mpsc, oneshot}, time::timeout
 };
-use tracing::{debug, warn};
+use tracing::{debug, error, warn};
 
 use self::event::Event;
 
@@ -102,10 +97,16 @@ impl Tracker {
     /// Bind UDP socket and send a connect handshake,
     /// to one of the trackers.
     // todo: get a new tracker if download is stale
-    #[tracing::instrument(skip(trackers))]
+    #[tracing::instrument(skip(trackers), name = "tracker::connect")]
     pub async fn connect<A>(trackers: Vec<A>) -> Result<Self, Error>
     where
-        A: ToSocketAddrs + Debug + Send + Sync + 'static + std::fmt::Display + Clone,
+        A: ToSocketAddrs
+            + Debug
+            + Send
+            + Sync
+            + 'static
+            + std::fmt::Display
+            + Clone,
         A::Iter: Send,
     {
         debug!("...trying to connect to {:?} trackers", trackers.len());
@@ -115,7 +116,8 @@ impl Tracker {
         for tracker_addr in trackers {
             debug!("trying to connect {tracker_addr:?}");
 
-            let socket = match Self::new_udp_socket(tracker_addr.clone()).await {
+            let socket = match Self::new_udp_socket(tracker_addr.clone()).await
+            {
                 Ok(socket) => socket,
                 Err(_) => {
                     debug!("could not connect to tracker");
@@ -141,12 +143,15 @@ impl Tracker {
             }
         }
 
-        warn!("Could not connect to any tracker");
+        error!("Could not connect to any tracker, all trackers rejected the connection.");
         Err(Error::TrackerNoHosts)
     }
 
     #[tracing::instrument(skip(self))]
-    async fn connect_exchange(&mut self, socket: UdpSocket) -> Result<UdpSocket, Error> {
+    async fn connect_exchange(
+        &mut self,
+        socket: UdpSocket,
+    ) -> Result<UdpSocket, Error> {
         let req = connect::Request::new();
         let mut buf = [0u8; connect::Response::LENGTH];
         let mut len: usize = 0;
@@ -177,8 +182,9 @@ impl Tracker {
 
         debug!("received res from tracker {res:#?}");
 
-        if res.transaction_id != req.transaction_id || res.action != req.action {
-            warn!("response not valid!");
+        if res.transaction_id != req.transaction_id || res.action != req.action
+        {
+            error!("response is not valid {res:?}");
             return Err(Error::TrackerResponse);
         }
 
@@ -203,10 +209,13 @@ impl Tracker {
 
         let local_peer_socket = {
             match listen {
-                Some(listen) => {
-                    SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), listen.port())
+                Some(listen) => SocketAddr::new(
+                    IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
+                    listen.port(),
+                ),
+                None => {
+                    SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 0)
                 }
-                None => SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 0),
             }
         };
 
@@ -259,14 +268,18 @@ impl Tracker {
         // which are in the form of ips and ports
         let (res, payload) = announce::Response::deserialize(res)?;
 
-        if res.transaction_id != req.transaction_id || res.action != req.action {
+        if res.transaction_id != req.transaction_id || res.action != req.action
+        {
             return Err(Error::TrackerResponse);
         }
 
         debug!("* announce successful");
         debug!("res from announce {:#?}", res);
 
-        let peers = Self::parse_compact_peer_list(payload, socket.peer_addr()?.is_ipv6())?;
+        let peers = Self::parse_compact_peer_list(
+            payload,
+            socket.peer_addr()?.is_ipv6(),
+        )?;
 
         Ok((res, peers))
     }
@@ -288,7 +301,10 @@ impl Tracker {
     }
 
     #[tracing::instrument(skip(buf, is_ipv6))]
-    fn parse_compact_peer_list(buf: &[u8], is_ipv6: bool) -> Result<Vec<SocketAddr>, Error> {
+    fn parse_compact_peer_list(
+        buf: &[u8],
+        is_ipv6: bool,
+    ) -> Result<Vec<SocketAddr>, Error> {
         let mut peer_list = Vec::<SocketAddr>::new();
 
         // in ipv4 the addresses come in packets of 6 bytes,
@@ -309,11 +325,14 @@ impl Tracker {
                     .expect("iterator guarantees bounds are OK");
                 IpAddr::from(std::net::Ipv6Addr::from(octets))
             } else {
-                IpAddr::from(std::net::Ipv4Addr::new(ip[0], ip[1], ip[2], ip[3]))
+                IpAddr::from(std::net::Ipv4Addr::new(
+                    ip[0], ip[1], ip[2], ip[3],
+                ))
             };
 
-            let port =
-                u16::from_be_bytes(port.try_into().expect("iterator guarantees bounds are OK"));
+            let port = u16::from_be_bytes(
+                port.try_into().expect("iterator guarantees bounds are OK"),
+            );
 
             peer_list.push((ip, port).into());
         }

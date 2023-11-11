@@ -1,3 +1,4 @@
+//! Utility functions
 /// transform bytes into a human readable format.
 pub fn to_human_readable(mut n: f64) -> String {
     let units = ["B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB", "ZiB", "YiB"];

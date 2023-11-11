@@ -2,24 +2,18 @@
 //! that is not the UI.
 use futures::{SinkExt, StreamExt};
 use hashbrown::HashMap;
-use std::{net::SocketAddr, sync::Arc, time::Duration};
+use std::{
+    net::{IpAddr, Ipv4Addr, SocketAddr}, sync::Arc, time::Duration
+};
 use tokio_util::codec::Framed;
-use tracing::{debug, info, warn};
+use tracing::{error, info, trace, warn};
 
 use tokio::{
-    net::{TcpListener, TcpStream},
-    select, spawn,
-    sync::{mpsc, oneshot, RwLock},
-    time::interval,
+    net::{TcpListener, TcpStream}, select, spawn, sync::{mpsc, oneshot, RwLock}, time::interval
 };
 
 use crate::{
-    daemon_wire::{DaemonCodec, Message},
-    disk::{Disk, DiskMsg},
-    error::Error,
-    magnet::Magnet,
-    torrent::{Torrent, TorrentMsg, TorrentState, TorrentStatus},
-    utils::to_human_readable,
+    daemon_wire::{DaemonCodec, Message}, disk::{Disk, DiskMsg}, error::Error, magnet::Magnet, torrent::{Torrent, TorrentMsg, TorrentState, TorrentStatus}, utils::to_human_readable
 };
 use clap::Parser;
 
@@ -50,17 +44,18 @@ pub struct Args {
     pub stats: bool,
 }
 
-/// The daemon is the most high-level API in all backend libs.
+/// The daemon is the highest-level entity in the library.
 /// It owns [`Disk`] and [`Torrent`]s, which owns Peers.
 ///
 /// The communication with the daemon happens via TCP with messages
 /// documented at [`DaemonCodec`].
 ///
-/// The daemon and the UI can run on different machines, and so,
-/// they need a way to communicate. We use TCP, so we can benefit
+/// The daemon is decoupled from the UI and can even run on different machines,
+/// and so, they need a way to communicate. We use TCP, so we can benefit
 /// from the Framed utilities that tokio provides, making it easy
 /// to create a protocol for the Daemon. HTTP wastes more bandwith
-/// and would reduce consistency.
+/// and would reduce consistency since the BitTorrent protocol nowadays rarely
+/// uses HTTP.
 pub struct Daemon {
     pub config: DaemonConfig,
     pub disk_tx: Option<mpsc::Sender<DiskMsg>>,
@@ -113,15 +108,16 @@ pub enum DaemonMsg {
 }
 
 impl Daemon {
-    /// Tries to create a Daemon struct and setup the logger listener.
-    /// Can error if the configuration validation fails,
-    /// check [`Config`] for more details about the validation.
+    pub const DEFAULT_LISTENER: SocketAddr =
+        SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 3030);
+
+    /// Initialize the Daemon struct with the default [`DaemonConfig`].
     pub fn new(download_dir: String) -> Self {
         let (tx, rx) = mpsc::channel::<DaemonMsg>(300);
 
         let daemon_config = DaemonConfig {
             download_dir,
-            listen: "127.0.0.1:3030".parse().unwrap(),
+            listen: Self::DEFAULT_LISTENER,
             quit_after_complete: false,
         };
 
@@ -142,13 +138,15 @@ impl Daemon {
     /// - The daemon TCP framed messages [`DaemonCodec`] (internal)
     /// - The Disk event loop [`Disk`]
     ///
+    /// # Important
+    ///
     /// Both internal and external messages share the same API.
     /// When the daemon receives a TCP message, it forwards to the
     /// mpsc event loop.
     ///
     /// This is useful to keep consistency, because the same command
-    /// that can be fired remotely (example: via TCP),
-    /// can also be fired internaly (example: via CLI flags).
+    /// that can be fired remotely (via TCP),
+    /// can also be fired internaly (via CLI flags).
     pub async fn run(&mut self) -> Result<(), Error> {
         let socket = TcpListener::bind(self.config.listen).await.unwrap();
 
@@ -163,17 +161,25 @@ impl Daemon {
 
         let ctx = self.ctx.clone();
 
-        info!("Vincenzo daemon is listening on: {}", self.config.listen);
+        info!("Daemon listening on: {}", self.config.listen);
 
         // Listen to remote TCP messages
         let handle = spawn(async move {
             loop {
-                if let Ok((socket, _addr)) = socket.accept().await {
-                    let ctx = ctx.clone();
-                    spawn(async move {
-                        let socket = Framed::new(socket, DaemonCodec);
-                        let _ = Self::listen_remote_msgs(socket, ctx).await;
-                    });
+                match socket.accept().await {
+                    Ok((socket, addr)) => {
+                        info!("Connected with remote: {addr}");
+
+                        let ctx = ctx.clone();
+
+                        spawn(async move {
+                            let socket = Framed::new(socket, DaemonCodec);
+                            let _ = Self::listen_remote_msgs(socket, ctx).await;
+                        });
+                    }
+                    Err(e) => {
+                        error!("Could not connect with remote: {e:#?}");
+                    }
                 }
             }
         });
@@ -211,13 +217,27 @@ impl Daemon {
                         }
                         DaemonMsg::PrintTorrentStatus => {
                             let torrent_states = self.ctx.torrent_states.read().await;
+
+                            println!("Showing stats of {} torrents.", torrent_states.len());
+
                             for state in torrent_states.values() {
+                                let status_line: String = match state.status {
+                                    TorrentStatus::Downloading => {
+                                        format!(
+                                            "{} - {}",
+                                            to_human_readable(state.downloaded as f64),
+                                            to_human_readable(state.download_rate as f64),
+                                        )
+                                    }
+                                    _ => state.status.clone().into()
+                                };
+
                                 println!(
-                                    "{} {} of {}. Download rate: {}",
+                                    "\n{}\n{}\nSeeders {} Leechers {}\n{status_line}",
                                     state.name,
                                     to_human_readable(state.size as f64),
-                                    to_human_readable(state.downloaded as f64),
-                                    to_human_readable(state.download_rate as f64),
+                                    state.stats.seeders,
+                                    state.stats.leechers,
                                 );
                             }
                         }
@@ -241,7 +261,7 @@ impl Daemon {
         socket: Framed<TcpStream, DaemonCodec>,
         ctx: Arc<DaemonCtx>,
     ) -> Result<(), Error> {
-        debug!("daemon listen_msgs");
+        trace!("daemon listen_msgs");
 
         let mut draw_interval = interval(Duration::from_secs(1));
         let (mut sink, mut stream) = socket.split();
@@ -255,13 +275,14 @@ impl Daemon {
                 Some(Ok(msg)) = stream.next() => {
                     match msg {
                         Message::NewTorrent(magnet_link) => {
-                            debug!("daemon received newTorrent");
+                            trace!("daemon received NewTorrent {magnet_link}");
                             let magnet = Magnet::new(&magnet_link);
                             if let Ok(magnet) = magnet {
                                 let _ = ctx.tx.send(DaemonMsg::NewTorrent(magnet)).await;
                             }
                         }
                         Message::RequestTorrentState(info_hash) => {
+                            trace!("daemon RequestTorrentState {info_hash:?}");
                             let (tx, rx) = oneshot::channel();
                             let _ = ctx.tx.send(DaemonMsg::RequestTorrentState(info_hash, tx)).await;
                             let r = rx.await?;
@@ -269,12 +290,16 @@ impl Daemon {
                             let _ = sink.send(Message::TorrentState(r)).await;
                         }
                         Message::TogglePause(id) => {
-                            debug!("daemon received TogglePause {id:?}");
+                            trace!("daemon received TogglePause {id:?}");
                             let _ = ctx.tx.send(DaemonMsg::TogglePause(id)).await;
                         }
                         Message::Quit => {
-                            debug!("daemon received quit");
+                            trace!("daemon received Quit");
                             let _ = ctx.tx.send(DaemonMsg::Quit).await;
+                        }
+                        Message::PrintTorrentStatus => {
+                            trace!("daemon received PrintTorrentStatus");
+                            let _ = ctx.tx.send(DaemonMsg::PrintTorrentStatus).await;
                         }
                         _ => {}
                     }
@@ -329,6 +354,7 @@ impl Daemon {
     ///
     /// This fn will panic if it is being called BEFORE run
     pub async fn new_torrent(&mut self, magnet: Magnet) -> Result<(), Error> {
+        trace!("magnet: {}", *magnet);
         let info_hash = magnet.parse_xt();
 
         let mut torrent_states = self.ctx.torrent_states.write().await;
@@ -353,7 +379,7 @@ impl Daemon {
         let mut torrent = Torrent::new(disk_tx, self.ctx.tx.clone(), magnet);
 
         self.torrent_txs.insert(info_hash, torrent.ctx.tx.clone());
-        info!("Downloading {}", torrent.name);
+        info!("Downloading torrent: {}", torrent.name);
 
         spawn(async move {
             torrent.start_and_run(None).await?;

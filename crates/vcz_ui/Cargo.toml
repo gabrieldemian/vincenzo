@@ -1,6 +1,6 @@
 [package]
 name = "vcz_ui"
-version = "0.0.2"
+version = "0.0.3"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -12,7 +12,7 @@ futures = "0.3.28"
 hashbrown = "0.14.0"
 magnet-url = "2.0.0"
 rand = "0.8.5"
-ratatui = { version = "0.22.0", features = ["all-widgets"] }
+ratatui = { version = "0.24.0", features = ["all-widgets"] }
 serde = { version = "1.0.185", features = ["derive"] }
 thiserror = "1.0.47"
 tokio = { version = "1.32.0", features = ["rt", "fs", "tracing", "time", "macros", "rt-multi-thread", "sync", "io-std", "io-util",  "net"] }

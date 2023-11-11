@@ -1,6 +1,6 @@
 [package]
 name = "vcz_daemon"
-version = "0.0.2"
+version = "0.0.3"
 edition = "2021"
 
 [[bin]]
@@ -13,8 +13,6 @@ path = "src/main.rs"
 bendy = { version = "0.3.3", features = ["std"] }
 bytes = "1.4.0"
 clap = {version = "4.3.4", features = ["derive"]}
-console-subscriber = "0.1.9"
-decurse = "0.0.4"
 directories = "5.0.1"
 futures = "0.3.28"
 hashbrown = "0.14.0"

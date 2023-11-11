@@ -11,8 +11,8 @@ use crate::torrent::TorrentState;
 /// to read how to send messages.
 ///
 /// Most messages can be sent to the Daemon in 2 ways:
-/// - Internally: within it's same process, via CLI flags for example.
-///     the message will be sent using mpsc.
+/// - Internally: within it's same process, via CLI flags for example. the
+///   message will be sent using mpsc.
 /// - Externally: via TCP. When the message arrives, it will be sent
 /// to the internal event handler in mpsc. They both use the same API.
 #[derive(Debug, Clone, PartialEq)]
@@ -113,7 +113,11 @@ pub struct DaemonCodec;
 impl Encoder<Message> for DaemonCodec {
     type Error = io::Error;
 
-    fn encode(&mut self, item: Message, buf: &mut BytesMut) -> Result<(), Self::Error> {
+    fn encode(
+        &mut self,
+        item: Message,
+        buf: &mut BytesMut,
+    ) -> Result<(), Self::Error> {
         match item {
             Message::NewTorrent(magnet) => {
                 let msg_len = 1 + magnet.len() as u32;
@@ -166,7 +170,10 @@ impl Decoder for DaemonCodec {
     type Item = Message;
     type Error = io::Error;
 
-    fn decode(&mut self, buf: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
+    fn decode(
+        &mut self,
+        buf: &mut BytesMut,
+    ) -> Result<Option<Self::Item>, Self::Error> {
         // the message length header must be present at the minimum, otherwise
         // we can't determine the message type
         if buf.remaining() < 4 {
@@ -217,7 +224,11 @@ impl Decoder for DaemonCodec {
                 if buf.has_remaining() {
                     let mut payload = vec![0u8; buf.remaining()];
                     buf.copy_to_slice(&mut payload);
-                    info = TorrentState::read_from_buffer_with_ctx(BigEndian {}, &payload).ok();
+                    info = TorrentState::read_from_buffer_with_ctx(
+                        BigEndian {},
+                        &payload,
+                    )
+                    .ok();
                 }
                 Message::TorrentState(info)
             }

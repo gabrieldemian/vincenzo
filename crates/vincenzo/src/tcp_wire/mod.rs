@@ -2,8 +2,7 @@
 //! Peers will follow this protocol to exchange information about torrents.
 pub mod messages;
 
-use bytes::BufMut;
-use bytes::BytesMut;
+use bytes::{BufMut, BytesMut};
 use tokio::io;
 
 /// The default block_len that most clients support, some clients drop
@@ -15,7 +14,8 @@ pub const BLOCK_LEN: u32 = 16384;
 /// Protocol String
 /// String identifier of the string "BitTorrent protocol", in bytes.
 pub const PSTR: [u8; 19] = [
-    66, 105, 116, 84, 111, 114, 114, 101, 110, 116, 32, 112, 114, 111, 116, 111, 99, 111, 108,
+    66, 105, 116, 84, 111, 114, 114, 101, 110, 116, 32, 112, 114, 111, 116,
+    111, 99, 111, 108,
 ];
 
 /// A Block is a subset of a Piece,
@@ -75,11 +75,7 @@ pub struct BlockInfo {
 
 impl Default for BlockInfo {
     fn default() -> Self {
-        Self {
-            index: 0,
-            begin: 0,
-            len: BLOCK_LEN,
-        }
+        Self { index: 0, begin: 0, len: BLOCK_LEN }
     }
 }
 

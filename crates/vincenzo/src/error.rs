@@ -3,7 +3,9 @@ use std::io;
 use thiserror::Error;
 use tokio::sync::{mpsc, oneshot};
 
-use crate::{disk::DiskMsg, peer::PeerMsg, torrent::TorrentMsg, tracker::TrackerMsg};
+use crate::{
+    disk::DiskMsg, peer::PeerMsg, torrent::TorrentMsg, tracker::TrackerMsg
+};
 
 #[derive(Error, Debug)]
 pub enum Error {
@@ -21,7 +23,9 @@ pub enum Error {
     TrackerSocketAddr,
     #[error("The response received from the connect handshake was wrong")]
     TrackerResponse,
-    #[error("Tracker event only goes from 0..=2 and a different value was used")]
+    #[error(
+        "Tracker event only goes from 0..=2 and a different value was used"
+    )]
     TrackerEvent,
     #[error("Tried to call announce without calling connect first")]
     TrackerResponseLength,

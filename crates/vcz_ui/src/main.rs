@@ -13,7 +13,7 @@ use vcz_ui::{UIMsg, UI};
 #[command(author, version, about)]
 struct Args {
     /// The address that the Daemon is listening on.
-    #[clap(long)]
+    #[clap(short, long)]
     pub daemon_addr: Option<SocketAddr>,
 }
 
@@ -30,9 +30,7 @@ async fn main() -> Result<(), Error> {
     let config = Config::load().await.unwrap();
 
     let daemon_addr = args.daemon_addr.unwrap_or(
-        config
-            .daemon_addr
-            .unwrap_or("127.0.0.1:3030".parse().unwrap()),
+        config.daemon_addr.unwrap_or("127.0.0.1:3030".parse().unwrap()),
     );
 
     fr.run(fr_rx, daemon_addr).await.unwrap();

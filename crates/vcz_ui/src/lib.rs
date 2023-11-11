@@ -5,30 +5,23 @@ use futures::{stream::SplitStream, FutureExt, SinkExt, StreamExt};
 use tokio_util::codec::Framed;
 
 use std::{
-    io::{self, Stdout},
-    net::SocketAddr,
-    sync::Arc,
+    io::{self, Stdout}, net::SocketAddr, sync::Arc
 };
 use tokio::{net::TcpStream, select, spawn, sync::mpsc};
 
 use crossterm::{
-    self,
-    event::{DisableMouseCapture, EnableMouseCapture, EventStream},
-    execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    self, event::{DisableMouseCapture, EnableMouseCapture, EventStream}, execute, terminal::{
+        disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen
+    }
 };
 use ratatui::{
-    backend::CrosstermBackend,
-    style::{Color, Style},
-    Terminal,
+    backend::CrosstermBackend, style::{Color, Style}, Terminal
 };
 
 use torrent_list::TorrentList;
 
 use vincenzo::{
-    daemon_wire::{DaemonCodec, Message},
-    error::Error,
-    torrent::TorrentState,
+    daemon_wire::{DaemonCodec, Message}, error::Error, torrent::TorrentState
 };
 
 /// Messages used by [`UI`] for internal communication.
@@ -60,7 +53,9 @@ impl AppStyle {
     pub fn new() -> Self {
         AppStyle {
             base_style: Style::default().fg(Color::Gray),
-            highlight_bg: Style::default().bg(Color::LightBlue).fg(Color::DarkGray),
+            highlight_bg: Style::default()
+                .bg(Color::LightBlue)
+                .fg(Color::DarkGray),
             highlight_fg: Style::default().fg(Color::LightBlue),
             success: Style::default().fg(Color::LightGreen),
             error: Style::default().fg(Color::Red),
@@ -100,13 +95,7 @@ impl<'a> UI<'a> {
         let ctx = Arc::new(UICtx { fr_tx });
         let torrent_list = TorrentList::new(ctx.clone());
 
-        UI {
-            terminal,
-            torrent_list,
-            ctx,
-            style,
-            is_detached: false,
-        }
+        UI { terminal, torrent_list, ctx, style, is_detached: false }
     }
 
     /// Listen to the messages sent by the daemon via TCP,
@@ -220,7 +209,11 @@ impl<'a> UI<'a> {
 
     /// Send a NewTorrent message to Daemon, it will answer with a Draw request
     /// with the newly added torrent state.
-    async fn new_torrent<T>(&mut self, magnet: &str, sink: &mut T) -> Result<(), Error>
+    async fn new_torrent<T>(
+        &mut self,
+        magnet: &str,
+        sink: &mut T,
+    ) -> Result<(), Error>
     where
         T: SinkExt<Message> + Sized + std::marker::Unpin,
     {
@@ -236,9 +229,7 @@ impl<'a> UI<'a> {
     {
         if !self.is_detached {
             debug!("ui sending quit to daemon");
-            sink.send(Message::Quit)
-                .await
-                .map_err(|_| Error::SendErrorTcp)?;
+            sink.send(Message::Quit).await.map_err(|_| Error::SendErrorTcp)?;
         }
 
         Self::reset_terminal();

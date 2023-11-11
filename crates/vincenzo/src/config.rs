@@ -1,18 +1,12 @@
 //! Config file
-use directories::ProjectDirs;
-use directories::UserDirs;
-use std::net::SocketAddr;
-use std::path::PathBuf;
-use tokio::io::AsyncReadExt;
-use tokio::io::AsyncWriteExt;
+use directories::{ProjectDirs, UserDirs};
+use std::{net::SocketAddr, path::PathBuf};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use serde::Deserialize;
-use serde::Serialize;
-use tokio::fs::create_dir_all;
-use tokio::fs::File;
-use tokio::fs::OpenOptions;
+use serde::{Deserialize, Serialize};
+use tokio::fs::{create_dir_all, File, OpenOptions};
 
-use crate::error::Error;
+use crate::{daemon::Daemon, error::Error};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Config {
@@ -24,23 +18,26 @@ impl Config {
     /// Returns the configuration fs File and it's path,
     ///
     /// If it doesn't exist, we try to create a default configuration file
-    /// at the user's config folder, which we get from their environmental variables.
+    /// at the user's config folder, which we get from their environmental
+    /// variables.
     ///
     /// # Errors
     ///
-    /// The fn will try to get the download and config dirs from the users home dir.
-    /// This fn can fail if the program does not have access to any path, or file.
+    /// The fn will try to get the download and config dirs from the users home
+    /// dir. This fn can fail if the program does not have access to any
+    /// path, or file.
     pub async fn config_file() -> Result<(File, PathBuf), Error> {
         // load the config file
         // errors if the user does not have a home folder
-        let dotfile = ProjectDirs::from("", "", "Vincenzo").ok_or(Error::HomeInvalid)?;
+        let dotfile =
+            ProjectDirs::from("", "", "Vincenzo").ok_or(Error::HomeInvalid)?;
         let mut config_path = dotfile.config_dir().to_path_buf();
 
         // If the user has a home folder, but for some reason we cant open it
         if !config_path.exists() {
-            create_dir_all(&config_path)
-                .await
-                .map_err(|_| Error::FolderOpenError(config_path.to_str().unwrap().to_owned()))?
+            create_dir_all(&config_path).await.map_err(|_| {
+                Error::FolderOpenError(config_path.to_str().unwrap().to_owned())
+            })?
         }
 
         // check that the user's download dir is valid
@@ -82,7 +79,7 @@ impl Config {
         if c.is_err() {
             let default_config = Config {
                 download_dir,
-                daemon_addr: Some("127.0.0.1:3030".parse().unwrap()),
+                daemon_addr: Some(Daemon::DEFAULT_LISTENER),
             };
 
             let config_str = toml::to_string(&default_config).unwrap();

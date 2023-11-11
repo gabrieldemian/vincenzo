@@ -3,16 +3,13 @@
 //! This is the library created for Vincenzo, a BitTorrent client. It uses this
 //! library to create both the daemon and ui binaries.
 //!
-//! This crate contains building blocks for developing software with this protocol
-//! in a high-level manner. Basically, BitTorrent is a decentralized, peer-to-peer
-//! file sharing protocol, this empowers you to build many powerful things.
+//! This crate contains building blocks for developing software using this
+//! protocol in a high-level manner.
 //!
-//! A few ideas:
+//! A few ideas that benefit from a distributed and decentralized protocol:
 //!
-//! * A new UI for the Vincenzo daemon
-//! * A program that synchronizes files between multiple servers
-//!
-//! This library has the tools for both the UI and the Daemon parts of a client.
+//! * A program that synchronizes files between multiple peers.
+//! * A fully encrypted chat client with files.
 //!
 //! # Example
 //!
