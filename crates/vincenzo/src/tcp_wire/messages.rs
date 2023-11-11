@@ -3,7 +3,7 @@ use speedy::{BigEndian, Readable, Writable};
 use std::io::Cursor;
 use tokio::io;
 use tokio_util::codec::{Decoder, Encoder};
-use tracing::warn;
+use tracing::{trace, warn};
 
 use crate::{bitfield::Bitfield, error::Error};
 
@@ -69,7 +69,6 @@ impl TryFrom<u8> for MessageId {
 #[derive(Debug)]
 pub struct PeerCodec;
 
-// bytes -> messages
 impl Encoder<Message> for PeerCodec {
     type Error = io::Error;
 
@@ -192,7 +191,7 @@ impl Decoder for PeerCodec {
                 return Ok(Some(Message::KeepAlive));
             }
         } else {
-            tracing::trace!(
+            trace!(
                 "Read buffer is {} bytes long but message is {} bytes long",
                 buf.remaining(),
                 msg_len
@@ -263,7 +262,7 @@ impl Decoder for PeerCodec {
 }
 
 /// The protocol version 1 string included in the handshake.
-pub const PROTOCOL_STRING: &str = "BitTorrent protocol";
+pub static PROTOCOL_STRING: &str = "BitTorrent protocol";
 
 /// Codec for encoding and decoding handshakes.
 ///

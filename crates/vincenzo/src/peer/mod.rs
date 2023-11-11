@@ -1,4 +1,4 @@
-//! A peer in the network that downloads and uploads data
+//! A remote peer in the network that downloads and uploads data
 pub mod session;
 use bendy::{decoding::FromBencode, encoding::ToBencode};
 use bitvec::{

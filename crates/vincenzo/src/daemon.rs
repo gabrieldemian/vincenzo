@@ -44,17 +44,18 @@ pub struct Args {
     pub stats: bool,
 }
 
-/// The daemon is the most high-level API in all backend libs.
+/// The daemon is the highest-level entity in the library.
 /// It owns [`Disk`] and [`Torrent`]s, which owns Peers.
 ///
 /// The communication with the daemon happens via TCP with messages
 /// documented at [`DaemonCodec`].
 ///
-/// The daemon and the UI can run on different machines, and so,
-/// they need a way to communicate. We use TCP, so we can benefit
+/// The daemon is decoupled from the UI and can even run on different machines,
+/// and so, they need a way to communicate. We use TCP, so we can benefit
 /// from the Framed utilities that tokio provides, making it easy
 /// to create a protocol for the Daemon. HTTP wastes more bandwith
-/// and would reduce consistency.
+/// and would reduce consistency since the BitTorrent protocol nowadays rarely
+/// uses HTTP.
 pub struct Daemon {
     pub config: DaemonConfig,
     pub disk_tx: Option<mpsc::Sender<DiskMsg>>,
