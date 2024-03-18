@@ -40,7 +40,7 @@ It is located at the default config folder of your OS.
 - Linux:   ~/.config/vincenzo/config.toml
 - Windows: C:\Users\Alice\AppData\Roaming\Vincenzo\config.toml
 - MacOS:   /Users/Alice/Library/Application Support/Vincenzo/config.toml
-  
+
 ### Default config file:
 ```toml
 download_dir = "/home/alice/Downloads"
@@ -59,7 +59,7 @@ You can also run the UI binary (maybe remotely from another machine) to control 
 
 <details>
 <summary>CLI flags of Daemon</summary>
-  
+
 ```
 Usage: vczd [OPTIONS]
 
@@ -80,6 +80,59 @@ Options:
 - [BEP 0010](http://www.bittorrent.org/beps/bep_0010.html) - Extension Protocol
 - [BEP 0015](http://www.bittorrent.org/beps/bep_0015.html) - UDP Tracker Protocol
 - [BEP 0023](http://www.bittorrent.org/beps/bep_0023.html) - Tracker Returns Compact Peer Lists
+
+## NixOS Install Instructions
+
+<details>
+<summary>Using nix profile</summary>
+
+To install Vincenzo using `nix profile`, you can use the following commands:
+
+```bash
+# Install Vincenzo using nix profile
+nix profile install github:gabrieldemian/vincenzo
+```
+
+</details>
+
+<details>
+<summary>Using Nix Flake and Home-Manager</summary>
+
+If you're using `Nix Flakes` and `Home-Manager`, you can add Vincenzo to your `configuration.nix` file:
+
+```nix
+# flake.nix
+
+{
+  inputs.vincenzo.url = "github:gabrieldemian/vincenzo";
+  # ...
+
+  outputs = {nixpkgs, ...} @ inputs: {
+    nixosConfigurations.HOSTNAME = nixpkgs.lib.nixosSystem {
+      specialArgs = { inherit inputs; }; # this is the important part
+      modules = [
+        ./configuration.nix
+      ];
+    };
+  }
+}
+
+```
+
+```nix
+# configuration.nix
+
+{config, inputs, pkgs, ...}: {
+  programs.vincenzo = {
+    enable = true;
+    package = inputs.vincenzo.packages.${pkgs.system}.default;
+    download_dir = config.xdg.userDirs.downloads
+  };
+}
+
+```
+
+</details>
 
 ## Roadmap
 - [x] Initial version of UI. <br />
