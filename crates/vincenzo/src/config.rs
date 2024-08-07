@@ -1,12 +1,9 @@
 //! Config file
-use directories::{ProjectDirs, UserDirs};
-use std::{net::SocketAddr, path::PathBuf};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use std::{net::SocketAddr, sync::LazyLock};
 
 use serde::{Deserialize, Serialize};
-use tokio::fs::{create_dir_all, File, OpenOptions};
 
-use crate::{daemon::Daemon, error::Error};
+use crate::error::Error;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Config {
@@ -14,100 +11,49 @@ pub struct Config {
     pub daemon_addr: Option<SocketAddr>,
 }
 
+static CONFIG: LazyLock<config::Config> = LazyLock::new(|| {
+    let home = std::env::var("HOME").expect("The $HOME env var is not set, therefore the program cant use default values, you should set them manually on the configuration file or through CLI flags. Use --help.");
+
+    let download_dir = std::env::var("XDG_DOWNLOAD_DIR")
+        .unwrap_or(format!("{home}/Downloads"));
+
+    // config.toml, the .toml part is omitted.
+    // right now this default guess only works in linux and macos.
+    let config_file = std::env::var("XDG_CONFIG_HOME")
+        .map(|v| format!("{v}/vincenzo/config"))
+        .unwrap_or(format!("{home}/.config/vincenzo/config"));
+
+    config::Config::builder()
+        .add_source(config::File::with_name(&config_file).required(false))
+        .add_source(config::Environment::default())
+        .set_default("download_dir", download_dir)
+        .unwrap()
+        .build()
+        .unwrap()
+});
+
 impl Config {
-    /// Returns the configuration fs File and it's path,
-    ///
-    /// If it doesn't exist, we try to create a default configuration file
-    /// at the user's config folder, which we get from their environmental
-    /// variables.
-    ///
-    /// # Errors
-    ///
-    /// The fn will try to get the download and config dirs from the users home
-    /// dir. This fn can fail if the program does not have access to any
-    /// path, or file.
-    pub async fn config_file() -> Result<(File, PathBuf), Error> {
-        // load the config file
-        // errors if the user does not have a home folder
-        let dotfile =
-            ProjectDirs::from("", "", "Vincenzo").ok_or(Error::HomeInvalid)?;
-        let mut config_path = dotfile.config_dir().to_path_buf();
-
-        // If the user has a home folder, but for some reason we cant open it
-        if !config_path.exists() {
-            create_dir_all(&config_path).await.map_err(|_| {
-                Error::FolderOpenError(config_path.to_str().unwrap().to_owned())
-            })?
-        }
-
-        // check that the user's download dir is valid
-        let download_dir = UserDirs::new()
-            .ok_or(Error::FolderNotFound(
-                "home".into(),
-                config_path.to_str().unwrap().to_owned(),
-            ))
-            .unwrap()
-            .download_dir()
-            .ok_or(Error::FolderNotFound(
-                "download".into(),
-                config_path.to_str().unwrap().to_owned(),
-            ))?
-            .to_str()
-            .unwrap()
-            .into();
-
-        config_path.push("config.toml");
-
-        // try to open the config file, and create one
-        // if it doesnt exist. This will only fail if we dont
-        // have permission to read or write to this path.
-        let mut config_file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .open(&config_path)
-            .await?;
-
-        // read the configuration file, and validate if it is
-        // a valid toml file. If it fails, it could also be empty.
-        // In both cases we write the default configuration to the file.
-        let mut dst = String::new();
-        config_file.read_to_string(&mut dst).await?;
-
-        let c = toml::from_str::<Config>(&dst);
-
-        if c.is_err() {
-            let default_config = Config {
-                download_dir,
-                daemon_addr: Some(Daemon::DEFAULT_LISTENER),
-            };
-
-            let config_str = toml::to_string(&default_config).unwrap();
-
-            config_file.write_all(config_str.as_bytes()).await.unwrap();
-        }
-
-        let config_file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .open(&config_path)
-            .await?;
-
-        Ok((config_file, config_path))
+    /// Try to load the configuration. Environmental variables have priviledge
+    /// over values from the configuration file. If both are not set, it will
+    /// try to guess the default values using $HOME.
+    pub fn load() -> Result<Self, Error> {
+        CONFIG
+            .clone()
+            .try_deserialize::<Self>()
+            .map_err(|_| Error::ConfigDeserializeError)
     }
+}
 
-    /// Load the configuration file and transform it into Self.
-    /// If the file does not exist, it tries to create the file
-    /// with the default configurations.
-    pub async fn load() -> Result<Self, Error> {
-        let (mut file, _p) = Self::config_file().await?;
+#[cfg(test)]
+pub mod tests {
+    use super::*;
 
-        let mut config_str = String::new();
-        file.read_to_string(&mut config_str).await.unwrap();
+    #[test]
+    fn override_config() {
+        std::env::set_var("DOWNLOAD_DIR", "/new/download");
 
-        let config = toml::from_str::<Config>(&config_str).unwrap();
+        let parsed = Config::load().unwrap();
 
-        Ok(config)
+        assert_eq!(parsed.download_dir, "/new/download".to_owned());
     }
 }

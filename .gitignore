@@ -1,4 +1,5 @@
 /target
+/.direnv
 log.txt
 perf.data
 flamegraph.svg

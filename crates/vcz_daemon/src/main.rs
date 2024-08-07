@@ -12,7 +12,7 @@ mod args;
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
-    let config = Config::load().await.unwrap();
+    let config = Config::load().unwrap();
 
     let download_dir = args.download_dir.unwrap_or(config.download_dir.clone());
     let mut listen = config.daemon_addr;

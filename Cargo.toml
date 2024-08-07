@@ -7,3 +7,34 @@ members = [
 ]
 
 resolver = "2"
+
+[workspace.dependencies]
+bendy = { version = "0.3.3", features = ["std"] }
+bitvec = "1.0.1"
+bytes = "1.4.0"
+clap = { version = "4.3.4", features = ["derive"] }
+config = "0.14.0"
+crossterm = { version = "0.27.0", features = ["event-stream"] }
+directories = "5.0.1"
+futures = "0.3.28"
+hashbrown = "0.14.5"
+hex = "0.4.3"
+magnet-url = "2.0.0"
+rand = "0.8.5"
+ratatui = { version = "0.22.0", features = ["all-widgets"] }
+serde = { version = "1.0.185", features = ["derive"] }
+sha1_smol = { version = "1.0.0", features = ["serde"] }
+speedy = "0.8.6"
+thiserror = "1.0.47"
+time = "0.3.36"
+tokio = { version = "1.32.0", features = ["rt", "fs", "tracing", "time", "macros", "rt-multi-thread", "sync", "io-std", "io-util",  "net"] }
+tokio-util = { version = "0.7.8", features = ["codec"] }
+toml = "0.8.0"
+tracing = "0.1.37"
+tracing-appender = "0.2.2"
+tracing-subscriber = { version = "0.3.17", features = ["time"] }
+urlencoding = "2.1.3"
+vcz = { path = "crates/vcz" }
+vcz_daemon = { path = "crates/vcz_daemon" }
+vcz_ui = { path = "crates/vcz_ui" }
+vincenzo = { path = "crates/vincenzo" }

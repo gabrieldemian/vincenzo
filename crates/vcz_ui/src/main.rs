@@ -27,7 +27,7 @@ async fn main() -> Result<(), Error> {
     fr.is_detached = true;
 
     let args = Args::parse();
-    let config = Config::load().await.unwrap();
+    let config = Config::load()?;
 
     let daemon_addr = args.daemon_addr.unwrap_or(
         config.daemon_addr.unwrap_or("127.0.0.1:3030".parse().unwrap()),
