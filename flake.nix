@@ -27,6 +27,7 @@
               export XDG_DATA_HOME="$HOME/.local/share";
             '';
             buildInputs = [
+              taplo
               pkg-config
               glib
               (

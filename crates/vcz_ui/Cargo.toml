@@ -6,16 +6,16 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-clap = {workspace=true}
-crossterm = {workspace=true}
-futures = {workspace=true}
-hashbrown = {workspace=true}
-magnet-url = {workspace=true}
-rand = {workspace=true}
-ratatui = {workspace=true}
-serde = {workspace=true}
-thiserror = {workspace=true}
-tokio = {workspace=true}
-tokio-util = {workspace=true}
-tracing = {workspace=true}
-vincenzo = {workspace=true}
+clap = { workspace = true }
+crossterm = { workspace = true }
+futures = { workspace = true }
+hashbrown = { workspace = true }
+magnet-url = { workspace = true }
+rand = { workspace = true }
+ratatui = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+vincenzo = { workspace = true }

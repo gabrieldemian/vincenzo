@@ -3,7 +3,7 @@ members = [
   "crates/vcz_daemon",
   "crates/vcz_ui",
   "crates/vincenzo",
-  "crates/vcz"
+  "crates/vcz",
 ]
 
 resolver = "2"
@@ -27,7 +27,18 @@ sha1_smol = { version = "1.0.0", features = ["serde"] }
 speedy = "0.8.6"
 thiserror = "1.0.47"
 time = "0.3.36"
-tokio = { version = "1.32.0", features = ["rt", "fs", "tracing", "time", "macros", "rt-multi-thread", "sync", "io-std", "io-util",  "net"] }
+tokio = { version = "1.32.0", features = [
+  "rt",
+  "fs",
+  "tracing",
+  "time",
+  "macros",
+  "rt-multi-thread",
+  "sync",
+  "io-std",
+  "io-util",
+  "net",
+] }
 tokio-util = { version = "0.7.8", features = ["codec"] }
 toml = "0.8.0"
 tracing = "0.1.37"
