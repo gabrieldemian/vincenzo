@@ -1,16 +1,30 @@
 //! Torrent that is spawned by the Daemon
 use crate::{
-    bitfield::Bitfield, daemon::DaemonMsg, disk::DiskMsg, error::Error, magnet::Magnet, metainfo::Info, peer::{session::ConnectionState, Direction, Peer, PeerCtx, PeerMsg}, tcp_wire::BlockInfo, tracker::{event::Event, Tracker, TrackerCtx, TrackerMsg}
+    bitfield::Bitfield,
+    daemon::DaemonMsg,
+    disk::DiskMsg,
+    error::Error,
+    magnet::Magnet,
+    metainfo::Info,
+    peer::{session::ConnectionState, Direction, Peer, PeerCtx, PeerMsg},
+    tcp_wire::BlockInfo,
+    tracker::{event::Event, Tracker, TrackerCtx, TrackerMsg},
 };
 use bendy::decoding::FromBencode;
 use bitvec::{bitvec, prelude::Msb0};
 use hashbrown::HashMap;
 use speedy::{Readable, Writable};
 use std::{
-    collections::BTreeMap, net::SocketAddr, sync::{atomic::AtomicBool, Arc}, time::Duration
+    collections::BTreeMap,
+    net::SocketAddr,
+    sync::{atomic::AtomicBool, Arc},
+    time::Duration,
 };
 use tokio::{
-    net::{TcpListener, TcpStream}, select, spawn, sync::{mpsc, oneshot, RwLock}, time::{interval, interval_at, Instant}
+    net::{TcpListener, TcpStream},
+    select, spawn,
+    sync::{mpsc, oneshot, RwLock},
+    time::{interval, interval_at, Instant},
 };
 use tracing::{debug, info, warn};
 

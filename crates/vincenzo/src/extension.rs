@@ -1,6 +1,7 @@
 //! Extensions of the standard BitTorrent protocol
 use bendy::{
-    decoding::{self, FromBencode, Object, ResultExt}, encoding::ToBencode
+    decoding::{self, FromBencode, Object, ResultExt},
+    encoding::ToBencode,
 };
 
 use crate::error;

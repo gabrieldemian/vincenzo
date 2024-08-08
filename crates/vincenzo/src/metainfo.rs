@@ -3,12 +3,14 @@
 use std::collections::VecDeque;
 
 use bendy::{
-    decoding::{self, FromBencode, Object, ResultExt}, encoding::{self, AsString, Error, SingleItemEncoder, ToBencode}
+    decoding::{self, FromBencode, Object, ResultExt},
+    encoding::{self, AsString, Error, SingleItemEncoder, ToBencode},
 };
 use tracing::warn;
 
 use crate::{
-    error, tcp_wire::{BlockInfo, BLOCK_LEN}
+    error,
+    tcp_wire::{BlockInfo, BLOCK_LEN},
 };
 
 /// Metainfo is a .torrent file with information about the Torrent.

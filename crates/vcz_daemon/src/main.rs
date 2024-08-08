@@ -5,26 +5,21 @@ use tokio_util::codec::Framed;
 use tracing::Level;
 use tracing_subscriber::FmtSubscriber;
 use vincenzo::{
-    config::Config, daemon::{Args, Daemon}, daemon_wire::{DaemonCodec, Message}
+    config::Config,
+    daemon::{Args, Daemon},
+    daemon_wire::{DaemonCodec, Message},
 };
 mod args;
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
-    let config = Config::load().unwrap();
+    let config = Config::load()?;
 
-    let download_dir = args.download_dir.unwrap_or(config.download_dir.clone());
-    let mut listen = config.daemon_addr;
+    let download_dir = config.download_dir;
+    let daemon_addr = config.daemon_addr;
 
-    if args.daemon_addr.is_some() {
-        listen = args.daemon_addr;
-    }
-
-    let is_daemon_running =
-        TcpListener::bind(listen.unwrap_or(Daemon::DEFAULT_LISTENER))
-            .await
-            .is_err();
+    let is_daemon_running = TcpListener::bind(daemon_addr).await.is_err();
 
     // if the daemon is not running, run it
     if !is_daemon_running {
@@ -38,11 +33,9 @@ async fn main() {
 
         let mut daemon = Daemon::new(download_dir);
 
-        if let Some(listen) = listen {
-            daemon.config.listen = listen;
-        }
+        daemon.config.listen = daemon_addr;
 
-        daemon.run().await.unwrap();
+        daemon.run().await?;
     }
 
     // Now that the daemon is running on a process,
@@ -51,9 +44,7 @@ async fn main() {
     // to listen to these flags and send messages to Daemon.
     //
     // 1. Create a TCP connection to Daemon
-    let socket = TcpStream::connect(listen.unwrap_or(Daemon::DEFAULT_LISTENER))
-        .await
-        .unwrap();
+    let socket = TcpStream::connect(daemon_addr).await?;
 
     let mut socket = Framed::new(socket, DaemonCodec);
 
@@ -61,10 +52,12 @@ async fn main() {
     //
     // add a a new torrent to Daemon
     if let Some(magnet) = args.magnet {
-        socket.send(Message::NewTorrent(magnet)).await.unwrap();
+        socket.send(Message::NewTorrent(magnet)).await?;
     }
 
     if args.stats {
-        socket.send(Message::PrintTorrentStatus).await.unwrap();
+        socket.send(Message::PrintTorrentStatus).await?;
     }
+
+    Ok(())
 }

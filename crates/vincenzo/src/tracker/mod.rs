@@ -6,13 +6,18 @@ pub mod event;
 
 use super::tracker::action::Action;
 use std::{
-    fmt::Debug, net::{IpAddr, Ipv4Addr, SocketAddr}, time::Duration
+    fmt::Debug,
+    net::{IpAddr, Ipv4Addr, SocketAddr},
+    time::Duration,
 };
 
 use crate::error::Error;
 use rand::Rng;
 use tokio::{
-    net::{ToSocketAddrs, UdpSocket}, select, sync::{mpsc, oneshot}, time::timeout
+    net::{ToSocketAddrs, UdpSocket},
+    select,
+    sync::{mpsc, oneshot},
+    time::timeout,
 };
 use tracing::{debug, error, warn};
 

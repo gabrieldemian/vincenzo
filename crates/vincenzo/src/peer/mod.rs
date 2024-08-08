@@ -2,15 +2,19 @@
 pub mod session;
 use bendy::{decoding::FromBencode, encoding::ToBencode};
 use bitvec::{
-    bitvec, prelude::{BitArray, Msb0}
+    bitvec,
+    prelude::{BitArray, Msb0},
 };
 use futures::{SinkExt, StreamExt};
 use hashbrown::{HashMap, HashSet};
 use std::{collections::VecDeque, net::SocketAddr, sync::Arc, time::Duration};
 use tokio::{
-    select, sync::{
-        mpsc::{self, Receiver}, oneshot, RwLock
-    }, time::{interval, interval_at, Instant}
+    select,
+    sync::{
+        mpsc::{self, Receiver},
+        oneshot, RwLock,
+    },
+    time::{interval, interval_at, Instant},
 };
 use tokio_util::codec::{Framed, FramedParts};
 
@@ -18,9 +22,16 @@ use tokio::net::TcpStream;
 use tracing::{debug, info, warn};
 
 use crate::{
-    bitfield::{Bitfield, Reserved}, disk::DiskMsg, error::Error, extension::{Extension, Metadata}, peer::session::ConnectionState, tcp_wire::{
-        messages::{Handshake, HandshakeCodec, Message, MessageId, PeerCodec}, Block, BlockInfo, BLOCK_LEN
-    }, torrent::{TorrentCtx, TorrentMsg}
+    bitfield::{Bitfield, Reserved},
+    disk::DiskMsg,
+    error::Error,
+    extension::{Extension, Metadata},
+    peer::session::ConnectionState,
+    tcp_wire::{
+        messages::{Handshake, HandshakeCodec, Message, MessageId, PeerCodec},
+        Block, BlockInfo, BLOCK_LEN,
+    },
+    torrent::{TorrentCtx, TorrentMsg},
 };
 
 use self::session::Session;

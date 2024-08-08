@@ -4,7 +4,7 @@ use thiserror::Error;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::{
-    disk::DiskMsg, peer::PeerMsg, torrent::TorrentMsg, tracker::TrackerMsg
+    disk::DiskMsg, peer::PeerMsg, torrent::TorrentMsg, tracker::TrackerMsg,
 };
 
 #[derive(Error, Debug)]

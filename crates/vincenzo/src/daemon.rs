@@ -3,17 +3,27 @@
 use futures::{SinkExt, StreamExt};
 use hashbrown::HashMap;
 use std::{
-    net::{IpAddr, Ipv4Addr, SocketAddr}, sync::Arc, time::Duration
+    net::{IpAddr, Ipv4Addr, SocketAddr},
+    sync::Arc,
+    time::Duration,
 };
 use tokio_util::codec::Framed;
-use tracing::{error, info, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use tokio::{
-    net::{TcpListener, TcpStream}, select, spawn, sync::{mpsc, oneshot, RwLock}, time::interval
+    net::{TcpListener, TcpStream},
+    select, spawn,
+    sync::{mpsc, oneshot, RwLock},
+    time::interval,
 };
 
 use crate::{
-    daemon_wire::{DaemonCodec, Message}, disk::{Disk, DiskMsg}, error::Error, magnet::Magnet, torrent::{Torrent, TorrentMsg, TorrentState, TorrentStatus}, utils::to_human_readable
+    daemon_wire::{DaemonCodec, Message},
+    disk::{Disk, DiskMsg},
+    error::Error,
+    magnet::Magnet,
+    torrent::{Torrent, TorrentMsg, TorrentState, TorrentStatus},
+    utils::to_human_readable,
 };
 use clap::Parser;
 
@@ -156,7 +166,7 @@ impl Daemon {
         let mut disk = Disk::new(disk_rx, self.config.download_dir.to_string());
 
         spawn(async move {
-            disk.run().await.unwrap();
+            let _ = disk.run().await;
         });
 
         let ctx = self.ctx.clone();
@@ -204,8 +214,6 @@ impl Daemon {
                         }
                         DaemonMsg::NewTorrent(magnet) => {
                             let _ = self.new_torrent(magnet).await;
-                            // todo: how to imemdiately draw?
-                            // Self::draw(&mut sink).await?;
                         }
                         DaemonMsg::TogglePause(info_hash) => {
                             let _ = self.toggle_pause(info_hash).await;
@@ -294,7 +302,7 @@ impl Daemon {
                             let _ = ctx.tx.send(DaemonMsg::TogglePause(id)).await;
                         }
                         Message::Quit => {
-                            trace!("daemon received Quit");
+                            info!("Daemon is quitting");
                             let _ = ctx.tx.send(DaemonMsg::Quit).await;
                         }
                         Message::PrintTorrentStatus => {
@@ -397,7 +405,10 @@ impl Daemon {
                 let _ = tx.send(TorrentMsg::Quit).await;
             });
         }
-        let _ = self.disk_tx.as_ref().unwrap().send(DiskMsg::Quit).await;
+        let _ = self
+            .disk_tx
+            .as_ref()
+            .map(|tx| async { tx.send(DiskMsg::Quit).await });
         Ok(())
     }
 }

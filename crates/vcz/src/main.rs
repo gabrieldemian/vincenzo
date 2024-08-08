@@ -1,16 +1,17 @@
 use clap::Parser;
-use tokio::{runtime::Runtime, spawn, sync::mpsc};
-use tracing::{debug, Level};
+use tokio::join;
+use tracing::Level;
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::{fmt::time::OffsetTime, FmtSubscriber};
 use vincenzo::{
-    config::Config, daemon::{Args, Daemon}, error::Error
+    config::Config,
+    daemon::{Args, Daemon},
 };
 
-use vcz_ui::{UIMsg, UI};
+use vcz_ui::{action::Action, app::App};
 
 #[tokio::main]
-async fn main() -> Result<(), Error> {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tmp = std::env::temp_dir();
     let time = std::time::SystemTime::now();
     let timestamp =
@@ -40,43 +41,29 @@ async fn main() -> Result<(), Error> {
     tracing::subscriber::set_global_default(subscriber)
         .expect("setting default subscriber failed");
 
-    let args = Args::parse();
     let config = Config::load()?;
 
-    let download_dir = args.download_dir.unwrap_or(config.download_dir.clone());
-    let daemon_addr = args.daemon_addr.unwrap_or(
-        config.daemon_addr.unwrap_or("127.0.0.1:3030".parse().unwrap()),
-    );
+    let download_dir = config.download_dir;
+    let daemon_addr = config.daemon_addr;
 
     let mut daemon = Daemon::new(download_dir);
     daemon.config.listen = daemon_addr;
 
-    let rt = Runtime::new().unwrap();
-    let handle = std::thread::spawn(move || {
-        rt.block_on(async {
-            daemon.run().await.unwrap();
-            debug!("daemon exited run");
-        });
-    });
-
     // Start and run the terminal UI
-    let (fr_tx, fr_rx) = mpsc::channel::<UIMsg>(300);
-    let mut fr = UI::new(fr_tx.clone());
-
-    spawn(async move {
-        fr.run(fr_rx, daemon_addr).await.unwrap();
-        debug!("ui exited run");
-    });
+    let mut fr = App::new();
+    let fr_tx = fr.tx.clone();
 
     let args = Args::parse();
 
     // If the user passed a magnet through the CLI,
     // start this torrent immediately
     if let Some(magnet) = args.magnet {
-        fr_tx.send(UIMsg::NewTorrent(magnet)).await.unwrap();
+        fr_tx.send(Action::NewTorrent(magnet)).unwrap();
     }
 
-    handle.join().unwrap();
+    let (v1, v2) = join!(daemon.run(), fr.run());
+    v1?;
+    v2?;
 
     Ok(())
 }

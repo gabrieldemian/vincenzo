@@ -1,17 +1,26 @@
 //! Disk is responsible for file I/O of all Torrents.
 use std::{
-    collections::VecDeque, io::SeekFrom, path::{Path, PathBuf}, sync::Arc
+    collections::VecDeque,
+    io::SeekFrom,
+    path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use hashbrown::HashMap;
 use rand::seq::SliceRandom;
 use tokio::{
-    fs::{create_dir_all, File, OpenOptions}, io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt}, sync::{mpsc::Receiver, oneshot::Sender}
+    fs::{create_dir_all, File, OpenOptions},
+    io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
+    sync::{mpsc::Receiver, oneshot::Sender},
 };
 use tracing::{debug, warn};
 
 use crate::{
-    error::Error, metainfo, peer::{PeerCtx, PeerMsg}, tcp_wire::{Block, BlockInfo}, torrent::{TorrentCtx, TorrentMsg}
+    error::Error,
+    metainfo,
+    peer::{PeerCtx, PeerMsg},
+    tcp_wire::{Block, BlockInfo},
+    torrent::{TorrentCtx, TorrentMsg},
 };
 
 #[derive(Debug)]
@@ -924,7 +933,12 @@ mod tests {
     use rand::{distributions::Alphanumeric, Rng};
 
     use crate::{
-        bitfield::Bitfield, daemon::DaemonMsg, magnet::Magnet, metainfo::{self, Info}, tcp_wire::{Block, BLOCK_LEN}, torrent::Torrent
+        bitfield::Bitfield,
+        daemon::DaemonMsg,
+        magnet::Magnet,
+        metainfo::{self, Info},
+        tcp_wire::{Block, BLOCK_LEN},
+        torrent::Torrent,
     };
 
     use super::*;
