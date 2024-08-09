@@ -9,6 +9,7 @@ use crate::error::Error;
 pub struct Config {
     pub download_dir: String,
     pub daemon_addr: SocketAddr,
+    pub quit_after_complete: bool,
 }
 
 static CONFIG: LazyLock<config::Config> = LazyLock::new(|| {
@@ -29,6 +30,8 @@ static CONFIG: LazyLock<config::Config> = LazyLock::new(|| {
         .set_default("download_dir", download_dir)
         .unwrap()
         .set_default("daemon_addr", "127.0.0.1:3030")
+        .unwrap()
+        .set_default("quit_after_complete", false)
         .unwrap()
         .build()
         .unwrap()

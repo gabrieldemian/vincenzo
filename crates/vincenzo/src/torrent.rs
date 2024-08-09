@@ -68,6 +68,42 @@ pub enum TorrentMsg {
     Quit,
 }
 
+#[derive(Debug, Clone)]
+pub struct InfoHash([u8; 20]);
+
+impl TryInto<InfoHash> for String {
+    type Error = String;
+    fn try_into(self) -> Result<InfoHash, Self::Error> {
+        let buff = hex::decode(self).map_err(|e| e.to_string())?;
+        let hash = InfoHash::try_from(buff)?;
+        Ok(hash)
+    }
+}
+
+impl Into<String> for InfoHash {
+    fn into(self) -> String {
+        hex::encode(self.0)
+    }
+}
+
+impl From<[u8; 20]> for InfoHash {
+    fn from(value: [u8; 20]) -> Self {
+        Self(value)
+    }
+}
+
+impl TryFrom<Vec<u8>> for InfoHash {
+    type Error = &'static str;
+    fn try_from(value: Vec<u8>) -> Result<Self, Self::Error> {
+        if value.len() != 20 {
+            return Err("The infohash must have exactly 20 bytes");
+        }
+        let mut buff = [0u8; 20];
+        buff[..20].copy_from_slice(&value[..20]);
+        Ok(InfoHash(buff))
+    }
+}
+
 /// This is the main entity responsible for the high-level management of
 /// a torrent download or upload.
 #[derive(Debug)]

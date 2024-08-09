@@ -3,10 +3,7 @@ use tokio::join;
 use tracing::Level;
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::{fmt::time::OffsetTime, FmtSubscriber};
-use vincenzo::{
-    config::Config,
-    daemon::{Args, Daemon},
-};
+use vincenzo::{args::Args, daemon::Daemon};
 
 use vcz_ui::{action::Action, app::App};
 
@@ -41,13 +38,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::subscriber::set_global_default(subscriber)
         .expect("setting default subscriber failed");
 
-    let config = Config::load()?;
-
-    let download_dir = config.download_dir;
-    let daemon_addr = config.daemon_addr;
-
-    let mut daemon = Daemon::new(download_dir);
-    daemon.config.listen = daemon_addr;
+    let mut daemon = Daemon::new();
 
     // Start and run the terminal UI
     let mut fr = App::new();

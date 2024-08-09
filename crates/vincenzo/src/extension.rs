@@ -54,18 +54,44 @@ pub struct M {
 /// this message is used to request, reject, and send data (info)
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Metadata {
-    pub msg_type: u8,
+    pub msg_type: MetadataMsgType,
     pub piece: u32,
     pub total_size: Option<u32>,
 }
 
+#[repr(u8)]
+#[derive(Copy, Clone, Debug, PartialEq, Default)]
+pub enum MetadataMsgType {
+    #[default]
+    Request = 0,
+    Response = 1,
+    Reject = 2,
+}
+
+impl TryFrom<u8> for MetadataMsgType {
+    type Error = error::Error;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        use MetadataMsgType::*;
+        match value {
+            v if v == Request as u8 => Ok(Request),
+            v if v == Response as u8 => Ok(Response),
+            v if v == Reject as u8 => Ok(Reject),
+            _ => Err(error::Error::BencodeError),
+        }
+    }
+}
+
 impl Metadata {
     pub fn request(piece: u32) -> Self {
-        Self { msg_type: 0, piece, total_size: None }
+        Self { msg_type: MetadataMsgType::Request, piece, total_size: None }
     }
     pub fn data(piece: u32, info: &[u8]) -> Result<Vec<u8>, error::Error> {
-        let metadata =
-            Self { msg_type: 1, piece, total_size: Some(info.len() as u32) };
+        let metadata = Self {
+            msg_type: MetadataMsgType::Response,
+            piece,
+            total_size: Some(info.len() as u32),
+        };
 
         let mut bytes =
             metadata.to_bencode().map_err(|_| error::Error::BencodeError)?;
@@ -75,7 +101,7 @@ impl Metadata {
         Ok(bytes)
     }
     pub fn reject(piece: u32) -> Self {
-        Self { msg_type: 2, piece, total_size: None }
+        Self { msg_type: MetadataMsgType::Reject, piece, total_size: None }
     }
     /// Tries to extract Info from the given buffer.
     ///
@@ -130,7 +156,7 @@ impl FromBencode for Metadata {
         }
 
         // Check that we discovered all necessary fields
-        Ok(Self { msg_type, piece, total_size })
+        Ok(Self { msg_type: msg_type.try_into()?, piece, total_size })
     }
 }
 
@@ -141,7 +167,7 @@ impl ToBencode for Metadata {
         encoder: bendy::encoding::SingleItemEncoder,
     ) -> Result<(), bendy::encoding::Error> {
         encoder.emit_dict(|mut e| {
-            e.emit_pair(b"msg_type", self.msg_type)?;
+            e.emit_pair(b"msg_type", self.msg_type as u8)?;
             e.emit_pair(b"piece", self.piece)?;
             if let Some(total_size) = self.total_size {
                 e.emit_pair(b"total_size", total_size)?;

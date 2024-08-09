@@ -55,6 +55,7 @@
 //!    }
 //! ```
 
+pub mod args;
 pub mod avg;
 pub mod bitfield;
 pub mod config;

@@ -5,18 +5,17 @@ use tokio_util::codec::Framed;
 use tracing::Level;
 use tracing_subscriber::FmtSubscriber;
 use vincenzo::{
+    args::Args,
     config::Config,
-    daemon::{Args, Daemon},
+    daemon::Daemon,
     daemon_wire::{DaemonCodec, Message},
 };
-mod args;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     let config = Config::load()?;
 
-    let download_dir = config.download_dir;
     let daemon_addr = config.daemon_addr;
 
     let is_daemon_running = TcpListener::bind(daemon_addr).await.is_err();
@@ -31,9 +30,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracing::subscriber::set_global_default(subscriber)
             .expect("setting default subscriber failed");
 
-        let mut daemon = Daemon::new(download_dir);
-
-        daemon.config.listen = daemon_addr;
+        let mut daemon = Daemon::new();
 
         daemon.run().await?;
     }
@@ -57,6 +54,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if args.stats {
         socket.send(Message::PrintTorrentStatus).await?;
+    }
+
+    if args.quit {
+        socket.send(Message::Quit).await?;
+    }
+
+    if let Some(id) = args.pause {
+        let id = hex::decode(id);
+        if let Ok(id) = id {
+            socket.send(Message::TogglePause(id.try_into().unwrap())).await?;
+        }
     }
 
     Ok(())

@@ -8,7 +8,7 @@ use std::{
     time::Duration,
 };
 use tokio_util::codec::Framed;
-use tracing::{debug, error, info, trace, warn};
+use tracing::{error, info, trace, warn};
 
 use tokio::{
     net::{TcpListener, TcpStream},
@@ -18,6 +18,7 @@ use tokio::{
 };
 
 use crate::{
+    config::Config,
     daemon_wire::{DaemonCodec, Message},
     disk::{Disk, DiskMsg},
     error::Error,
@@ -25,34 +26,6 @@ use crate::{
     torrent::{Torrent, TorrentMsg, TorrentState, TorrentStatus},
     utils::to_human_readable,
 };
-use clap::Parser;
-
-/// CLI flags used by the Daemon binary. These values
-/// will take preference over values of the config file.
-#[derive(Parser, Debug, Default)]
-#[clap(name = "Vincenzo Daemon", author = "Gabriel Lombardo")]
-#[command(author, version, about, long_about = None)]
-pub struct Args {
-    /// The Daemon will accept TCP connections on this address.
-    #[clap(long)]
-    pub daemon_addr: Option<SocketAddr>,
-
-    /// The directory in which torrents will be downloaded
-    #[clap(short, long)]
-    pub download_dir: Option<String>,
-
-    /// Download a torrent using it's magnet link, wrapped in quotes.
-    #[clap(short, long)]
-    pub magnet: Option<String>,
-
-    /// If the program should quit after all torrents are fully downloaded
-    #[clap(short, long)]
-    pub quit_after_complete: bool,
-
-    /// Print all torrent status on stdout
-    #[clap(short, long)]
-    pub stats: bool,
-}
 
 /// The daemon is the highest-level entity in the library.
 /// It owns [`Disk`] and [`Torrent`]s, which owns Peers.
@@ -67,7 +40,7 @@ pub struct Args {
 /// and would reduce consistency since the BitTorrent protocol nowadays rarely
 /// uses HTTP.
 pub struct Daemon {
-    pub config: DaemonConfig,
+    // pub config: DaemonConfig,
     pub disk_tx: Option<mpsc::Sender<DiskMsg>>,
     pub ctx: Arc<DaemonCtx>,
     /// key: info_hash
@@ -81,18 +54,6 @@ pub struct DaemonCtx {
     /// key: info_hash
     /// States of all Torrents, updated each second by the Torrent struct.
     pub torrent_states: RwLock<HashMap<[u8; 20], TorrentState>>,
-}
-
-/// Configuration of the [`Daemon`], the values here are
-/// evaluated between the config file and CLI flags.
-/// The CLI flag will have preference over the same value in the config file.
-pub struct DaemonConfig {
-    /// The Daemon will accept TCP connections on this address.
-    pub listen: SocketAddr,
-    /// The directory in which torrents will be downloaded
-    pub download_dir: String,
-    /// If the program should quit after all torrents are fully downloaded
-    pub quit_after_complete: bool,
 }
 
 /// Messages used by the [`Daemon`] for internal communication.
@@ -122,19 +83,12 @@ impl Daemon {
         SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 3030);
 
     /// Initialize the Daemon struct with the default [`DaemonConfig`].
-    pub fn new(download_dir: String) -> Self {
+    pub fn new() -> Self {
         let (tx, rx) = mpsc::channel::<DaemonMsg>(300);
-
-        let daemon_config = DaemonConfig {
-            download_dir,
-            listen: Self::DEFAULT_LISTENER,
-            quit_after_complete: false,
-        };
 
         Self {
             rx,
             disk_tx: None,
-            config: daemon_config,
             torrent_txs: HashMap::new(),
             ctx: Arc::new(DaemonCtx {
                 tx,
@@ -158,12 +112,13 @@ impl Daemon {
     /// that can be fired remotely (via TCP),
     /// can also be fired internaly (via CLI flags).
     pub async fn run(&mut self) -> Result<(), Error> {
-        let socket = TcpListener::bind(self.config.listen).await.unwrap();
+        let config = Config::load()?;
+        let socket = TcpListener::bind(config.daemon_addr).await.unwrap();
 
         let (disk_tx, disk_rx) = mpsc::channel::<DiskMsg>(300);
         self.disk_tx = Some(disk_tx);
 
-        let mut disk = Disk::new(disk_rx, self.config.download_dir.to_string());
+        let mut disk = Disk::new(disk_rx, config.download_dir);
 
         spawn(async move {
             let _ = disk.run().await;
@@ -171,7 +126,7 @@ impl Daemon {
 
         let ctx = self.ctx.clone();
 
-        info!("Daemon listening on: {}", self.config.listen);
+        info!("Daemon listening on: {}", config.daemon_addr);
 
         // Listen to remote TCP messages
         let handle = spawn(async move {
@@ -206,7 +161,7 @@ impl Daemon {
 
                             torrent_states.insert(torrent_state.info_hash, torrent_state.clone());
 
-                            if self.config.quit_after_complete && torrent_states.values().all(|v| v.status == TorrentStatus::Seeding) {
+                            if config.quit_after_complete && torrent_states.values().all(|v| v.status == TorrentStatus::Seeding) {
                                 let _ = ctx.tx.send(DaemonMsg::Quit).await;
                             }
 

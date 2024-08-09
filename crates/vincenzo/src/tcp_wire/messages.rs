@@ -24,7 +24,30 @@ pub enum Message {
     Request(BlockInfo),
     Piece(Block),
     Cancel(BlockInfo),
-    Extended((u8, Vec<u8>)),
+    Extended(u8, Vec<u8>),
+}
+
+#[repr(u8)]
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum ExtendedMessageId {
+    Handshake = 0,
+    Metadata = 3,
+}
+
+impl TryFrom<u8> for ExtendedMessageId {
+    type Error = io::Error;
+
+    fn try_from(k: u8) -> Result<Self, Self::Error> {
+        use ExtendedMessageId::*;
+        match k {
+            k if k == Handshake as u8 => Ok(Handshake),
+            k if k == Metadata as u8 => Ok(Metadata),
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Unknown extended message id",
+            )),
+        }
+    }
 }
 
 #[repr(u8)]
@@ -143,7 +166,7 @@ impl Encoder<Message> for PeerCodec {
 
                 block.encode(buf)?;
             }
-            Message::Extended((ext_id, payload)) => {
+            Message::Extended(ext_id, payload) => {
                 let msg_len = payload.len() as u32 + 2;
                 buf.put_u32(msg_len);
                 buf.put_u8(MessageId::Extended as u8);
@@ -247,13 +270,14 @@ impl Decoder for PeerCodec {
 
                 Message::Cancel(BlockInfo { index, begin, len })
             }
+            // <len=002 + payload><id=20><ext_id><payload>
             MessageId::Extended => {
                 let ext_id = buf.get_u8();
 
                 let mut payload = vec![0u8; msg_len - 2];
                 buf.copy_to_slice(&mut payload);
 
-                Message::Extended((ext_id, payload))
+                Message::Extended(ext_id, payload)
             }
         };
 
@@ -438,7 +462,7 @@ mod tests {
     #[test]
     fn extended() {
         let mut buf = BytesMut::new();
-        let msg = Message::Extended((0, vec![]));
+        let msg = Message::Extended(0, vec![]);
         PeerCodec.encode(msg.clone(), &mut buf).unwrap();
 
         // len
@@ -455,7 +479,7 @@ mod tests {
         let msg = PeerCodec.decode(&mut buf).unwrap().unwrap();
 
         match msg {
-            Message::Extended((ext_id, _payload)) => {
+            Message::Extended(ext_id, _payload) => {
                 assert_eq!(ext_id, 0);
             }
             _ => panic!(),

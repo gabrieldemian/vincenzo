@@ -25,10 +25,13 @@ use crate::{
     bitfield::{Bitfield, Reserved},
     disk::DiskMsg,
     error::Error,
-    extension::{Extension, Metadata},
+    extension::{Extension, Metadata, MetadataMsgType},
     peer::session::ConnectionState,
     tcp_wire::{
-        messages::{Handshake, HandshakeCodec, Message, MessageId, PeerCodec},
+        messages::{
+            ExtendedMessageId, Handshake, HandshakeCodec, Message, MessageId,
+            PeerCodec,
+        },
         Block, BlockInfo, BLOCK_LEN,
     },
     torrent::{TorrentCtx, TorrentMsg},
@@ -113,6 +116,42 @@ pub struct Peer {
     /// This is a cache of have_info on Torrent
     /// to avoid using locks or atomics.
     pub have_info: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct PeerId([u8; 20]);
+
+impl TryInto<PeerId> for String {
+    type Error = String;
+    fn try_into(self) -> Result<PeerId, Self::Error> {
+        let buff = hex::decode(self).map_err(|e| e.to_string())?;
+        let hash = PeerId::try_from(buff)?;
+        Ok(hash)
+    }
+}
+
+impl Into<String> for PeerId {
+    fn into(self) -> String {
+        hex::encode(self.0)
+    }
+}
+
+impl From<[u8; 20]> for PeerId {
+    fn from(value: [u8; 20]) -> Self {
+        Self(value)
+    }
+}
+
+impl TryFrom<Vec<u8>> for PeerId {
+    type Error = &'static str;
+    fn try_from(value: Vec<u8>) -> Result<Self, Self::Error> {
+        if value.len() != 20 {
+            return Err("The PeerId must have exactly 20 bytes");
+        }
+        let mut buff = [0u8; 20];
+        buff[..20].copy_from_slice(&value[..20]);
+        Ok(PeerId(buff))
+    }
 }
 
 /// Ctx that is shared with Torrent and Disk;
@@ -272,7 +311,7 @@ impl Peer {
                         .to_bencode()
                         .map_err(|_| Error::BencodeError)?;
 
-                    let extended = Message::Extended((0, ext));
+                    let extended = Message::Extended(0, ext);
 
                     socket.send(extended).await?;
                     self.try_request_info(&mut socket).await?;
@@ -524,10 +563,10 @@ impl Peer {
                                 let _ = sink.send(Message::Piece(block)).await;
                             }
                         }
-                        Message::Extended((ext_id, payload)) => {
+                        Message::Extended(ext_id, payload) => {
                             // receive extended handshake, send our extended handshake
                             // and maybe request info pieces if we don't have
-                            if ext_id == 0 {
+                            if ext_id == ExtendedMessageId::Handshake as u8 {
                                 debug!("--------------------------------------------");
                                 debug!("| {local} Extended Handshake from {remote}  |");
                                 debug!("--------------------------------------------");
@@ -546,7 +585,7 @@ impl Peer {
                                             .to_bencode()
                                             .map_err(|_| Error::BencodeError)?;
 
-                                        let msg = Message::Extended((0, ext));
+                                        let msg = Message::Extended(0, ext);
 
                                         sink.send(msg).await?;
                                         self.try_request_info(&mut sink).await?;
@@ -560,13 +599,13 @@ impl Peer {
                                 // if outbound, the peer will set ext_id to MY ut_metadata
                                 // which is 3
                                 // if inbound, i send the data with the ext_id of THE PEER
-                                Some(ut_metadata) if ext_id == 3 => {
+                                Some(ut_metadata) if ext_id == ExtendedMessageId::Metadata as u8 => {
                                     let t = self.extension.metadata_size.unwrap();
                                     let (metadata, info) = Metadata::extract(payload.clone())?;
 
                                     match metadata.msg_type {
                                         // if peer is requesting, send or reject
-                                        0 => {
+                                        MetadataMsgType::Request => {
                                             debug!("-------------------------------------");
                                             debug!("| {local} Metadata Req from {remote}  |");
                                             debug!("-------------------------------------");
@@ -582,7 +621,7 @@ impl Peer {
                                                     info!("sending data with piece {:?}", metadata.piece);
                                                     let r = Metadata::data(metadata.piece, &info_slice)?;
                                                     sink.send(
-                                                        Message::Extended((ut_metadata, r))
+                                                        Message::Extended(ut_metadata, r)
                                                     )
                                                     .await?;
                                                 }
@@ -591,13 +630,13 @@ impl Peer {
                                                     let r = Metadata::reject(metadata.piece).to_bencode()
                                                         .map_err(|_| Error::BencodeError)?;
                                                     sink.send(
-                                                        Message::Extended((ut_metadata, r))
+                                                        Message::Extended(ut_metadata, r)
                                                     )
                                                     .await?;
                                                 }
                                             }
                                         }
-                                        1 => {
+                                        MetadataMsgType::Response => {
                                             debug!("-------------------------------------");
                                             debug!("| {local} Metadata Res from {}  |", metadata.piece);
                                             debug!("-------------------------------------");
@@ -720,7 +759,7 @@ impl Peer {
                             let metadata_reject = Metadata::reject(index);
                             let metadata_reject = metadata_reject.to_bencode().unwrap();
 
-                            sink.send(Message::Extended((3, metadata_reject))).await?;
+                            sink.send(Message::Extended(3, metadata_reject)).await?;
                         }
                         PeerMsg::Quit => {
                             debug!("{local} Quit");
@@ -1046,8 +1085,7 @@ impl Peer {
                     debug!("request {h:?}");
 
                     let h = h.to_bencode().map_err(|_| Error::BencodeError)?;
-                    let _ =
-                        sink.send(Message::Extended((ut_metadata, h))).await;
+                    let _ = sink.send(Message::Extended(ut_metadata, h)).await;
                 }
             }
         }
