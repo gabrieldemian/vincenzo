@@ -4,10 +4,10 @@ use crate::{
     daemon::DaemonMsg,
     disk::DiskMsg,
     error::Error,
+    extensions::core::BlockInfo,
     magnet::Magnet,
     metainfo::Info,
     peer::{session::ConnectionState, Direction, Peer, PeerCtx, PeerMsg},
-    tcp_wire::BlockInfo,
     tracker::{event::Event, Tracker, TrackerCtx, TrackerMsg},
 };
 use bendy::decoding::FromBencode;

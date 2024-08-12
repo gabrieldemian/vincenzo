@@ -1,14 +1,46 @@
-//! Extensions of the standard BitTorrent protocol
+//! Types for the Extended protocol.
+//!
+//! <http://www.bittorrent.org/beps/bep_0010.html>
+
+pub mod codec;
+mod r#trait;
+
+// re-exports
+pub use r#trait::*;
+
 use bendy::{
-    decoding::{self, FromBencode, Object, ResultExt},
+    decoding::{FromBencode, Object, ResultExt},
     encoding::ToBencode,
 };
 
-use crate::error;
+#[repr(u8)]
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum ExtendedMessageId {
+    Handshake = 0,
+    Metadata = 3,
+}
+
+impl TryFrom<u8> for ExtendedMessageId {
+    type Error = std::io::Error;
+
+    fn try_from(k: u8) -> Result<Self, Self::Error> {
+        use ExtendedMessageId::*;
+        match k {
+            k if k == Handshake as u8 => Ok(Handshake),
+            k if k == Metadata as u8 => Ok(Metadata),
+            _ => Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Unknown extended message id",
+            )),
+        }
+    }
+}
 
 /// This is the payload of the extension protocol described on:
-/// BEP 10 - Extension Protocol
+/// BEP 0010 - Extension Protocol
 /// <http://www.bittorrent.org/beps/bep_0010.html>
+///
+/// Other protocols may add new fields to this struct.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Extension {
     /// messages (dictionary of supported extensions)
@@ -20,10 +52,18 @@ pub struct Extension {
     /// number of outstanding requests messages this client supports
     /// without dropping any.
     pub reqq: Option<u16>,
-    /// added by BEP 9
+    /// added by Metadata protocol, BEP 0009
     /// the size of the metadata file, which is the
     /// info-dictionary part of the metainfo(.torrent) file
     pub metadata_size: Option<u32>,
+}
+
+impl TryInto<Vec<u8>> for Extension {
+    type Error = bendy::encoding::Error;
+
+    fn try_into(self) -> Result<Vec<u8>, Self::Error> {
+        self.to_bencode()
+    }
 }
 
 impl Extension {
@@ -46,140 +86,14 @@ impl Extension {
 /// and naturally, we are only interested in reading this part of the metadata
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct M {
+    /// Added by Metadata protocol BEP 0009.
     pub ut_metadata: Option<u8>,
     pub ut_pex: Option<u8>,
 }
 
-/// Metadata message used by Metadata Extension protocol (BEP 9)
-/// this message is used to request, reject, and send data (info)
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct Metadata {
-    pub msg_type: MetadataMsgType,
-    pub piece: u32,
-    pub total_size: Option<u32>,
-}
-
-#[repr(u8)]
-#[derive(Copy, Clone, Debug, PartialEq, Default)]
-pub enum MetadataMsgType {
-    #[default]
-    Request = 0,
-    Response = 1,
-    Reject = 2,
-}
-
-impl TryFrom<u8> for MetadataMsgType {
-    type Error = error::Error;
-
-    fn try_from(value: u8) -> Result<Self, Self::Error> {
-        use MetadataMsgType::*;
-        match value {
-            v if v == Request as u8 => Ok(Request),
-            v if v == Response as u8 => Ok(Response),
-            v if v == Reject as u8 => Ok(Reject),
-            _ => Err(error::Error::BencodeError),
-        }
-    }
-}
-
-impl Metadata {
-    pub fn request(piece: u32) -> Self {
-        Self { msg_type: MetadataMsgType::Request, piece, total_size: None }
-    }
-    pub fn data(piece: u32, info: &[u8]) -> Result<Vec<u8>, error::Error> {
-        let metadata = Self {
-            msg_type: MetadataMsgType::Response,
-            piece,
-            total_size: Some(info.len() as u32),
-        };
-
-        let mut bytes =
-            metadata.to_bencode().map_err(|_| error::Error::BencodeError)?;
-
-        bytes.extend_from_slice(info);
-
-        Ok(bytes)
-    }
-    pub fn reject(piece: u32) -> Self {
-        Self { msg_type: MetadataMsgType::Reject, piece, total_size: None }
-    }
-    /// Tries to extract Info from the given buffer.
-    ///
-    /// # Errors
-    ///
-    /// This function will return an error if the buffer is not a valid Data
-    /// type of the metadata extension protocol
-    pub fn extract(mut buf: Vec<u8>) -> Result<(Self, Vec<u8>), error::Error> {
-        // let mut info_buf = Vec::new();
-        let mut metadata_buf = Vec::new();
-
-        // find end of info dict, which is always the first "ee"
-        if let Some(i) = buf.windows(2).position(|w| w == b"ee") {
-            metadata_buf = buf.drain(..i + 2).collect();
-        }
-
-        let metadata = Metadata::from_bencode(&metadata_buf)
-            .map_err(|_| error::Error::BencodeError)?;
-
-        Ok((metadata, buf))
-    }
-}
-
-impl FromBencode for Metadata {
-    fn decode_bencode_object(object: Object) -> Result<Self, decoding::Error>
-    where
-        Self: Sized,
-    {
-        let mut msg_type = 0;
-        let mut piece = 0;
-        let mut total_size = None;
-
-        let mut dict_dec = object.try_into_dictionary()?;
-
-        while let Some(pair) = dict_dec.next_pair()? {
-            match pair {
-                (b"msg_type", value) => {
-                    msg_type =
-                        u8::decode_bencode_object(value).context("msg_type")?;
-                }
-                (b"piece", value) => {
-                    piece =
-                        u32::decode_bencode_object(value).context("piece")?;
-                }
-                (b"total_size", value) => {
-                    total_size = u32::decode_bencode_object(value)
-                        .context("total_size")
-                        .map(Some)?;
-                }
-                _ => {}
-            }
-        }
-
-        // Check that we discovered all necessary fields
-        Ok(Self { msg_type: msg_type.try_into()?, piece, total_size })
-    }
-}
-
-impl ToBencode for Metadata {
-    const MAX_DEPTH: usize = 20;
-    fn encode(
-        &self,
-        encoder: bendy::encoding::SingleItemEncoder,
-    ) -> Result<(), bendy::encoding::Error> {
-        encoder.emit_dict(|mut e| {
-            e.emit_pair(b"msg_type", self.msg_type as u8)?;
-            e.emit_pair(b"piece", self.piece)?;
-            if let Some(total_size) = self.total_size {
-                e.emit_pair(b"total_size", total_size)?;
-            };
-            Ok(())
-        })?;
-        Ok(())
-    }
-}
-
 impl ToBencode for M {
     const MAX_DEPTH: usize = 20;
+
     fn encode(
         &self,
         encoder: bendy::encoding::SingleItemEncoder,
@@ -233,6 +147,7 @@ impl FromBencode for M {
 
 impl ToBencode for Extension {
     const MAX_DEPTH: usize = 20;
+
     fn encode(
         &self,
         encoder: bendy::encoding::SingleItemEncoder,
@@ -304,7 +219,7 @@ impl FromBencode for Extension {
 
 #[cfg(test)]
 mod tests {
-    use crate::metainfo::MetaInfo;
+    use crate::{extensions::metadata::Metadata, metainfo::MetaInfo};
 
     use super::*;
 
@@ -322,7 +237,8 @@ mod tests {
 
     #[test]
     fn can_create_metadata_data() {
-        let metainfo_bytes = include_bytes!("../../../test-files/book.torrent");
+        let metainfo_bytes =
+            include_bytes!("../../../../test-files/book.torrent");
         let metainfo = MetaInfo::from_bencode(metainfo_bytes).unwrap();
 
         let info = metainfo.info;

@@ -10,7 +10,7 @@ use tracing::warn;
 
 use crate::{
     error,
-    tcp_wire::{BlockInfo, BLOCK_LEN},
+    extensions::core::{BlockInfo, BLOCK_LEN},
 };
 
 /// Metainfo is a .torrent file with information about the Torrent.

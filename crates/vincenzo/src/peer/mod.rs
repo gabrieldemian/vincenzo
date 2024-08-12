@@ -25,15 +25,15 @@ use crate::{
     bitfield::{Bitfield, Reserved},
     disk::DiskMsg,
     error::Error,
-    extension::{Extension, Metadata, MetadataMsgType},
-    peer::session::ConnectionState,
-    tcp_wire::{
-        messages::{
-            ExtendedMessageId, Handshake, HandshakeCodec, Message, MessageId,
-            PeerCodec,
+    extensions::{
+        core::{
+            Block, BlockInfo, Core, CoreCodec, CoreId, Handshake,
+            HandshakeCodec, BLOCK_LEN,
         },
-        Block, BlockInfo, BLOCK_LEN,
+        extended::{ExtendedMessageId, Extension},
+        metadata::{Metadata, MetadataMsgType},
     },
+    peer::session::ConnectionState,
     torrent::{TorrentCtx, TorrentMsg},
 };
 
@@ -48,7 +48,7 @@ pub enum Direction {
     Inbound,
 }
 
-/// Messages that peers send to each other.
+/// Cores that peers send to each other.
 #[derive(Debug)]
 pub enum PeerMsg {
     /// When we download a full piece, we need to send Have's
@@ -188,7 +188,7 @@ impl Peer {
         direction: Direction,
         info_hash: [u8; 20],
         local_peer_id: [u8; 20],
-    ) -> Result<(Framed<TcpStream, PeerCodec>, Handshake), Error> {
+    ) -> Result<(Framed<TcpStream, CoreCodec>, Handshake), Error> {
         let local = socket.local_addr()?;
         let remote = socket.peer_addr()?;
         let mut socket = Framed::new(socket, HandshakeCodec);
@@ -213,7 +213,7 @@ impl Peer {
             // receive the second handshake, if outbound
             if direction == Direction::Outbound {
                 let old_parts = socket.into_parts();
-                let mut new_parts = FramedParts::new(old_parts.io, PeerCodec);
+                let mut new_parts = FramedParts::new(old_parts.io, CoreCodec);
                 new_parts.read_buf = old_parts.read_buf;
                 new_parts.write_buf = old_parts.write_buf;
                 let socket = Framed::from_parts(new_parts);
@@ -232,7 +232,7 @@ impl Peer {
         }
 
         let old_parts = socket.into_parts();
-        let mut new_parts = FramedParts::new(old_parts.io, PeerCodec);
+        let mut new_parts = FramedParts::new(old_parts.io, CoreCodec);
         new_parts.read_buf = old_parts.read_buf;
         new_parts.write_buf = old_parts.write_buf;
         let socket = Framed::from_parts(new_parts);
@@ -283,7 +283,7 @@ impl Peer {
     pub async fn run(
         &mut self,
         direction: Direction,
-        mut socket: Framed<TcpStream, PeerCodec>,
+        mut socket: Framed<TcpStream, CoreCodec>,
     ) -> Result<(), Error> {
         self.session.state.connection = ConnectionState::Connecting;
         let local = self.ctx.local_addr;
@@ -311,7 +311,7 @@ impl Peer {
                         .to_bencode()
                         .map_err(|_| Error::BencodeError)?;
 
-                    let extended = Message::Extended(0, ext);
+                    let extended = Core::Extended(0, ext);
 
                     socket.send(extended).await?;
                     self.try_request_info(&mut socket).await?;
@@ -338,15 +338,15 @@ impl Peer {
         let bitfield = self.torrent_ctx.bitfield.read().await;
         if bitfield.len() > 0 {
             debug!("{local} sending bitfield to {remote}");
-            sink.send(Message::Bitfield(bitfield.clone())).await?;
+            sink.send(Core::Bitfield(bitfield.clone())).await?;
         }
         drop(bitfield);
 
         // todo: implement choke algorithm
         // send Unchoke
         self.session.state.am_choking = false;
-        sink.send(Message::Unchoke).await?;
-        // sink.send(Message::Interested).await?;
+        sink.send(Core::Unchoke).await?;
+        // sink.send(Core::Interested).await?;
 
         // when running a new Peer, we might
         // already have the info downloaded.
@@ -379,16 +379,16 @@ impl Peer {
                 }
                 // send Keepalive every 2 minutes
                 _ = keep_alive_timer.tick(), if self.have_info => {
-                    sink.send(Message::KeepAlive).await?;
+                    sink.send(Core::KeepAlive).await?;
                 }
                 Some(Ok(msg)) = stream.next() => {
                     match msg {
-                        Message::KeepAlive => {
+                        Core::KeepAlive => {
                             debug!("--------------------------------");
                             debug!("| {local} Keepalive  |");
                             debug!("--------------------------------");
                         }
-                        Message::Bitfield(bitfield) => {
+                        Core::Bitfield(bitfield) => {
                             // take entire pieces from bitfield
                             // and put in pending_requests
                             debug!("----------------------------------");
@@ -415,7 +415,7 @@ impl Peer {
                                 debug!("{local} interested due to Bitfield");
 
                                 self.session.state.am_interested = true;
-                                sink.send(Message::Interested).await?;
+                                sink.send(Core::Interested).await?;
 
                                 if self.can_request() {
                                     self.prepare_for_download().await;
@@ -425,7 +425,7 @@ impl Peer {
 
                             debug!("------------------------------\n");
                         }
-                        Message::Unchoke => {
+                        Core::Unchoke => {
                             self.session.state.peer_choking = false;
                             debug!("---------------------------------");
                             debug!("| {local} Unchoke  |");
@@ -437,26 +437,26 @@ impl Peer {
                             }
                             debug!("---------------------------------\n");
                         }
-                        Message::Choke => {
+                        Core::Choke => {
                             self.session.state.peer_choking = true;
                             debug!("--------------------------------");
                             debug!("| {local} Choke  |");
                             debug!("---------------------------------");
                             self.free_pending_blocks().await;
                         }
-                        Message::Interested => {
+                        Core::Interested => {
                             debug!("------------------------------");
                             debug!("| {local} Interested  |");
                             debug!("-------------------------------");
                             self.session.state.peer_interested = true;
                         }
-                        Message::NotInterested => {
+                        Core::NotInterested => {
                             debug!("------------------------------");
                             debug!("| {local} NotInterested  |");
                             debug!("-------------------------------");
                             self.session.state.peer_interested = false;
                         }
-                        Message::Have(piece) => {
+                        Core::Have(piece) => {
                             debug!("-------------------------------");
                             debug!("| {local} Have {piece}  |");
                             debug!("-------------------------------");
@@ -492,7 +492,7 @@ impl Peer {
                                         debug!("{local} we are interested due to Have");
 
                                         self.session.state.am_interested = true;
-                                        sink.send(Message::Interested).await?;
+                                        sink.send(Core::Interested).await?;
 
                                         if self.can_request() {
                                             self.prepare_for_download().await;
@@ -502,7 +502,7 @@ impl Peer {
                                 }
                             }
                         }
-                        Message::Piece(block) => {
+                        Core::Piece(block) => {
                             debug!("-------------------------------");
                             debug!("| {local} Piece {}  |", block.index);
                             debug!("-------------------------------");
@@ -519,14 +519,14 @@ impl Peer {
 
                             debug!("---------------------------------\n");
                         }
-                        Message::Cancel(block_info) => {
+                        Core::Cancel(block_info) => {
                             debug!("------------------------------");
                             debug!("| {local} Cancel from {remote}  |");
                             debug!("------------------------------");
                             debug!("{block_info:?}");
                             self.incoming_requests.remove(&block_info);
                         }
-                        Message::Request(block_info) => {
+                        Core::Request(block_info) => {
                             debug!("------------------------------");
                             debug!("| {local} Request from {remote}  |");
                             debug!("------------------------------");
@@ -560,10 +560,10 @@ impl Peer {
                                     begin,
                                     block: bytes,
                                 };
-                                let _ = sink.send(Message::Piece(block)).await;
+                                let _ = sink.send(Core::Piece(block)).await;
                             }
                         }
-                        Message::Extended(ext_id, payload) => {
+                        Core::Extended(ext_id, payload) => {
                             // receive extended handshake, send our extended handshake
                             // and maybe request info pieces if we don't have
                             if ext_id == ExtendedMessageId::Handshake as u8 {
@@ -585,7 +585,7 @@ impl Peer {
                                             .to_bencode()
                                             .map_err(|_| Error::BencodeError)?;
 
-                                        let msg = Message::Extended(0, ext);
+                                        let msg = Core::Extended(ExtendedMessageId::Handshake as u8, ext);
 
                                         sink.send(msg).await?;
                                         self.try_request_info(&mut sink).await?;
@@ -621,7 +621,7 @@ impl Peer {
                                                     info!("sending data with piece {:?}", metadata.piece);
                                                     let r = Metadata::data(metadata.piece, &info_slice)?;
                                                     sink.send(
-                                                        Message::Extended(ut_metadata, r)
+                                                        Core::Extended(ut_metadata, r)
                                                     )
                                                     .await?;
                                                 }
@@ -630,7 +630,7 @@ impl Peer {
                                                     let r = Metadata::reject(metadata.piece).to_bencode()
                                                         .map_err(|_| Error::BencodeError)?;
                                                     sink.send(
-                                                        Message::Extended(ut_metadata, r)
+                                                        Core::Extended(ut_metadata, r)
                                                     )
                                                     .await?;
                                                 }
@@ -674,7 +674,7 @@ impl Peer {
                                 // send Have to this peer if he doesnt have this piece
                                 if !b {
                                     debug!("sending have {piece} to peer {local}");
-                                    let _ = sink.send(Message::Have(piece)).await;
+                                    let _ = sink.send(Core::Have(piece)).await;
                                 }
                             }
                             drop(pieces);
@@ -695,14 +695,14 @@ impl Peer {
                                     self.outgoing_requests_timeout
                                         .insert(block_info.clone(), Instant::now());
 
-                                    sink.send(Message::Request(block_info)).await?;
+                                    sink.send(Core::Request(block_info)).await?;
                                 }
                             }
                         }
                         PeerMsg::NotInterested => {
                             debug!("{local} NotInterested {remote}");
                             self.session.state.am_interested = false;
-                            sink.send(Message::NotInterested).await?;
+                            sink.send(Core::NotInterested).await?;
                         }
                         PeerMsg::Pause => {
                             debug!("{local} Pause");
@@ -710,16 +710,16 @@ impl Peer {
 
                             if self.session.state.am_interested {
                                 self.session.state.am_interested = false;
-                                let _ = sink.send(Message::NotInterested).await;
+                                let _ = sink.send(Core::NotInterested).await;
                             }
 
                             if !self.session.state.peer_choking {
                                 self.session.state.peer_choking = true;
-                                let _ = sink.send(Message::Choke).await;
+                                let _ = sink.send(Core::Choke).await;
                             }
 
                             for block_info in &self.outgoing_requests {
-                                sink.send(Message::Cancel(block_info.clone())).await?;
+                                sink.send(Core::Cancel(block_info.clone())).await?;
                             }
 
                             self.free_pending_blocks().await;
@@ -729,7 +729,7 @@ impl Peer {
                             self.session.state.peer_choking = self.session.state.prev_peer_choking;
 
                             if !self.session.state.peer_choking {
-                                sink.send(Message::Unchoke).await?;
+                                sink.send(Core::Unchoke).await?;
                             }
 
                             let peer_has_piece = self.has_piece_not_in_local().await;
@@ -737,7 +737,7 @@ impl Peer {
                             if peer_has_piece {
                                 debug!("{local} we are interested due to Bitfield");
                                 self.session.state.am_interested = true;
-                                sink.send(Message::Interested).await?;
+                                sink.send(Core::Interested).await?;
 
                                 if self.can_request() {
                                     self.request_block_infos(&mut sink).await?;
@@ -748,7 +748,7 @@ impl Peer {
                             debug!("{local} CancelBlock {remote}");
                             self.outgoing_requests.remove(&block_info);
                             self.outgoing_requests_timeout.remove(&block_info);
-                            sink.send(Message::Cancel(block_info)).await?;
+                            sink.send(Core::Cancel(block_info)).await?;
                         }
                         PeerMsg::SeedOnly => {
                             debug!("{local} SeedOnly");
@@ -759,7 +759,7 @@ impl Peer {
                             let metadata_reject = Metadata::reject(index);
                             let metadata_reject = metadata_reject.to_bencode().unwrap();
 
-                            sink.send(Message::Extended(3, metadata_reject)).await?;
+                            sink.send(Core::Extended(3, metadata_reject)).await?;
                         }
                         PeerMsg::Quit => {
                             debug!("{local} Quit");
@@ -862,7 +862,7 @@ impl Peer {
     /// - Update stats about the Peer.
     pub async fn tick<T>(&mut self, sink: &mut T) -> Result<(), Error>
     where
-        T: SinkExt<Message> + Sized + std::marker::Unpin,
+        T: SinkExt<Core> + Sized + std::marker::Unpin,
     {
         // resend requests if we have any pending and more time has elapsed
         // since the last received block than the current timeout value
@@ -881,7 +881,7 @@ impl Peer {
         sink: &mut T,
     ) -> Result<(), Error>
     where
-        T: SinkExt<Message> + Sized + std::marker::Unpin,
+        T: SinkExt<Core> + Sized + std::marker::Unpin,
     {
         let local = self.ctx.local_addr;
 
@@ -904,7 +904,7 @@ impl Peer {
                     elapsed_since_last_request.as_millis(),
                 );
 
-                let _ = sink.send(Message::Request(block.clone())).await;
+                let _ = sink.send(Core::Request(block.clone())).await;
                 *timeout = Instant::now();
 
                 debug!(
@@ -961,7 +961,7 @@ impl Peer {
         sink: &mut T,
     ) -> Result<(), Error>
     where
-        T: SinkExt<Message> + Sized + std::marker::Unpin,
+        T: SinkExt<Core> + Sized + std::marker::Unpin,
     {
         if self.session.seed_only {
             warn!("Calling request_block_infos when peer is in seed-only mode");
@@ -1021,12 +1021,12 @@ impl Peer {
                 // debug!("{local} requesting \n {block_info:#?} to {remote}");
                 self.outgoing_requests.insert(block_info.clone());
 
-                let _ = sink.send(Message::Request(block_info.clone())).await;
+                let _ = sink.send(Core::Request(block_info.clone())).await;
 
                 self.outgoing_requests_timeout
                     .insert(block_info, Instant::now());
 
-                let req_id: u64 = MessageId::Request as u64;
+                let req_id: u64 = CoreId::Request as u64;
 
                 self.session.counters.protocol.up += req_id;
             }
@@ -1062,7 +1062,7 @@ impl Peer {
         sink: &mut T,
     ) -> Result<(), Error>
     where
-        T: SinkExt<Message> + Sized + std::marker::Unpin,
+        T: SinkExt<Core> + Sized + std::marker::Unpin,
     {
         // only request info if we dont have an Info
         // and the peer supports the metadata extension protocol
@@ -1085,7 +1085,7 @@ impl Peer {
                     debug!("request {h:?}");
 
                     let h = h.to_bencode().map_err(|_| Error::BencodeError)?;
-                    let _ = sink.send(Message::Extended(ut_metadata, h)).await;
+                    let _ = sink.send(Core::Extended(ut_metadata, h)).await;
                 }
             }
         }

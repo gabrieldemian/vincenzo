@@ -13,7 +13,7 @@ pub enum Error {
     ConnectSendFailed,
     #[error("Failed to decode or encode the bencode buffer")]
     BencodeError,
-    #[error("Failed to resolve socket address")]
+    #[error("IO error")]
     PeerSocketAddrs(#[from] io::Error),
     #[error("Peer resolved to no unusable addresses")]
     PeerSocketAddr,

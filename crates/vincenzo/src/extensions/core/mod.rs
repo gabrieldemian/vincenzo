@@ -1,6 +1,12 @@
 //! Documentation of the "TCP Wire" protocol between Peers in the network.
 //! Peers will follow this protocol to exchange information about torrents.
-pub mod messages;
+
+mod codec;
+mod handshake_codec;
+
+// re-exports
+pub use codec::*;
+pub use handshake_codec::*;
 
 use bytes::{BufMut, BytesMut};
 use tokio::io;
@@ -8,11 +14,11 @@ use tokio::io;
 /// The default block_len that most clients support, some clients drop
 /// the connection on blocks larger than this value.
 ///
-/// Tha last block of a piece might be smallar.
+/// Tha last block of a piece might be smaller.
 pub const BLOCK_LEN: u32 = 16384;
 
-/// Protocol String
-/// String identifier of the string "BitTorrent protocol", in bytes.
+/// Protocol String (PSTR)
+/// Bytes of the string "BitTorrent protocol". Used during handshake.
 pub const PSTR: [u8; 19] = [
     66, 105, 116, 84, 111, 114, 114, 101, 110, 116, 32, 112, 114, 111, 116,
     111, 99, 111, 108,
@@ -20,6 +26,9 @@ pub const PSTR: [u8; 19] = [
 
 /// A Block is a subset of a Piece,
 /// pieces are subsets of the entire Torrent data.
+///
+/// Blocks may overlap pieces, for example, part of a block may start at piece
+/// 0, but end at piece 1.
 ///
 /// When peers send data (seed) to us, they send us Blocks.
 /// This happens on the "Piece" message of the peer wire protocol.

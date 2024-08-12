@@ -17,9 +17,9 @@ use tracing::{debug, warn};
 
 use crate::{
     error::Error,
+    extensions::core::{Block, BlockInfo},
     metainfo,
     peer::{PeerCtx, PeerMsg},
-    tcp_wire::{Block, BlockInfo},
     torrent::{TorrentCtx, TorrentMsg},
 };
 
