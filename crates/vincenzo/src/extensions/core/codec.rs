@@ -4,23 +4,14 @@ use tokio::io;
 use tokio_util::codec::{Decoder, Encoder};
 use tracing::trace;
 
-use super::{super::metadata::codec::Metadata, Block, BlockInfo};
+use super::{Block, BlockInfo};
 use crate::{
-    bitfield::Bitfield,
-    extensions::extended::{codec::Extended, ExtensionTrait},
+    bitfield::Bitfield, error::Error, extensions::extended::ExtensionTrait,
 };
-
-/// A network message exchanged between Peers, each branch represents a possible
-/// protocol that the message may be.
-#[derive(Debug, Clone, PartialEq)]
-pub enum Message {
-    Core(Core),
-    Extended(Extended),
-    Metadata(Metadata),
-}
 
 /// Core messages exchanged after a successful handshake.
 /// These are from the vanilla protocol, with no extensions.
+#[repr(u8)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum Core {
     Choke,
@@ -170,7 +161,7 @@ impl Encoder<Core> for CoreCodec {
 
 impl Decoder for CoreCodec {
     type Item = Core;
-    type Error = io::Error;
+    type Error = Error;
 
     fn decode(
         &mut self,
@@ -272,16 +263,23 @@ impl Decoder for CoreCodec {
     }
 }
 
-impl ExtensionTrait<Core> for CoreCodec {
+impl ExtensionTrait for CoreCodec {
+    type Codec = CoreCodec;
+    type Msg = Core;
+
     // Core does not have an extension ID,
     // maybe create another trait for an extension that has an id?
     const ID: u8 = 255;
 
     fn handle_msg(
         &self,
-        msg: Core,
+        msg: Self::Msg,
         peer_ctx: std::sync::Arc<crate::peer::PeerCtx>,
     ) {
+    }
+
+    fn codec(&self) -> Self::Codec {
+        CoreCodec
     }
 }
 

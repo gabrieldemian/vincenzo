@@ -65,7 +65,7 @@ impl TryInto<Metadata> for Core {
     /// Parse [`Core::Extended`] into a [`Metadata`] message.
     fn try_into(self) -> Result<Metadata, Self::Error> {
         if let Core::Extended(id, payload) = self {
-            let ext_id = <MetadataCodec as ExtensionTrait<Metadata>>::ID;
+            let ext_id = <MetadataCodec as ExtensionTrait>::ID;
 
             if id != ext_id {
                 // todo: change this error
@@ -112,13 +112,19 @@ impl TryInto<Core> for Metadata {
     }
 }
 
-impl ExtensionTrait<Metadata> for MetadataCodec {
+impl ExtensionTrait for MetadataCodec {
+    type Codec = MetadataCodec;
+    type Msg = Metadata;
     const ID: u8 = 3;
 
     fn handle_msg(
         &self,
-        msg: Metadata,
+        msg: Self::Msg,
         peer_ctx: std::sync::Arc<crate::peer::PeerCtx>,
     ) {
+    }
+
+    fn codec(&self) -> Self::Codec {
+        MetadataCodec
     }
 }

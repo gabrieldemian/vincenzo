@@ -935,9 +935,9 @@ mod tests {
     use crate::{
         bitfield::Bitfield,
         daemon::DaemonMsg,
+        extensions::core::{Block, BLOCK_LEN},
         magnet::Magnet,
         metainfo::{self, Info},
-        tcp_wire::{Block, BLOCK_LEN},
         torrent::Torrent,
     };
 

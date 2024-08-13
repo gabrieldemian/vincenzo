@@ -40,7 +40,7 @@ impl TryInto<Extended> for Core {
 
     /// Try to convert a [`Core::Extended`] to [`Extended`] message.
     fn try_into(self) -> Result<Extended, Self::Error> {
-        let ext_id = <ExtendedCodec as ExtensionTrait<Extended>>::ID;
+        let ext_id = <ExtendedCodec as ExtensionTrait>::ID;
 
         if let Core::Extended(id, payload) = self {
             if id != ext_id {
@@ -86,7 +86,10 @@ impl Decoder for ExtendedCodec {
     }
 }
 
-impl ExtensionTrait<Extended> for ExtendedCodec {
+impl ExtensionTrait for ExtendedCodec {
+    type Codec = ExtendedCodec;
+    type Msg = Extended;
+
     // handshake id
     const ID: u8 = 0;
 
@@ -95,5 +98,9 @@ impl ExtensionTrait<Extended> for ExtendedCodec {
         msg: Extended,
         peer_ctx: std::sync::Arc<crate::peer::PeerCtx>,
     ) {
+    }
+
+    fn codec(&self) -> Self::Codec {
+        ExtendedCodec
     }
 }
