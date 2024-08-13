@@ -1,12 +1,14 @@
 use bytes::{Buf, BufMut, BytesMut};
+use futures::SinkExt;
 use std::io::Cursor;
 use tokio::io;
 use tokio_util::codec::{Decoder, Encoder};
 use tracing::trace;
 
-use super::{Block, BlockInfo};
+use super::{Block, BlockInfo, Message};
 use crate::{
     bitfield::Bitfield, error::Error, extensions::extended::ExtensionTrait,
+    peer::Peer,
 };
 
 /// Core messages exchanged after a successful handshake.
@@ -271,15 +273,24 @@ impl ExtensionTrait for CoreCodec {
     // maybe create another trait for an extension that has an id?
     const ID: u8 = 255;
 
-    fn handle_msg(
+    async fn handle_msg<T: SinkExt<Message> + Sized + std::marker::Unpin>(
         &self,
         msg: Self::Msg,
-        peer_ctx: std::sync::Arc<crate::peer::PeerCtx>,
-    ) {
+        peer: &mut Peer,
+        sink: &mut T,
+    ) -> Result<(), Error> {
+        todo!()
     }
 
     fn codec(&self) -> Self::Codec {
         CoreCodec
+    }
+
+    fn is_supported(
+        &self,
+        _extension: &crate::extensions::extended::Extension,
+    ) -> bool {
+        true
     }
 }
 

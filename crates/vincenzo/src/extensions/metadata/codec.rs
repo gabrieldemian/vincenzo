@@ -1,8 +1,13 @@
 //! Types for the metadata protocol codec.
 
-use crate::error::Error;
+use crate::{
+    error::Error, extensions::core::Message, peer::Peer, torrent::TorrentMsg,
+};
 use bendy::encoding::ToBencode;
+use futures::SinkExt;
+use tokio::sync::oneshot;
 use tokio_util::codec::{Decoder, Encoder};
+use tracing::{debug, info};
 
 use crate::extensions::{
     core::{Core, CoreCodec, CoreId},
@@ -28,6 +33,7 @@ pub enum Metadata {
     Reject(u32),
 }
 
+#[derive(Debug)]
 pub struct MetadataCodec;
 
 impl Encoder<Metadata> for MetadataCodec {
@@ -115,13 +121,86 @@ impl TryInto<Core> for Metadata {
 impl ExtensionTrait for MetadataCodec {
     type Codec = MetadataCodec;
     type Msg = Metadata;
+
     const ID: u8 = 3;
 
-    fn handle_msg(
+    async fn handle_msg<T: SinkExt<Message> + Sized + std::marker::Unpin>(
         &self,
         msg: Self::Msg,
-        peer_ctx: std::sync::Arc<crate::peer::PeerCtx>,
-    ) {
+        peer: &mut Peer,
+        sink: &mut T,
+    ) -> Result<(), Error> {
+        match &msg {
+            Metadata::Response { metadata, payload } => {
+                debug!(
+                    "{} metadata res from {}",
+                    peer.ctx.local_addr, peer.ctx.remote_addr
+                );
+                debug!("{metadata:?}");
+
+                let peer_ext_id = peer.extension.metadata_size.unwrap();
+
+                peer.torrent_ctx
+                    .tx
+                    .send(TorrentMsg::DownloadedInfoPiece(
+                        peer_ext_id,
+                        metadata.piece,
+                        payload.clone(),
+                    ))
+                    .await?;
+                peer.torrent_ctx
+                    .tx
+                    .send(TorrentMsg::SendCancelMetadata {
+                        from: peer.ctx.id,
+                        index: metadata.piece,
+                    })
+                    .await?;
+            }
+            Metadata::Request(piece) => {
+                debug!(
+                    "{} metadata req from {}",
+                    peer.ctx.local_addr, peer.ctx.remote_addr
+                );
+                debug!("piece = {piece:?}");
+
+                let (tx, rx) = oneshot::channel();
+                peer.torrent_ctx
+                    .tx
+                    .send(TorrentMsg::RequestInfoPiece(*piece, tx))
+                    .await?;
+
+                match rx.await? {
+                    Some(info_slice) => {
+                        info!("sending data with piece {:?}", piece);
+                        let payload = MetadataDict::data(*piece, &info_slice)?;
+                        sink.send(Core::Extended(Self::ID, payload).into())
+                            .await;
+                    }
+                    None => {
+                        info!("sending reject");
+                        let r = MetadataDict::reject(*piece)
+                            .to_bencode()
+                            .map_err(|_| Error::BencodeError)?;
+                        sink.send(Core::Extended(Self::ID, r).into()).await;
+                    }
+                }
+            }
+            Metadata::Reject(piece) => {
+                debug!(
+                    "{} metadata res from {}",
+                    peer.ctx.local_addr, peer.ctx.remote_addr
+                );
+                debug!("piece = {piece:?}");
+            }
+        }
+        Ok(())
+    }
+
+    fn is_supported(
+        &self,
+        extension: &crate::extensions::extended::Extension,
+    ) -> bool {
+        extension.m.ut_metadata.is_some()
     }
 
     fn codec(&self) -> Self::Codec {

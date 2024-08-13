@@ -38,6 +38,14 @@ macro_rules! declare_message {
             )*
         }
 
+        $(
+            impl From<<$codec as ExtensionTrait>::Msg> for Message {
+                fn from(value: <$codec as ExtensionTrait>::Msg) -> Self {
+                    Message::$codec(value)
+                }
+            }
+        )*
+
         impl Encoder<Message> for MessageCodec {
             type Error = crate::error::Error;
 

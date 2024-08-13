@@ -1,10 +1,16 @@
 //! Types for the Extended protocol codec.
 
-use crate::{error::Error, extensions::core::CoreCodec};
+use crate::{
+    error::Error,
+    extensions::core::{CoreCodec, Message},
+    peer::{Direction, Peer},
+};
 use std::{fmt::Debug, ops::Deref};
 
 use bendy::{decoding::FromBencode, encoding::ToBencode};
+use futures::{Sink, SinkExt, Stream};
 use tokio_util::codec::{Decoder, Encoder};
+use tracing::debug;
 
 use crate::extensions::core::Core;
 
@@ -14,6 +20,12 @@ use super::{Extension, ExtensionTrait};
 /// their own enum type.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Extended(Extension);
+
+impl From<Extension> for Extended {
+    fn from(value: Extension) -> Self {
+        Self(value)
+    }
+}
 
 impl Deref for Extended {
     type Target = Extension;
@@ -90,14 +102,41 @@ impl ExtensionTrait for ExtendedCodec {
     type Codec = ExtendedCodec;
     type Msg = Extended;
 
-    // handshake id
     const ID: u8 = 0;
 
-    fn handle_msg(
+    async fn handle_msg<T: SinkExt<Message> + Sized + std::marker::Unpin>(
         &self,
-        msg: Extended,
-        peer_ctx: std::sync::Arc<crate::peer::PeerCtx>,
-    ) {
+        msg: Self::Msg,
+        peer: &mut Peer,
+        sink: &mut T,
+    ) -> Result<(), Error> {
+        debug!(
+            "{} extended handshake from {}",
+            peer.ctx.local_addr, peer.ctx.remote_addr
+        );
+        peer.extension = msg.0;
+
+        if peer.ctx.direction == Direction::Outbound {
+            let metadata_size = peer.extension.metadata_size.unwrap();
+
+            // create our Extension dict, that the local client supports.
+            let ext = Extension::supported(Some(metadata_size))
+                .to_bencode()
+                .map_err(|_| Error::BencodeError)?;
+
+            // and send to the remote peer
+            let core = Core::Extended(Self::ID, ext);
+
+            let _ = sink.send(core.into()).await;
+
+            // todo: uncomment this once I fix the bounds on this method
+            // peer.try_request_info(&mut sink).await?;
+        }
+        Ok(())
+    }
+
+    fn is_supported(&self, extension: &Extension) -> bool {
+        extension.v.is_some()
     }
 
     fn codec(&self) -> Self::Codec {

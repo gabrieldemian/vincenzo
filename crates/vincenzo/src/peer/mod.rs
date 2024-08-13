@@ -157,6 +157,7 @@ impl TryFrom<Vec<u8>> for PeerId {
 /// Ctx that is shared with Torrent and Disk;
 #[derive(Debug)]
 pub struct PeerCtx {
+    pub direction: Direction,
     pub tx: mpsc::Sender<PeerMsg>,
     /// a `Bitfield` with pieces that this peer
     /// has, and hasn't, containing 0s and 1s
@@ -245,6 +246,7 @@ impl Peer {
     /// # Important
     /// This MUST be called AFTER the method `handshake`.
     pub fn new(
+        direction: Direction,
         remote_addr: SocketAddr,
         torrent_ctx: Arc<TorrentCtx>,
         handshake: Handshake,
@@ -253,6 +255,7 @@ impl Peer {
         let (tx, rx) = mpsc::channel::<PeerMsg>(300);
 
         let ctx = Arc::new(PeerCtx {
+            direction,
             remote_addr,
             pieces: RwLock::new(Bitfield::new()),
             id: handshake.peer_id,
@@ -384,16 +387,12 @@ impl Peer {
                 Some(Ok(msg)) = stream.next() => {
                     match msg {
                         Core::KeepAlive => {
-                            debug!("--------------------------------");
-                            debug!("| {local} Keepalive  |");
-                            debug!("--------------------------------");
+                            debug!("{local} keepalive");
                         }
                         Core::Bitfield(bitfield) => {
                             // take entire pieces from bitfield
                             // and put in pending_requests
-                            debug!("----------------------------------");
-                            debug!("| {local} Bitfield  |");
-                            debug!("----------------------------------\n");
+                            debug!("{local} bitfield");
 
                             let mut b = self.ctx.pieces.write().await;
                             *b = bitfield.clone();
@@ -422,44 +421,31 @@ impl Peer {
                                     self.request_block_infos(&mut sink).await?;
                                 }
                             }
-
-                            debug!("------------------------------\n");
                         }
                         Core::Unchoke => {
                             self.session.state.peer_choking = false;
-                            debug!("---------------------------------");
-                            debug!("| {local} Unchoke  |");
-                            debug!("---------------------------------");
+                            debug!("{local} unchoke");
 
                             if self.can_request() {
                                 self.prepare_for_download().await;
                                 self.request_block_infos(&mut sink).await?;
                             }
-                            debug!("---------------------------------\n");
                         }
                         Core::Choke => {
                             self.session.state.peer_choking = true;
-                            debug!("--------------------------------");
-                            debug!("| {local} Choke  |");
-                            debug!("---------------------------------");
+                            debug!("{local} choke");
                             self.free_pending_blocks().await;
                         }
                         Core::Interested => {
-                            debug!("------------------------------");
-                            debug!("| {local} Interested  |");
-                            debug!("-------------------------------");
+                            debug!("{local} interested");
                             self.session.state.peer_interested = true;
                         }
                         Core::NotInterested => {
-                            debug!("------------------------------");
-                            debug!("| {local} NotInterested  |");
-                            debug!("-------------------------------");
+                            debug!("{local} NotInterested");
                             self.session.state.peer_interested = false;
                         }
                         Core::Have(piece) => {
-                            debug!("-------------------------------");
-                            debug!("| {local} Have {piece}  |");
-                            debug!("-------------------------------");
+                            debug!("{local} Have {piece}");
                             // Have is usually sent when the peer has downloaded
                             // a new piece, however, some peers, after handshake,
                             // send an incomplete bitfield followed by a sequence of
@@ -503,9 +489,7 @@ impl Peer {
                             }
                         }
                         Core::Piece(block) => {
-                            debug!("-------------------------------");
-                            debug!("| {local} Piece {}  |", block.index);
-                            debug!("-------------------------------");
+                            debug!("{local} piece {}", block.index);
                             debug!("index: {:?}", block.index);
                             debug!("begin: {:?}", block.begin);
                             debug!("len: {:?}", block.block.len());
@@ -516,20 +500,14 @@ impl Peer {
                                 self.prepare_for_download().await;
                                 self.request_block_infos(&mut sink).await?;
                             }
-
-                            debug!("---------------------------------\n");
                         }
                         Core::Cancel(block_info) => {
-                            debug!("------------------------------");
-                            debug!("| {local} Cancel from {remote}  |");
-                            debug!("------------------------------");
+                            debug!("{local} cancel from {remote}");
                             debug!("{block_info:?}");
                             self.incoming_requests.remove(&block_info);
                         }
                         Core::Request(block_info) => {
-                            debug!("------------------------------");
-                            debug!("| {local} Request from {remote}  |");
-                            debug!("------------------------------");
+                            debug!("{local} request from {remote}");
                             debug!("{block_info:?}");
                             if !self.session.state.peer_choking {
                                 let begin = block_info.begin;
@@ -570,13 +548,12 @@ impl Peer {
                                 debug!("--------------------------------------------");
                                 debug!("| {local} Extended Handshake from {remote}  |");
                                 debug!("--------------------------------------------");
-                                debug!("ext_id {ext_id}");
 
                                 if let Ok(extension) = Extension::from_bencode(&payload) {
                                     debug!("extension of peer: {:?}", extension);
-                                    self.extension = extension;
+                                    self.extension = extension.clone();
 
-                                    if direction == Direction::Outbound {
+                                    if self.ctx.direction == Direction::Outbound {
                                         debug!("outbound, sending extended handshake to {remote}");
                                         let metadata_size = self.extension.metadata_size.unwrap();
                                         debug!("metadata_size {metadata_size:?}");
@@ -609,7 +586,6 @@ impl Peer {
                                             debug!("-------------------------------------");
                                             debug!("| {local} Metadata Req from {remote}  |");
                                             debug!("-------------------------------------");
-                                            debug!("ext_id {ext_id}");
                                             debug!("self ut_metadata {:?}", self.extension.m.ut_metadata);
                                             debug!("payload len {:?}", payload.len());
 

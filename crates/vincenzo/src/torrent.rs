@@ -314,7 +314,7 @@ impl Torrent {
         let local = socket.get_ref().local_addr()?;
         let remote = socket.get_ref().peer_addr()?;
 
-        let mut peer = Peer::new(remote, ctx, handshake, local);
+        let mut peer = Peer::new(direction, remote, ctx, handshake, local);
 
         let r = peer.run(direction, socket).await;
 
