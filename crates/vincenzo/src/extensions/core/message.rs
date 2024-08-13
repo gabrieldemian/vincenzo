@@ -1,17 +1,17 @@
 use crate::extensions::{
     core::{Core, CoreCodec},
-    extended::codec::Extended,
-    metadata::codec::Metadata,
+    extended::codec::ExtendedCodec,
+    metadata::codec::MetadataCodec,
 };
 
 /// From a list of types that implement
-/// [`crate::extensions::extended::ExtensionTrait`], generate a Message
+/// [`crate::extensions::extended::ExtensionTrait`], generate a [`Message`]
 /// enum with all of their messages. Aditionally, a struct `MessageCodec` that
 /// implements Encoder and Decoder for it's branches.
 ///
 /// example:
 ///
-/// ```rs
+/// ```ignore
 /// declare_message!(CoreCodec, ExtendedCodec, MetadataCodec);
 ///
 /// pub enum Message {
@@ -69,21 +69,21 @@ macro_rules! declare_message {
                 // todo: change this error
                 let core = core.ok_or(crate::error::Error::PeerIdInvalid)?;
                 match core {
-                    Core::Extended(_id, _payload) => {
-                        $(
-                            if let Ok(Some(v)) = $codec.codec().decode(src) {
-                                return Ok(Some(Message::$codec(v)));
-                            } else {
-                                return Ok(None);
-                            }
-                        )*
-                    },
+                    $(
+                        Core::Extended(id, _payload) if id == <$codec as ExtensionTrait>::ID => {
+                            let v = $codec.codec().decode(src)?
+                                .ok_or(crate::error::Error::PeerIdInvalid)?;
+                            return Ok(Some(Message::$codec(v)));
+                        },
+                    )*
                     _ => Ok(Some(Message::CoreCodec(core)))
                 }
             }
         }
     };
 }
+
+declare_message!(CoreCodec, ExtendedCodec, MetadataCodec);
 
 #[cfg(test)]
 mod tests {
@@ -93,7 +93,7 @@ mod tests {
 
     #[test]
     fn declare_message_works() {
-        declare_message!(CoreCodec);
+        declare_message!(CoreCodec, MetadataCodec);
 
         let c = Core::Interested;
         let id = CoreId::Interested as u8;

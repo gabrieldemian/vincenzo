@@ -28,7 +28,7 @@ pub enum Metadata {
     Reject(u32),
 }
 
-struct MetadataCodec;
+pub struct MetadataCodec;
 
 impl Encoder<Metadata> for MetadataCodec {
     type Error = Error;
