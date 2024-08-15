@@ -33,7 +33,7 @@ pub enum Metadata {
     Reject(u32),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct MetadataCodec;
 
 impl Encoder<Metadata> for MetadataCodec {
@@ -126,7 +126,7 @@ impl ExtensionTrait for MetadataCodec {
 
     async fn handle_msg<T: SinkExt<Message> + Sized + std::marker::Unpin>(
         &self,
-        msg: Self::Msg,
+        msg: &Self::Msg,
         peer: &mut Peer,
         sink: &mut T,
     ) -> Result<(), Error> {

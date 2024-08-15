@@ -8,7 +8,7 @@ use crate::{
 use std::{fmt::Debug, ops::Deref};
 
 use bendy::{decoding::FromBencode, encoding::ToBencode};
-use futures::{Sink, SinkExt, Stream};
+use futures::{Sink, SinkExt};
 use tokio_util::codec::{Decoder, Encoder};
 use tracing::debug;
 
@@ -34,7 +34,7 @@ impl Deref for Extended {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ExtendedCodec;
 
 impl TryInto<Core> for Extended {
@@ -104,9 +104,14 @@ impl ExtensionTrait for ExtendedCodec {
 
     const ID: u8 = 0;
 
-    async fn handle_msg<T: SinkExt<Message> + Sized + std::marker::Unpin>(
+    async fn handle_msg<
+        T: SinkExt<Message>
+            + Sized
+            + std::marker::Unpin
+            + Sink<Message, Error = Error>,
+    >(
         &self,
-        msg: Self::Msg,
+        msg: &Self::Msg,
         peer: &mut Peer,
         sink: &mut T,
     ) -> Result<(), Error> {
@@ -114,7 +119,7 @@ impl ExtensionTrait for ExtendedCodec {
             "{} extended handshake from {}",
             peer.ctx.local_addr, peer.ctx.remote_addr
         );
-        peer.extension = msg.0;
+        peer.extension = msg.0.clone();
 
         if peer.ctx.direction == Direction::Outbound {
             let metadata_size = peer.extension.metadata_size.unwrap();
@@ -127,10 +132,9 @@ impl ExtensionTrait for ExtendedCodec {
             // and send to the remote peer
             let core = Core::Extended(Self::ID, ext);
 
-            let _ = sink.send(core.into()).await;
+            sink.send(core.into()).await?;
 
-            // todo: uncomment this once I fix the bounds on this method
-            // peer.try_request_info(&mut sink).await?;
+            peer.try_request_info(sink).await?;
         }
         Ok(())
     }

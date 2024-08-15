@@ -4,7 +4,7 @@ use crate::{
     daemon::DaemonMsg,
     disk::DiskMsg,
     error::Error,
-    extensions::core::BlockInfo,
+    extensions::core::{BlockInfo, Message, CoreCodec},
     magnet::Magnet,
     metainfo::Info,
     peer::{session::ConnectionState, Direction, Peer, PeerCtx, PeerMsg},

@@ -55,6 +55,8 @@
 //!    }
 //! ```
 
+#![feature(macro_metavar_expr)]
+
 pub mod args;
 pub mod avg;
 pub mod bitfield;
