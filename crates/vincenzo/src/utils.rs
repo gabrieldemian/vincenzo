@@ -15,6 +15,43 @@ pub fn to_human_readable(mut n: f64) -> String {
     format!("{:.2} {}", n, units[u as usize])
 }
 
+#[macro_export]
+macro_rules! as_expr {
+    ($e:expr) => {
+        $e
+    };
+}
+#[macro_export]
+macro_rules! as_item {
+    ($i:item) => {
+        $i
+    };
+}
+#[macro_export]
+macro_rules! as_pat {
+    ($p:pat) => {
+        $p
+    };
+}
+#[macro_export]
+macro_rules! as_stmt {
+    ($s:stmt) => {
+        $s
+    };
+}
+#[macro_export]
+macro_rules! as_ty {
+    ($t:ty) => {
+        $t
+    };
+}
+#[macro_export]
+macro_rules! as_ident {
+    ($t:ident) => {
+        $t
+    };
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

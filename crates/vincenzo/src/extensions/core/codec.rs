@@ -1,11 +1,11 @@
 use bytes::{Buf, BufMut, BytesMut};
-use futures::{Sink, SinkExt};
+use futures::SinkExt;
 use std::io::Cursor;
 use tokio::{io, sync::oneshot};
 use tokio_util::codec::{Decoder, Encoder};
 use tracing::{debug, trace, warn};
 
-use super::{Block, BlockInfo, Message};
+use super::{Block, BlockInfo};
 use crate::{
     bitfield::Bitfield, disk::DiskMsg, error::Error,
     extensions::extended::ExtensionTrait, peer::Peer,
@@ -71,6 +71,56 @@ impl TryFrom<u8> for CoreId {
 
 #[derive(Debug, Clone)]
 pub struct CoreCodec;
+
+#[derive(Debug)]
+pub struct NewMessageCodec;
+
+#[derive(Debug, Clone)]
+pub struct NewMessage {
+    id: u8,
+    bytes: Vec<u8>,
+}
+
+impl Decoder for NewMessageCodec {
+    type Item = NewMessage;
+    type Error = Error;
+
+    fn decode(
+        &mut self,
+        src: &mut BytesMut,
+    ) -> Result<Option<Self::Item>, Self::Error> {
+        if src.remaining() < 4 {
+            return Ok(None);
+        }
+
+        let mut tmp_buf = Cursor::new(&src);
+        let msg_len = tmp_buf.get_u32() as usize;
+
+        tmp_buf.set_position(0);
+
+        if src.remaining() >= 4 + msg_len {
+            src.advance(4);
+            if msg_len == 0 {
+                return Ok(Some(NewMessage { id: 255, bytes: Vec::new() }));
+            }
+        } else {
+            trace!(
+                "Read buffer is {} bytes long but message is {} bytes long",
+                src.remaining(),
+                msg_len
+            );
+            return Ok(None);
+        }
+
+        // ID of the message
+        let id = src.get_u8();
+
+        let mut bytes: Vec<u8> = Vec::new();
+        src.copy_to_slice(&mut bytes);
+
+        Ok(Some(NewMessage { id, bytes }))
+    }
+}
 
 impl Encoder<Core> for CoreCodec {
     type Error = Error;
@@ -273,16 +323,10 @@ impl ExtensionTrait for CoreCodec {
     // maybe create another trait for an extension that has an id?
     const ID: u8 = 255;
 
-    async fn handle_msg<
-        T: SinkExt<Message>
-            + Sized
-            + std::marker::Unpin
-            + Sink<Message, Error = Error>,
-    >(
+    async fn handle_msg(
         &self,
         msg: &Self::Msg,
         peer: &mut Peer,
-        sink: &mut T,
     ) -> Result<(), Error> {
         let local = peer.ctx.local_addr;
         let remote = peer.ctx.remote_addr;
@@ -319,11 +363,11 @@ impl ExtensionTrait for CoreCodec {
                     debug!("{local} interested due to Bitfield");
 
                     peer.session.state.am_interested = true;
-                    sink.send(Core::Interested.into()).await?;
+                    peer.sink.send(Core::Interested.into()).await?;
 
                     if peer.can_request() {
                         peer.prepare_for_download().await;
-                        peer.request_block_infos(sink).await?;
+                        peer.request_block_infos().await?;
                     }
                 }
             }
@@ -333,7 +377,7 @@ impl ExtensionTrait for CoreCodec {
 
                 if peer.can_request() {
                     peer.prepare_for_download().await;
-                    peer.request_block_infos(sink).await?;
+                    peer.request_block_infos().await?;
                 }
             }
             Core::Choke => {
@@ -387,11 +431,11 @@ impl ExtensionTrait for CoreCodec {
                             debug!("{local} we are interested due to Have");
 
                             peer.session.state.am_interested = true;
-                            sink.send(Core::Interested.into()).await?;
+                            peer.sink.send(Core::Interested.into()).await?;
 
                             if peer.can_request() {
                                 peer.prepare_for_download().await;
-                                peer.request_block_infos(sink).await?;
+                                peer.request_block_infos().await?;
                             }
                         }
                     }
@@ -409,7 +453,7 @@ impl ExtensionTrait for CoreCodec {
                 peer.handle_piece_msg(block.clone()).await?;
                 if peer.can_request() {
                     peer.prepare_for_download().await;
-                    peer.request_block_infos(sink).await?;
+                    peer.request_block_infos().await?;
                 }
             }
             Core::Cancel(block_info) => {
@@ -439,14 +483,14 @@ impl ExtensionTrait for CoreCodec {
                         .send(DiskMsg::ReadBlock {
                             block_info: block_info.clone(),
                             recipient: tx,
-                            info_hash: peer.torrent_ctx.info_hash,
+                            info_hash: peer.torrent_ctx.info_hash.clone(),
                         })
                         .await?;
 
                     let bytes = rx.await?;
 
                     let block = Block { index, begin, block: bytes };
-                    let _ = sink.send(Core::Piece(block).into()).await;
+                    let _ = peer.sink.send(Core::Piece(block).into()).await;
                 }
             }
             Core::Extended(_, _) => {

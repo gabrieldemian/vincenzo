@@ -6,7 +6,7 @@ use ratatui::{
 };
 use tokio::sync::mpsc;
 use vincenzo::{
-    torrent::{TorrentState, TorrentStatus},
+    torrent::{InfoHash, TorrentState, TorrentStatus},
     utils::to_human_readable,
 };
 
@@ -16,7 +16,7 @@ use super::Page;
 
 #[derive(Clone)]
 pub struct TorrentList<'a> {
-    active_torrent: Option<[u8; 20]>,
+    active_torrent: Option<InfoHash>,
     cursor_position: usize,
     footer: List<'a>,
     input: String,
@@ -24,7 +24,7 @@ pub struct TorrentList<'a> {
     pub focused: bool,
     pub state: ListState,
     pub style: AppStyle,
-    pub torrent_infos: HashMap<[u8; 20], TorrentState>,
+    pub torrent_infos: HashMap<InfoHash, TorrentState>,
     pub tx: mpsc::UnboundedSender<Action>,
 }
 
@@ -240,7 +240,7 @@ impl<'a> Page for TorrentList<'a> {
             ];
 
             if Some(i) == selected {
-                self.active_torrent = Some(ctx.info_hash);
+                self.active_torrent = Some(ctx.info_hash.clone());
             }
 
             if Some(i) != selected && selected > Some(0) {
@@ -292,8 +292,10 @@ impl<'a> Page for TorrentList<'a> {
     fn handle_action(&mut self, action: &Action) {
         match action {
             Action::TorrentState(torrent_state) => {
-                self.torrent_infos
-                    .insert(torrent_state.info_hash, torrent_state.clone());
+                self.torrent_infos.insert(
+                    torrent_state.info_hash.clone(),
+                    torrent_state.clone(),
+                );
             }
             Action::Key(k)
                 if self.show_popup && k.kind == KeyEventKind::Press =>
@@ -329,9 +331,10 @@ impl<'a> Page for TorrentList<'a> {
                     self.show_popup = true;
                 }
                 KeyCode::Char('p') => {
-                    if let Some(active_torrent) = self.active_torrent {
-                        let _ =
-                            self.tx.send(Action::TogglePause(active_torrent));
+                    if let Some(active_torrent) = &self.active_torrent {
+                        let _ = self
+                            .tx
+                            .send(Action::TogglePause(active_torrent.clone()));
                     }
                 }
                 _ => {}

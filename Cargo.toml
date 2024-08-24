@@ -3,12 +3,16 @@ members = [
   "crates/vcz_daemon",
   "crates/vcz_ui",
   "crates/vincenzo",
+  "crates/vincenzo_macros",
   "crates/vcz",
 ]
 
 resolver = "2"
 
 [workspace.dependencies]
+quote = "1.0.36"
+syn = "2.0.74"
+derive_builder = "0.20.0"
 bendy = { version = "0.3.3", features = ["std"] }
 bitvec = "1.0.1"
 bytes = "1.4.0"
@@ -49,3 +53,4 @@ vcz = { path = "crates/vcz" }
 vcz_daemon = { path = "crates/vcz_daemon" }
 vcz_ui = { path = "crates/vcz_ui" }
 vincenzo = { path = "crates/vincenzo" }
+vincenzo_macros = { path = "crates/vincenzo_macros" }

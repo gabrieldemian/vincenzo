@@ -1,7 +1,11 @@
 use rand::Rng;
 use speedy::{BigEndian, Readable, Writable};
 
-use crate::{error::Error, torrent::Stats};
+use crate::{
+    error::Error,
+    peer::PeerId,
+    torrent::{InfoHash, Stats},
+};
 
 use super::{action::Action, event::Event};
 
@@ -10,8 +14,8 @@ pub struct Request {
     pub connection_id: u64,
     pub action: u32,
     pub transaction_id: u32,
-    pub info_hash: [u8; 20],
-    pub peer_id: [u8; 20],
+    pub info_hash: InfoHash,
+    pub peer_id: PeerId,
     pub downloaded: u64,
     pub left: u64,
     pub uploaded: u64,
@@ -26,8 +30,8 @@ impl Request {
 
     pub fn new(
         connection_id: u64,
-        info_hash: [u8; 20],
-        peer_id: [u8; 20],
+        info_hash: InfoHash,
+        peer_id: PeerId,
         _ip_address: u32,
         port: u16,
         event: Event,

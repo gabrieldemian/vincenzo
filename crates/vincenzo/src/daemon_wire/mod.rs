@@ -5,7 +5,7 @@ use std::io::Cursor;
 use tokio::io;
 use tokio_util::codec::{Decoder, Encoder};
 
-use crate::torrent::TorrentState;
+use crate::torrent::{InfoHash, TorrentState};
 
 /// Messages of [`DaemonCodec`], check the struct documentation
 /// to read how to send messages.
@@ -13,8 +13,8 @@ use crate::torrent::TorrentState;
 /// Most messages can be sent to the Daemon in 2 ways:
 /// - Internally: within it's same process, via CLI flags for example. the
 ///   message will be sent using mpsc.
-/// - Externally: via TCP. When the message arrives, it will be sent
-/// to the internal event handler in mpsc. They both use the same API.
+/// - Externally: via TCP. When the message arrives, it will be sent to the
+///   internal event handler in mpsc. They both use the same API.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Message {
     /// Daemon will send other Quit messages to all Torrents.
@@ -32,10 +32,9 @@ pub enum Message {
     /// <len=1+torrent_state_len><id=2><torrent_state>
     TorrentState(Option<TorrentState>),
     /// Pause/Resume the torrent with the given info_hash.
-    TogglePause([u8; 20]),
+    TogglePause(InfoHash),
     /// Ask the Daemon to send a [`TorrentState`] of the torrent with the given
-    /// hash_info.
-    RequestTorrentState([u8; 20]),
+    RequestTorrentState(InfoHash),
     /// Print the status of all Torrents to stdout
     PrintTorrentStatus,
 }
@@ -142,14 +141,14 @@ impl Encoder<Message> for DaemonCodec {
 
                 buf.put_u32(msg_len);
                 buf.put_u8(MessageId::GetTorrentState as u8);
-                buf.extend_from_slice(&info_hash);
+                buf.extend_from_slice(&*info_hash);
             }
             Message::TogglePause(info_hash) => {
                 let msg_len = 1 + info_hash.len() as u32;
 
                 buf.put_u32(msg_len);
                 buf.put_u8(MessageId::TogglePause as u8);
-                buf.extend_from_slice(&info_hash);
+                buf.extend_from_slice(&*info_hash);
             }
             Message::PrintTorrentStatus => {
                 let msg_len = 1;
@@ -236,14 +235,14 @@ impl Decoder for DaemonCodec {
                 let mut payload = [0u8; 20_usize];
                 buf.copy_to_slice(&mut payload);
 
-                Message::TogglePause(payload)
+                Message::TogglePause(payload.into())
             }
             MessageId::PrintTorrentStatus => Message::PrintTorrentStatus,
             MessageId::GetTorrentState => {
                 let mut payload = [0u8; 20_usize];
                 buf.copy_to_slice(&mut payload);
 
-                Message::RequestTorrentState(payload)
+                Message::RequestTorrentState(payload.into())
             }
         };
 
@@ -291,7 +290,7 @@ mod tests {
             download_rate: 111,
             uploaded: 44,
             size: 9,
-            info_hash: [0u8; 20],
+            info_hash: [0u8; 20].into(),
         };
 
         let a = info.write_to_vec_with_ctx(BigEndian {}).unwrap();
@@ -327,7 +326,7 @@ mod tests {
     #[test]
     fn request_torrent_state() {
         let mut buf = BytesMut::new();
-        let msg = Message::RequestTorrentState([1u8; 20]);
+        let msg = Message::RequestTorrentState([1u8; 20].into());
         DaemonCodec.encode(msg, &mut buf).unwrap();
 
         println!("encoded {buf:?}");
@@ -338,7 +337,7 @@ mod tests {
 
         match msg {
             Message::RequestTorrentState(info_hash) => {
-                assert_eq!(info_hash, [1u8; 20]);
+                assert_eq!(info_hash, [1u8; 20].into());
             }
             _ => panic!(),
         }

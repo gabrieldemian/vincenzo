@@ -11,7 +11,7 @@ use std::{
     time::Duration,
 };
 
-use crate::error::Error;
+use crate::{error::Error, peer::PeerId, torrent::InfoHash};
 use rand::Rng;
 use tokio::{
     net::{ToSocketAddrs, UdpSocket},
@@ -59,7 +59,7 @@ impl Default for Tracker {
 pub struct TrackerCtx {
     pub tx: Option<mpsc::Sender<TrackerMsg>>,
     /// Our ID for this connected Tracker
-    pub peer_id: [u8; 20],
+    pub peer_id: PeerId,
     /// UDP Socket of the `socket` in Tracker struct
     pub tracker_addr: String,
     /// Our peer socket addr, peers will send handshakes
@@ -84,7 +84,7 @@ impl Default for TrackerCtx {
 pub enum TrackerMsg {
     Announce {
         event: Event,
-        info_hash: [u8; 20],
+        info_hash: InfoHash,
         downloaded: u64,
         uploaded: u64,
         left: u64,
@@ -201,7 +201,7 @@ impl Tracker {
     #[tracing::instrument(skip(self, info_hash))]
     pub async fn announce_exchange(
         &mut self,
-        info_hash: [u8; 20],
+        info_hash: &InfoHash,
         listen: Option<SocketAddr>,
     ) -> Result<(announce::Response, Vec<SocketAddr>), Error> {
         let socket = UdpSocket::bind(self.local_addr).await?;
@@ -226,8 +226,8 @@ impl Tracker {
 
         let req = announce::Request::new(
             connection_id,
-            info_hash,
-            self.ctx.peer_id,
+            info_hash.clone(),
+            self.ctx.peer_id.clone(),
             // local_peer_socket.ip() as u32,
             0,
             local_peer_socket.port(),
@@ -351,7 +351,7 @@ impl Tracker {
     pub async fn announce_msg(
         &self,
         event: Event,
-        info_hash: [u8; 20],
+        info_hash: InfoHash,
         downloaded: u64,
         uploaded: u64,
         left: u64,
@@ -365,7 +365,7 @@ impl Tracker {
             action: Action::Announce.into(),
             transaction_id: rand::thread_rng().gen(),
             info_hash,
-            peer_id: self.ctx.peer_id,
+            peer_id: self.ctx.peer_id.clone(),
             downloaded,
             left,
             uploaded,
@@ -434,11 +434,11 @@ impl Tracker {
         }
     }
     /// Peer ids should be prefixed with "vcz".
-    pub fn gen_peer_id() -> [u8; 20] {
+    pub fn gen_peer_id() -> PeerId {
         let mut peer_id = [0; 20];
         peer_id[..3].copy_from_slice(b"vcz");
         peer_id[3..].copy_from_slice(&rand::random::<[u8; 17]>());
-        peer_id
+        peer_id.into()
     }
 }
 
@@ -450,8 +450,9 @@ mod tests {
     fn peer_ids_prefixed_with_vcz() {
         // Poor man's fuzzing.
         let peer_id = Tracker::gen_peer_id();
-        for _ in 0..10 {
-            assert!(peer_id.starts_with(&[b'v', b'c', b'z']));
-        }
+        let first_three = &peer_id.to_string()[..3];
+
+        assert_eq!(first_three, "vcz");
+        assert_eq!(peer_id.to_string().len(), 20);
     }
 }

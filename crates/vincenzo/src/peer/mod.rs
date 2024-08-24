@@ -1,11 +1,21 @@
 //! A remote peer in the network that downloads and uploads data
 pub mod session;
+mod types;
+
+// re-exports
+pub use types::*;
+
+pub use crate::handshake_peer::*;
+
 use bendy::encoding::ToBencode;
 use bitvec::{
     bitvec,
     prelude::{BitArray, Msb0},
 };
-use futures::{SinkExt, StreamExt};
+use futures::{
+    stream::{SplitSink, SplitStream},
+    SinkExt, StreamExt,
+};
 use hashbrown::{HashMap, HashSet};
 use std::{collections::VecDeque, net::SocketAddr, sync::Arc, time::Duration};
 use tokio::{
@@ -16,25 +26,22 @@ use tokio::{
     },
     time::{interval, interval_at, Instant},
 };
-use tokio_util::codec::{Framed, FramedParts};
+use tokio_util::codec::Framed;
 
 use tokio::net::TcpStream;
 use tracing::{debug, warn};
 
-use crate::extensions::{
-    core::MessageCodec,
-    extended::{ExtensionTrait, MessageTrait},
+use crate::{
+    extensions::core::{Codec, CoreCodec, MessageCodec},
+    torrent::InfoHash,
 };
 
 use crate::{
-    bitfield::{Bitfield, Reserved},
+    bitfield::Bitfield,
     disk::DiskMsg,
     error::Error,
     extensions::{
-        core::{
-            Block, BlockInfo, Core, CoreId, Handshake, HandshakeCodec, Message,
-            BLOCK_LEN,
-        },
+        core::{Block, BlockInfo, Core, CoreId, Message, BLOCK_LEN},
         extended::Extension,
         metadata::Metadata,
     },
@@ -44,54 +51,19 @@ use crate::{
 
 use self::session::Session;
 
-/// Determines who initiated the connection.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Direction {
-    /// Outbound means we initiated the connection
-    Outbound,
-    /// Inbound means the peer initiated the connection
-    Inbound,
-}
-
-/// Cores that peers send to each other.
-#[derive(Debug)]
-pub enum PeerMsg {
-    /// When we download a full piece, we need to send Have's
-    /// to peers that dont Have it.
-    HavePiece(usize),
-    /// Sometimes a peer either takes too long to answer,
-    /// or simply does not answer at all. In both cases
-    /// we need to request the block again.
-    RequestBlockInfos(Vec<BlockInfo>),
-    /// Tell this peer that we are not interested,
-    /// update the local state and send a message to the peer
-    NotInterested,
-    /// Sends a Cancel message to cancel a block info that we
-    /// expect the peer to send us, because we requested it previously.
-    CancelBlock(BlockInfo),
-    /// Sends a Cancel message to cancel a metadata piece that we
-    /// expect the peer to send us, because we requested it previously.
-    CancelMetadata(u32),
-    /// Sent when the torrent has downloaded the entire info of the torrent.
-    HaveInfo,
-    /// Sent when the torrent is paused, it makes the peer pause downloads and
-    /// uploads
-    Pause,
-    /// Sent when the torrent was unpaused.
-    Resume,
-    /// Sent to make this peer read-only, the peer won't download
-    /// anymore, but it will still seed.
-    /// This usually happens when the torrent is fully downloaded.
-    SeedOnly,
-    /// When the program is being gracefuly shutdown, we need to kill the tokio
-    /// green thread of the peer.
-    Quit,
-}
-
 /// Data about a remote Peer that the client is connected to,
 /// but the client itself does not have a Peer struct.
 #[derive(Debug)]
 pub struct Peer {
+    /// Codecs/extensions that the Peer supports, can be changed at runtime
+    /// after `Extension` is sent by the peer.
+    pub ext: Vec<Codec>,
+
+    pub direction: Direction,
+
+    stream: SplitStream<Framed<TcpStream, MessageCodec>>,
+    pub sink: SplitSink<Framed<TcpStream, MessageCodec>, Message>,
+
     /// Extensions of the protocol that the peer supports.
     pub extension: Extension,
     pub reserved: BitArray<[u8; 8], Msb0>,
@@ -123,42 +95,6 @@ pub struct Peer {
     pub have_info: bool,
 }
 
-#[derive(Debug, Clone)]
-pub struct PeerId([u8; 20]);
-
-impl TryInto<PeerId> for String {
-    type Error = String;
-    fn try_into(self) -> Result<PeerId, Self::Error> {
-        let buff = hex::decode(self).map_err(|e| e.to_string())?;
-        let hash = PeerId::try_from(buff)?;
-        Ok(hash)
-    }
-}
-
-impl Into<String> for PeerId {
-    fn into(self) -> String {
-        hex::encode(self.0)
-    }
-}
-
-impl From<[u8; 20]> for PeerId {
-    fn from(value: [u8; 20]) -> Self {
-        Self(value)
-    }
-}
-
-impl TryFrom<Vec<u8>> for PeerId {
-    type Error = &'static str;
-    fn try_from(value: Vec<u8>) -> Result<Self, Self::Error> {
-        if value.len() != 20 {
-            return Err("The PeerId must have exactly 20 bytes");
-        }
-        let mut buff = [0u8; 20];
-        buff[..20].copy_from_slice(&value[..20]);
-        Ok(PeerId(buff))
-    }
-}
-
 /// Ctx that is shared with Torrent and Disk;
 #[derive(Debug)]
 pub struct PeerCtx {
@@ -169,177 +105,66 @@ pub struct PeerCtx {
     pub pieces: RwLock<Bitfield>,
     /// Updated when the peer sends us its peer
     /// id, in the handshake.
-    pub id: [u8; 20],
+    pub id: PeerId,
     /// Where the TCP socket of this Peer is connected to.
     pub remote_addr: SocketAddr,
     /// Where the TCP socket of this Peer is listening.
     pub local_addr: SocketAddr,
     /// The info_hash of the torrent that this Peer belongs to.
-    pub info_hash: [u8; 20],
+    pub info_hash: InfoHash,
 }
 
-impl Peer {
-    /// Do a handshake with a remote peer and return the remote peer's
-    /// handshake.
-    ///
-    /// # Important
-    /// A peer cannot exist on it's own, it needs to be handshaked with another
-    /// peer in order to "exist". Only in this moment it gains it's peer_id
-    /// and other data.
-    ///
-    /// The right order to create and run a Peer is the following:
-    /// handshake -> new -> run
-    pub async fn handshake(
-        socket: TcpStream,
-        direction: Direction,
-        info_hash: [u8; 20],
-        local_peer_id: [u8; 20],
-    ) -> Result<(Framed<TcpStream, MessageCodec>, Handshake), Error>
-// where
-    //     M: Into<Message> + From<Core>,
-    //     C: Encoder<M> + Decoder + Unpin,
-    {
-        let local = socket.local_addr()?;
-        let remote = socket.peer_addr()?;
-        let mut socket = Framed::new(socket, HandshakeCodec);
-        let our_handshake = Handshake::new(info_hash, local_peer_id);
-        let peer_handshake: Handshake;
-
-        // we are connecting, send the first handshake
-        if direction == Direction::Outbound {
-            debug!("{local} sending the first handshake to {remote}");
-            socket.send(our_handshake.clone()).await?;
-        }
-
-        // wait for, and validate, their handshake
-        if let Some(Ok(their_handshake)) = socket.next().await {
-            debug!("{local} received their handshake {remote}");
-            peer_handshake = their_handshake.clone();
-
-            if !their_handshake.validate(&our_handshake) {
-                return Err(Error::HandshakeInvalid);
-            }
-
-            // receive the second handshake, if outbound
-            if direction == Direction::Outbound {
-                let old_parts = socket.into_parts();
-                let mut new_parts =
-                    FramedParts::new(old_parts.io, MessageCodec);
-                new_parts.read_buf = old_parts.read_buf;
-                new_parts.write_buf = old_parts.write_buf;
-                let socket = Framed::from_parts(new_parts);
-                return Ok((socket, peer_handshake));
-            }
-        } else {
-            warn!("{remote} did not send a handshake");
-            return Err(Error::HandshakeInvalid);
-        }
-
-        // if inbound, he have already received their first handshake,
-        // send our second handshake here.
-        if direction == Direction::Inbound {
-            debug!("{local} sending the second handshake to {remote}");
-            socket.send(our_handshake.clone()).await?;
-        }
-
-        let old_parts = socket.into_parts();
-        let mut new_parts = FramedParts::new(old_parts.io, MessageCodec);
-        new_parts.read_buf = old_parts.read_buf;
-        new_parts.write_buf = old_parts.write_buf;
-        let socket = Framed::from_parts(new_parts);
-
-        Ok((socket, peer_handshake))
-    }
-
-    /// Create a new [`Peer`] given it's handshake.
-    ///
-    /// # Important
-    /// This MUST be called AFTER the method `handshake`.
-    pub fn new(
-        direction: Direction,
-        remote_addr: SocketAddr,
-        torrent_ctx: Arc<TorrentCtx>,
-        handshake: Handshake,
-        local_addr: SocketAddr,
-    ) -> Self {
+impl From<HandshakedPeer> for Peer {
+    fn from(value: HandshakedPeer) -> Self {
         let (tx, rx) = mpsc::channel::<PeerMsg>(300);
+        let peer = value.peer;
 
         let ctx = Arc::new(PeerCtx {
-            direction,
-            remote_addr,
+            direction: peer.direction,
+            remote_addr: value.socket.get_ref().peer_addr().unwrap(),
             pieces: RwLock::new(Bitfield::new()),
-            id: handshake.peer_id,
+            id: peer.peer_id,
             tx,
-            info_hash: handshake.info_hash,
-            local_addr,
+            info_hash: peer.torrent_ctx.info_hash.clone(),
+            local_addr: value.socket.get_ref().local_addr().unwrap(),
         });
 
-        let reserved = Reserved::from(handshake.reserved);
+        let (sink, stream) = value.socket.split();
 
-        Peer {
+        Self {
+            sink,
+            stream,
+            direction: peer.direction,
+            ext: Vec::from([Codec::CoreCodec(CoreCodec)]),
             incoming_requests: HashSet::default(),
             outgoing_requests: HashSet::default(),
             outgoing_requests_timeout: HashMap::new(),
             session: Session::default(),
             have_info: false,
             extension: Extension::default(),
-            reserved,
-            torrent_ctx,
+            reserved: peer.reserved,
+            torrent_ctx: peer.torrent_ctx,
             ctx,
             rx,
         }
     }
+}
 
+impl Peer {
     /// Start the event loop of the Peer, listen to messages sent by others
     /// on the peer wire protocol.
     #[tracing::instrument(skip_all, name = "peer::run")]
-    pub async fn run(
-        &mut self,
-        direction: Direction,
-        mut socket: Framed<TcpStream, MessageCodec>,
-    ) -> Result<(), Error>
-// where
-    //     M: Into<Message> + From<Core>,
-    //     C: Encoder<M> + Decoder + Unpin + ExtensionTrait,
-    {
-        self.session.state.connection = ConnectionState::Connecting;
+    pub async fn run(&mut self) -> Result<(), Error> {
         let local = self.ctx.local_addr;
         let remote = self.ctx.remote_addr;
-
-        // if they are connecting, answer with our extended handshake
-        // if supported
-        if direction == Direction::Inbound {
-            // The bit selected for the extension protocol is bit 20 from the
-            // right and bit 44 from the left
-            if self.reserved[43] {
-                debug!("{local} sending extended handshake to {remote}");
-
-                // we need to have the info downloaded in order to send the
-                // extended message, because it contains the metadata_size
-                if self.have_info {
-                    let info = self.torrent_ctx.info.read().await;
-                    let metadata_size = info
-                        .to_bencode()
-                        .map_err(|_| Error::BencodeError)?
-                        .len();
-                    drop(info);
-
-                    let ext = Extension::supported(Some(metadata_size as u32))
-                        .to_bencode()
-                        .map_err(|_| Error::BencodeError)?;
-
-                    let extended = Core::Extended(0, ext);
-
-                    socket.send(extended.into()).await?;
-                    self.try_request_info(&mut socket).await?;
-                }
-            }
-        }
 
         let _ = self
             .torrent_ctx
             .tx
-            .send(TorrentMsg::PeerConnected(self.ctx.id, self.ctx.clone()))
+            .send(TorrentMsg::PeerConnected(
+                self.ctx.id.clone(),
+                self.ctx.clone(),
+            ))
             .await;
 
         let mut tick_timer = interval(Duration::from_secs(1));
@@ -349,20 +174,18 @@ impl Peer {
             Duration::from_secs(120),
         );
 
-        let (mut sink, mut stream) = socket.split();
-
         // maybe send bitfield
         let bitfield = self.torrent_ctx.bitfield.read().await;
         if bitfield.len() > 0 {
             debug!("{local} sending bitfield to {remote}");
-            sink.send(Core::Bitfield(bitfield.clone()).into()).await?;
+            self.sink.send(Core::Bitfield(bitfield.clone()).into()).await?;
         }
         drop(bitfield);
 
         // todo: implement choke algorithm
         // send Unchoke
         self.session.state.am_choking = false;
-        sink.send(Core::Unchoke.into()).await?;
+        self.sink.send(Core::Unchoke.into()).await?;
         // sink.send(Core::Interested).await?;
 
         // when running a new Peer, we might
@@ -392,23 +215,14 @@ impl Peer {
             select! {
                 // update internal data every 1 second
                 _ = tick_timer.tick(), if self.have_info => {
-                    self.tick(&mut sink).await?;
+                    self.tick().await?;
                 }
                 // send Keepalive every 2 minutes
                 _ = keep_alive_timer.tick(), if self.have_info => {
-                    sink.send(Core::KeepAlive.into()).await?;
+                    self.sink.send(Core::KeepAlive.into()).await?;
                 }
-                Some(Ok(msg)) = stream.next() => {
-                    msg.handle_msg(self, &mut sink).await?;
-                    // match msg {
-                    //     Message::CoreCodec(m) => {
-                    //         // let c = m.codec();
-                    //         // if c.is_supported(&self.extension) {
-                    //         //     c.handle_msg(&m, self, &mut sink).await?;
-                    //         // }
-                    //     }
-                    //     _ => todo!()
-                    // }
+                Some(Ok(msg)) = self.stream.next() => {
+                    msg.handle_msg(self).await?;
                 }
                 Some(msg) = self.rx.recv() => {
                     match msg {
@@ -422,7 +236,7 @@ impl Peer {
                                 // send Have to this peer if he doesnt have this piece
                                 if !b {
                                     debug!("sending have {piece} to peer {local}");
-                                    let _ = sink.send(Core::Have(piece).into()).await;
+                                    let _ = self.sink.send(Core::Have(piece).into()).await;
                                 }
                             }
                             drop(pieces);
@@ -443,14 +257,14 @@ impl Peer {
                                     self.outgoing_requests_timeout
                                         .insert(block_info.clone(), Instant::now());
 
-                                    sink.send(Core::Request(block_info).into()).await?;
+                                    self.sink.send(Core::Request(block_info).into()).await?;
                                 }
                             }
                         }
                         PeerMsg::NotInterested => {
                             debug!("{local} NotInterested {remote}");
                             self.session.state.am_interested = false;
-                            sink.send(Core::NotInterested.into()).await?;
+                            self.sink.send(Core::NotInterested.into()).await?;
                         }
                         PeerMsg::Pause => {
                             debug!("{local} Pause");
@@ -458,16 +272,16 @@ impl Peer {
 
                             if self.session.state.am_interested {
                                 self.session.state.am_interested = false;
-                                let _ = sink.send(Core::NotInterested.into()).await;
+                                let _ = self.sink.send(Core::NotInterested.into()).await;
                             }
 
                             if !self.session.state.peer_choking {
                                 self.session.state.peer_choking = true;
-                                let _ = sink.send(Core::Choke.into()).await;
+                                let _ = self.sink.send(Core::Choke.into()).await;
                             }
 
                             for block_info in &self.outgoing_requests {
-                                sink.send(Core::Cancel(block_info.clone()).into()).await?;
+                                self.sink.send(Core::Cancel(block_info.clone()).into()).await?;
                             }
 
                             self.free_pending_blocks().await;
@@ -477,7 +291,7 @@ impl Peer {
                             self.session.state.peer_choking = self.session.state.prev_peer_choking;
 
                             if !self.session.state.peer_choking {
-                                sink.send(Core::Unchoke.into()).await?;
+                                self.sink.send(Core::Unchoke.into()).await?;
                             }
 
                             let peer_has_piece = self.has_piece_not_in_local().await;
@@ -485,10 +299,10 @@ impl Peer {
                             if peer_has_piece {
                                 debug!("{local} we are interested due to Bitfield");
                                 self.session.state.am_interested = true;
-                                sink.send(Core::Interested.into()).await?;
+                                self.sink.send(Core::Interested.into()).await?;
 
                                 if self.can_request() {
-                                    self.request_block_infos(&mut sink).await?;
+                                    self.request_block_infos().await?;
                                 }
                             }
                         }
@@ -496,7 +310,7 @@ impl Peer {
                             debug!("{local} CancelBlock {remote}");
                             self.outgoing_requests.remove(&block_info);
                             self.outgoing_requests_timeout.remove(&block_info);
-                            sink.send(Core::Cancel(block_info).into()).await?;
+                            self.sink.send(Core::Cancel(block_info).into()).await?;
                         }
                         PeerMsg::SeedOnly => {
                             debug!("{local} SeedOnly");
@@ -507,7 +321,7 @@ impl Peer {
                             let metadata_reject = Metadata::reject(index);
                             let metadata_reject = metadata_reject.to_bencode().unwrap();
 
-                            sink.send(Core::Extended(3, metadata_reject).into()).await?;
+                            self.sink.send(Core::Extended(3, metadata_reject).into()).await?;
                         }
                         PeerMsg::Quit => {
                             debug!("{local} Quit");
@@ -526,7 +340,7 @@ impl Peer {
                             if am_interested && !peer_choking {
                                 self.prepare_for_download().await;
                                 debug!("{local} requesting blocks");
-                                self.request_block_infos(&mut sink).await?;
+                                self.request_block_infos().await?;
                             }
                         }
                     }
@@ -573,7 +387,7 @@ impl Peer {
 
         // if in endgame, send cancels to all other peers
         if self.session.in_endgame {
-            let from = self.ctx.id;
+            let from = self.ctx.id.clone();
             let _ = self
                 .torrent_ctx
                 .tx
@@ -591,7 +405,7 @@ impl Peer {
             .send(DiskMsg::WriteBlock {
                 block,
                 // recipient: tx,
-                info_hash: self.torrent_ctx.info_hash,
+                info_hash: self.torrent_ctx.info_hash.clone(),
             })
             .await?;
 
@@ -608,15 +422,11 @@ impl Peer {
     /// - Check if we can request blocks.
     /// - Check and resend requests that timed out.
     /// - Update stats about the Peer.
-    pub async fn tick<M, C>(&mut self, sink: &mut C) -> Result<(), Error>
-    where
-        M: From<Core> + Into<Message>,
-        C: SinkExt<M> + Sized + std::marker::Unpin,
-    {
+    pub async fn tick(&mut self) -> Result<(), Error> {
         // resend requests if we have any pending and more time has elapsed
         // since the last received block than the current timeout value
         if !self.outgoing_requests.is_empty() && self.can_request() {
-            self.check_request_timeout(sink).await?;
+            self.check_request_timeout().await?;
         }
 
         self.session.counters.reset();
@@ -625,14 +435,7 @@ impl Peer {
     }
 
     /// Re-request blocks that timed-out
-    async fn check_request_timeout<T, M>(
-        &mut self,
-        sink: &mut T,
-    ) -> Result<(), Error>
-    where
-        M: Into<Message> + From<Core>,
-        T: SinkExt<M> + Sized + std::marker::Unpin,
-    {
+    async fn check_request_timeout(&mut self) -> Result<(), Error> {
         let local = self.ctx.local_addr;
 
         // if self.session.timed_out_request_count >= 10 {
@@ -654,7 +457,8 @@ impl Peer {
                     elapsed_since_last_request.as_millis(),
                 );
 
-                let _ = sink.send(Core::Request(block.clone()).into()).await;
+                let _ =
+                    self.sink.send(Core::Request(block.clone()).into()).await;
                 *timeout = Instant::now();
 
                 debug!(
@@ -664,7 +468,7 @@ impl Peer {
             }
         }
         if !self.session.seed_only {
-            self.request_block_infos(sink).await?;
+            self.request_block_infos().await?;
         }
 
         Ok(())
@@ -695,7 +499,7 @@ impl Peer {
                 .torrent_ctx
                 .disk_tx
                 .send(DiskMsg::ReturnBlockInfos(
-                    self.torrent_ctx.info_hash,
+                    self.torrent_ctx.info_hash.clone(),
                     blocks,
                 ))
                 .await;
@@ -706,14 +510,7 @@ impl Peer {
     /// Must be used after checking that the Peer is able to send blocks with
     /// [`Self::can_request`].
     #[tracing::instrument(level="debug", skip_all, fields(self.local_addr))]
-    pub async fn request_block_infos<T, M>(
-        &mut self,
-        sink: &mut T,
-    ) -> Result<(), Error>
-    where
-        M: Into<Message> + From<Core>,
-        T: SinkExt<M> + Sized + std::marker::Unpin,
-    {
+    pub async fn request_block_infos(&mut self) -> Result<(), Error> {
         if self.session.seed_only {
             warn!("Calling request_block_infos when peer is in seed-only mode");
             return Ok(());
@@ -748,8 +545,8 @@ impl Peer {
                 .send(DiskMsg::RequestBlocks {
                     recipient: otx,
                     qnt: request_len,
-                    info_hash: self.torrent_ctx.info_hash,
-                    peer_id: self.ctx.id,
+                    info_hash: self.torrent_ctx.info_hash.clone(),
+                    peer_id: self.ctx.id.clone(),
                 })
                 .await;
 
@@ -772,8 +569,10 @@ impl Peer {
                 // debug!("{local} requesting \n {block_info:#?} to {remote}");
                 self.outgoing_requests.insert(block_info.clone());
 
-                let _ =
-                    sink.send(Core::Request(block_info.clone()).into()).await;
+                let _ = self
+                    .sink
+                    .send(Core::Request(block_info.clone()).into())
+                    .await;
 
                 self.outgoing_requests_timeout
                     .insert(block_info, Instant::now());
@@ -800,7 +599,7 @@ impl Peer {
         let _ = self
             .torrent_ctx
             .tx
-            .send(TorrentMsg::StartEndgame(self.ctx.id, outgoing))
+            .send(TorrentMsg::StartEndgame(self.ctx.id.clone(), outgoing))
             .await;
     }
 
@@ -808,15 +607,8 @@ impl Peer {
     /// - The peer supports the "ut_metadata" extension from the extension
     ///   protocol
     /// - We do not have the info downloaded
-    #[tracing::instrument(skip(self, sink))]
-    pub async fn try_request_info<T, M>(
-        &mut self,
-        sink: &mut T,
-    ) -> Result<(), Error>
-    where
-        M: Into<Message> + From<Core>,
-        T: SinkExt<M> + Sized + std::marker::Unpin,
-    {
+    #[tracing::instrument(skip(self))]
+    pub async fn try_request_info(&mut self) -> Result<(), Error> {
         // only request info if we dont have an Info
         // and the peer supports the metadata extension protocol
         if !self.have_info {
@@ -838,8 +630,10 @@ impl Peer {
                     debug!("request {h:?}");
 
                     let h = h.to_bencode().map_err(|_| Error::BencodeError)?;
-                    let _ =
-                        sink.send(Core::Extended(ut_metadata, h).into()).await;
+                    let _ = self
+                        .sink
+                        .send(Core::Extended(ut_metadata, h).into())
+                        .await;
                 }
             }
         }

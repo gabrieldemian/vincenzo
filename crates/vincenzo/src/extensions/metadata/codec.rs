@@ -45,7 +45,7 @@ impl Encoder<Metadata> for MetadataCodec {
         dst: &mut bytes::BytesMut,
     ) -> Result<(), Self::Error> {
         let item: Core = item.try_into()?;
-        CoreCodec.encode(item, dst).map_err(|e| e.into())
+        CoreCodec.encode(item, dst)
     }
 }
 
@@ -124,11 +124,10 @@ impl ExtensionTrait for MetadataCodec {
 
     const ID: u8 = 3;
 
-    async fn handle_msg<T: SinkExt<Message> + Sized + std::marker::Unpin>(
+    async fn handle_msg(
         &self,
         msg: &Self::Msg,
         peer: &mut Peer,
-        sink: &mut T,
     ) -> Result<(), Error> {
         match &msg {
             Metadata::Response { metadata, payload } => {
@@ -151,7 +150,7 @@ impl ExtensionTrait for MetadataCodec {
                 peer.torrent_ctx
                     .tx
                     .send(TorrentMsg::SendCancelMetadata {
-                        from: peer.ctx.id,
+                        from: peer.ctx.id.clone(),
                         index: metadata.piece,
                     })
                     .await?;
@@ -173,7 +172,8 @@ impl ExtensionTrait for MetadataCodec {
                     Some(info_slice) => {
                         info!("sending data with piece {:?}", piece);
                         let payload = MetadataDict::data(*piece, &info_slice)?;
-                        sink.send(Core::Extended(Self::ID, payload).into())
+                        peer.sink
+                            .send(Core::Extended(Self::ID, payload).into())
                             .await;
                     }
                     None => {
@@ -181,7 +181,9 @@ impl ExtensionTrait for MetadataCodec {
                         let r = MetadataDict::reject(*piece)
                             .to_bencode()
                             .map_err(|_| Error::BencodeError)?;
-                        sink.send(Core::Extended(Self::ID, r).into()).await;
+                        peer.sink
+                            .send(Core::Extended(Self::ID, r).into())
+                            .await;
                     }
                 }
             }

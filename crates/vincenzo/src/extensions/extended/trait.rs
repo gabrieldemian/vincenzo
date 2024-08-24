@@ -1,7 +1,6 @@
 use crate::{error::Error, extensions::core::Message};
 use std::future::Future;
 
-use futures::{Sink, SinkExt};
 use tokio_util::codec::{Decoder, Encoder};
 
 use crate::{extensions::core::Core, peer::Peer};
@@ -13,6 +12,18 @@ pub trait MessageTrait: TryInto<Core> {
     fn codec(
         &self,
     ) -> impl Encoder<Self, Error = Error> + Decoder + ExtensionTrait<Msg = Self>;
+
+    /// Return the extended ID to which this message belongs to. 255 if Core.
+    fn id(&self) -> u8;
+}
+
+pub trait MessageTrait2: Clone {}
+
+pub trait ExtensionTrait2: TryInto<Core> {
+    fn id(&self) -> u8;
+    fn codecc(
+        &self,
+    ) -> impl Encoder<Self, Error = Error> + Decoder + ExtensionTrait<Msg = Self>;
 }
 
 /// All extensions from the extended protocol (Bep 0010) must implement this
@@ -20,7 +31,7 @@ pub trait MessageTrait: TryInto<Core> {
 pub trait ExtensionTrait: Clone {
     /// The Message of the extension must know how to convert itself to a
     /// [`Core::Extended`]
-    type Msg: TryInto<Core>;
+    type Msg: MessageTrait;
 
     /// Codec for [`Self::Msg`]
     type Codec: Encoder<Self::Msg> + Decoder + Clone;
@@ -34,17 +45,17 @@ pub trait ExtensionTrait: Clone {
     /// supported or not.
     fn is_supported(&self, extension: &Extension) -> bool;
 
-    fn handle_msg<T>(
+    fn handle_msg(
         &self,
         msg: &Self::Msg,
         peer: &mut Peer,
-        sink: &mut T,
-    ) -> impl Future<Output = Result<(), Error>> + Send + Sync
-    where
-        T: SinkExt<Message>
-            + Sized
-            + std::marker::Unpin
-            + Send
-            + Sync
-            + Sink<Message, Error = Error>;
+        // sink: &mut T,
+    ) -> impl Future<Output = Result<(), Error>> + Send + Sync;
+    // where
+    //     T: SinkExt<Message>
+    //         + Sized
+    //         + std::marker::Unpin
+    //         + Send
+    //         + Sync
+    //         + Sink<Message, Error = Error>;
 }

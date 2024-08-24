@@ -23,7 +23,7 @@ use crate::{
     disk::{Disk, DiskMsg},
     error::Error,
     magnet::Magnet,
-    torrent::{Torrent, TorrentMsg, TorrentState, TorrentStatus},
+    torrent::{InfoHash, Torrent, TorrentMsg, TorrentState, TorrentStatus},
     utils::to_human_readable,
 };
 
@@ -43,17 +43,15 @@ pub struct Daemon {
     // pub config: DaemonConfig,
     pub disk_tx: Option<mpsc::Sender<DiskMsg>>,
     pub ctx: Arc<DaemonCtx>,
-    /// key: info_hash
-    pub torrent_txs: HashMap<[u8; 20], mpsc::Sender<TorrentMsg>>,
+    pub torrent_txs: HashMap<InfoHash, mpsc::Sender<TorrentMsg>>,
     rx: mpsc::Receiver<DaemonMsg>,
 }
 
 /// Context of the [`Daemon`] that may be shared between other types.
 pub struct DaemonCtx {
     pub tx: mpsc::Sender<DaemonMsg>,
-    /// key: info_hash
     /// States of all Torrents, updated each second by the Torrent struct.
-    pub torrent_states: RwLock<HashMap<[u8; 20], TorrentState>>,
+    pub torrent_states: RwLock<HashMap<InfoHash, TorrentState>>,
 }
 
 /// Messages used by the [`Daemon`] for internal communication.
@@ -68,14 +66,19 @@ pub enum DaemonMsg {
     /// of a torrent updates (every 1 second).
     TorrentState(TorrentState),
     /// Ask the Daemon to send a [`TorrentState`] of the torrent with the given
-    /// hash_info.
-    RequestTorrentState([u8; 20], oneshot::Sender<Option<TorrentState>>),
+    RequestTorrentState(InfoHash, oneshot::Sender<Option<TorrentState>>),
     /// Pause/Resume a torrent.
-    TogglePause([u8; 20]),
+    TogglePause(InfoHash),
     /// Gracefully shutdown the Daemon
     Quit,
     /// Print the status of all Torrents to stdout
     PrintTorrentStatus,
+}
+
+impl Default for Daemon {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Daemon {
@@ -159,7 +162,7 @@ impl Daemon {
                         DaemonMsg::TorrentState(torrent_state) => {
                             let mut torrent_states = self.ctx.torrent_states.write().await;
 
-                            torrent_states.insert(torrent_state.info_hash, torrent_state.clone());
+                            torrent_states.insert(torrent_state.info_hash.clone(), torrent_state.clone());
 
                             if config.quit_after_complete && torrent_states.values().all(|v| v.status == TorrentStatus::Seeding) {
                                 let _ = ctx.tx.send(DaemonMsg::Quit).await;
@@ -171,7 +174,7 @@ impl Daemon {
                             let _ = self.new_torrent(magnet).await;
                         }
                         DaemonMsg::TogglePause(info_hash) => {
-                            let _ = self.toggle_pause(info_hash).await;
+                            let _ = self.toggle_pause(&info_hash).await;
                         }
                         DaemonMsg::RequestTorrentState(info_hash, recipient) => {
                             let torrent_states = self.ctx.torrent_states.read().await;
@@ -277,10 +280,13 @@ impl Daemon {
     }
 
     /// Pause/resume the torrent, making the download an upload stale.
-    pub async fn toggle_pause(&self, info_hash: [u8; 20]) -> Result<(), Error> {
+    pub async fn toggle_pause(
+        &self,
+        info_hash: &InfoHash,
+    ) -> Result<(), Error> {
         let tx = self
             .torrent_txs
-            .get(&info_hash)
+            .get(info_hash)
             .ok_or(Error::TorrentDoesNotExist)?;
 
         tx.send(TorrentMsg::TogglePause).await?;
@@ -318,7 +324,7 @@ impl Daemon {
     /// This fn will panic if it is being called BEFORE run
     pub async fn new_torrent(&mut self, magnet: Magnet) -> Result<(), Error> {
         trace!("magnet: {}", *magnet);
-        let info_hash = magnet.parse_xt();
+        let info_hash = magnet.parse_xt_infohash();
 
         let mut torrent_states = self.ctx.torrent_states.write().await;
 
@@ -329,11 +335,11 @@ impl Daemon {
 
         let torrent_state = TorrentState {
             name: magnet.parse_dn(),
-            info_hash,
+            info_hash: info_hash.clone(),
             ..Default::default()
         };
 
-        torrent_states.insert(info_hash, torrent_state);
+        torrent_states.insert(info_hash.clone(), torrent_state);
         drop(torrent_states);
 
         // disk_tx is not None at this point, this is safe

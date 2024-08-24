@@ -127,7 +127,10 @@ pub struct Handshake {
 }
 
 impl Handshake {
-    pub fn new(info_hash: [u8; 20], peer_id: [u8; 20]) -> Self {
+    pub fn new(
+        info_hash: impl Into<[u8; 20]>,
+        peer_id: impl Into<[u8; 20]>,
+    ) -> Self {
         let mut reserved = [0u8; 8];
 
         // we support the `extension protocol`
@@ -138,8 +141,8 @@ impl Handshake {
             pstr_len: u8::to_be(19),
             pstr: PSTR,
             reserved,
-            info_hash,
-            peer_id,
+            info_hash: info_hash.into(),
+            peer_id: peer_id.into(),
         }
     }
     pub fn serialize(&self) -> Result<[u8; 68], Error> {

@@ -26,6 +26,12 @@ pub struct App {
     page: Box<dyn Page>,
 }
 
+impl Default for App {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl App {
     pub fn is_detched(mut self, v: bool) -> Self {
         self.is_detached = v;

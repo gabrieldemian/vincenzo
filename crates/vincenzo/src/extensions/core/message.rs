@@ -1,65 +1,13 @@
-#[macro_export]
-macro_rules! as_expr {
-    ($e:expr) => {
-        $e
-    };
-}
-#[macro_export]
-macro_rules! as_item {
-    ($i:item) => {
-        $i
-    };
-}
-#[macro_export]
-macro_rules! as_pat {
-    ($p:pat) => {
-        $p
-    };
-}
-#[macro_export]
-macro_rules! as_stmt {
-    ($s:stmt) => {
-        $s
-    };
-}
-#[macro_export]
-macro_rules! as_ty {
-    ($t:ty) => {
-        $t
-    };
-}
-#[macro_export]
-macro_rules! as_ident {
-    ($t:ident) => {
-        $t
-    };
-}
-
-macro_rules! count {
-    () => (0usize);
-    ( $x:tt $($xs:tt)* ) => (1usize + count!($($xs)*));
-}
-
-use std::future::Future;
-
 use futures::{Sink, SinkExt};
 
 use crate::{
     extensions::{
         core::{Core, CoreCodec},
-        extended::codec::ExtendedCodec,
+        extended::{codec::ExtendedCodec, ExtensionTrait2},
         metadata::codec::MetadataCodec,
     },
     peer::Peer,
 };
-
-pub struct Message2<T>
-where
-    T: ExtensionTrait,
-{
-    bytes: Vec<u8>,
-    extension: T,
-}
 
 /// From a list of types that implement
 /// [`crate::extensions::extended::ExtensionTrait`], generate a [`Message`]
@@ -93,6 +41,16 @@ macro_rules! declare_message {
         pub enum Message {
             $(
                 $codec(<$codec as ExtensionTrait>::Msg),
+            )*
+        }
+
+        /// A peer supports all the variants of this enum. Used as an enum to allow passing this as
+        /// an associated type in other traits. Since different trait bounds in the same trait is
+        /// considered to be a new type.
+        #[derive(Debug, Clone)]
+        pub enum Codec {
+            $(
+                $codec($codec),
             )*
         }
 
@@ -158,37 +116,25 @@ macro_rules! declare_message {
                 {
                     $codec
                 }
+
+                fn id(&self) -> u8 {
+                    <$codec as ExtensionTrait>::ID
+                }
             }
         )*
 
         impl Message {
-            // pub async fn handle_msg<T, M>(
-            //     &self,
-            //     peer: &mut Peer,
-            //     sink: &mut T,
-            // ) -> Result<(), Error>
-            pub async fn handle_msg<M, C>(
+            pub async fn handle_msg(
                 &self,
                 peer: &mut Peer,
-                sink: &mut C,
             ) -> Result<(), Error>
-                // where
-                //     T: SinkExt<Message>
-                //         + Sized
-                //         + std::marker::Unpin
-                //         + Send
-                //         + Sync
-                //         + Sink<Message, Error = Error>
-                where
-                    M: From<Core> + Into<Message>,
-                    C: SinkExt<M> + Sized + std::marker::Unpin + Send + Sync + Sink<Message, Error = Error>,
                 {
                 match self {
                     $(
                         Message::$codec(msg) => {
                             let codec = msg.codec();
                             if codec.is_supported(&peer.extension) {
-                                codec.handle_msg(&msg, peer, sink).await?;
+                                codec.handle_msg(&msg, peer).await?;
                             }
                         }
                     )*
@@ -196,61 +142,10 @@ macro_rules! declare_message {
                 Ok(())
             }
         }
-        // pub async fn tick<M, C>(&mut self, sink: &mut C) -> Result<(), Error>
-        // where
-        //     M: From<Core> + Into<Message>,
-        //     C: SinkExt<M> + Sized + std::marker::Unpin,
-
-        // pub struct Extensions;
-        //
-        // impl Extensions {
-        //     pub fn get() -> [$($codec,)*] {
-        //         // todo!()
-        //         // [count!($($codec)*); $($codec)*]
-        //         [$($codec,)*]
-        //     }
-        // }
     };
 }
 
 declare_message!(CoreCodec, ExtendedCodec, MetadataCodec);
-// impl Message {
-//     pub async fn handle_msg<T, M>(
-//         &self,
-//         msg: &M,
-//         peer: &mut Peer,
-//         sink: &mut T,
-//     ) -> Result<(), Error>
-//         where
-//             M: TryInto<Core>,
-//             T: SinkExt<Message>
-//                 + Sized
-//                 + std::marker::Unpin
-//                 + Send
-//                 + Sync
-//                 + Sink<Message, Error = Error>
-//         {
-//         // match self {
-//         //     $(
-//         //         Message::$codec(m) => {
-//         //             let c = m.codec();
-//         //             // if c.is_supported(&self.extension) {
-//         //                 c.handle_msg(&m, peer, sink).await?;
-//         //             // }
-//         //         }
-//         //     )*
-//         // }
-//         Ok(())
-//     }
-// }
-
-pub struct Extensions;
-
-impl Extensions {
-    pub fn get() -> (CoreCodec, ExtendedCodec) {
-        (CoreCodec, ExtendedCodec)
-    }
-}
 
 #[cfg(test)]
 mod tests {

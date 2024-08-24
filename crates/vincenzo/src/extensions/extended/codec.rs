@@ -2,7 +2,10 @@
 
 use crate::{
     error::Error,
-    extensions::core::{CoreCodec, Message},
+    extensions::{
+        core::{Codec, CoreCodec, Message},
+        metadata::codec::MetadataCodec,
+    },
     peer::{Direction, Peer},
 };
 use std::{fmt::Debug, ops::Deref};
@@ -14,7 +17,9 @@ use tracing::debug;
 
 use crate::extensions::core::Core;
 
-use super::{Extension, ExtensionTrait};
+use super::{
+    Extension, ExtensionTrait, ExtensionTrait2, MessageTrait, MessageTrait2,
+};
 
 /// Extended handshake from the Extended protocol, other extended messages have
 /// their own enum type.
@@ -43,7 +48,7 @@ impl TryInto<Core> for Extended {
     /// Try to convert an [`Extended`] message to a [`Core::Extended`] message.
     fn try_into(self) -> Result<Core, Self::Error> {
         let bytes = self.to_bencode().map_err(|_| Error::BencodeError)?;
-        Ok(Core::Extended(0, bytes))
+        Ok(Core::Extended(<ExtendedCodec as ExtensionTrait>::ID, bytes))
     }
 }
 
@@ -78,7 +83,7 @@ impl Encoder<Extended> for ExtendedCodec {
     ) -> Result<(), Self::Error> {
         // Core::Extended
         let core: Core = item.try_into()?;
-        CoreCodec.encode(core, dst).map_err(|e| e.into())
+        CoreCodec.encode(core, dst)
     }
 }
 
@@ -98,27 +103,41 @@ impl Decoder for ExtendedCodec {
     }
 }
 
+impl MessageTrait2 for Extended {}
+
+impl ExtensionTrait2 for Extended {
+    fn codecc(
+        &self,
+    ) -> impl Encoder<Self, Error = Error> + Decoder + ExtensionTrait<Msg = Self>
+    {
+        ExtendedCodec
+    }
+    fn id(&self) -> u8 {
+        0
+    }
+}
+
 impl ExtensionTrait for ExtendedCodec {
     type Codec = ExtendedCodec;
     type Msg = Extended;
 
     const ID: u8 = 0;
 
-    async fn handle_msg<
-        T: SinkExt<Message>
-            + Sized
-            + std::marker::Unpin
-            + Sink<Message, Error = Error>,
-    >(
+    async fn handle_msg(
         &self,
         msg: &Self::Msg,
         peer: &mut Peer,
-        sink: &mut T,
     ) -> Result<(), Error> {
         debug!(
             "{} extended handshake from {}",
             peer.ctx.local_addr, peer.ctx.remote_addr
         );
+
+        // todo: maybe make Into<Vec<Codec>> for Extension
+        if msg.0.m.ut_metadata.is_some() {
+            peer.ext.push(Codec::MetadataCodec(MetadataCodec));
+        }
+
         peer.extension = msg.0.clone();
 
         if peer.ctx.direction == Direction::Outbound {
@@ -132,9 +151,9 @@ impl ExtensionTrait for ExtendedCodec {
             // and send to the remote peer
             let core = Core::Extended(Self::ID, ext);
 
-            sink.send(core.into()).await?;
+            peer.sink.send(core.into()).await?;
 
-            peer.try_request_info(sink).await?;
+            peer.try_request_info().await?;
         }
         Ok(())
     }
