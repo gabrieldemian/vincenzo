@@ -7,8 +7,6 @@ edition = "2021"
 name = "vczd"
 path = "src/main.rs"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
 bendy = { workspace = true }
 bytes = { workspace = true }

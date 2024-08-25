@@ -1,24 +1,20 @@
 //! Types for the metadata protocol codec.
 
-use crate::{
-    error::Error, extensions::core::Message, peer::Peer, torrent::TorrentMsg,
-};
+use crate::{error::Error, peer::Peer, torrent::TorrentMsg};
 use bendy::encoding::ToBencode;
 use futures::SinkExt;
 use tokio::sync::oneshot;
 use tokio_util::codec::{Decoder, Encoder};
 use tracing::{debug, info};
+use vincenzo_macros::{Extension, Message};
 
-use crate::extensions::{
-    core::{Core, CoreCodec, CoreId},
-    extended::ExtensionTrait,
-};
+use crate::extensions::{Core, CoreCodec, CoreId, ExtensionTrait};
 
 use super::{Metadata as MetadataDict, MetadataMsgType};
 
 /// Messages of the extended metadata protocol, used to exchange pieces of the
 /// `Info` of a metadata file.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Message)]
 pub enum Metadata {
     /// id: 0
     /// Request(piece)
@@ -118,6 +114,10 @@ impl TryInto<Core> for Metadata {
     }
 }
 
+#[derive(Extension)]
+#[extension(id = 3, codec = MetadataCodec, msg = Metadata)]
+pub struct MetadataExt;
+
 impl ExtensionTrait for MetadataCodec {
     type Codec = MetadataCodec;
     type Msg = Metadata;
@@ -174,7 +174,7 @@ impl ExtensionTrait for MetadataCodec {
                         let payload = MetadataDict::data(*piece, &info_slice)?;
                         peer.sink
                             .send(Core::Extended(Self::ID, payload).into())
-                            .await;
+                            .await?;
                     }
                     None => {
                         info!("sending reject");
@@ -183,7 +183,7 @@ impl ExtensionTrait for MetadataCodec {
                             .map_err(|_| Error::BencodeError)?;
                         peer.sink
                             .send(Core::Extended(Self::ID, r).into())
-                            .await;
+                            .await?;
                     }
                 }
             }

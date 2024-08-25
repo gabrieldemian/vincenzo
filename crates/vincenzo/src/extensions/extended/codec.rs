@@ -2,28 +2,24 @@
 
 use crate::{
     error::Error,
-    extensions::{
-        core::{Codec, CoreCodec, Message},
-        metadata::codec::MetadataCodec,
-    },
+    extensions::{Codec, CoreCodec, MetadataCodec},
     peer::{Direction, Peer},
 };
 use std::{fmt::Debug, ops::Deref};
 
 use bendy::{decoding::FromBencode, encoding::ToBencode};
-use futures::{Sink, SinkExt};
+use futures::SinkExt;
 use tokio_util::codec::{Decoder, Encoder};
 use tracing::debug;
+use vincenzo_macros::{Extension, Message};
 
 use crate::extensions::core::Core;
 
-use super::{
-    Extension, ExtensionTrait, ExtensionTrait2, MessageTrait, MessageTrait2,
-};
+use super::{CodecTrait, Extension, ExtensionTrait, ExtensionTrait2};
 
 /// Extended handshake from the Extended protocol, other extended messages have
 /// their own enum type.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Message)]
 pub struct Extended(Extension);
 
 impl From<Extension> for Extended {
@@ -103,19 +99,9 @@ impl Decoder for ExtendedCodec {
     }
 }
 
-impl MessageTrait2 for Extended {}
-
-impl ExtensionTrait2 for Extended {
-    fn codecc(
-        &self,
-    ) -> impl Encoder<Self, Error = Error> + Decoder + ExtensionTrait<Msg = Self>
-    {
-        ExtendedCodec
-    }
-    fn id(&self) -> u8 {
-        0
-    }
-}
+#[derive(Debug, Clone, Extension)]
+#[extension(id = 0, codec = ExtendedCodec, msg = Extended)]
+pub struct ExtendedExt;
 
 impl ExtensionTrait for ExtendedCodec {
     type Codec = ExtendedCodec;

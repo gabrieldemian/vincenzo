@@ -11,7 +11,7 @@ use vincenzo::{
     daemon_wire::{DaemonCodec, Message},
 };
 
-#[tokio::main]
+#[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     let config = Config::load()?;

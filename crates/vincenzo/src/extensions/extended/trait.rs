@@ -17,13 +17,35 @@ pub trait MessageTrait: TryInto<Core> {
     fn id(&self) -> u8;
 }
 
-pub trait MessageTrait2: Clone {}
+pub trait MessageTrait2 {}
 
-pub trait ExtensionTrait2: TryInto<Core> {
+pub trait CodecTrait<Item>:
+    Encoder<Item, Error = Error> + Decoder<Item = Item, Error = Error>
+{
+}
+
+impl<T, I> CodecTrait<I> for T where
+    T: Encoder<I, Error = Error> + Decoder<Error = Error, Item = I>
+{
+}
+
+pub trait ExtensionTrait2<T>
+where
+    T: TryInto<Core>,
+{
     fn id(&self) -> u8;
-    fn codecc(
+    fn codecc(&self) -> Box<dyn CodecTrait<T>>;
+}
+
+pub trait HandleMsg<T>: ExtensionTrait2<T>
+where
+    T: TryInto<Core>,
+{
+    fn handle_msg(
         &self,
-    ) -> impl Encoder<Self, Error = Error> + Decoder + ExtensionTrait<Msg = Self>;
+        msg: &T,
+        peer: &mut Peer,
+    ) -> impl Future<Output = Result<(), Error>> + Send + Sync;
 }
 
 /// All extensions from the extended protocol (Bep 0010) must implement this
@@ -49,13 +71,5 @@ pub trait ExtensionTrait: Clone {
         &self,
         msg: &Self::Msg,
         peer: &mut Peer,
-        // sink: &mut T,
     ) -> impl Future<Output = Result<(), Error>> + Send + Sync;
-    // where
-    //     T: SinkExt<Message>
-    //         + Sized
-    //         + std::marker::Unpin
-    //         + Send
-    //         + Sync
-    //         + Sink<Message, Error = Error>;
 }

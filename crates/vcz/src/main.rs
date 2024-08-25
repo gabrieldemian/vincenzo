@@ -7,7 +7,7 @@ use vincenzo::{args::Args, daemon::Daemon};
 
 use vcz_ui::{action::Action, app::App};
 
-#[tokio::main]
+#[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tmp = std::env::temp_dir();
     let time = std::time::SystemTime::now();

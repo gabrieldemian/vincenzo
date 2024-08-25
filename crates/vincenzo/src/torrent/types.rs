@@ -1,6 +1,53 @@
-use std::ops::Deref;
+use std::{net::SocketAddr, ops::Deref, sync::Arc};
 
 use speedy::{Readable, Writable};
+use tokio::sync::oneshot;
+
+use crate::{
+    extensions::core::BlockInfo,
+    peer::{PeerCtx, PeerId},
+};
+
+/// Messages used to control the local peer or the state of the torrent.
+#[derive(Debug)]
+pub enum TorrentMsg {
+    /// Message when one of the peers have downloaded
+    /// an entire piece. We send Have messages to peers
+    /// that don't have it and update the UI with stats.
+    DownloadedPiece(usize),
+    PeerConnected(PeerId, Arc<PeerCtx>),
+    DownloadComplete,
+    /// When in endgame mode, the first peer that receives this info,
+    /// sends this message to send Cancel's to all other peers.
+    SendCancelBlock {
+        from: PeerId,
+        block_info: BlockInfo,
+    },
+    /// When a peer downloads a piece of a metadata,
+    /// send cancels to all other peers so that we dont receive
+    /// pieces that we already have
+    SendCancelMetadata {
+        from: PeerId,
+        index: u32,
+    },
+    StartEndgame(PeerId, Vec<BlockInfo>),
+    /// When a peer downloads an info piece,
+    /// we need to mutate `info_dict` and maybe
+    /// generate the entire info.
+    /// total, metadata.index, bytes
+    DownloadedInfoPiece(u32, u32, Vec<u8>),
+    /// When a peer request a piece of the info
+    /// index, recipient
+    RequestInfoPiece(u32, oneshot::Sender<Option<Vec<u8>>>),
+    IncrementDownloaded(u32),
+    IncrementUploaded(u32),
+    /// Toggle pause torrent and send Pause/Resume message to all Peers
+    TogglePause,
+    /// When we can't do a TCP connection with the ip of the Peer.
+    FailedPeer(SocketAddr),
+    /// When torrent is being gracefully shutdown
+    Quit,
+}
 
 #[derive(Clone, PartialEq, Eq, Hash, Default, Readable, Writable)]
 pub struct InfoHash([u8; 20]);

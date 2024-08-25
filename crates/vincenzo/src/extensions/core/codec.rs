@@ -4,6 +4,7 @@ use std::io::Cursor;
 use tokio::{io, sync::oneshot};
 use tokio_util::codec::{Decoder, Encoder};
 use tracing::{debug, trace, warn};
+use vincenzo_macros::{Extension, Message};
 
 use super::{Block, BlockInfo};
 use crate::{
@@ -14,7 +15,7 @@ use crate::{
 /// Core messages exchanged after a successful handshake.
 /// These are from the vanilla protocol, with no extensions.
 #[repr(u8)]
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Message)]
 pub enum Core {
     Choke,
     Unchoke,
@@ -80,6 +81,10 @@ pub struct NewMessage {
     id: u8,
     bytes: Vec<u8>,
 }
+
+#[derive(Extension)]
+#[extension(id = 255, codec = CoreCodec, msg = Core)]
+pub struct CoreExt;
 
 impl Decoder for NewMessageCodec {
     type Item = NewMessage;

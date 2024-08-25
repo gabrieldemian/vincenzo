@@ -2,7 +2,10 @@
 //!
 //! <http://www.bittorrent.org/beps/bep_0009.html>
 
-pub mod codec;
+mod codec;
+
+// re-exports
+pub use codec::*;
 
 use bendy::{
     decoding::{self, FromBencode, Object, ResultExt},

@@ -6,6 +6,7 @@ pub mod codec;
 mod r#trait;
 
 // re-exports
+pub use codec::*;
 pub use r#trait::*;
 
 use bendy::{

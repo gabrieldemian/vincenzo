@@ -3,7 +3,7 @@ use vincenzo::error::Error;
 
 use vcz_ui::app::App;
 
-#[tokio::main]
+#[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Error> {
     // Start and run the terminal UI
     let mut app = App::new();

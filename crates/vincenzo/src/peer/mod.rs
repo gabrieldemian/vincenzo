@@ -32,7 +32,10 @@ use tokio::net::TcpStream;
 use tracing::{debug, warn};
 
 use crate::{
-    extensions::core::{Codec, CoreCodec, MessageCodec},
+    extensions::{
+        core::{Codec, CoreCodec, MessageCodec},
+        extended::ExtensionTrait2,
+    },
     torrent::InfoHash,
 };
 
@@ -53,8 +56,9 @@ use self::session::Session;
 
 /// Data about a remote Peer that the client is connected to,
 /// but the client itself does not have a Peer struct.
-#[derive(Debug)]
+// #[derive(Debug)]
 pub struct Peer {
+
     /// Codecs/extensions that the Peer supports, can be changed at runtime
     /// after `Extension` is sent by the peer.
     pub ext: Vec<Codec>,
@@ -132,6 +136,7 @@ impl From<HandshakedPeer> for Peer {
         let (sink, stream) = value.socket.split();
 
         Self {
+            aaa: Vec::new(),
             sink,
             stream,
             direction: peer.direction,
@@ -222,7 +227,9 @@ impl Peer {
                     self.sink.send(Core::KeepAlive.into()).await?;
                 }
                 Some(Ok(msg)) = self.stream.next() => {
-                    msg.handle_msg(self).await?;
+                    // if msg == Message {
+                    // }
+                    // msg.handle_msg(self).await?;
                 }
                 Some(msg) = self.rx.recv() => {
                     match msg {

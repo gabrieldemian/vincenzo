@@ -14,7 +14,7 @@ use crate::{
     daemon::DaemonMsg,
     disk::DiskMsg,
     error::Error,
-    extensions::core::BlockInfo,
+    extensions::{core::Codec, extended::ExtensionTrait2},
     magnet::Magnet,
     metainfo::Info,
     peer::{
@@ -41,55 +41,14 @@ use tokio::{
 };
 use tracing::{debug, info, warn};
 
-/// Messages used to control the local peer or the state of the torrent.
-#[derive(Debug)]
-pub enum TorrentMsg {
-    /// Message when one of the peers have downloaded
-    /// an entire piece. We send Have messages to peers
-    /// that don't have it and update the UI with stats.
-    DownloadedPiece(usize),
-    PeerConnected(PeerId, Arc<PeerCtx>),
-    DownloadComplete,
-    /// When in endgame mode, the first peer that receives this info,
-    /// sends this message to send Cancel's to all other peers.
-    SendCancelBlock {
-        from: PeerId,
-        block_info: BlockInfo,
-    },
-    /// When a peer downloads a piece of a metadata,
-    /// send cancels to all other peers so that we dont receive
-    /// pieces that we already have
-    SendCancelMetadata {
-        from: PeerId,
-        index: u32,
-    },
-    StartEndgame(PeerId, Vec<BlockInfo>),
-    /// When a peer downloads an info piece,
-    /// we need to mutate `info_dict` and maybe
-    /// generate the entire info.
-    /// total, metadata.index, bytes
-    DownloadedInfoPiece(u32, u32, Vec<u8>),
-    /// When a peer request a piece of the info
-    /// index, recipient
-    RequestInfoPiece(u32, oneshot::Sender<Option<Vec<u8>>>),
-    IncrementDownloaded(u32),
-    IncrementUploaded(u32),
-    /// Toggle pause torrent and send Pause/Resume message to all Peers
-    TogglePause,
-    /// When we can't do a TCP connection with the ip of the Peer.
-    FailedPeer(SocketAddr),
-    /// When torrent is being gracefully shutdown
-    Quit,
-}
-
 /// This is the main entity responsible for the high-level management of
 /// a torrent download or upload.
-#[derive(Debug)]
 pub struct Torrent {
+    // pub ext2: HashMap<PeerId, Vec<Box<dyn ExtensionTrait2<Codec>>>>,
+    pub ext2: Vec<Box<dyn ExtensionTrait2<Codec>>>,
     pub ctx: Arc<TorrentCtx>,
     pub tracker_ctx: Arc<TrackerCtx>,
     pub rx: mpsc::Receiver<TorrentMsg>,
-    /// key: peer_id
     pub peer_ctxs: HashMap<PeerId, Arc<PeerCtx>>,
     pub failed_peers: Vec<SocketAddr>,
     /// If using a Magnet link, the info will be downloaded in pieces
@@ -178,6 +137,7 @@ impl Torrent {
         });
 
         Self {
+            ext2: Vec::new(),
             name,
             size: 0,
             last_second_downloaded: 0,
