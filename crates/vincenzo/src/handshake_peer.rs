@@ -11,8 +11,8 @@ use crate::{
     bitfield::Reserved,
     error::Error,
     extensions::{
-        core::{Handshake, HandshakeCodec, MessageCodec},
         extended::{codec::Extended, Extension},
+        Handshake, HandshakeCodec, MessageCodec,
     },
     peer::{Direction, PeerId},
     torrent::TorrentCtx,

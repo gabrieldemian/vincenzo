@@ -14,7 +14,6 @@ use crate::{
     daemon::DaemonMsg,
     disk::DiskMsg,
     error::Error,
-    extensions::{core::Codec, extended::ExtensionTrait2},
     magnet::Magnet,
     metainfo::Info,
     peer::{
@@ -44,8 +43,6 @@ use tracing::{debug, info, warn};
 /// This is the main entity responsible for the high-level management of
 /// a torrent download or upload.
 pub struct Torrent {
-    // pub ext2: HashMap<PeerId, Vec<Box<dyn ExtensionTrait2<Codec>>>>,
-    pub ext2: Vec<Box<dyn ExtensionTrait2<Codec>>>,
     pub ctx: Arc<TorrentCtx>,
     pub tracker_ctx: Arc<TrackerCtx>,
     pub rx: mpsc::Receiver<TorrentMsg>,
@@ -137,7 +134,7 @@ impl Torrent {
         });
 
         Self {
-            ext2: Vec::new(),
+            // ext2: Vec::new(),
             name,
             size: 0,
             last_second_downloaded: 0,

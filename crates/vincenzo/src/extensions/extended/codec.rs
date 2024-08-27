@@ -2,7 +2,7 @@
 
 use crate::{
     error::Error,
-    extensions::{Codec, CoreCodec, MetadataCodec},
+    extensions::{CoreCodec, MetadataCodec},
     peer::{Direction, Peer},
 };
 use std::{fmt::Debug, ops::Deref};
@@ -15,23 +15,27 @@ use vincenzo_macros::{Extension, Message};
 
 use crate::extensions::core::Core;
 
-use super::{CodecTrait, Extension, ExtensionTrait, ExtensionTrait2};
+use super::{CodecTrait, Extension, ExtensionTrait2};
 
 /// Extended handshake from the Extended protocol, other extended messages have
 /// their own enum type.
 #[derive(Debug, Clone, PartialEq, Message)]
-pub struct Extended(Extension);
+pub enum Extended {
+    Extension(Extension),
+}
 
 impl From<Extension> for Extended {
     fn from(value: Extension) -> Self {
-        Self(value)
+        Self::Extension(value)
     }
 }
 
 impl Deref for Extended {
     type Target = Extension;
     fn deref(&self) -> &Self::Target {
-        &self.0
+        match self {
+            Self::Extension(v) => v,
+        }
     }
 }
 
@@ -44,7 +48,7 @@ impl TryInto<Core> for Extended {
     /// Try to convert an [`Extended`] message to a [`Core::Extended`] message.
     fn try_into(self) -> Result<Core, Self::Error> {
         let bytes = self.to_bencode().map_err(|_| Error::BencodeError)?;
-        Ok(Core::Extended(<ExtendedCodec as ExtensionTrait>::ID, bytes))
+        Ok(Core::Extended(ExtendedExt.id(), bytes))
     }
 }
 
@@ -53,7 +57,7 @@ impl TryInto<Extended> for Core {
 
     /// Try to convert a [`Core::Extended`] to [`Extended`] message.
     fn try_into(self) -> Result<Extended, Self::Error> {
-        let ext_id = <ExtendedCodec as ExtensionTrait>::ID;
+        let ext_id = ExtendedExt.id();
 
         if let Core::Extended(id, payload) = self {
             if id != ext_id {
@@ -62,7 +66,7 @@ impl TryInto<Extended> for Core {
             }
             let ext = Extension::from_bencode(&payload)
                 .map_err(|_| Error::BencodeError)?;
-            return Ok(Extended(ext));
+            return Ok(Extended::Extension(ext));
         }
         // todo: change this error
         Err(crate::error::Error::PeerIdInvalid)
@@ -100,55 +104,55 @@ impl Decoder for ExtendedCodec {
 }
 
 #[derive(Debug, Clone, Extension)]
-#[extension(id = 0, codec = ExtendedCodec, msg = Extended)]
+#[extension(id = 0, codec = ExtendedCodec)]
 pub struct ExtendedExt;
 
-impl ExtensionTrait for ExtendedCodec {
-    type Codec = ExtendedCodec;
-    type Msg = Extended;
-
-    const ID: u8 = 0;
-
-    async fn handle_msg(
-        &self,
-        msg: &Self::Msg,
-        peer: &mut Peer,
-    ) -> Result<(), Error> {
-        debug!(
-            "{} extended handshake from {}",
-            peer.ctx.local_addr, peer.ctx.remote_addr
-        );
-
-        // todo: maybe make Into<Vec<Codec>> for Extension
-        if msg.0.m.ut_metadata.is_some() {
-            peer.ext.push(Codec::MetadataCodec(MetadataCodec));
-        }
-
-        peer.extension = msg.0.clone();
-
-        if peer.ctx.direction == Direction::Outbound {
-            let metadata_size = peer.extension.metadata_size.unwrap();
-
-            // create our Extension dict, that the local client supports.
-            let ext = Extension::supported(Some(metadata_size))
-                .to_bencode()
-                .map_err(|_| Error::BencodeError)?;
-
-            // and send to the remote peer
-            let core = Core::Extended(Self::ID, ext);
-
-            peer.sink.send(core.into()).await?;
-
-            peer.try_request_info().await?;
-        }
-        Ok(())
-    }
-
-    fn is_supported(&self, extension: &Extension) -> bool {
-        extension.v.is_some()
-    }
-
-    fn codec(&self) -> Self::Codec {
-        ExtendedCodec
-    }
-}
+// impl ExtensionTrait for ExtendedCodec {
+//     type Codec = ExtendedCodec;
+//     type Msg = Extended;
+//
+//     const ID: u8 = 0;
+//
+//     async fn handle_msg(
+//         &self,
+//         msg: &Self::Msg,
+//         peer: &mut Peer,
+//     ) -> Result<(), Error> {
+//         debug!(
+//             "{} extended handshake from {}",
+//             peer.ctx.local_addr, peer.ctx.remote_addr
+//         );
+//
+//         // todo: maybe make Into<Vec<Codec>> for Extension
+//         if msg.0.m.ut_metadata.is_some() {
+//             peer.ext.push(Codec::MetadataCodec(MetadataCodec));
+//         }
+//
+//         peer.extension = msg.0.clone();
+//
+//         if peer.ctx.direction == Direction::Outbound {
+//             let metadata_size = peer.extension.metadata_size.unwrap();
+//
+//             // create our Extension dict, that the local client supports.
+//             let ext = Extension::supported(Some(metadata_size))
+//                 .to_bencode()
+//                 .map_err(|_| Error::BencodeError)?;
+//
+//             // and send to the remote peer
+//             let core = Core::Extended(Self::ID, ext);
+//
+//             peer.sink.send(core.into()).await?;
+//
+//             peer.try_request_info().await?;
+//         }
+//         Ok(())
+//     }
+//
+//     fn is_supported(&self, extension: &Extension) -> bool {
+//         extension.v.is_some()
+//     }
+//
+//     fn codec(&self) -> Self::Codec {
+//         ExtendedCodec
+//     }
+// }
