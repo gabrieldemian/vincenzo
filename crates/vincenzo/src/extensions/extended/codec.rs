@@ -73,38 +73,39 @@ impl TryInto<Extended> for Core {
     }
 }
 
-impl Encoder<Extended> for ExtendedCodec {
+impl Encoder<Message> for ExtendedCodec {
     type Error = crate::error::Error;
 
     fn encode(
         &mut self,
-        item: Extended,
+        item: Message,
         dst: &mut bytes::BytesMut,
     ) -> Result<(), Self::Error> {
         // Core::Extended
-        let core: Core = item.try_into()?;
-        CoreCodec.encode(core, dst)
+        // let core: Core = item.try_into()?;
+        CoreCodec.encode(item, dst)
     }
 }
 
 impl Decoder for ExtendedCodec {
     type Error = crate::error::Error;
-    type Item = Extended;
+    type Item = Message;
 
     fn decode(
         &mut self,
         src: &mut bytes::BytesMut,
     ) -> Result<Option<Self::Item>, Self::Error> {
-        let core: Option<Core> = CoreCodec.decode(src)?;
-        // todo: change this error
-        let core = core.ok_or(Error::PeerIdInvalid)?;
+        // Core::Extended
+        let core: Option<Message> = CoreCodec.decode(src)?;
+        let Some(core) = core else { return Ok(None) };
         let extended: Extended = core.try_into()?;
-        Ok(Some(extended))
+        let message: Message = extended.into();
+        Ok(Some(message))
     }
 }
 
 #[derive(Debug, Clone, Extension)]
-#[extension(id = 0, codec = ExtendedCodec)]
+#[extension(id = 0, codec = ExtendedCodec, msg = Extended)]
 pub struct ExtendedExt;
 
 // impl ExtensionTrait for ExtendedCodec {

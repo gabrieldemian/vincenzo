@@ -73,21 +73,105 @@ impl TryFrom<u8> for CoreId {
 #[derive(Debug, Clone)]
 pub struct CoreCodec;
 
-#[derive(Debug)]
-pub struct NewMessageCodec;
-
-#[derive(Debug, Clone)]
-pub struct NewMessage {
-    id: u8,
-    bytes: Vec<u8>,
-}
-
 #[derive(Extension, Clone, Debug)]
-#[extension(id = 255, codec = CoreCodec)]
+#[extension(id = 255, codec = CoreCodec, msg = Core)]
 pub struct CoreExt;
 
-impl Decoder for NewMessageCodec {
-    type Item = NewMessage;
+impl Encoder<Message> for CoreCodec {
+    type Error = Error;
+
+    fn encode(
+        &mut self,
+        item: Message,
+        dst: &mut BytesMut,
+    ) -> Result<(), Self::Error> {
+        let Message::CoreExt(item) = item else {
+            return Err(Error::Timeout);
+        };
+
+        match item {
+            Core::KeepAlive => {
+                dst.put_u32(0);
+            }
+            Core::Bitfield(bitfield) => {
+                let v = bitfield.into_vec();
+                dst.put_u32(1 + v.len() as u32);
+                dst.put_u8(CoreId::Bitfield as u8);
+                dst.extend_from_slice(&v);
+            }
+            Core::Choke => {
+                dst.put_u32(1);
+                dst.put_u8(CoreId::Choke as u8);
+            }
+            Core::Unchoke => {
+                dst.put_u32(1);
+                dst.put_u8(CoreId::Unchoke as u8);
+            }
+            Core::Interested => {
+                dst.put_u32(1);
+                dst.put_u8(CoreId::Interested as u8);
+            }
+            Core::NotInterested => {
+                dst.put_u32(1);
+                dst.put_u8(CoreId::NotInterested as u8);
+            }
+            Core::Have(piece_index) => {
+                let msg_len = 1 + 4;
+                dst.put_u32(msg_len);
+                dst.put_u8(CoreId::Have as u8);
+                let piece_index = piece_index.try_into().map_err(|e| {
+                    io::Error::new(io::ErrorKind::InvalidInput, e)
+                })?;
+                dst.put_u32(piece_index);
+            }
+            // <len=0013><id=6><index><begin><length>
+            Core::Request(block) => {
+                let msg_len = 1 + 4 + 4 + 4;
+                dst.put_u32(msg_len);
+                dst.put_u8(CoreId::Request as u8);
+                block.encode(dst)?;
+            }
+            Core::Piece(block) => {
+                let Block { index, begin, block } = block;
+
+                let msg_len = 1 + 4 + 4 + block.len() as u32;
+
+                dst.put_u32(msg_len);
+                dst.put_u8(CoreId::Piece as u8);
+
+                let index = index.try_into().map_err(|e| {
+                    io::Error::new(io::ErrorKind::InvalidInput, e)
+                })?;
+
+                dst.put_u32(index);
+                dst.put_u32(begin);
+                dst.put(&block[..]);
+            }
+            Core::Cancel(block) => {
+                let msg_len = 1 + 4 + 4 + 4;
+
+                dst.put_u32(msg_len);
+                dst.put_u8(CoreId::Cancel as u8);
+
+                block.encode(dst)?;
+            }
+            Core::Extended(ext_id, payload) => {
+                let msg_len = payload.len() as u32 + 2;
+                dst.put_u32(msg_len);
+                dst.put_u8(CoreId::Extended as u8);
+                dst.put_u8(ext_id);
+
+                if !payload.is_empty() {
+                    dst.extend_from_slice(&payload);
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Decoder for CoreCodec {
+    type Item = Message;
     type Error = Error;
 
     fn decode(
@@ -106,7 +190,7 @@ impl Decoder for NewMessageCodec {
         if src.remaining() >= 4 + msg_len {
             src.advance(4);
             if msg_len == 0 {
-                return Ok(Some(NewMessage { id: 255, bytes: Vec::new() }));
+                return Ok(Some(Core::KeepAlive.into()));
             }
         } else {
             trace!(
@@ -117,147 +201,7 @@ impl Decoder for NewMessageCodec {
             return Ok(None);
         }
 
-        // ID of the message
-        let id = src.get_u8();
-
-        let mut bytes: Vec<u8> = Vec::new();
-        src.copy_to_slice(&mut bytes);
-
-        Ok(Some(NewMessage { id, bytes }))
-    }
-}
-
-impl Encoder<Core> for CoreCodec {
-    type Error = Error;
-
-    fn encode(
-        &mut self,
-        item: Core,
-        buf: &mut BytesMut,
-    ) -> Result<(), Self::Error> {
-        match item {
-            Core::KeepAlive => {
-                buf.put_u32(0);
-            }
-            Core::Bitfield(bitfield) => {
-                let v = bitfield.into_vec();
-                buf.put_u32(1 + v.len() as u32);
-                buf.put_u8(CoreId::Bitfield as u8);
-                buf.extend_from_slice(&v);
-            }
-            Core::Choke => {
-                buf.put_u32(1);
-                buf.put_u8(CoreId::Choke as u8);
-            }
-            Core::Unchoke => {
-                buf.put_u32(1);
-                buf.put_u8(CoreId::Unchoke as u8);
-            }
-            Core::Interested => {
-                buf.put_u32(1);
-                buf.put_u8(CoreId::Interested as u8);
-            }
-            Core::NotInterested => {
-                buf.put_u32(1);
-                buf.put_u8(CoreId::NotInterested as u8);
-            }
-            Core::Have(piece_index) => {
-                let msg_len = 1 + 4;
-                buf.put_u32(msg_len);
-                buf.put_u8(CoreId::Have as u8);
-                let piece_index = piece_index.try_into().map_err(|e| {
-                    io::Error::new(io::ErrorKind::InvalidInput, e)
-                })?;
-                buf.put_u32(piece_index);
-            }
-            // <len=0013><id=6><index><begin><length>
-            Core::Request(block) => {
-                let msg_len = 1 + 4 + 4 + 4;
-                buf.put_u32(msg_len);
-                buf.put_u8(CoreId::Request as u8);
-                block.encode(buf)?;
-            }
-            Core::Piece(block) => {
-                let Block { index, begin, block } = block;
-
-                let msg_len = 1 + 4 + 4 + block.len() as u32;
-
-                buf.put_u32(msg_len);
-                buf.put_u8(CoreId::Piece as u8);
-
-                let index = index.try_into().map_err(|e| {
-                    io::Error::new(io::ErrorKind::InvalidInput, e)
-                })?;
-
-                buf.put_u32(index);
-                buf.put_u32(begin);
-                buf.put(&block[..]);
-            }
-            Core::Cancel(block) => {
-                let msg_len = 1 + 4 + 4 + 4;
-
-                buf.put_u32(msg_len);
-                buf.put_u8(CoreId::Cancel as u8);
-
-                block.encode(buf)?;
-            }
-            Core::Extended(ext_id, payload) => {
-                let msg_len = payload.len() as u32 + 2;
-                buf.put_u32(msg_len);
-                buf.put_u8(CoreId::Extended as u8);
-                buf.put_u8(ext_id);
-
-                if !payload.is_empty() {
-                    buf.extend_from_slice(&payload);
-                }
-            }
-        }
-        Ok(())
-    }
-}
-
-impl Decoder for CoreCodec {
-    type Item = Core;
-    type Error = Error;
-
-    fn decode(
-        &mut self,
-        buf: &mut BytesMut,
-    ) -> Result<Option<Self::Item>, Self::Error> {
-        // the message length header must be present at the minimum, otherwise
-        // we can't determine the message type
-        if buf.remaining() < 4 {
-            return Ok(None);
-        }
-
-        // `get_*` integer extractors consume the message bytes by advancing
-        // buf's internal cursor. However, we don't want to do this as at this
-        // point we aren't sure we have the full message in the buffer, and thus
-        // we just want to peek at this value.
-        let mut tmp_buf = Cursor::new(&buf);
-        let msg_len = tmp_buf.get_u32() as usize;
-
-        tmp_buf.set_position(0);
-
-        if buf.remaining() >= 4 + msg_len {
-            // we have the full message in the buffer so advance the buffer
-            // cursor past the message length header
-            buf.advance(4);
-            // the message length is only 0 if this is a keep alive message (all
-            // other message types have at least one more field, the message id)
-            if msg_len == 0 {
-                return Ok(Some(Core::KeepAlive));
-            }
-        } else {
-            trace!(
-                "Read buffer is {} bytes long but message is {} bytes long",
-                buf.remaining(),
-                msg_len
-            );
-            return Ok(None);
-        }
-
-        let msg_id = CoreId::try_from(buf.get_u8())?;
+        let msg_id = CoreId::try_from(src.get_u8())?;
 
         let msg = match msg_id {
             // <len=0001><id=0>
@@ -270,55 +214,248 @@ impl Decoder for CoreCodec {
             CoreId::NotInterested => Core::NotInterested,
             // <len=0005><id=4><piece index>
             CoreId::Have => {
-                let piece_index = buf.get_u32();
+                let piece_index = src.get_u32();
                 Core::Have(piece_index as usize)
             }
             // <len=0001+X><id=5><bitfield>
             CoreId::Bitfield => {
                 let mut bitfield = vec![0; msg_len - 1];
-                buf.copy_to_slice(&mut bitfield);
+                src.copy_to_slice(&mut bitfield);
                 Core::Bitfield(Bitfield::from_vec(bitfield))
             }
             // <len=0013><id=6><index><begin><length>
             CoreId::Request => {
-                let index = buf.get_u32();
-                let begin = buf.get_u32();
-                let len = buf.get_u32();
+                let index = src.get_u32();
+                let begin = src.get_u32();
+                let len = src.get_u32();
 
                 Core::Request(BlockInfo { index, begin, len })
             }
             // <len=0009+X><id=7><index><begin><block>
             CoreId::Piece => {
-                let index = buf.get_u32() as usize;
-                let begin = buf.get_u32();
+                let index = src.get_u32() as usize;
+                let begin = src.get_u32();
 
                 let mut block = vec![0; msg_len - 9];
-                buf.copy_to_slice(&mut block);
+                src.copy_to_slice(&mut block);
 
                 Core::Piece(Block { index, begin, block })
             }
             // <len=0013><id=8><index><begin><length>
             CoreId::Cancel => {
-                let index = buf.get_u32();
-                let begin = buf.get_u32();
-                let len = buf.get_u32();
+                let index = src.get_u32();
+                let begin = src.get_u32();
+                let len = src.get_u32();
 
                 Core::Cancel(BlockInfo { index, begin, len })
             }
             // <len=002 + payload><id=20><ext_id><payload>
             CoreId::Extended => {
-                let ext_id = buf.get_u8();
+                let ext_id = src.get_u8();
 
                 let mut payload = vec![0u8; msg_len - 2];
-                buf.copy_to_slice(&mut payload);
+                src.copy_to_slice(&mut payload);
 
                 Core::Extended(ext_id, payload)
             }
         };
 
-        Ok(Some(msg))
+        Ok(Some(msg.into()))
     }
 }
+
+// impl Encoder<Core> for CoreCodec {
+//     type Error = Error;
+//
+//     fn encode(
+//         &mut self,
+//         item: Core,
+//         buf: &mut BytesMut,
+//     ) -> Result<(), Self::Error> {
+//         match item {
+//             Core::KeepAlive => {
+//                 buf.put_u32(0);
+//             }
+//             Core::Bitfield(bitfield) => {
+//                 let v = bitfield.into_vec();
+//                 buf.put_u32(1 + v.len() as u32);
+//                 buf.put_u8(CoreId::Bitfield as u8);
+//                 buf.extend_from_slice(&v);
+//             }
+//             Core::Choke => {
+//                 buf.put_u32(1);
+//                 buf.put_u8(CoreId::Choke as u8);
+//             }
+//             Core::Unchoke => {
+//                 buf.put_u32(1);
+//                 buf.put_u8(CoreId::Unchoke as u8);
+//             }
+//             Core::Interested => {
+//                 buf.put_u32(1);
+//                 buf.put_u8(CoreId::Interested as u8);
+//             }
+//             Core::NotInterested => {
+//                 buf.put_u32(1);
+//                 buf.put_u8(CoreId::NotInterested as u8);
+//             }
+//             Core::Have(piece_index) => {
+//                 let msg_len = 1 + 4;
+//                 buf.put_u32(msg_len);
+//                 buf.put_u8(CoreId::Have as u8);
+//                 let piece_index = piece_index.try_into().map_err(|e| {
+//                     io::Error::new(io::ErrorKind::InvalidInput, e)
+//                 })?;
+//                 buf.put_u32(piece_index);
+//             }
+//             // <len=0013><id=6><index><begin><length>
+//             Core::Request(block) => {
+//                 let msg_len = 1 + 4 + 4 + 4;
+//                 buf.put_u32(msg_len);
+//                 buf.put_u8(CoreId::Request as u8);
+//                 block.encode(buf)?;
+//             }
+//             Core::Piece(block) => {
+//                 let Block { index, begin, block } = block;
+//
+//                 let msg_len = 1 + 4 + 4 + block.len() as u32;
+//
+//                 buf.put_u32(msg_len);
+//                 buf.put_u8(CoreId::Piece as u8);
+//
+//                 let index = index.try_into().map_err(|e| {
+//                     io::Error::new(io::ErrorKind::InvalidInput, e)
+//                 })?;
+//
+//                 buf.put_u32(index);
+//                 buf.put_u32(begin);
+//                 buf.put(&block[..]);
+//             }
+//             Core::Cancel(block) => {
+//                 let msg_len = 1 + 4 + 4 + 4;
+//
+//                 buf.put_u32(msg_len);
+//                 buf.put_u8(CoreId::Cancel as u8);
+//
+//                 block.encode(buf)?;
+//             }
+//             Core::Extended(ext_id, payload) => {
+//                 let msg_len = payload.len() as u32 + 2;
+//                 buf.put_u32(msg_len);
+//                 buf.put_u8(CoreId::Extended as u8);
+//                 buf.put_u8(ext_id);
+//
+//                 if !payload.is_empty() {
+//                     buf.extend_from_slice(&payload);
+//                 }
+//             }
+//         }
+//         Ok(())
+//     }
+// }
+
+// impl Decoder for CoreCodec {
+//     type Item = Core;
+//     type Error = Error;
+//
+//     fn decode(
+//         &mut self,
+//         buf: &mut BytesMut,
+//     ) -> Result<Option<Self::Item>, Self::Error> {
+//         // the message length header must be present at the minimum,
+// otherwise         // we can't determine the message type
+//         if buf.remaining() < 4 {
+//             return Ok(None);
+//         }
+//
+//         // `get_*` integer extractors consume the message bytes by advancing
+//         // buf's internal cursor. However, we don't want to do this as at
+// this         // point we aren't sure we have the full message in the buffer,
+// and thus         // we just want to peek at this value.
+//         let mut tmp_buf = Cursor::new(&buf);
+//         let msg_len = tmp_buf.get_u32() as usize;
+//
+//         tmp_buf.set_position(0);
+//
+//         if buf.remaining() >= 4 + msg_len {
+//             // we have the full message in the buffer so advance the buffer
+//             // cursor past the message length header
+//             buf.advance(4);
+//             // the message length is only 0 if this is a keep alive message
+// (all             // other message types have at least one more field, the
+// message id)             if msg_len == 0 {
+//                 return Ok(Some(Core::KeepAlive));
+//             }
+//         } else {
+//             trace!(
+//                 "Read buffer is {} bytes long but message is {} bytes long",
+//                 buf.remaining(),
+//                 msg_len
+//             );
+//             return Ok(None);
+//         }
+//
+//         let msg_id = CoreId::try_from(buf.get_u8())?;
+//
+//         let msg = match msg_id {
+//             // <len=0001><id=0>
+//             CoreId::Choke => Core::Choke,
+//             // <len=0001><id=1>
+//             CoreId::Unchoke => Core::Unchoke,
+//             // <len=0001><id=2>
+//             CoreId::Interested => Core::Interested,
+//             // <len=0001><id=3>
+//             CoreId::NotInterested => Core::NotInterested,
+//             // <len=0005><id=4><piece index>
+//             CoreId::Have => {
+//                 let piece_index = buf.get_u32();
+//                 Core::Have(piece_index as usize)
+//             }
+//             // <len=0001+X><id=5><bitfield>
+//             CoreId::Bitfield => {
+//                 let mut bitfield = vec![0; msg_len - 1];
+//                 buf.copy_to_slice(&mut bitfield);
+//                 Core::Bitfield(Bitfield::from_vec(bitfield))
+//             }
+//             // <len=0013><id=6><index><begin><length>
+//             CoreId::Request => {
+//                 let index = buf.get_u32();
+//                 let begin = buf.get_u32();
+//                 let len = buf.get_u32();
+//
+//                 Core::Request(BlockInfo { index, begin, len })
+//             }
+//             // <len=0009+X><id=7><index><begin><block>
+//             CoreId::Piece => {
+//                 let index = buf.get_u32() as usize;
+//                 let begin = buf.get_u32();
+//
+//                 let mut block = vec![0; msg_len - 9];
+//                 buf.copy_to_slice(&mut block);
+//
+//                 Core::Piece(Block { index, begin, block })
+//             }
+//             // <len=0013><id=8><index><begin><length>
+//             CoreId::Cancel => {
+//                 let index = buf.get_u32();
+//                 let begin = buf.get_u32();
+//                 let len = buf.get_u32();
+//
+//                 Core::Cancel(BlockInfo { index, begin, len })
+//             }
+//             // <len=002 + payload><id=20><ext_id><payload>
+//             CoreId::Extended => {
+//                 let ext_id = buf.get_u8();
+//
+//                 let mut payload = vec![0u8; msg_len - 2];
+//                 buf.copy_to_slice(&mut payload);
+//
+//                 Core::Extended(ext_id, payload)
+//             }
+//         };
+//
+//         Ok(Some(msg))
+//     }
+// }
 
 // impl ExtensionTrait2 for CoreCodec {
 //     type Codec = CoreCodec;
@@ -411,11 +548,11 @@ impl Decoder for CoreCodec {
 //
 //                 if pieces.clone().get(*piece).is_none() {
 //                     warn!(
-//                         "{local} sent Have but it's bitfield is out of bounds"
-//                     );
-//                     warn!("initializing an empty bitfield with the len of the piece {piece}");
-//                     *pieces = Bitfield::from_vec(vec![0u8; *piece]);
-//                 }
+//                         "{local} sent Have but it's bitfield is out of
+// bounds"                     );
+//                     warn!("initializing an empty bitfield with the len of the
+// piece {piece}");                     *pieces = Bitfield::from_vec(vec![0u8;
+// *piece]);                 }
 //
 //                 pieces.set(*piece, true);
 //                 drop(pieces);
@@ -431,8 +568,8 @@ impl Decoder for CoreCodec {
 //                             debug!("already have this piece, ignoring");
 //                         } else {
 //                             debug!(
-//                                 "We do not have this piece, sending interested"
-//                             );
+//                                 "We do not have this piece, sending
+// interested"                             );
 //                             debug!("{local} we are interested due to Have");
 //
 //                             peer.session.state.am_interested = true;
@@ -667,6 +804,51 @@ mod tests {
         assert!(support_extension_protocol)
     }
 }
+// #[derive(Debug, Clone)]
+// pub struct NewMessage {
+//     id: u8,
+//     bytes: Vec<u8>,
+// }
+// impl Decoder for NewMessageCodec {
+//     type Item = NewMessage;
+//     type Error = Error;
+//
+//     fn decode(
+//         &mut self,
+//         src: &mut BytesMut,
+//     ) -> Result<Option<Self::Item>, Self::Error> {
+//         if src.remaining() < 4 {
+//             return Ok(None);
+//         }
+//
+//         let mut tmp_buf = Cursor::new(&src);
+//         let msg_len = tmp_buf.get_u32() as usize;
+//
+//         tmp_buf.set_position(0);
+//
+//         if src.remaining() >= 4 + msg_len {
+//             src.advance(4);
+//             if msg_len == 0 {
+//                 return Ok(Some(NewMessage { id: 255, bytes: Vec::new() }));
+//             }
+//         } else {
+//             trace!(
+//                 "Read buffer is {} bytes long but message is {} bytes long",
+//                 src.remaining(),
+//                 msg_len
+//             );
+//             return Ok(None);
+//         }
+//
+//         // ID of the message
+//         let id = src.get_u8();
+//
+//         let mut bytes: Vec<u8> = Vec::new();
+//         src.copy_to_slice(&mut bytes);
+//
+//         Ok(Some(NewMessage { id, bytes }))
+//     }
+// }
 
 // Client connections start out as "choked" and "not interested".
 // In other words:

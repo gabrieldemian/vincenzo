@@ -32,9 +32,7 @@ use tokio::net::TcpStream;
 use tracing::{debug, warn};
 
 use crate::{
-    extensions::{
-        core::MessageCodec, CoreExt, ExtensionTrait2, Extensions, MessageTrait2,
-    },
+    extensions::{core::MessageCodec, CoreExt, Extensions},
     torrent::InfoHash,
 };
 

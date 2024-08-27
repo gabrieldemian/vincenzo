@@ -1,40 +1,29 @@
-use crate::{error::Error, extensions::core::Message};
-use std::future::Future;
+use crate::{error::Error, extensions::Message};
 
 use tokio_util::codec::{Decoder, Encoder};
 
-use crate::{extensions::core::Core, peer::Peer};
-
-use super::Extension;
+use crate::extensions::core::Core;
 
 pub trait MessageTrait: TryInto<Core> {
     /// Return the Codec for Self, which is a Message type.
-    fn codec(
-        &self,
-    ) -> impl Encoder<Self, Error = Error> + Decoder + ExtensionTrait2<Msg = Self>;
-
-    /// Return the extended ID to which this message belongs to. 255 if Core.
-    fn id(&self) -> u8;
+    fn codec(&self) -> impl CodecTrait;
 }
 
-pub trait MessageTrait2 {}
-
-pub trait CodecTrait<Item>:
-    Encoder<Item, Error = Error> + Decoder<Item = Item, Error = Error>
+pub trait CodecTrait:
+    Encoder<Message, Error = Error> + Decoder<Item = Message, Error = Error>
 {
 }
 
-impl<T, I> CodecTrait<I> for T where
-    T: Encoder<I, Error = Error> + Decoder<Error = Error, Item = I>
+impl<T> CodecTrait for T where
+    T: Encoder<Message, Error = Error> + Decoder<Error = Error, Item = Message>
 {
 }
 
 pub trait ExtensionTrait2 {
-    // type Msg: TryInto<Core> + MessageTrait2;
-    type Msg: TryInto<Core>;
+    type Msg: MessageTrait;
 
+    fn codec(&self) -> Box<dyn CodecTrait>;
     fn id(&self) -> u8;
-    fn codec(&self) -> Box<dyn CodecTrait<Self::Msg>>;
 }
 
 // pub trait HandleMsg<T>: ExtensionTrait2<Msg = T> {

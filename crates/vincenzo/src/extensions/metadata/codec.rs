@@ -32,32 +32,38 @@ pub enum Metadata {
 #[derive(Debug, Clone)]
 pub struct MetadataCodec;
 
-impl Encoder<Metadata> for MetadataCodec {
+impl Encoder<Message> for MetadataCodec {
     type Error = Error;
 
     fn encode(
         &mut self,
-        item: Metadata,
+        item: Message,
         dst: &mut bytes::BytesMut,
     ) -> Result<(), Self::Error> {
-        let item: Core = item.try_into()?;
+        // Core::Extended(3, bytes...)
+        // let item: Core = item.try_into()?;
+        // let item: Metadata = item.try_into().unwrap();
         CoreCodec.encode(item, dst)
     }
 }
 
 impl Decoder for MetadataCodec {
     type Error = Error;
-    type Item = Metadata;
+    type Item = Message;
 
     fn decode(
         &mut self,
         src: &mut bytes::BytesMut,
     ) -> Result<Option<Self::Item>, Self::Error> {
-        let core = CoreCodec.decode(src)?;
-        // todo: change this error
-        let core = core.ok_or(crate::error::Error::PeerIdInvalid)?;
-        let metadata: Metadata = core.try_into()?;
-        Ok(Some(metadata))
+        // Message::Core
+        let message_core: Option<Message> = CoreCodec.decode(src)?;
+        // Core::Extended(3, bytes...)
+        let Some(message_core) = message_core else { return Ok(None) };
+        // Metadata::whatever
+        let metadata: Metadata = message_core.try_into()?;
+        // Message::Metadata
+        let message: Message = metadata.into();
+        Ok(Some(message))
     }
 }
 
@@ -70,7 +76,6 @@ impl TryInto<Metadata> for Core {
             let ext_id = MetadataExt.id();
 
             if id != ext_id {
-                // todo: change this error
                 return Err(Error::PeerIdInvalid);
             }
 
@@ -115,7 +120,7 @@ impl TryInto<Core> for Metadata {
 }
 
 #[derive(Extension, Clone, Debug)]
-#[extension(id = 3, codec = MetadataCodec)]
+#[extension(id = 3, codec = MetadataCodec, msg = Metadata)]
 pub struct MetadataExt;
 
 // impl ExtensionTrait2 for MetadataCodec {
@@ -171,8 +176,8 @@ pub struct MetadataExt;
 //                 match rx.await? {
 //                     Some(info_slice) => {
 //                         info!("sending data with piece {:?}", piece);
-//                         let payload = MetadataDict::data(*piece, &info_slice)?;
-//                         peer.sink
+//                         let payload = MetadataDict::data(*piece,
+// &info_slice)?;                         peer.sink
 //                             .send(Core::Extended(Self::ID, payload).into())
 //                             .await?;
 //                     }

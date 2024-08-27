@@ -13,8 +13,8 @@ mod tests {
     fn declare_message_works() {
         // declare_message!(CoreExt, ExtendedExt, MetadataExt);
 
-        let c = CoreExt;
-        let codec = c.codec();
+        // let c = CoreExt;
+        // let codec = c.codec();
         // let mut buff = bytes::BytesMut::new();
         // MessageCodec.encode(m, &mut buff).unwrap();
         //

@@ -351,7 +351,7 @@ impl Daemon {
         info!("Downloading torrent: {}", torrent.name);
 
         spawn(async move {
-            // torrent.start_and_run(None).await?;
+            torrent.start_and_run(None).await?;
             Ok::<(), Error>(())
         });
 

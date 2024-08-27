@@ -18,23 +18,8 @@ pub fn derive_msg(input: TokenStream) -> TokenStream {
     let name = &input.ident;
 
     let expanded = quote! {
-        impl crate::extensions::extended::MessageTrait2 for #name {}
+        // impl crate::extensions::extended::MessageTrait2 for #name {}
     };
-
-    // list of field names of the struct
-    // [ { ident: a, type: u32 }, { ident: b, type: u32 } ]
-    // let struct_field = if let Data::Struct(DataStruct {
-    //     fields: Fields::Named(FieldsNamed { ref named, .. }),
-    //     ..
-    // }) = input.data
-    // {
-    //     named
-    // } else {
-    //     // user tried to use the macro on non-enum type
-    //     return syn::Error::new(name.span(), "expected `\"enum\"`")
-    //         .to_compile_error()
-    //         .into();
-    // };
 
     TokenStream::from(expanded)
 }
@@ -48,10 +33,10 @@ struct ExtArgs {
     _codec_name: syn::Ident,
     _eq2: Token![=],
     codec_value: syn::Type,
-    // _comma2: Token![,],
-    // _msg_name: syn::Ident,
-    // _eq3: Token![=],
-    // msg_value: syn::Type,
+    _comma2: Token![,],
+    _msg_name: syn::Ident,
+    _eq3: Token![=],
+    msg_value: syn::Type,
 }
 
 impl Parse for ExtArgs {
@@ -74,15 +59,15 @@ impl Parse for ExtArgs {
             })?,
             _eq2: input.parse()?,
             codec_value: input.parse()?,
-            // _comma2: input.parse()?,
-            // _msg_name: input.parse().and_then(|v: Ident| {
-            //     if v != *"msg" {
-            //         return Err(syn::Error::new(v.span(), "Expected `msg`"));
-            //     }
-            //     Ok(v)
-            // })?,
-            // _eq3: input.parse()?,
-            // msg_value: input.parse()?,
+            _comma2: input.parse()?,
+            _msg_name: input.parse().and_then(|v: Ident| {
+                if v != *"msg" {
+                    return Err(syn::Error::new(v.span(), "Expected `msg`"));
+                }
+                Ok(v)
+            })?,
+            _eq3: input.parse()?,
+            msg_value: input.parse()?,
         })
     }
 }
@@ -120,16 +105,25 @@ pub fn derive_extension(input: TokenStream) -> TokenStream {
     };
     let id = parsed.id_value;
     let codec = parsed.codec_value;
-    // let msg = parsed.msg_value;
+    let msg = parsed.msg_value;
 
     let expanded = quote! {
         use crate::extensions::*;
 
-        impl ExtensionTrait2 for #name {
-            // type Msg = #msg;
-            type Msg = <#codec as Decoder>::Item;
+        impl MessageTrait for #msg {
+            fn codec(&self) -> impl CodecTrait {
+                #codec
+            }
+        }
 
-            fn codec(&self) -> Box<dyn CodecTrait<Self::Msg>> {
+        impl ExtensionTrait2 for #name {
+            type Msg = #msg;
+            // type Msg = <#codec as Decoder>::Item;
+
+            // fn codec(&self) -> Box<dyn CodecTrait<Self::Msg>> {
+            //     Box::new(#codec)
+            // }
+            fn codec(&self) -> Box<dyn CodecTrait> {
                 Box::new(#codec)
             }
             fn id(&self) -> u8 {
@@ -187,6 +181,9 @@ pub fn declare_message(input: TokenStream) -> TokenStream {
     let decoder: syn::Path =
         syn::parse_str("tokio_util::codec::Decoder").unwrap();
 
+    let core_codec: syn::Path =
+        syn::parse_str("crate::extensions::CoreCodec").unwrap();
+
     let expanded = quote! {
         use crate::extensions::*;
 
@@ -200,20 +197,32 @@ pub fn declare_message(input: TokenStream) -> TokenStream {
             )*
         }
 
-        #[derive(Debug, Clone)]
-        pub enum Extensions {
-            #(
-                #ext(#ext),
-            )*
-        }
-
         #(
             impl From<<#ext as ExtensionTrait2>::Msg> for Message {
                 fn from(value: <#ext as ExtensionTrait2>::Msg) -> Self {
                     Message::#ext(value)
                 }
             }
+
+            impl TryFrom<Message> for <#ext as ExtensionTrait2>::Msg {
+                type Error = #error;
+
+                fn try_from(value: Message) -> Result<Self, #error> {
+                    if let Message::#ext(v) = value {
+                        Ok(v)
+                    } else {
+                        Err(#error::PeerIdInvalid)
+                    }
+                }
+            }
         )*
+
+        #[derive(Debug, Clone)]
+        pub enum Extensions {
+            #(
+                #ext(#ext),
+            )*
+        }
 
         impl #encoder<Message> for MessageCodec {
             type Error = #error;
@@ -223,10 +232,11 @@ pub fn declare_message(input: TokenStream) -> TokenStream {
                 item: Message,
                 dst: &mut bytes::BytesMut,
             ) -> Result<(), Self::Error> {
-                match item {
+                match &item {
                     #(
-                        Message::#ext(v) => {
-                            #ext.codec().encode(v, dst)?;
+                        Message::#ext(ext) => {
+                            let mut codec = ext.codec();
+                            codec.encode(item.clone(), dst)?;
                         },
                     )*
                 };
@@ -242,30 +252,30 @@ pub fn declare_message(input: TokenStream) -> TokenStream {
                 &mut self,
                 src: &mut bytes::BytesMut,
             ) -> Result<Option<Self::Item>, Self::Error> {
-                let core = CoreExt.codec().decode(src)?;
-
-                // todo: change this error
-                let core = core.ok_or(crate::error::Error::PeerIdInvalid)?;
-
-                match core {
-                    #(
-                        // find if there is an extension that supports the given message extension
-                        // ID (src) by comparing their ids.
-                        Core::Extended(id, _payload) if id == #ext.id() => {
-                            let v = #ext.codec().decode(src)?
-                                .ok_or(#error::PeerIdInvalid)?;
-                            return Ok(Some(Message::#ext(v)));
-                        },
-                    )*
-                    // if not, its a Core message
-                    _ => Ok(Some(Message::CoreExt(core)))
-                }
+                let msg = #core_codec.decode(src)?;
+                let Some(msg) = msg else { return Ok(None) };
+                Ok(Some(msg))
+                // let core = CoreExt.codec().decode(src)?;
+                //
+                // match core {
+                //     #(
+                //         // find if there is an extension that supports the given message extension
+                //         // ID (src) by comparing their ids.
+                //         Core::Extended(id, _payload) if id == #ext.id() => {
+                //             let v = #ext.codec().decode(src)?
+                //                 .ok_or(#error::PeerIdInvalid)?;
+                //             return Ok(Some(Message::#ext(v)));
+                //         },
+                //     )*
+                //     // if not, its a Core message
+                //     _ => Ok(Some(Message::CoreExt(core)))
+                // }
             }
         }
 
         // impl Extensions {
         //     pub fn get_codec<M>(&self, msg: &M) -> Option<Box<dyn CodecTrait<M>>>
-        //         where M: MessageTrait2 
+        //         where M: MessageTrait2
         //     {
         //         match self {
         //             #(
@@ -284,7 +294,7 @@ pub fn declare_message(input: TokenStream) -> TokenStream {
         //     }
         // }
 
-        impl Message {
+        // impl Message {
             // pub async fn handle_msg(
             //     &self,
             //     peer: &mut Peer,
@@ -302,7 +312,7 @@ pub fn declare_message(input: TokenStream) -> TokenStream {
             //     }
             //     Ok(())
             // }
-        }
+        // }
     };
 
     TokenStream::from(expanded)
