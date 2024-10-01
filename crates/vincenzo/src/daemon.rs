@@ -22,7 +22,9 @@ use crate::{
     daemon_wire::{DaemonCodec, Message},
     disk::{Disk, DiskMsg},
     error::Error,
+    extensions::{ExtDataTrait, ExtTrait},
     magnet::Magnet,
+    peer::PeerId,
     torrent::{InfoHash, Torrent, TorrentMsg, TorrentState, TorrentStatus},
     utils::to_human_readable,
 };
@@ -40,10 +42,14 @@ use crate::{
 /// and would reduce consistency since the BitTorrent protocol nowadays rarely
 /// uses HTTP.
 pub struct Daemon {
-    // pub config: DaemonConfig,
     pub disk_tx: Option<mpsc::Sender<DiskMsg>>,
     pub ctx: Arc<DaemonCtx>,
     pub torrent_txs: HashMap<InfoHash, mpsc::Sender<TorrentMsg>>,
+
+    // u8 is the extension ID
+    pub exts: HashMap<u8, Box<dyn ExtTrait<Msg = Message>>>,
+    pub ext_data: HashMap<PeerId, HashMap<u8, Box<dyn ExtDataTrait>>>,
+
     rx: mpsc::Receiver<DaemonMsg>,
 }
 
@@ -90,6 +96,8 @@ impl Daemon {
         let (tx, rx) = mpsc::channel::<DaemonMsg>(300);
 
         Self {
+            exts: HashMap::new(),
+            ext_data: HashMap::new(),
             rx,
             disk_tx: None,
             torrent_txs: HashMap::new(),

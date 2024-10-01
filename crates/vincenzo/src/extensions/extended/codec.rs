@@ -5,9 +5,10 @@ use crate::{
     extensions::{CoreCodec, MetadataCodec},
     peer::{Direction, Peer},
 };
-use std::{fmt::Debug, ops::Deref};
+use std::{convert::Infallible, fmt::Debug, ops::Deref};
 
 use bendy::{decoding::FromBencode, encoding::ToBencode};
+use bytes::{BufMut, BytesMut};
 use futures::SinkExt;
 use tokio_util::codec::{Decoder, Encoder};
 use tracing::debug;
@@ -15,7 +16,7 @@ use vincenzo_macros::{Extension, Message};
 
 use crate::extensions::core::Core;
 
-use super::{CodecTrait, Extension, ExtensionTrait2};
+use super::{CodecTrait, Extension, ExtensionTrait};
 
 /// Extended handshake from the Extended protocol, other extended messages have
 /// their own enum type.
@@ -42,69 +43,47 @@ impl Deref for Extended {
 #[derive(Debug, Clone)]
 pub struct ExtendedCodec;
 
-impl TryInto<Core> for Extended {
-    type Error = Error;
+impl Into<BytesMut> for Extended {
+    fn into(self) -> BytesMut {
+        let mut dst = BytesMut::new();
 
-    /// Try to convert an [`Extended`] message to a [`Core::Extended`] message.
-    fn try_into(self) -> Result<Core, Self::Error> {
-        let bytes = self.to_bencode().map_err(|_| Error::BencodeError)?;
-        Ok(Core::Extended(ExtendedExt.id(), bytes))
+        let Extended::Extension(extension) = self;
+        let payload = extension.to_bencode().unwrap();
+        dst.extend(payload);
+
+        dst
     }
 }
 
-impl TryInto<Extended> for Core {
-    type Error = Error;
-
-    /// Try to convert a [`Core::Extended`] to [`Extended`] message.
-    fn try_into(self) -> Result<Extended, Self::Error> {
-        let ext_id = ExtendedExt.id();
-
-        if let Core::Extended(id, payload) = self {
-            if id != ext_id {
-                // todo: change this error
-                return Err(crate::error::Error::PeerIdInvalid);
-            }
-            let ext = Extension::from_bencode(&payload)
-                .map_err(|_| Error::BencodeError)?;
-            return Ok(Extended::Extension(ext));
-        }
-        // todo: change this error
-        Err(crate::error::Error::PeerIdInvalid)
-    }
-}
-
-impl Encoder<Message> for ExtendedCodec {
+impl Encoder<Extended> for ExtendedCodec {
     type Error = crate::error::Error;
 
     fn encode(
         &mut self,
-        item: Message,
+        item: Extended,
         dst: &mut bytes::BytesMut,
     ) -> Result<(), Self::Error> {
-        // Core::Extended
-        // let core: Core = item.try_into()?;
-        CoreCodec.encode(item, dst)
+        let mut b: BytesMut = item.into();
+        std::mem::swap(&mut b, dst);
+        Ok(())
     }
 }
 
 impl Decoder for ExtendedCodec {
     type Error = crate::error::Error;
-    type Item = Message;
+    type Item = Extended;
 
     fn decode(
         &mut self,
         src: &mut bytes::BytesMut,
     ) -> Result<Option<Self::Item>, Self::Error> {
-        // Core::Extended
-        let core: Option<Message> = CoreCodec.decode(src)?;
-        let Some(core) = core else { return Ok(None) };
-        let extended: Extended = core.try_into()?;
-        let message: Message = extended.into();
-        Ok(Some(message))
+        let extension = Extension::from_bencode(&src.to_vec())
+            .map_err(|_| crate::error::Error::BencodeError)?;
+        Ok(Some(Extended::Extension(extension)))
     }
 }
 
-#[derive(Debug, Clone, Extension)]
+#[derive(Debug, Clone, Extension, Copy)]
 #[extension(id = 0, codec = ExtendedCodec, msg = Extended)]
 pub struct ExtendedExt;
 

@@ -2,13 +2,14 @@
 
 use crate::{error::Error, peer::Peer, torrent::TorrentMsg};
 use bendy::encoding::ToBencode;
+use bytes::{Buf, BufMut, BytesMut};
 use futures::SinkExt;
 use tokio::sync::oneshot;
 use tokio_util::codec::{Decoder, Encoder};
 use tracing::{debug, info};
 use vincenzo_macros::{Extension, Message};
 
-use crate::extensions::{Core, CoreCodec, CoreId, ExtensionTrait2};
+use crate::extensions::{Core, CoreCodec, CoreId, ExtensionTrait};
 
 use super::{Metadata as MetadataDict, MetadataMsgType};
 
@@ -32,103 +33,160 @@ pub enum Metadata {
 #[derive(Debug, Clone)]
 pub struct MetadataCodec;
 
-impl Encoder<Message> for MetadataCodec {
+/// Encode Metadata without any knowledge of the Core protocol, simply put the
+/// metadata id and the bytes side by side in a vector.
+/// <u8_ext_id><vec>
+///
+/// The Core protocol can easily transform this into a Core::Extended
+///
+/// ```ignore
+/// ExtendedMessage(ext_id, payload).into()
+/// ```
+impl Into<BytesMut> for Metadata {
+    fn into(self) -> BytesMut {
+        // <metadata_msg_type> <payload>
+        let mut dst = BytesMut::new();
+
+        let metadata_msg_type = self.msg_type();
+        dst.put_u8(metadata_msg_type as u8);
+
+        match self {
+            Self::Request(piece) | Self::Reject(piece) => {
+                dst.put_u32(piece);
+            }
+            Self::Response { metadata, payload } => {
+                dst.extend(metadata.to_bencode().unwrap());
+                dst.extend(payload);
+            }
+        }
+
+        dst
+    }
+}
+
+impl Encoder<Metadata> for MetadataCodec {
     type Error = Error;
 
     fn encode(
         &mut self,
-        item: Message,
+        item: Metadata,
         dst: &mut bytes::BytesMut,
     ) -> Result<(), Self::Error> {
-        // Core::Extended(3, bytes...)
-        // let item: Core = item.try_into()?;
-        // let item: Metadata = item.try_into().unwrap();
-        CoreCodec.encode(item, dst)
+        let mut b: BytesMut = item.into();
+        std::mem::swap(&mut b, dst);
+        Ok(())
     }
 }
 
 impl Decoder for MetadataCodec {
     type Error = Error;
-    type Item = Message;
+    type Item = Metadata;
 
     fn decode(
         &mut self,
+        // <metadata_msg_type> <payload>
         src: &mut bytes::BytesMut,
     ) -> Result<Option<Self::Item>, Self::Error> {
-        // Message::Core
-        let message_core: Option<Message> = CoreCodec.decode(src)?;
-        // Core::Extended(3, bytes...)
-        let Some(message_core) = message_core else { return Ok(None) };
-        // Metadata::whatever
-        let metadata: Metadata = message_core.try_into()?;
-        // Message::Metadata
-        let message: Message = metadata.into();
-        Ok(Some(message))
+        // minimum 2 bytes, 1 byte for the flag and another one for the payload
+        if src.remaining() < 2 {
+            return Ok(None);
+        };
+
+        let meadata_msg_type: MetadataMsgType = src.get_u8().try_into()?;
+
+        Ok(Some(match meadata_msg_type {
+            MetadataMsgType::Request | MetadataMsgType::Reject => {
+                Metadata::Request(src.get_u32())
+            }
+
+            MetadataMsgType::Response => {
+                let remaining = src.remaining();
+                let mut payload = vec![0u8; remaining];
+                src.copy_to_slice(&mut payload);
+
+                let (metadata, payload) = MetadataDict::extract(payload)?;
+
+                Metadata::Response { metadata, payload }
+            }
+        }))
     }
 }
 
-impl TryInto<Metadata> for Core {
-    type Error = crate::error::Error;
-
-    /// Parse [`Core::Extended`] into a [`Metadata`] message.
-    fn try_into(self) -> Result<Metadata, Self::Error> {
-        if let Core::Extended(id, payload) = self {
-            let ext_id = MetadataExt.id();
-
-            if id != ext_id {
-                return Err(Error::PeerIdInvalid);
-            }
-
-            let (metadata, payload) = MetadataDict::extract(payload)?;
-
-            return Ok(match metadata.msg_type {
-                MetadataMsgType::Request => Metadata::Request(metadata.piece),
-                MetadataMsgType::Reject => Metadata::Reject(metadata.piece),
-                MetadataMsgType::Response => {
-                    Metadata::Response { metadata, payload }
-                }
-            });
+impl Metadata {
+    pub const fn msg_type(&self) -> MetadataMsgType {
+        match self {
+            Self::Request(..) => MetadataMsgType::Request,
+            Self::Response { .. } => MetadataMsgType::Response,
+            Self::Reject(..) => MetadataMsgType::Reject,
         }
-        // todo: change this error
-        Err(Error::PeerIdInvalid)
     }
 }
 
-impl TryInto<Core> for Metadata {
-    type Error = Error;
+// impl From<Metadata> for Core {
+//     fn from(value: Metadata) -> Self {
+// let msg: Message = value.into();
+// let ext_id = MetadataExt.id();
+// let ext_msg = ExtendedMessage(ext_id);
+// Core::Extended(value.into())
+//     }
+// }
 
-    /// Try to convert a Metadata message to a [`Core::Extended`] message.
-    fn try_into(self) -> Result<Core, Self::Error> {
-        let id = CoreId::Extended as u8;
+// impl TryFrom<Core> for Metadata {
+//     type Error = crate::error::Error;
+//
+//     /// Parse [`Core::Extended`] into a [`Metadata`] message.
+//     fn try_from(value: Core) -> Result<Self, Self::Error> {
+//         if let Core::Extended(id, payload) = value {
+//             let ext_id = MetadataExt.id();
+//
+//             if id != ext_id {
+//                 return Err(Error::PeerIdInvalid);
+//             }
+//
+//             let (metadata, payload) = MetadataDict::extract(payload)?;
+//
+//             return Ok(match metadata.msg_type {
+//                 MetadataMsgType::Request =>
+// Metadata::Request(metadata.piece),                 MetadataMsgType::Reject =>
+// Metadata::Reject(metadata.piece),                 MetadataMsgType::Response
+// => {                     Metadata::Response { metadata, payload }
+//                 }
+//             });
+//         }
+//         // todo: change this error
+//         Err(Error::PeerIdInvalid)
+//     }
+// }
 
-        Ok(match self {
-            Self::Reject(piece) => Core::Extended(
-                id,
-                MetadataDict::reject(piece).to_bencode().unwrap(),
-            ),
-            Self::Request(piece) => Core::Extended(
-                id,
-                MetadataDict::request(piece).to_bencode().unwrap(),
-            ),
-            Self::Response { metadata, payload } => {
-                let mut buff = metadata.to_bencode().unwrap();
-                buff.copy_from_slice(&payload);
-                Core::Extended(id, buff)
-            }
-        })
-    }
-}
+// impl TryInto<Core> for Metadata {
+//     type Error = Error;
+//     /// Try to convert a Metadata message to a [`Core::Extended`] message.
+//     fn try_into(self) -> Result<Core, Self::Error> {
+//         let id = CoreId::Extended as u8;
+//         let ext_msg: ExtendedMessage = self.try_into()?;
+//         Ok(match self {
+//             Self::Reject(piece) => Core::Extended(
+//                 id,
+//                 MetadataDict::reject(piece).to_bencode().unwrap(),
+//             ),
+//             Self::Request(piece) => Core::Extended(
+//                 id,
+//                 MetadataDict::request(piece).to_bencode().unwrap(),
+//             ),
+//             Self::Response { metadata, payload } => {
+//                 let mut buff = metadata.to_bencode().unwrap();
+//                 buff.copy_from_slice(&payload);
+//                 Core::Extended(id, buff)
+//             }
+//         })
+//     }
+// }
 
-#[derive(Extension, Clone, Debug)]
+#[derive(Extension, Clone, Copy, Debug)]
 #[extension(id = 3, codec = MetadataCodec, msg = Metadata)]
 pub struct MetadataExt;
 
-// impl ExtensionTrait2 for MetadataCodec {
-//     type Codec = MetadataCodec;
-//     type Msg = Metadata;
-//
-//     const ID: u8 = 3;
-//
+// impl ExtensionTrait for MetadataCodec {
 //     async fn handle_msg(
 //         &self,
 //         msg: &Self::Msg,

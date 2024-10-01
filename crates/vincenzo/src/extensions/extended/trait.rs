@@ -1,61 +1,86 @@
-use crate::{error::Error, extensions::Message};
+use crate::{
+    error::Error,
+    extensions::{ExtendedMessage, Message},
+};
 
+use bytes::BytesMut;
 use tokio_util::codec::{Decoder, Encoder};
 
-use crate::extensions::core::Core;
-
-pub trait MessageTrait: TryInto<Core> {
-    /// Return the Codec for Self, which is a Message type.
-    fn codec(&self) -> impl CodecTrait;
+pub trait MessageTrait {
+    fn extension() -> impl ExtensionTrait;
 }
 
-pub trait CodecTrait:
-    Encoder<Message, Error = Error> + Decoder<Item = Message, Error = Error>
+/// A message that is able to decode itself in the format required by
+/// Core::Extended(ExtendedMessage).
+pub trait IntoExtendedMessage {
+    fn into_extended_message(self) -> ExtendedMessage;
+}
+
+/// Convenience trait inherited by ExtendedMessage for all messages. This trait
+/// means that ExtendedMessage can try into all messages.
+pub trait TryIntoMessage<Ext> {
+    fn try_into_message(self) -> Result<<Ext>::Msg, Error>
+    where
+        Ext: ExtensionTrait;
+}
+
+pub trait CodecTrait<Msg>:
+    Encoder<Msg, Error = Error> + Decoder<Item = Msg, Error = Error>
 {
 }
 
-impl<T> CodecTrait for T where
-    T: Encoder<Message, Error = Error> + Decoder<Error = Error, Item = Message>
-{
-}
-
-pub trait ExtensionTrait2 {
-    type Msg: MessageTrait;
-
-    fn codec(&self) -> Box<dyn CodecTrait>;
+pub trait ExtensionTrait: Copy + Clone {
+    type Msg;
+    const ID: u8;
+    fn codec() -> impl Encoder<Self::Msg, Error = Error>
+           + Decoder<Item = Self::Msg, Error = Error>;
     fn id(&self) -> u8;
 }
 
-// pub trait HandleMsg<T>: ExtensionTrait2<Msg = T> {
-//     fn handle_msg(
-//         &self,
-//         msg: &T,
-//         peer: &mut Peer,
-//     ) -> impl Future<Output = Result<(), Error>> + Send + Sync;
-// }
+pub trait ExtDataTrait {
+    fn handle_msg(&mut self, msg: &Message) -> Result<(), Error>;
+}
 
-// All extensions from the extended protocol (Bep 0010) must implement this
-// trait.
-// pub trait ExtensionTrait: Clone {
-//     /// The Message of the extension must know how to convert itself to a
-//     /// [`Core::Extended`]
-//     type Msg;
-//
-//     /// Codec for [`Self::Msg`]
-//     type Codec: Encoder<Self::Msg> + Decoder + Clone;
-//
-//     /// The ID of this extension.
-//     const ID: u8;
-//
-//     fn codec(&self) -> Self::Codec;
-//
-//     /// Given an Extension dict return a boolean if the extension "Self" is
-//     /// supported or not.
-//     fn is_supported(&self, extension: &Extension) -> bool;
-//
-//     fn handle_msg(
-//         &self,
-//         msg: &Self::Msg,
-//         peer: &mut Peer,
-//     ) -> impl Future<Output = Result<(), Error>> + Send + Sync;
-// }
+pub trait ExtTrait {
+    type Msg: TryInto<ExtendedMessage>;
+    fn id(&self) -> u8;
+    fn handle_msg(&mut self, msg: &Self::Msg) -> Result<(), Error>;
+}
+
+// 1. Make blanket impl so that all messages implement: `IntoExtendedMessage`
+// 2. Another blanket impl so that ExtendedMessage can try into all messages:
+//    `TryIntoMessage`
+
+// --- BLANKET IMPLS ---
+
+// 1
+impl<M> IntoExtendedMessage for M
+where
+    M: Into<BytesMut> + MessageTrait,
+{
+    fn into_extended_message(self) -> ExtendedMessage {
+        let ext = M::extension();
+        let ext_id = ext.id();
+        let payload: BytesMut = self.into();
+        ExtendedMessage(ext_id, payload.to_vec())
+    }
+}
+
+// 2
+impl<Ext> TryIntoMessage<Ext> for ExtendedMessage
+where
+    Ext: ExtensionTrait,
+{
+    fn try_into_message(self) -> Result<<Ext>::Msg, Error> {
+        let buff: Vec<u8> = self.into();
+        let mut dst: BytesMut = BytesMut::with_capacity(buff.len());
+        dst.extend(buff);
+        let mut codec = Ext::codec();
+        codec.decode(&mut dst)?.ok_or(Error::BencodeError)
+    }
+}
+
+impl<T, M> CodecTrait<M> for T where
+    T: Encoder<M, Error = Error> + Decoder<Error = Error, Item = M>
+{
+}

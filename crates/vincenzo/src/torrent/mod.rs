@@ -134,7 +134,6 @@ impl Torrent {
         });
 
         Self {
-            // ext2: Vec::new(),
             name,
             size: 0,
             last_second_downloaded: 0,

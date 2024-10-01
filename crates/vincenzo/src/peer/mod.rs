@@ -100,11 +100,10 @@ pub struct Peer {
 pub struct PeerCtx {
     pub direction: Direction,
     pub tx: mpsc::Sender<PeerMsg>,
-    /// a `Bitfield` with pieces that this peer
-    /// has, and hasn't, containing 0s and 1s
+    /// a `Bitfield` with pieces that this peer has, and hasn't, containing 0s
+    /// and 1s
     pub pieces: RwLock<Bitfield>,
-    /// Updated when the peer sends us its peer
-    /// id, in the handshake.
+    /// Updated when the peer sends us its id in the handshake.
     pub id: PeerId,
     /// Where the TCP socket of this Peer is connected to.
     pub remote_addr: SocketAddr,
@@ -222,11 +221,11 @@ impl Peer {
                     self.sink.send(Core::KeepAlive.into()).await?;
                 }
                 Some(Ok(msg)) = self.stream.next() => {
-                    for ext in &self.ext {
+                    // for ext in &self.ext {
                         // let c = ext.get_codec(&msg);
                         // if msg == <ext as ExtensionTrait2>::Msg::help() {
                         // }
-                    }
+                    // }
                     // if msg == Message {
                     // }
                     // msg.handle_msg(self).await?;
@@ -328,7 +327,10 @@ impl Peer {
                             let metadata_reject = Metadata::reject(index);
                             let metadata_reject = metadata_reject.to_bencode().unwrap();
 
-                            self.sink.send(Core::Extended(3, metadata_reject).into()).await?;
+                            // todo: fix this
+                            // self.sink.send(
+                            //     Core::Extended(3, metadata_reject).into()
+                            // ).await?;
                         }
                         PeerMsg::Quit => {
                             debug!("{local} Quit");
@@ -637,10 +639,11 @@ impl Peer {
                     debug!("request {h:?}");
 
                     let h = h.to_bencode().map_err(|_| Error::BencodeError)?;
-                    let _ = self
-                        .sink
-                        .send(Core::Extended(ut_metadata, h).into())
-                        .await;
+                    // todo: fix this
+                    // let _ = self
+                    //     .sink
+                    //     .send(Core::Extended(ut_metadata, h).into())
+                    //     .await;
                 }
             }
         }

@@ -12,7 +12,8 @@ use crate::{
     error::Error,
     extensions::{
         extended::{codec::Extended, Extension},
-        Handshake, HandshakeCodec, MessageCodec,
+        Core, ExtendedMessage, Handshake, HandshakeCodec, IntoExtendedMessage,
+        Message, MessageCodec,
     },
     peer::{Direction, PeerId},
     torrent::TorrentCtx,
@@ -114,9 +115,12 @@ impl PeerBuilder {
 
                 let ext = Extension::supported(metadata_size);
 
-                let extended = Extended::from(ext);
+                let msg = Extended::from(ext);
+                // let msg: ExtendedMessage = msg.into_extended_message();
+                // let msg: Core = msg.into();
+                // let msg: Message = msg.into();
 
-                core_socket.send(extended.into()).await?;
+                core_socket.send(msg.into()).await?;
             }
         } else {
             let old_parts = socket.into_parts();
