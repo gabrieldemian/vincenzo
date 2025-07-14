@@ -42,19 +42,19 @@ pub struct MetadataCodec;
 /// ```ignore
 /// ExtendedMessage(ext_id, payload).into()
 /// ```
-impl Into<BytesMut> for Metadata {
-    fn into(self) -> BytesMut {
+impl From<Metadata> for BytesMut {
+    fn from(val: Metadata) -> Self {
         // <metadata_msg_type> <payload>
         let mut dst = BytesMut::new();
 
-        let metadata_msg_type = self.msg_type();
+        let metadata_msg_type = val.msg_type();
         dst.put_u8(metadata_msg_type as u8);
 
-        match self {
-            Self::Request(piece) | Self::Reject(piece) => {
+        match val {
+            Metadata::Request(piece) | Metadata::Reject(piece) => {
                 dst.put_u32(piece);
             }
-            Self::Response { metadata, payload } => {
+            Metadata::Response { metadata, payload } => {
                 dst.extend(metadata.to_bencode().unwrap());
                 dst.extend(payload);
             }
@@ -121,15 +121,6 @@ impl Metadata {
         }
     }
 }
-
-// impl From<Metadata> for Core {
-//     fn from(value: Metadata) -> Self {
-// let msg: Message = value.into();
-// let ext_id = MetadataExt.id();
-// let ext_msg = ExtendedMessage(ext_id);
-// Core::Extended(value.into())
-//     }
-// }
 
 // impl TryFrom<Core> for Metadata {
 //     type Error = crate::error::Error;

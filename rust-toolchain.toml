@@ -1,0 +1,5 @@
+[toolchain]
+channel = "nightly-2025-06-20"
+components = [ "rustfmt", "clippy" ]
+# targets = []
+profile = "default"

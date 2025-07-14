@@ -31,17 +31,14 @@ use tokio_util::codec::Framed;
 use tokio::net::TcpStream;
 use tracing::{debug, warn};
 
-use crate::{
-    extensions::{core::MessageCodec, CoreExt, Extensions},
-    torrent::InfoHash,
-};
+use crate::{extensions::core::CoreCodec, torrent::InfoHash};
 
 use crate::{
     bitfield::Bitfield,
     disk::DiskMsg,
     error::Error,
     extensions::{
-        core::{Block, BlockInfo, Core, CoreId, Message, BLOCK_LEN},
+        core::{Block, BlockInfo, Core, CoreId, BLOCK_LEN},
         extended::Extension,
         metadata::Metadata,
     },
@@ -53,16 +50,14 @@ use self::session::Session;
 
 /// Data about a remote Peer that the client is connected to,
 /// but the client itself does not have a Peer struct.
-// #[derive(Debug)]
 pub struct Peer {
     /// Codecs/extensions that the Peer supports, can be changed at runtime
     /// after `Extension` is sent by the peer.
-    pub ext: Vec<Extensions>,
-
+    // pub ext: Vec<Extensions>,
     pub direction: Direction,
 
-    stream: SplitStream<Framed<TcpStream, MessageCodec>>,
-    pub sink: SplitSink<Framed<TcpStream, MessageCodec>, Message>,
+    stream: SplitStream<Framed<TcpStream, CoreCodec>>,
+    pub sink: SplitSink<Framed<TcpStream, CoreCodec>, Core>,
 
     /// Extensions of the protocol that the peer supports.
     pub extension: Extension,
@@ -134,7 +129,6 @@ impl From<HandshakedPeer> for Peer {
             sink,
             stream,
             direction: peer.direction,
-            ext: Vec::from([Extensions::CoreExt(CoreExt)]),
             incoming_requests: HashSet::default(),
             outgoing_requests: HashSet::default(),
             outgoing_requests_timeout: HashMap::new(),
@@ -218,20 +212,15 @@ impl Peer {
                 }
                 // send Keepalive every 2 minutes
                 _ = keep_alive_timer.tick(), if self.have_info => {
-                    self.sink.send(Core::KeepAlive.into()).await?;
+                    self.sink.send(Core::KeepAlive).await?;
                 }
-                Some(Ok(msg)) = self.stream.next() => {
-                    // for ext in &self.ext {
-                        // let c = ext.get_codec(&msg);
-                        // if msg == <ext as ExtensionTrait2>::Msg::help() {
-                        // }
-                    // }
-                    // if msg == Message {
-                    // }
-                    // msg.handle_msg(self).await?;
+                Some(Ok(core)) = self.stream.next() => {
                 }
                 Some(msg) = self.rx.recv() => {
                     match msg {
+                        PeerMsg::SendToSink(msg) => {
+                            self.sink.send(msg).await?;
+                        }
                         PeerMsg::HavePiece(piece) => {
                             debug!("{local} has piece {piece}");
 
@@ -242,7 +231,7 @@ impl Peer {
                                 // send Have to this peer if he doesnt have this piece
                                 if !b {
                                     debug!("sending have {piece} to peer {local}");
-                                    let _ = self.sink.send(Core::Have(piece).into()).await;
+                                    let _ = self.sink.send(Core::Have(piece)).await;
                                 }
                             }
                             drop(pieces);

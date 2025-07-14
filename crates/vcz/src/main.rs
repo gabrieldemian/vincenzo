@@ -10,6 +10,7 @@ use vcz_ui::{action::Action, app::App};
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tmp = std::env::temp_dir();
+
     let time = std::time::SystemTime::now();
     let timestamp =
         time.duration_since(std::time::UNIX_EPOCH).unwrap().as_millis();

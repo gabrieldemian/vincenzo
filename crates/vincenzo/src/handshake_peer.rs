@@ -12,8 +12,8 @@ use crate::{
     error::Error,
     extensions::{
         extended::{codec::Extended, Extension},
-        Core, ExtendedMessage, Handshake, HandshakeCodec, IntoExtendedMessage,
-        Message, MessageCodec,
+        CoreCodec, ExtendedMessage, Handshake, HandshakeCodec,
+        IntoExtendedMessage,
     },
     peer::{Direction, PeerId},
     torrent::TorrentCtx,
@@ -97,7 +97,7 @@ impl PeerBuilder {
             socket.send(our_handshake.clone()).await?;
 
             let old_parts = socket.into_parts();
-            let mut new_parts = FramedParts::new(old_parts.io, MessageCodec);
+            let mut new_parts = FramedParts::new(old_parts.io, CoreCodec);
             new_parts.read_buf = old_parts.read_buf;
             new_parts.write_buf = old_parts.write_buf;
             core_socket = Framed::from_parts(new_parts);
@@ -115,16 +115,13 @@ impl PeerBuilder {
 
                 let ext = Extension::supported(metadata_size);
 
-                let msg = Extended::from(ext);
-                // let msg: ExtendedMessage = msg.into_extended_message();
-                // let msg: Core = msg.into();
-                // let msg: Message = msg.into();
-
-                core_socket.send(msg.into()).await?;
+                // let msg = Extended::from(ext);
+                // let msg: ExtendedMessage = msg.into();
+                // core_socket.send(msg.into()).await?;
             }
         } else {
             let old_parts = socket.into_parts();
-            let mut new_parts = FramedParts::new(old_parts.io, MessageCodec);
+            let mut new_parts = FramedParts::new(old_parts.io, CoreCodec);
             new_parts.read_buf = old_parts.read_buf;
             new_parts.write_buf = old_parts.write_buf;
             core_socket = Framed::from_parts(new_parts);
@@ -153,7 +150,7 @@ pub struct HandshakingPeer {
 #[derive(Debug)]
 pub struct HandshakedPeer {
     pub(crate) peer: HandshakingPeer,
-    pub(crate) socket: Framed<TcpStream, MessageCodec>,
+    pub(crate) socket: Framed<TcpStream, CoreCodec>,
 }
 
 impl HandshakingPeer {}

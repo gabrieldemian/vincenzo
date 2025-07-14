@@ -13,7 +13,7 @@ use crate::{
 };
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct ExtendedMessage(pub(crate) u8, pub(crate) Vec<u8>);
+pub struct ExtendedMessage(pub u8, pub Vec<u8>);
 
 impl ExtendedMessage {
     pub fn ext_id(&self) -> u8 {
@@ -24,11 +24,11 @@ impl ExtendedMessage {
     }
 }
 
-impl Into<Vec<u8>> for ExtendedMessage {
-    fn into(self) -> Vec<u8> {
-        let mut buff = Vec::with_capacity(1 + self.payload().len());
-        buff.push(self.ext_id());
-        buff.extend(self.payload());
+impl From<ExtendedMessage> for Vec<u8> {
+    fn from(val: ExtendedMessage) -> Self {
+        let mut buff = Vec::with_capacity(1 + val.payload().len());
+        buff.push(val.ext_id());
+        buff.extend(val.payload());
         buff
     }
 }
@@ -100,8 +100,7 @@ impl TryFrom<u8> for CoreId {
 #[derive(Debug, Clone)]
 pub struct CoreCodec;
 
-#[derive(Extension, Clone, Debug, Copy)]
-#[extension(id = 255, codec = CoreCodec, msg = Core)]
+#[derive(Clone, Debug, Copy)]
 pub struct CoreExt;
 
 impl TryInto<Vec<u8>> for Core {
@@ -112,6 +111,14 @@ impl TryInto<Vec<u8>> for Core {
         let mut codec = CoreCodec;
         codec.encode(self, &mut dst)?;
         Ok(dst.into())
+    }
+}
+
+impl From<Core> for BytesMut {
+    fn from(val: Core) -> Self {
+        let mut dst = BytesMut::new();
+        let _ = CoreCodec.encode(val, &mut dst);
+        dst
     }
 }
 
@@ -200,7 +207,7 @@ impl Encoder<Core> for CoreCodec {
                 buf.put_u8(ext_id);
 
                 if !payload.is_empty() {
-                    buf.extend_from_slice(&payload);
+                    buf.extend_from_slice(payload);
                 }
             }
         }

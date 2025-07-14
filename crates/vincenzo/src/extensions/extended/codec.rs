@@ -1,11 +1,12 @@
 //! Types for the Extended protocol codec.
 
 use crate::{
+    daemon::DaemonCtx,
     error::Error,
     extensions::{CoreCodec, MetadataCodec},
     peer::{Direction, Peer},
 };
-use std::{convert::Infallible, fmt::Debug, ops::Deref};
+use std::{convert::Infallible, fmt::Debug, ops::Deref, sync::Arc};
 
 use bendy::{decoding::FromBencode, encoding::ToBencode};
 use bytes::{BufMut, BytesMut};
@@ -77,7 +78,7 @@ impl Decoder for ExtendedCodec {
         &mut self,
         src: &mut bytes::BytesMut,
     ) -> Result<Option<Self::Item>, Self::Error> {
-        let extension = Extension::from_bencode(&src.to_vec())
+        let extension = Extension::from_bencode(src)
             .map_err(|_| crate::error::Error::BencodeError)?;
         Ok(Some(Extended::Extension(extension)))
     }
@@ -86,6 +87,37 @@ impl Decoder for ExtendedCodec {
 #[derive(Debug, Clone, Extension, Copy)]
 #[extension(id = 0, codec = ExtendedCodec, msg = Extended)]
 pub struct ExtendedExt;
+
+pub struct ExtendedData {
+    extension: Extension,
+}
+
+impl ExtDataTrait for ExtendedData {}
+
+// fn t() {
+//     let v = ExtendedExt;
+//     let mut c = v.handle_msg();
+//     c(3);
+// }
+
+impl ExtensionMsgHandler for ExtendedExt {
+    fn handle_msg(
+        &self,
+        msg: &Self::Msg,
+        data: &mut dyn ExtDataTrait,
+        daemon_ctx: Arc<DaemonCtx>,
+    ) -> u8 {
+        if msg.m.ut_metadata.is_some() {
+            // peer.ext.push(Codec::MetadataCodec(MetadataCodec));
+        }
+        2
+    }
+    // fn handle_msg(
+    //     &self,
+    // ) -> impl FnMut(&Self::Msg, &mut dyn ExtDataTrait, Arc<DaemonCtx>) -> u8
+    // {     |msg, data, daemon_ctx| 2
+    // }
+}
 
 // impl ExtensionTrait for ExtendedCodec {
 //     type Codec = ExtendedCodec;
@@ -105,6 +137,7 @@ pub struct ExtendedExt;
 //
 //         // todo: maybe make Into<Vec<Codec>> for Extension
 //         if msg.0.m.ut_metadata.is_some() {
+//          // send msg to daemon to update ext and extdata
 //             peer.ext.push(Codec::MetadataCodec(MetadataCodec));
 //         }
 //

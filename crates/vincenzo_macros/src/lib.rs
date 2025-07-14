@@ -108,26 +108,35 @@ pub fn derive_extension(input: TokenStream) -> TokenStream {
     let expanded = quote! {
         use crate::extensions::*;
 
-        impl MessageTrait for #msg {
-            fn extension() -> impl ExtensionTrait {
+        impl extended::MessageTrait for #msg {
+            fn extension(&self) -> impl extended::ExtensionTrait {
                 #name
             }
         }
 
-        impl ExtensionTrait for #name {
+        impl From<#msg> for core::ExtendedMessage {
+            fn from(val: #msg) -> Self {
+                let payload: bytes::BytesMut = val.into();
+                ExtendedMessage(MetadataExt.id(), payload.to_vec())
+            }
+        }
+
+        impl extended::ExtensionTrait for #name {
             type Msg = #msg;
-            const ID: u8 = #id;
 
             fn id(&self) -> u8 {
                 #id
             }
 
             fn codec(
-            ) -> impl
-                tokio_util::codec::Encoder<Self::Msg, Error = crate::error::Error> +
-                tokio_util::codec::Decoder<Item = Self::Msg, Error = crate::error::Error>
+                &self
+            ) ->
+                Box<dyn CodecTrait<Self::Msg>>
+            // impl
+            //     tokio_util::codec::Encoder<Self::Msg, Error = crate::error::Error> +
+            //     tokio_util::codec::Decoder<Item = Self::Msg, Error = crate::error::Error>
             {
-                #codec
+                Box::new(#codec)
             }
         }
     };
@@ -167,40 +176,44 @@ impl Parse for Items {
 pub fn declare_message(input: TokenStream) -> TokenStream {
     let a = parse_macro_input!(input as Items).0;
 
-    let mut ext = Vec::new();
-    ext.extend(a);
+    // let mut ext = Vec::new();
+    // ext.extend(a);
 
-    let error: syn::Path = syn::parse_str("crate::error::Error").unwrap();
-
-    let encoder: syn::Path =
-        syn::parse_str("tokio_util::codec::Encoder").unwrap();
-
-    let decoder: syn::Path =
-        syn::parse_str("tokio_util::codec::Decoder").unwrap();
-
-    let core_codec: syn::Path =
-        syn::parse_str("crate::extensions::CoreCodec").unwrap();
+    // let error: syn::Path = syn::parse_str("crate::error::Error").unwrap();
+    //
+    // let encoder: syn::Path =
+    //     syn::parse_str("tokio_util::codec::Encoder").unwrap();
+    //
+    // let decoder: syn::Path =
+    //     syn::parse_str("tokio_util::codec::Decoder").unwrap();
+    //
+    // let core_codec: syn::Path =
+    //     syn::parse_str("crate::extensions::CoreCodec").unwrap();
+    //
+    // let msg_trait: syn::Path =
+    //     syn::parse_str("crate::extensions::extended::r#trait::MessageTrait")
+    //         .unwrap();
 
     let expanded = quote! {
-        use crate::extensions::*;
+        // use crate::extensions::*;
 
-        #[derive(Debug)]
-        pub struct MessageCodec;
+        // #[derive(Debug)]
+        // pub struct MessageCodec;
 
-        #[derive(Debug, Clone, PartialEq)]
-        pub enum Message {
-            #(
-                #ext(<#ext as ExtensionTrait>::Msg),
-            )*
-        }
+        // #[derive(Debug, Clone, PartialEq)]
+        // pub enum Message {
+        //     #(
+        //         #ext(<#ext as ExtensionTrait>::Msg),
+        //     )*
+        // }
 
         // From<Metadata> for <ExtendedMessage>
-        #(
-            impl From<<#ext as ExtensionTrait>::Msg> for Message {
-                fn from(value: <#ext as ExtensionTrait>::Msg) -> Self {
-                    Message::#ext(value)
-                }
-            }
+        // #(
+        //     impl From<<#ext as ExtensionTrait>::Msg> for Message {
+        //         fn from(value: <#ext as ExtensionTrait>::Msg) -> Self {
+        //             Message::#ext(value)
+        //         }
+        //     }
         //     impl TryFrom<Message> for <#ext as ExtensionTrait>::Msg {
         //         type Error = #error;
         //
@@ -212,75 +225,34 @@ pub fn declare_message(input: TokenStream) -> TokenStream {
         //             }
         //         }
         //     }
-        )*
-
-        #[derive(Debug, Clone)]
-        pub enum Extensions {
-            #(
-                #ext(#ext),
-            )*
-        }
-
-        impl #encoder<Message> for MessageCodec {
-            type Error = #error;
-
-            fn encode(
-                &mut self,
-                item: Message,
-                dst: &mut bytes::BytesMut,
-            ) -> Result<(), Self::Error> {
-                match &item {
-                    #(
-                        Message::#ext(ext) => {
-                            // let mut codec = ext.codec();
-                            // codec.encode(item.clone(), dst)?;
-                        },
-                    )*
-                };
-                Ok(())
-            }
-        }
-
-        impl #decoder for MessageCodec {
-            type Error = #error;
-            type Item = Message;
-
-            fn decode(
-                &mut self,
-                src: &mut bytes::BytesMut,
-            ) -> Result<Option<Self::Item>, Self::Error> {
-                todo!();
-                // let msg = #core_codec.decode(src)?;
-                // let Some(msg) = msg else { return Ok(None) };
-
-                // when using CoreCodec to decode, it will
-                // decode messages of extensions into Core::Extended
-                // instead of using the extension message,
-                //
-                // so we try to decode using other extensions,
-                // if the message is Core::Extended
-                // if let Message::CoreExt(Core::Extended(ext_msg)) = &msg {
-                    // if *ext_id != 255 {
-                    //     let ext = from_id(*ext_id);
-                    //
-                    //     if let Some(ext) = ext {
-                    //         let mut codec = ext.codec();
-                    //         let mut src = bytes::BytesMut::with_capacity(payload.len());
-                    //
-                    //         // src.extend_from_slice(payload);
-                    //         // let r = codec.decode(&mut src)?;
-                    //         // return Ok(r);
-                    //         return Ok(None);
-                    //     }
-                    //     return Ok(Some(msg));
-                    // }
-                    // return Ok(Some(msg));
-                //     Ok(Some(msg))
-                // } else {
-                //     Ok(Some(msg))
-                // }
-            }
-        }
+        // )*
+        // #[derive(Debug, Clone)]
+        // pub enum Extensions {
+        //     #(
+        //         #ext(#ext),
+        //     )*
+        // }
+        // impl #encoder<Message> for MessageCodec {
+        //     type Error = #error;
+        //     fn encode(
+        //         &mut self,
+        //         item: Message,
+        //         dst: &mut bytes::BytesMut,
+        //     ) -> Result<(), Self::Error> {
+        //         Ok(())
+        //     }
+        // }
+        // impl #decoder for MessageCodec {
+        //     type Error = #error;
+        //     type Item = Message;
+        //
+        //     fn decode(
+        //         &mut self,
+        //         src: &mut bytes::BytesMut,
+        //     ) -> Result<Option<Self::Item>, Self::Error> {
+        //         todo!();
+        //     }
+        // }
     };
 
     TokenStream::from(expanded)

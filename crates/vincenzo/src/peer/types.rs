@@ -1,6 +1,6 @@
 use speedy::{Readable, Writable};
 
-use crate::extensions::core::BlockInfo;
+use crate::extensions::{core::BlockInfo, Core};
 
 #[derive(Clone, PartialEq, Eq, Hash, Default, Readable, Writable)]
 pub struct PeerId([u8; 20]);
@@ -62,6 +62,7 @@ impl TryFrom<Vec<u8>> for PeerId {
 /// message.
 #[derive(Debug)]
 pub enum PeerMsg {
+    SendToSink(Core),
     /// When we download a full piece, we need to send Have's
     /// to peers that dont Have it.
     HavePiece(usize),
