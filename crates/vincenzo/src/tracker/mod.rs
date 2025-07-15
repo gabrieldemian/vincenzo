@@ -113,21 +113,6 @@ pub struct TrackerCtx {
     pub left: u64,
 }
 
-impl Default for TrackerCtx {
-    fn default() -> Self {
-        TrackerCtx {
-            local_addr: "0.0.0.0:0".parse().unwrap(),
-            peer_id: Tracker::gen_peer_id(),
-            tx: None,
-            connection_id: None,
-            tracker_addr: "0.0.0.0:0".parse().unwrap(),
-            downloaded: 0,
-            uploaded: 0,
-            left: 0,
-        }
-    }
-}
-
 #[derive(Debug)]
 pub enum TrackerMsg {
     Announce {

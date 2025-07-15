@@ -20,7 +20,7 @@ use tokio::{
 use crate::{
     config::Config,
     daemon_wire::{DaemonCodec, Message},
-    disk::{Disk, DiskMsg},
+    disk::DiskMsg,
     error::Error,
     extensions::{Core, ExtDataTrait, ExtensionTrait},
     magnet::Magnet,
@@ -42,7 +42,7 @@ use crate::{
 /// and would reduce consistency since the BitTorrent protocol nowadays rarely
 /// uses HTTP.
 pub struct Daemon {
-    pub disk_tx: Option<mpsc::Sender<DiskMsg>>,
+    pub disk_tx: mpsc::Sender<DiskMsg>,
     pub ctx: Arc<DaemonCtx>,
     pub torrent_txs: HashMap<InfoHash, mpsc::Sender<TorrentMsg>>,
 
@@ -84,26 +84,19 @@ pub enum DaemonMsg {
     PrintTorrentStatus,
 }
 
-impl Default for Daemon {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl Daemon {
     pub const DEFAULT_LISTENER: SocketAddr =
         SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 3030);
 
     /// Initialize the Daemon struct with the default [`DaemonConfig`].
-    pub fn new() -> Self {
-        let (tx, rx) = mpsc::channel::<DaemonMsg>(300);
+    pub fn new(disk_tx: mpsc::Sender<DiskMsg>) -> Self {
+        let (tx, rx) = mpsc::channel::<DaemonMsg>(100);
 
         Self {
-            // fns: None,
+            disk_tx,
             exts: HashMap::new(),
             ext_data: HashMap::new(),
             rx,
-            disk_tx: None,
             torrent_txs: HashMap::new(),
             ctx: Arc::new(DaemonCtx {
                 tx,
@@ -129,15 +122,6 @@ impl Daemon {
     pub async fn run(&mut self) -> Result<(), Error> {
         let config = Config::load()?;
         let socket = TcpListener::bind(config.daemon_addr).await.unwrap();
-
-        let (disk_tx, disk_rx) = mpsc::channel::<DiskMsg>(300);
-        self.disk_tx = Some(disk_tx);
-
-        let mut disk = Disk::new(disk_rx, config.download_dir);
-
-        spawn(async move {
-            let _ = disk.run().await;
-        });
 
         let ctx = self.ctx.clone();
 
@@ -354,16 +338,19 @@ impl Daemon {
         torrent_states.insert(info_hash.clone(), torrent_state);
         drop(torrent_states);
 
-        // disk_tx is not None at this point, this is safe
-        // (if calling after run)
-        let disk_tx = self.disk_tx.clone().unwrap();
-        let mut torrent = Torrent::new(disk_tx, self.ctx.tx.clone(), magnet);
+        let torrent =
+            Torrent::new(self.disk_tx.clone(), self.ctx.tx.clone(), magnet);
 
         self.torrent_txs.insert(info_hash, torrent.ctx.tx.clone());
         info!("Downloading torrent: {}", torrent.name);
 
         spawn(async move {
-            torrent.start_and_run(None).await?;
+            let mut torrent = torrent.start(None).await?;
+
+            torrent.spawn_outbound_peers().await?;
+            torrent.spawn_inbound_peers().await?;
+            torrent.run().await?;
+
             Ok::<(), Error>(())
         });
 
@@ -378,10 +365,9 @@ impl Daemon {
                 let _ = tx.send(TorrentMsg::Quit).await;
             });
         }
-        let _ = self
-            .disk_tx
-            .as_ref()
-            .map(|tx| async { tx.send(DiskMsg::Quit).await });
+
+        let _ = self.disk_tx.send(DiskMsg::Quit).await;
+
         Ok(())
     }
 }

@@ -11,7 +11,10 @@ use rand::seq::SliceRandom;
 use tokio::{
     fs::{create_dir_all, File, OpenOptions},
     io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
-    sync::{mpsc::Receiver, oneshot::Sender},
+    sync::{
+        mpsc::{self, Receiver},
+        oneshot::Sender,
+    },
 };
 use tracing::{debug, warn};
 
@@ -110,6 +113,7 @@ struct TorrentInfo {
 /// - Validate hash of pieces
 #[derive(Debug)]
 pub struct Disk {
+    pub tx: mpsc::Sender<DiskMsg>,
     pub torrent_ctxs: HashMap<InfoHash, Arc<TorrentCtx>>,
     pub peer_ctxs: HashMap<PeerId, Arc<PeerCtx>>,
     /// The sequence in which pieces will be downloaded,
@@ -130,9 +134,12 @@ pub struct Disk {
 }
 
 impl Disk {
-    pub fn new(rx: Receiver<DiskMsg>, download_dir: String) -> Self {
+    pub fn new(download_dir: String) -> Self {
+        let (tx, rx) = mpsc::channel::<DiskMsg>(100);
+
         Self {
             rx,
+            tx,
             download_dir,
             cache: HashMap::new(),
             peer_ctxs: HashMap::new(),
@@ -593,8 +600,7 @@ impl Disk {
         *downloaded_piece_bytes += len as u64;
 
         // Check if the entire piece of the `block` has been downloaded
-        if *downloaded_piece_bytes >= self.piece_size(info_hash, index) as u64
-        {
+        if *downloaded_piece_bytes >= self.piece_size(info_hash, index) as u64 {
             let downloaded_pieces_len = self
                 .downloaded_pieces_len
                 .get_mut(info_hash)
@@ -958,7 +964,7 @@ mod tests {
             original_hook(panic);
         }));
 
-        let mut disk = Disk::new(disk_rx, download_dir.clone());
+        let mut disk = Disk::new(download_dir.clone());
 
         let info = Info {
             file_length: None,
@@ -1084,7 +1090,7 @@ mod tests {
         let torrent = Torrent::new(disk_tx.clone(), fr_tx, magnet);
         let torrent_ctx = torrent.ctx.clone();
         let info_hash: InfoHash = torrent_ctx.info_hash.clone();
-        let mut disk = Disk::new(disk_rx, download_dir.clone());
+        let mut disk = Disk::new(download_dir.clone());
 
         let mut info_ctx = torrent.ctx.info.write().await;
         *info_ctx = info.clone();
@@ -1216,7 +1222,7 @@ mod tests {
         let (disk_tx, _) = mpsc::channel::<DiskMsg>(3);
 
         let (_, rx) = mpsc::channel(5);
-        let mut disk = Disk::new(rx, download_dir.clone());
+        let mut disk = Disk::new(download_dir.clone());
 
         let (fr_tx, _) = mpsc::channel::<DaemonMsg>(300);
         let magnet = Magnet::new(&magnet).unwrap();
@@ -1343,7 +1349,7 @@ mod tests {
         let (disk_tx, _) = mpsc::channel::<DiskMsg>(3);
 
         let (_, rx) = mpsc::channel(5);
-        let mut disk = Disk::new(rx, download_dir.clone());
+        let mut disk = Disk::new(download_dir.clone());
 
         let (fr_tx, _) = mpsc::channel::<DaemonMsg>(300);
         let magnet = Magnet::new(&magnet).unwrap();
@@ -1510,7 +1516,7 @@ mod tests {
         let (disk_tx, _) = mpsc::channel::<DiskMsg>(3);
 
         let (_, rx) = mpsc::channel(5);
-        let mut disk = Disk::new(rx, download_dir.clone());
+        let mut disk = Disk::new(download_dir.clone());
 
         let (fr_tx, _) = mpsc::channel::<DaemonMsg>(300);
         let magnet = Magnet::new(&magnet).unwrap();

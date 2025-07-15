@@ -1,9 +1,9 @@
 use clap::Parser;
-use tokio::join;
+use tokio::{join, spawn};
 use tracing::Level;
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::{fmt::time::OffsetTime, FmtSubscriber};
-use vincenzo::{args::Args, daemon::Daemon};
+use vincenzo::{args::Args, config::Config, daemon::Daemon, disk::Disk};
 
 use vcz_ui::{action::Action, app::App};
 
@@ -39,7 +39,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::subscriber::set_global_default(subscriber)
         .expect("setting default subscriber failed");
 
-    let mut daemon = Daemon::new();
+    let config = Config::load()?;
+    let mut disk = Disk::new(config.download_dir);
+    let disk_tx = disk.tx.clone();
+
+    let mut daemon = Daemon::new(disk_tx);
+
+    spawn(async move {
+        let _ = disk.run().await;
+    });
 
     // Start and run the terminal UI
     let mut fr = App::new();

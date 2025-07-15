@@ -1,6 +1,6 @@
 use clap::Parser;
 use futures::SinkExt;
-use tokio::net::{TcpListener, TcpStream};
+use tokio::{net::{TcpListener, TcpStream}, spawn};
 use tokio_util::codec::Framed;
 use tracing::Level;
 use tracing_subscriber::FmtSubscriber;
@@ -8,7 +8,7 @@ use vincenzo::{
     args::Args,
     config::Config,
     daemon::Daemon,
-    daemon_wire::{DaemonCodec, Message},
+    daemon_wire::{DaemonCodec, Message}, disk::Disk,
 };
 
 #[tokio::main(flavor = "current_thread")]
@@ -30,7 +30,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracing::subscriber::set_global_default(subscriber)
             .expect("setting default subscriber failed");
 
-        let mut daemon = Daemon::new();
+        let mut disk = Disk::new(config.download_dir);
+        let disk_tx = disk.tx.clone();
+
+        spawn(async move {
+            let _ = disk.run().await;
+        });
+
+        let mut daemon = Daemon::new(disk_tx);
 
         daemon.run().await?;
     }
