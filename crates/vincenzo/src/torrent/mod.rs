@@ -26,12 +26,7 @@ use bendy::decoding::FromBencode;
 use bitvec::{bitvec, prelude::Msb0};
 use hashbrown::HashMap;
 use speedy::{Readable, Writable};
-use std::{
-    collections::BTreeMap,
-    net::SocketAddr,
-    sync::{atomic::AtomicBool, Arc},
-    time::Duration,
-};
+use std::{collections::BTreeMap, net::SocketAddr, sync::Arc, time::Duration};
 use tokio::{
     net::{TcpListener, TcpStream},
     select, spawn,
@@ -90,6 +85,17 @@ pub struct Torrent<S: TorrentTrait> {
     pub status: TorrentStatus,
 }
 
+/// Context of [`Torrent`] that can be shared between other types
+#[derive(Debug)]
+pub struct TorrentCtx {
+    pub disk_tx: mpsc::Sender<DiskMsg>,
+    pub tx: mpsc::Sender<TorrentMsg>,
+    pub magnet: Magnet,
+    pub info_hash: InfoHash,
+    pub bitfield: RwLock<Bitfield>,
+    pub info: Arc<RwLock<Info>>,
+}
+
 /// State of a [`Torrent`], used by the UI to present data.
 #[derive(Debug, Clone, Default, PartialEq, Readable, Writable)]
 pub struct TorrentState {
@@ -101,18 +107,6 @@ pub struct TorrentState {
     pub uploaded: u64,
     pub size: u64,
     pub info_hash: InfoHash,
-}
-
-/// Context of [`Torrent`] that can be shared between other types
-#[derive(Debug)]
-pub struct TorrentCtx {
-    pub disk_tx: mpsc::Sender<DiskMsg>,
-    pub tx: mpsc::Sender<TorrentMsg>,
-    pub magnet: Magnet,
-    pub info_hash: InfoHash,
-    pub bitfield: RwLock<Bitfield>,
-    pub info: Arc<RwLock<Info>>,
-    pub has_at_least_one_piece: AtomicBool,
 }
 
 /// Status of the current Torrent, updated at every announce request.
@@ -143,7 +137,6 @@ impl Torrent<Idle> {
             bitfield,
             magnet,
             info,
-            has_at_least_one_piece: AtomicBool::new(false),
         });
 
         Self {
@@ -368,10 +361,6 @@ impl Torrent<Connected> {
                 Some(msg) = self.rx.recv() => {
                     match msg {
                         TorrentMsg::DownloadedPiece(piece) => {
-                            self.ctx.has_at_least_one_piece.store(
-                                true,
-                                std::sync::atomic::Ordering::Relaxed
-                            );
                             // send Have messages to peers that dont have our pieces
                             for peer in self.state.peer_ctxs.values() {
                                 let _ = peer.tx.send(PeerMsg::HavePiece(piece)).await;
@@ -460,8 +449,7 @@ impl Torrent<Connected> {
                                 });
                                 let info = Info::from_bencode(&info_bytes).map_err(|_| Error::BencodeError)?;
 
-                                // todo get xt
-                                let m_info = self.ctx.magnet.hash_type().unwrap();
+                                let m_info = self.ctx.magnet.hash().unwrap();
 
                                 let mut hash = sha1_smol::Sha1::new();
                                 hash.update(&info_bytes);
@@ -620,7 +608,7 @@ impl Torrent<Connected> {
                 _ = announce_interval.tick() => {
                     let info = self.ctx.info.read().await;
 
-                    // we know if the info is downloaded if the piece_length is > 0
+                    // we know if the info was downloaded if the piece_length is > 0
                     if info.piece_length > 0 {
                         debug!("sending periodic announce, interval {announce_interval:?}");
 

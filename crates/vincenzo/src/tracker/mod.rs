@@ -88,6 +88,7 @@ pub struct Tracker<P: Protocol> {
     pub info: Option<Info>,
     pub info_hash: InfoHash,
     pub rx: mpsc::Receiver<TrackerMsg>,
+    pub connection_id: u64,
     state: P,
 }
 
@@ -103,8 +104,6 @@ pub struct TrackerCtx {
 
     /// Our local socket addr where peers will send handshakes
     pub local_addr: SocketAddr,
-
-    pub connection_id: Option<u64>,
 
     pub downloaded: u64,
     pub uploaded: u64,
@@ -205,23 +204,26 @@ impl TrackerTrait for Tracker<Udp> {
                     continue;
                 }
             };
+
             let (tracker_tx, tracker_rx) = mpsc::channel::<TrackerMsg>(100);
+
             let mut tracker = Tracker {
                 ctx: TrackerCtx {
                     tx: tracker_tx,
                     peer_id: Tracker::gen_peer_id(),
                     local_addr: socket.local_addr().unwrap(),
                     tracker_addr: socket.peer_addr().unwrap(),
-                    connection_id: None,
                     downloaded: 0,
                     uploaded: 0,
                     left: 0,
                 },
                 info_hash: info_hash.clone(),
                 info: None,
+                connection_id: 0,
                 state: Udp { socket },
                 rx: tracker_rx,
             };
+
             if Tracker::connect(&mut tracker).await.is_ok() {
                 debug!("announced to tracker {tracker_addr}");
                 return Ok(tracker);
@@ -279,7 +281,7 @@ impl TrackerTrait for Tracker<Udp> {
             return Err(Error::TrackerResponse);
         }
 
-        self.ctx.connection_id.replace(res.connection_id);
+        self.connection_id = res.connection_id;
 
         Ok(res)
     }
@@ -292,7 +294,7 @@ impl TrackerTrait for Tracker<Udp> {
         debug!("announcing {event:#?} to tracker");
 
         let req = announce::Request {
-            connection_id: self.ctx.connection_id.unwrap_or(0),
+            connection_id: self.connection_id,
             action: Action::Announce.into(),
             transaction_id: rand::rng().random(),
             info_hash: self.info_hash.clone(),

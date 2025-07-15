@@ -183,14 +183,9 @@ impl Peer {
 
         // when running a new Peer, we might
         // already have the info downloaded.
-        let have = self
-            .torrent_ctx
-            .has_at_least_one_piece
-            .load(std::sync::atomic::Ordering::Relaxed);
-
-        if have {
-            self.have_info = have;
-        }
+        let info = self.torrent_ctx.info.read().await;
+        self.have_info = info.piece_length > 0;
+        drop(info);
 
         let info = self.torrent_ctx.info.read().await;
         let mut peer_pieces = self.ctx.pieces.write().await;
@@ -454,8 +449,7 @@ impl Peer {
                     elapsed_since_last_request.as_millis(),
                 );
 
-                let _ =
-                    self.sink.send(Core::Request(block.clone())).await;
+                let _ = self.sink.send(Core::Request(block.clone())).await;
                 *timeout = Instant::now();
 
                 debug!(
@@ -566,10 +560,7 @@ impl Peer {
                 // debug!("{local} requesting \n {block_info:#?} to {remote}");
                 self.outgoing_requests.insert(block_info.clone());
 
-                let _ = self
-                    .sink
-                    .send(Core::Request(block_info.clone()))
-                    .await;
+                let _ = self.sink.send(Core::Request(block_info.clone())).await;
 
                 self.outgoing_requests_timeout
                     .insert(block_info, Instant::now());
@@ -667,19 +658,15 @@ impl Peer {
         debug_assert!(self.session.state.am_interested);
         debug_assert!(!self.session.state.am_choking);
 
-        let has_one_piece = self
-            .torrent_ctx
-            .has_at_least_one_piece
-            .load(std::sync::atomic::Ordering::Relaxed);
+        // let has_one_piece = self
+        //     .torrent_ctx
+        //     .has_at_least_one_piece
+        //     .load(std::sync::atomic::Ordering::Relaxed);
 
         // the max number of block_infos to request
-        let n = if has_one_piece {
-            debug!("has one piece, changing it to {:?}", self.extension.reqq);
-            self.extension.reqq.unwrap_or(Session::DEFAULT_REQUEST_QUEUE_LEN)
-        } else {
-            // self.torrent_ctx.info.read().await.pieces() as u16
-            self.extension.reqq.unwrap_or(Session::DEFAULT_REQUEST_QUEUE_LEN)
-        };
+        let n =
+            self.extension.reqq.unwrap_or(Session::DEFAULT_REQUEST_QUEUE_LEN);
+        // debug!("has one piece, changing it to {:?}", self.extension.reqq);
 
         if n > 0 {
             self.session.target_request_queue_len = n;
