@@ -13,7 +13,11 @@ pub struct Config {
 }
 
 static CONFIG: LazyLock<config::Config> = LazyLock::new(|| {
-    let home = std::env::var("HOME").expect("The $HOME env var is not set, therefore the program cant use default values, you should set them manually on the configuration file or through CLI flags. Use --help.");
+    let home = std::env::var("HOME").expect(
+        "The $HOME env var is not set, therefore the program cant use default \
+         values, you should set them manually on the configuration file or \
+         through CLI flags. Use --help.",
+    );
 
     let download_dir = std::env::var("XDG_DOWNLOAD_DIR")
         .unwrap_or(format!("{home}/Downloads"));

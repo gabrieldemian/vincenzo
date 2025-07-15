@@ -29,7 +29,10 @@ pub enum Error {
     TrackerEvent,
     #[error("Tried to call announce without calling connect first")]
     TrackerResponseLength,
-    #[error("The response length received from the tracker was less then 20 bytes, when it should be larger")]
+    #[error(
+        "The response length received from the tracker was less then 20 \
+         bytes, when it should be larger"
+    )]
     TrackerNoConnectionId,
     #[error("The peer list returned by the announce request is not valid")]
     TrackerCompactPeerList,
@@ -48,14 +51,19 @@ pub enum Error {
     #[error("The handshake received is not valid")]
     HandshakeInvalid,
     #[error(
-        "Could not open the file `{0}`. Please make sure the program has permission to access it"
+        "Could not open the file `{0}`. Please make sure the program has \
+         permission to access it"
     )]
     FileOpenError(String),
     #[error(
-        "Could not open the folder `{0}`. Please make sure the program has permission to open it and that the folder exist"
+        "Could not open the folder `{0}`. Please make sure the program has \
+         permission to open it and that the folder exist"
     )]
     FolderOpenError(String),
-    #[error("The `{0}` folder was not found, please edit the config file manually at `{1}")]
+    #[error(
+        "The `{0}` folder was not found, please edit the config file manually \
+         at `{1}"
+    )]
     FolderNotFound(String, String),
     #[error("This torrent is already downloaded fully")]
     TorrentComplete,
@@ -69,10 +77,14 @@ pub enum Error {
     InfoHashInvalid,
     #[error("The peer took to long to respond")]
     Timeout,
-    #[error("Your magnet does not have a tracker. Currently, this client does not support DHT, you need to use a magnet that has a tracker.")]
+    #[error(
+        "Your magnet does not have a tracker. Currently, this client does not \
+         support DHT, you need to use a magnet that has a tracker."
+    )]
     MagnetNoTracker,
     #[error(
-        "Your magnet does not have an info_hash, are you sure you copied the entire magnet link?"
+        "Your magnet does not have an info_hash, are you sure you copied the \
+         entire magnet link?"
     )]
     MagnetNoInfoHash,
     #[error("Could not send message to Disk")]
@@ -89,9 +101,15 @@ pub enum Error {
     PathInvalid,
     #[error("Could not send message to TCP socket")]
     SendErrorTcp,
-    #[error("Tried to load $HOME but could not find it. Please make sure you have a $HOME env and that this program has the permission to create dirs.")]
+    #[error(
+        "Tried to load $HOME but could not find it. Please make sure you have \
+         a $HOME env and that this program has the permission to create dirs."
+    )]
     HomeInvalid,
-    #[error("Error while trying to read the configuration file, please make sure it has the correct format")]
+    #[error(
+        "Error while trying to read the configuration file, please make sure \
+         it has the correct format"
+    )]
     ConfigDeserializeError,
     #[error("You cannot add a duplicate torrent, only 1 is allowed")]
     NoDuplicateTorrent,

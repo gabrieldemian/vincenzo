@@ -7,6 +7,7 @@ pub mod event;
 use super::tracker::action::Action;
 use std::{
     fmt::Debug,
+    marker::PhantomData,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     time::Duration,
 };
@@ -23,19 +24,24 @@ use tracing::{debug, error, warn};
 
 use self::event::Event;
 
+pub struct Udp;
+
+/// The generic `P` stands for "Protocol".
+/// Currently, only UDP and HTTP are supported.
 #[derive(Debug)]
-pub struct Tracker {
-    /// UDP Socket of the `tracker_addr`
+pub struct Tracker<P> {
+    /// Socket of the `tracker_addr`
     /// Peers announcing will send handshakes
     /// to this addr
     pub local_addr: SocketAddr,
     pub peer_addr: SocketAddr,
     pub ctx: TrackerCtx,
     pub rx: mpsc::Receiver<TrackerMsg>,
+    marker: PhantomData<P>,
 }
 
-impl Default for Tracker {
-    fn default() -> Self {
+impl Default for Tracker<Udp> {
+    fn default() -> Tracker<Udp> {
         let (tx, rx) = mpsc::channel::<TrackerMsg>(300);
 
         let peer_id = Self::gen_peer_id();
@@ -51,6 +57,7 @@ impl Default for Tracker {
                 connection_id: None,
                 local_peer_addr: "0.0.0.0:0".parse().unwrap(),
             },
+            marker: PhantomData,
         }
     }
 }
@@ -92,9 +99,11 @@ pub enum TrackerMsg {
     },
 }
 
-impl Tracker {
+impl<P> Tracker<P> {
     const ANNOUNCE_RES_BUF_LEN: usize = 8192;
+}
 
+impl Tracker<Udp> {
     pub fn new() -> Self {
         Self::default()
     }
@@ -141,6 +150,7 @@ impl Tracker {
                 rx: tracker_rx,
                 local_addr: socket.local_addr().unwrap(),
                 peer_addr: socket.peer_addr().unwrap(),
+                marker: PhantomData,
             };
             if tracker.connect_exchange(socket).await.is_ok() {
                 debug!("announced to tracker {tracker_addr}");
@@ -148,7 +158,10 @@ impl Tracker {
             }
         }
 
-        error!("Could not connect to any tracker, all trackers rejected the connection.");
+        error!(
+            "Could not connect to any tracker, all trackers rejected the \
+             connection."
+        );
         Err(Error::TrackerNoHosts)
     }
 
@@ -363,7 +376,7 @@ impl Tracker {
         let req = announce::Request {
             connection_id: self.ctx.connection_id.unwrap_or(0),
             action: Action::Announce.into(),
-            transaction_id: rand::thread_rng().gen(),
+            transaction_id: rand::rng().random(),
             info_hash,
             peer_id: self.ctx.peer_id.clone(),
             downloaded,
@@ -373,6 +386,7 @@ impl Tracker {
             ip_address: 0,
             num_want: u32::MAX,
             port: self.local_addr.port(),
+            compact: 1,
         };
 
         let mut len = 0_usize;

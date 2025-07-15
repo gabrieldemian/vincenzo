@@ -53,7 +53,6 @@ pub struct Daemon {
     // pub fns: Option<
     //     Box<dyn FnMut(&Core, &dyn ExtDataTrait, Arc<DaemonCtx>) -> usize>,
     // >,
-
     rx: mpsc::Receiver<DaemonMsg>,
 }
 

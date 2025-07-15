@@ -160,8 +160,11 @@ impl Torrent {
         &mut self,
         listen: Option<SocketAddr>,
     ) -> Result<Vec<SocketAddr>, Error> {
+        let org_trackers = self.ctx.magnet.organize_trackers();
+
         let mut tracker =
             Tracker::connect(self.ctx.magnet.parse_trackers()).await?;
+
         let (res, peers) =
             tracker.announce_exchange(&self.ctx.info_hash, listen).await?;
 
@@ -432,7 +435,8 @@ impl Torrent {
                                 });
                                 let info = Info::from_bencode(&info_bytes).map_err(|_| Error::BencodeError)?;
 
-                                let m_info = self.ctx.magnet.xt.clone().unwrap();
+                                // todo get xt
+                                let m_info = self.ctx.magnet.hash_type().clone().unwrap();
 
                                 let mut hash = sha1_smol::Sha1::new();
                                 hash.update(&info_bytes);

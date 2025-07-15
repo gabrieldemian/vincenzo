@@ -609,7 +609,10 @@ impl Disk {
                     .ok_or(Error::TorrentDoesNotExist)?;
 
                 if *piece_order == PieceStrategy::Random {
-                    debug!("first piece downloaded, and piece order is random, switching to rarest-first");
+                    debug!(
+                        "first piece downloaded, and piece order is random, \
+                         switching to rarest-first"
+                    );
                     self.rarest_first(info_hash).await?;
                 }
             }
@@ -913,7 +916,7 @@ impl Disk {
 mod tests {
     use std::path::Path;
 
-    use rand::{distributions::Alphanumeric, Rng};
+    use rand::{distr::Alphanumeric, Rng};
 
     use crate::{
         bitfield::Bitfield,
@@ -933,7 +936,20 @@ mod tests {
     async fn create_file_tree() {
         let original_hook = std::panic::take_hook();
         let name = "bla".to_owned();
-        let magnet = format!("magnet:?xt=urn:btih:9999999999999999999999999999999999999999&amp;dn={name}&amp;tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.openbittorrent.com%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.bittor.pw%3A1337%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&amp;tr=udp%3A%2F%2Fbt.xxx-tracker.com%3A2710%2Fannounce&amp;tr=udp%3A%2F%2Fpublic.popcorn-tracker.org%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Feddie4.nl%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451%2Fannounce&amp;tr=udp%3A%2F%2Fp4p.arenabg.com%3A1337%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.tiny-vps.com%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Fopen.stealth.si%3A80%2Fannounce");
+        let magnet = format!(
+            "magnet:?xt=urn:btih:9999999999999999999999999999999999999999&amp;\
+             dn={name}&amp;tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%\
+             2Fannounce&amp;tr=udp%3A%2F%2Ftracker.openbittorrent.com%3A6969%\
+             2Fannounce&amp;tr=udp%3A%2F%2Ftracker.bittor.pw%3A1337%\
+             2Fannounce&amp;tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&amp;\
+             tr=udp%3A%2F%2Fbt.xxx-tracker.com%3A2710%2Fannounce&amp;tr=udp%\
+             3A%2F%2Fpublic.popcorn-tracker.org%3A6969%2Fannounce&amp;tr=udp%\
+             3A%2F%2Feddie4.nl%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.\
+             torrent.eu.org%3A451%2Fannounce&amp;tr=udp%3A%2F%2Fp4p.arenabg.\
+             com%3A1337%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.tiny-vps.com%\
+             3A6969%2Fannounce&amp;tr=udp%3A%2F%2Fopen.stealth.si%3A80%\
+             2Fannounce"
+        );
         let (disk_tx, disk_rx) = mpsc::channel::<DiskMsg>(1000);
 
         let (daemon_tx, _daemon_rx) = mpsc::channel::<DaemonMsg>(1000);
@@ -1056,7 +1072,20 @@ mod tests {
             ]),
         };
 
-        let magnet = format!("magnet:?xt=urn:btih:9999999999999999999999999999999999999999&amp;dn={name}&amp;tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.openbittorrent.com%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.bittor.pw%3A1337%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&amp;tr=udp%3A%2F%2Fbt.xxx-tracker.com%3A2710%2Fannounce&amp;tr=udp%3A%2F%2Fpublic.popcorn-tracker.org%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Feddie4.nl%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451%2Fannounce&amp;tr=udp%3A%2F%2Fp4p.arenabg.com%3A1337%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.tiny-vps.com%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Fopen.stealth.si%3A80%2Fannounce");
+        let magnet = format!(
+            "magnet:?xt=urn:btih:9999999999999999999999999999999999999999&amp;\
+             dn={name}&amp;tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%\
+             2Fannounce&amp;tr=udp%3A%2F%2Ftracker.openbittorrent.com%3A6969%\
+             2Fannounce&amp;tr=udp%3A%2F%2Ftracker.bittor.pw%3A1337%\
+             2Fannounce&amp;tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&amp;\
+             tr=udp%3A%2F%2Fbt.xxx-tracker.com%3A2710%2Fannounce&amp;tr=udp%\
+             3A%2F%2Fpublic.popcorn-tracker.org%3A6969%2Fannounce&amp;tr=udp%\
+             3A%2F%2Feddie4.nl%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.\
+             torrent.eu.org%3A451%2Fannounce&amp;tr=udp%3A%2F%2Fp4p.arenabg.\
+             com%3A1337%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.tiny-vps.com%\
+             3A6969%2Fannounce&amp;tr=udp%3A%2F%2Fopen.stealth.si%3A80%\
+             2Fannounce"
+        );
 
         let (disk_tx, disk_rx) = mpsc::channel::<DiskMsg>(3);
 
@@ -1170,7 +1199,20 @@ mod tests {
             ]),
         };
 
-        let magnet = format!("magnet:?xt=urn:btih:9999999999999999999999999999999999999999&amp;dn={name}&amp;tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.openbittorrent.com%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.bittor.pw%3A1337%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&amp;tr=udp%3A%2F%2Fbt.xxx-tracker.com%3A2710%2Fannounce&amp;tr=udp%3A%2F%2Fpublic.popcorn-tracker.org%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Feddie4.nl%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451%2Fannounce&amp;tr=udp%3A%2F%2Fp4p.arenabg.com%3A1337%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.tiny-vps.com%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Fopen.stealth.si%3A80%2Fannounce");
+        let magnet = format!(
+            "magnet:?xt=urn:btih:9999999999999999999999999999999999999999&amp;\
+             dn={name}&amp;tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%\
+             2Fannounce&amp;tr=udp%3A%2F%2Ftracker.openbittorrent.com%3A6969%\
+             2Fannounce&amp;tr=udp%3A%2F%2Ftracker.bittor.pw%3A1337%\
+             2Fannounce&amp;tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&amp;\
+             tr=udp%3A%2F%2Fbt.xxx-tracker.com%3A2710%2Fannounce&amp;tr=udp%\
+             3A%2F%2Fpublic.popcorn-tracker.org%3A6969%2Fannounce&amp;tr=udp%\
+             3A%2F%2Feddie4.nl%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.\
+             torrent.eu.org%3A451%2Fannounce&amp;tr=udp%3A%2F%2Fp4p.arenabg.\
+             com%3A1337%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.tiny-vps.com%\
+             3A6969%2Fannounce&amp;tr=udp%3A%2F%2Fopen.stealth.si%3A80%\
+             2Fannounce"
+        );
         let mut rng = rand::thread_rng();
         let download_dir: String =
             (0..20).map(|_| rng.sample(Alphanumeric) as char).collect();
@@ -1284,7 +1326,20 @@ mod tests {
             ]),
         };
 
-        let magnet = format!("magnet:?xt=urn:btih:9999999999999999999999999999999999999999&amp;dn={name}&amp;tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.openbittorrent.com%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.bittor.pw%3A1337%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&amp;tr=udp%3A%2F%2Fbt.xxx-tracker.com%3A2710%2Fannounce&amp;tr=udp%3A%2F%2Fpublic.popcorn-tracker.org%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Feddie4.nl%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451%2Fannounce&amp;tr=udp%3A%2F%2Fp4p.arenabg.com%3A1337%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.tiny-vps.com%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Fopen.stealth.si%3A80%2Fannounce");
+        let magnet = format!(
+            "magnet:?xt=urn:btih:9999999999999999999999999999999999999999&amp;\
+             dn={name}&amp;tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%\
+             2Fannounce&amp;tr=udp%3A%2F%2Ftracker.openbittorrent.com%3A6969%\
+             2Fannounce&amp;tr=udp%3A%2F%2Ftracker.bittor.pw%3A1337%\
+             2Fannounce&amp;tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&amp;\
+             tr=udp%3A%2F%2Fbt.xxx-tracker.com%3A2710%2Fannounce&amp;tr=udp%\
+             3A%2F%2Fpublic.popcorn-tracker.org%3A6969%2Fannounce&amp;tr=udp%\
+             3A%2F%2Feddie4.nl%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.\
+             torrent.eu.org%3A451%2Fannounce&amp;tr=udp%3A%2F%2Fp4p.arenabg.\
+             com%3A1337%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.tiny-vps.com%\
+             3A6969%2Fannounce&amp;tr=udp%3A%2F%2Fopen.stealth.si%3A80%\
+             2Fannounce"
+        );
         let mut rng = rand::thread_rng();
         let download_dir: String =
             (0..20).map(|_| rng.sample(Alphanumeric) as char).collect();
@@ -1438,7 +1493,20 @@ mod tests {
             ]),
         };
 
-        let magnet = format!("magnet:?xt=urn:btih:9999999999999999999999999999999999999999&amp;dn={name}&amp;tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.openbittorrent.com%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.bittor.pw%3A1337%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&amp;tr=udp%3A%2F%2Fbt.xxx-tracker.com%3A2710%2Fannounce&amp;tr=udp%3A%2F%2Fpublic.popcorn-tracker.org%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Feddie4.nl%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451%2Fannounce&amp;tr=udp%3A%2F%2Fp4p.arenabg.com%3A1337%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.tiny-vps.com%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Fopen.stealth.si%3A80%2Fannounce");
+        let magnet = format!(
+            "magnet:?xt=urn:btih:9999999999999999999999999999999999999999&amp;\
+             dn={name}&amp;tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%\
+             2Fannounce&amp;tr=udp%3A%2F%2Ftracker.openbittorrent.com%3A6969%\
+             2Fannounce&amp;tr=udp%3A%2F%2Ftracker.bittor.pw%3A1337%\
+             2Fannounce&amp;tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&amp;\
+             tr=udp%3A%2F%2Fbt.xxx-tracker.com%3A2710%2Fannounce&amp;tr=udp%\
+             3A%2F%2Fpublic.popcorn-tracker.org%3A6969%2Fannounce&amp;tr=udp%\
+             3A%2F%2Feddie4.nl%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.\
+             torrent.eu.org%3A451%2Fannounce&amp;tr=udp%3A%2F%2Fp4p.arenabg.\
+             com%3A1337%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.tiny-vps.com%\
+             3A6969%2Fannounce&amp;tr=udp%3A%2F%2Fopen.stealth.si%3A80%\
+             2Fannounce"
+        );
         let mut rng = rand::thread_rng();
         let download_dir: String =
             (0..20).map(|_| rng.sample(Alphanumeric) as char).collect();

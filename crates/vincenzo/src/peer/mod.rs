@@ -450,8 +450,7 @@ impl Peer {
                 self.session.register_request_timeout();
 
                 debug!(
-                    "{local} this block {block:#?} timed out \
-                    ({} ms ago)",
+                    "{local} this block {block:#?} timed out ({} ms ago)",
                     elapsed_since_last_request.as_millis(),
                 );
 

@@ -23,6 +23,7 @@ pub struct Request {
     pub ip_address: u32,
     pub num_want: u32,
     pub port: u16,
+    pub compact: u8,
 }
 
 impl Request {
@@ -36,11 +37,11 @@ impl Request {
         port: u16,
         event: Event,
     ) -> Self {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         Self {
             connection_id,
             action: Action::Announce.into(),
-            transaction_id: rng.gen(),
+            transaction_id: rng.random(),
             info_hash,
             peer_id,
             downloaded: 0,
@@ -50,6 +51,7 @@ impl Request {
             ip_address: 0,
             num_want: u32::MAX,
             port,
+            compact: 1,
         }
     }
 
