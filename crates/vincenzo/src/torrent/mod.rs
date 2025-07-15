@@ -184,7 +184,6 @@ impl Torrent<Idle> {
 
         let mut tracker = Tracker::connect_to_tracker(
             self.ctx.magnet.parse_trackers(),
-            self.ctx.info.clone(),
             self.ctx.info_hash.clone(),
         )
         .await?;
@@ -347,7 +346,7 @@ impl Torrent<Connected> {
     pub async fn run(&mut self) -> Result<(), Error> {
         debug!("running torrent: {:?}", self.name);
 
-        let tracker_tx = self.state.tracker_ctx.tx.clone();
+        let tracker_tx = &self.state.tracker_ctx.tx;
 
         let mut announce_interval = interval_at(
             Instant::now()
@@ -395,14 +394,12 @@ impl Torrent<Connected> {
 
                             self.status = TorrentStatus::Seeding;
 
-                            if let Some(tracker_tx) = &tracker_tx {
-                                let _ = tracker_tx.send(
-                                    TrackerMsg::Announce {
-                                        event: Event::Completed,
-                                        recipient: Some(otx),
-                                    })
-                                .await;
-                            }
+                            let _ = tracker_tx.send(
+                                TrackerMsg::Announce {
+                                    event: Event::Completed,
+                                    recipient: Some(otx),
+                                })
+                            .await;
 
                             if let Ok(Ok(r)) = orx.await {
                                 debug!("announced completion with success {r:#?}");
@@ -494,6 +491,7 @@ impl Torrent<Connected> {
 
                                     self.state.size = info.get_size();
                                     self.state.have_info = true;
+                                    self.state.tracker_ctx.tx.send(TrackerMsg::Info(info.clone())).await?;
 
                                     let mut info_l = self.ctx.info.write().await;
 
@@ -520,7 +518,8 @@ impl Torrent<Connected> {
                             let _ = recipient.send(bytes);
                         }
                         TorrentMsg::IncrementDownloaded(downloaded) => {
-                            let tx = self.state.tracker_ctx.tx.as_ref().unwrap();
+                            let tx = &self.state.tracker_ctx.tx;
+
                             tx.send(TrackerMsg::Increment { downloaded, uploaded: 0 }).await?;
 
                             // check if the torrent download is complete
@@ -533,8 +532,8 @@ impl Torrent<Connected> {
                             }
                         }
                         TorrentMsg::IncrementUploaded(uploaded) => {
-                            let tx = self.state.tracker_ctx.tx.as_ref().unwrap();
-                            tx.send(TrackerMsg::Increment { downloaded: 0, uploaded }).await?;
+                            let tracker_tx = &self.state.tracker_ctx.tx;
+                            tracker_tx.send(TrackerMsg::Increment { downloaded: 0, uploaded }).await?;
                             debug!("IncrementUploaded {}", self.state.tracker_ctx.uploaded);
                         }
                         TorrentMsg::TogglePause => {
@@ -567,14 +566,14 @@ impl Torrent<Connected> {
                             info!("Quitting torrent {:?}", self.name);
                             let (otx, orx) = oneshot::channel();
 
-                            if let Some(tracker_tx) = &tracker_tx {
-                                let _ = tracker_tx.send(
-                                    TrackerMsg::Announce {
-                                        event: Event::Stopped,
-                                        recipient: Some(otx),
-                                    })
-                                .await;
-                            }
+                            let tracker_tx = &self.state.tracker_ctx.tx;
+
+                            let _ = tracker_tx.send(
+                                TrackerMsg::Announce {
+                                    event: Event::Stopped,
+                                    recipient: Some(otx),
+                                })
+                            .await;
 
                             for peer in self.state.peer_ctxs.values() {
                                 let tx = peer.tx.clone();
@@ -626,15 +625,14 @@ impl Torrent<Connected> {
                         debug!("sending periodic announce, interval {announce_interval:?}");
 
                         let (otx, orx) = oneshot::channel();
+                        let tracker_tx = &self.state.tracker_ctx.tx;
 
-                        if let Some(tracker_tx) = &tracker_tx {
-                            let _ = tracker_tx.send(
-                                TrackerMsg::Announce {
-                                    event: Event::None,
-                                    recipient: Some(otx),
-                                })
-                            .await;
-                        }
+                        let _ = tracker_tx.send(
+                            TrackerMsg::Announce {
+                                event: Event::None,
+                                recipient: Some(otx),
+                            })
+                        .await;
 
                         let r = orx.await??;
                         debug!("new stats {r:#?}");

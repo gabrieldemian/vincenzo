@@ -9,7 +9,6 @@ use std::{
     fmt::Debug,
     future::Future,
     net::{IpAddr, Ipv4Addr, SocketAddr},
-    sync::Arc,
     time::Duration,
 };
 
@@ -18,7 +17,7 @@ use rand::Rng;
 use tokio::{
     net::{ToSocketAddrs, UdpSocket},
     select,
-    sync::{mpsc, oneshot, RwLock},
+    sync::{mpsc, oneshot},
     time::timeout,
 };
 use tracing::{debug, error, warn};
@@ -68,7 +67,6 @@ pub trait TrackerTrait: Sized {
     /// Try to connect to one tracker, in order, and return Self.
     fn connect_to_tracker<A>(
         trackers: Vec<A>,
-        info: Arc<RwLock<Info>>,
         info_hash: InfoHash,
     ) -> impl Future<Output = Result<Self, Error>>
     where
@@ -87,7 +85,7 @@ pub trait TrackerTrait: Sized {
 #[derive(Debug)]
 pub struct Tracker<P: Protocol> {
     pub ctx: TrackerCtx,
-    pub info: Arc<RwLock<Info>>,
+    pub info: Option<Info>,
     pub info_hash: InfoHash,
     pub rx: mpsc::Receiver<TrackerMsg>,
     state: P,
@@ -95,7 +93,7 @@ pub struct Tracker<P: Protocol> {
 
 #[derive(Debug, Clone)]
 pub struct TrackerCtx {
-    pub tx: Option<mpsc::Sender<TrackerMsg>>,
+    pub tx: mpsc::Sender<TrackerMsg>,
 
     /// Our ID for this connected Tracker
     pub peer_id: PeerId,
@@ -125,6 +123,7 @@ pub enum TrackerMsg {
         downloaded: u64,
         uploaded: u64,
     },
+    Info(Info),
 }
 
 impl TrackerTrait for Tracker<Udp> {
@@ -172,13 +171,13 @@ impl TrackerTrait for Tracker<Udp> {
 
         Ok(peers)
     }
+
     /// Bind UDP socket and send a connect handshake,
     /// to one of the trackers.
     // todo: get a new tracker if download is stale
     #[tracing::instrument(skip(trackers))]
     async fn connect_to_tracker<A>(
         trackers: Vec<A>,
-        info: Arc<RwLock<Info>>,
         info_hash: InfoHash,
     ) -> Result<Self, Error>
     where
@@ -209,7 +208,7 @@ impl TrackerTrait for Tracker<Udp> {
             let (tracker_tx, tracker_rx) = mpsc::channel::<TrackerMsg>(100);
             let mut tracker = Tracker {
                 ctx: TrackerCtx {
-                    tx: tracker_tx.into(),
+                    tx: tracker_tx,
                     peer_id: Tracker::gen_peer_id(),
                     local_addr: socket.local_addr().unwrap(),
                     tracker_addr: socket.peer_addr().unwrap(),
@@ -219,7 +218,7 @@ impl TrackerTrait for Tracker<Udp> {
                     left: 0,
                 },
                 info_hash: info_hash.clone(),
-                info: info.clone(),
+                info: None,
                 state: Udp { socket },
                 rx: tracker_rx,
             };
@@ -372,18 +371,19 @@ impl Tracker<Udp> {
             select! {
                 Some(msg) = self.rx.recv() => {
                     match msg {
+                        TrackerMsg::Info(info) => self.info = Some(info),
                         TrackerMsg::Increment {downloaded, uploaded} => {
                             self.ctx.downloaded += downloaded;
                             self.ctx.uploaded += uploaded;
 
-                            let info = self.info.read().await;
+                            if let Some(info) = &self.info {
+                                let left =
+                                    if self.ctx.downloaded < info.get_size()
+                                        { info.get_size() - self.ctx.downloaded }
+                                    else { 0 };
 
-                            let left =
-                                if self.ctx.downloaded < info.get_size()
-                                    { info.get_size() - self.ctx.downloaded }
-                                else { 0 };
-
-                            self.ctx.left = left;
+                                self.ctx.left = left;
+                            }
                         }
                         TrackerMsg::Announce {
                             recipient,
