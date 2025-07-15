@@ -7,6 +7,7 @@ pub mod event;
 use super::tracker::action::Action;
 use std::{
     fmt::Debug,
+    future::Future,
     marker::PhantomData,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     time::Duration,
@@ -25,6 +26,7 @@ use tracing::{debug, error, warn};
 use self::event::Event;
 
 pub struct Udp;
+pub struct Http;
 
 /// The generic `P` stands for "Protocol".
 /// Currently, only UDP and HTTP are supported.
@@ -38,6 +40,33 @@ pub struct Tracker<P> {
     pub ctx: TrackerCtx,
     pub rx: mpsc::Receiver<TrackerMsg>,
     marker: PhantomData<P>,
+}
+
+pub trait TrackerTrait: Sized {
+    fn connect<A>(
+        trackers: Vec<A>,
+    ) -> impl Future<Output = Result<Self, Error>>
+    where
+        A: ToSocketAddrs
+            + Debug
+            + Send
+            + Sync
+            + 'static
+            + std::fmt::Display
+            + Clone,
+        A::Iter: Send;
+
+    fn connect_exchange(
+        &mut self,
+        socket: UdpSocket,
+    ) -> impl Future<Output = Result<UdpSocket, Error>> + Send;
+
+    fn announce_exchange(
+        &mut self,
+        info_hash: &InfoHash,
+        listen: Option<SocketAddr>,
+    ) -> impl Future<Output = Result<(announce::Response, Vec<SocketAddr>), Error>>
+           + Send;
 }
 
 impl Default for Tracker<Udp> {
