@@ -117,7 +117,7 @@ impl Torrent {
         let info_pieces = BTreeMap::new();
         let tracker_ctx = Arc::new(TrackerCtx::default());
 
-        let (tx, rx) = mpsc::channel::<TorrentMsg>(300);
+        let (tx, rx) = mpsc::channel::<TorrentMsg>(100);
 
         let ctx = Arc::new(TorrentCtx {
             tx: tx.clone(),

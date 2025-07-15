@@ -260,16 +260,25 @@ impl TrackerTrait for Tracker<Udp> {
 
         self.state.socket.send(&req.serialize()).await?;
 
-        match timeout(Duration::new(5, 0), self.state.socket.recv(&mut buf))
+        let mut retransmit = 30;
+
+        for i in 1..=7 {
+            match timeout(
+                Duration::new(retransmit, 0),
+                self.state.socket.recv(&mut buf),
+            )
             .await
-        {
-            Ok(Ok(lenn)) => {
-                len = lenn;
+            {
+                Ok(Ok(lenn)) => {
+                    len = lenn;
+                    break;
+                }
+                _ => {
+                    debug!("error receiving connect response");
+                    retransmit = 15 * 2_u64.pow(i);
+                    self.state.socket.send(&req.serialize()).await?;
+                }
             }
-            Err(e) => {
-                debug!("error receiving connect response, {e}");
-            }
-            _ => {}
         }
 
         if len == 0 {
@@ -317,17 +326,26 @@ impl TrackerTrait for Tracker<Udp> {
         let mut len = 0_usize;
         let mut res = [0u8; ANNOUNCE_RES_BUF_LEN];
 
+        let mut retransmit = 30;
+
         self.state.socket.send(&req.serialize()).await?;
-        match timeout(Duration::new(3, 0), self.state.socket.recv(&mut res))
+
+        for i in 1..=7 {
+            match timeout(
+                Duration::new(retransmit, 0),
+                self.state.socket.recv(&mut res),
+            )
             .await
-        {
-            Ok(Ok(lenn)) => {
-                len = lenn;
+            {
+                Ok(Ok(lenn)) => {
+                    len = lenn;
+                }
+                _ => {
+                    self.state.socket.send(&req.serialize()).await?;
+                    retransmit = 15 * 2_u64.pow(i);
+                    warn!("failed to announce");
+                }
             }
-            Err(e) => {
-                warn!("failed to announce {e:#?}");
-            }
-            _ => {}
         }
 
         let res = &res[..len];
@@ -376,8 +394,8 @@ impl Tracker<Udp> {
                             let info = self.info.read().await;
 
                             let left =
-                                if self.ctx.downloaded > info.get_size()
-                                    { self.ctx.downloaded - info.get_size() }
+                                if self.ctx.downloaded < info.get_size()
+                                    { info.get_size() - self.ctx.downloaded }
                                 else { 0 };
 
                             self.ctx.left = left;
