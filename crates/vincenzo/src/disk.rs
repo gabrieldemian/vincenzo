@@ -630,9 +630,8 @@ impl Disk {
                 Ok(_) => {
                     debug!("Piece {index} is valid.");
 
-                    let mut bitfield = torrent_ctx.bitfield.write().await;
-                    bitfield.set(index, true);
-
+                    let _ =
+                        torrent_tx.send(TorrentMsg::SetBitfield(index)).await;
                     let _ = torrent_tx
                         .send(TorrentMsg::DownloadedPiece(index))
                         .await;
@@ -1238,10 +1237,10 @@ mod tests {
         *disk.piece_strategy.get_mut(&info_hash).unwrap() =
             PieceStrategy::Sequential;
 
-        let mut p = torrent.ctx.bitfield.write().await;
-        *p = Bitfield::from_vec(vec![255]);
+        // let mut p = torrent.ctx.bitfield.write().await;
+        // *p = Bitfield::from_vec(vec![255]);
         drop(info);
-        drop(p);
+        // drop(p);
 
         //
         //  WRITE
@@ -1364,10 +1363,10 @@ mod tests {
         *disk.piece_strategy.get_mut(&info_hash).unwrap() =
             PieceStrategy::Sequential;
 
-        let mut p = torrent.ctx.bitfield.write().await;
-        *p = Bitfield::from_vec(vec![255, 255, 255, 255]);
+        // let mut p = torrent.ctx.bitfield.write().await;
+        // *p = Bitfield::from_vec(vec![255, 255, 255, 255]);
         drop(info);
-        drop(p);
+        // drop(p);
 
         //
         //  WRITE BLOCKS
@@ -1531,12 +1530,12 @@ mod tests {
         *disk.piece_strategy.get_mut(&info_hash).unwrap() =
             PieceStrategy::Sequential;
 
-        let mut p = torrent.ctx.bitfield.write().await;
-        *p = Bitfield::from_vec(vec![
-            255, 255, 255, 255, 255, 255, 255, 255, 255,
-        ]);
+        // let mut p = torrent.ctx.bitfield.write().await;
+        // *p = Bitfield::from_vec(vec![
+        //     255, 255, 255, 255, 255, 255, 255, 255, 255,
+        // ]);
         drop(info);
-        drop(p);
+        // drop(p);
 
         //
         //  WRITE BLOCKS

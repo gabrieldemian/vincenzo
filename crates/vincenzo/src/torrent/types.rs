@@ -4,6 +4,7 @@ use speedy::{Readable, Writable};
 use tokio::sync::oneshot;
 
 use crate::{
+    bitfield::Bitfield,
     extensions::core::BlockInfo,
     peer::{PeerCtx, PeerId},
 };
@@ -15,6 +16,8 @@ pub enum TorrentMsg {
     /// an entire piece. We send Have messages to peers
     /// that don't have it and update the UI with stats.
     DownloadedPiece(usize),
+    SetBitfield(usize),
+    ReadBitfield(oneshot::Sender<Bitfield>),
     PeerConnected(PeerId, Arc<PeerCtx>),
     DownloadComplete,
     /// When in endgame mode, the first peer that receives this info,

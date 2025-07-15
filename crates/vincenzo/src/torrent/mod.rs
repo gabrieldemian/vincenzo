@@ -46,16 +46,19 @@ pub struct Connected {
     // requests.
     pub stats: Stats,
 
+    pub bitfield: Bitfield,
+
     pub peer_ctxs: HashMap<PeerId, Arc<PeerCtx>>,
     pub have_info: bool,
 
     // If using a Magnet link, the info will be downloaded in pieces
     // and those pieces may come in different order,
-    // hence the HashMap (dictionary), and not a vec.
-    // After the dict is complete, it will be decoded into [`info`]
+    // After it is complete, it will be encoded into [`Info`]
     pub info_pieces: BTreeMap<u32, Vec<u8>>,
 
     pub failed_peers: Vec<SocketAddr>,
+
+    /// Peers returned from an announce request to the tracker.
     pub peers: Vec<SocketAddr>,
 
     // The downloaded bytes of the previous second,
@@ -92,8 +95,7 @@ pub struct TorrentCtx {
     pub tx: mpsc::Sender<TorrentMsg>,
     pub magnet: Magnet,
     pub info_hash: InfoHash,
-    pub bitfield: RwLock<Bitfield>,
-    pub info: Arc<RwLock<Info>>,
+    pub info: RwLock<Info>,
 }
 
 /// State of a [`Torrent`], used by the UI to present data.
@@ -125,8 +127,7 @@ impl Torrent<Idle> {
         magnet: Magnet,
     ) -> Torrent<Idle> {
         let name = magnet.parse_dn();
-        let bitfield = RwLock::new(Bitfield::default());
-        let info = Arc::new(RwLock::new(Info::default().name(name.clone())));
+        let info = RwLock::new(Info::default().name(name.clone()));
 
         let (tx, rx) = mpsc::channel::<TorrentMsg>(100);
 
@@ -134,7 +135,6 @@ impl Torrent<Idle> {
             tx: tx.clone(),
             disk_tx,
             info_hash: magnet.parse_xt_infohash(),
-            bitfield,
             magnet,
             info,
         });
@@ -205,6 +205,7 @@ impl Torrent<Idle> {
 
         Ok(Torrent {
             state: Connected {
+                bitfield: Bitfield::default(),
                 stats,
                 peers,
                 tracker_ctx,
@@ -360,6 +361,12 @@ impl Torrent<Connected> {
             select! {
                 Some(msg) = self.rx.recv() => {
                     match msg {
+                        TorrentMsg::ReadBitfield(oneshot) => {
+                            let _ = oneshot.send(self.state.bitfield.clone());
+                        }
+                        TorrentMsg::SetBitfield(index) => {
+                            self.state.bitfield.set(index, true);
+                        }
                         TorrentMsg::DownloadedPiece(piece) => {
                             // send Have messages to peers that dont have our pieces
                             for peer in self.state.peer_ctxs.values() {
@@ -465,17 +472,16 @@ impl Torrent<Connected> {
 
                                     // with the info fully downloaded, we now know the pieces len,
                                     // this will update the bitfield of the torrent
-                                    let mut bitfield = self.ctx.bitfield.write().await;
-                                    *bitfield = bitvec![u8, Msb0; 0; info.pieces() as usize];
+                                    self.state.bitfield = bitvec![u8, Msb0; 0; info.pieces() as usize];
 
                                     // remove excess bits
-                                    if (info.pieces() as usize) < bitfield.len() {
+                                    if (info.pieces() as usize) < self.state.bitfield.len() {
                                         unsafe {
-                                            bitfield.set_len(info.pieces() as usize);
+                                            self.state.bitfield.set_len(info.pieces() as usize);
                                         }
                                     }
 
-                                    debug!("local_bitfield is now of len {:?}", bitfield.len());
+                                    debug!("local_bitfield is now of len {:?}", self.state.bitfield.len());
 
                                     self.state.size = info.get_size();
                                     self.state.have_info = true;
@@ -606,10 +612,7 @@ impl Torrent<Connected> {
                 // periodically announce to tracker, at the specified interval
                 // to update the tracker about the client's stats.
                 _ = announce_interval.tick() => {
-                    let info = self.ctx.info.read().await;
-
-                    // we know if the info was downloaded if the piece_length is > 0
-                    if info.piece_length > 0 {
+                    if self.state.have_info {
                         debug!("sending periodic announce, interval {announce_interval:?}");
 
                         let (otx, orx) = oneshot::channel();
@@ -632,7 +635,6 @@ impl Torrent<Connected> {
                             Duration::from_secs(self.state.stats.interval as u64),
                         );
                     }
-                    drop(info);
                 }
                 // At every 5 seconds, try to reconnect to peers in which
                 // the TCP connection failed.

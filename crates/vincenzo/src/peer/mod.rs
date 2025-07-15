@@ -168,12 +168,16 @@ impl Peer {
         );
 
         // maybe send bitfield
-        let bitfield = self.torrent_ctx.bitfield.read().await;
-        if !bitfield.is_empty() {
-            debug!("{local} sending bitfield to {remote}");
-            self.sink.send(Core::Bitfield(bitfield.clone())).await?;
+        {
+            let (otx, orx) = oneshot::channel();
+            let _ =
+                self.torrent_ctx.tx.send(TorrentMsg::ReadBitfield(otx)).await;
+            let bitfield = orx.await?;
+            if !bitfield.is_empty() {
+                debug!("{local} sending bitfield to {remote}");
+                self.sink.send(Core::Bitfield(bitfield.clone())).await?;
+            }
         }
-        drop(bitfield);
 
         // todo: implement choke algorithm
         // send Unchoke
@@ -187,17 +191,16 @@ impl Peer {
         self.have_info = info.piece_length > 0;
         drop(info);
 
-        let info = self.torrent_ctx.info.read().await;
-        let mut peer_pieces = self.ctx.pieces.write().await;
+        {
+            let info = self.torrent_ctx.info.read().await;
+            let mut peer_pieces = self.ctx.pieces.write().await;
 
-        // if local peer has info, initialize the bitfield
-        // of this peer.
-        if peer_pieces.is_empty() && info.piece_length != 0 {
-            *peer_pieces = bitvec![u8, Msb0; 0; info.pieces() as usize];
+            // if local peer has info, initialize the bitfield
+            // of this peer.
+            if peer_pieces.is_empty() && info.piece_length != 0 {
+                *peer_pieces = bitvec![u8, Msb0; 0; info.pieces() as usize];
+            }
         }
-
-        drop(peer_pieces);
-        drop(info);
 
         loop {
             select! {
@@ -284,7 +287,7 @@ impl Peer {
                                 self.sink.send(Core::Unchoke).await?;
                             }
 
-                            let peer_has_piece = self.has_piece_not_in_local().await;
+                            let peer_has_piece = self.has_piece_not_in_local().await?;
 
                             if peer_has_piece {
                                 debug!("{local} we are interested due to Bitfield");
@@ -631,25 +634,29 @@ impl Peer {
 
     /// If this Peer has a piece that the local Peer (client)
     /// does not have.
-    pub async fn has_piece_not_in_local(&self) -> bool {
+    pub async fn has_piece_not_in_local(&self) -> Result<bool, Error> {
         // bitfield of the peer
         let bitfield = self.ctx.pieces.read().await;
 
+        let (otx, orx) = oneshot::channel();
+
         // local bitfield of the local peer
-        let local_bitfield = self.torrent_ctx.bitfield.read().await;
+        let _ = self.torrent_ctx.tx.send(TorrentMsg::ReadBitfield(otx)).await;
+        let local_bitfield = orx.await?;
 
         // when we don't have the info fully downloaded yet,
         // and the peer has already sent a bitfield or a have.
         if local_bitfield.is_empty() {
-            return true;
+            return Ok(true);
         }
 
         for (local_piece, piece) in local_bitfield.iter().zip(bitfield.iter()) {
             if *piece && !local_piece {
-                return true;
+                return Ok(true);
             }
         }
-        false
+
+        Ok(false)
     }
 
     /// Calculate the maximum number of block infos to request,
