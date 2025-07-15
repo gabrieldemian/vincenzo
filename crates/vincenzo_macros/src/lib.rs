@@ -174,7 +174,7 @@ impl Parse for Items {
 /// ```
 #[proc_macro]
 pub fn declare_message(input: TokenStream) -> TokenStream {
-    let a = parse_macro_input!(input as Items).0;
+    let _a = parse_macro_input!(input as Items).0;
 
     // let mut ext = Vec::new();
     // ext.extend(a);

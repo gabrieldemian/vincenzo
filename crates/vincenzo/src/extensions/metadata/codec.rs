@@ -1,15 +1,12 @@
 //! Types for the metadata protocol codec.
 
-use crate::{error::Error, peer::Peer, torrent::TorrentMsg};
+use crate::error::Error;
 use bendy::encoding::ToBencode;
 use bytes::{Buf, BufMut, BytesMut};
-use futures::SinkExt;
-use tokio::sync::oneshot;
 use tokio_util::codec::{Decoder, Encoder};
-use tracing::{debug, info};
 use vincenzo_macros::{Extension, Message};
 
-use crate::extensions::{Core, CoreCodec, CoreId, ExtensionTrait};
+use crate::extensions::ExtensionTrait;
 
 use super::{Metadata as MetadataDict, MetadataMsgType};
 

@@ -39,8 +39,8 @@ pub enum TorrentMsg {
     /// When a peer request a piece of the info
     /// index, recipient
     RequestInfoPiece(u32, oneshot::Sender<Option<Vec<u8>>>),
-    IncrementDownloaded(u32),
-    IncrementUploaded(u32),
+    IncrementDownloaded(u64),
+    IncrementUploaded(u64),
     /// Toggle pause torrent and send Pause/Resume message to all Peers
     TogglePause,
     /// When we can't do a TCP connection with the ip of the Peer.
@@ -123,7 +123,7 @@ pub enum TorrentStatus {
     Error,
 }
 
-impl<'a> From<TorrentStatus> for &'a str {
+impl From<TorrentStatus> for &str {
     fn from(val: TorrentStatus) -> Self {
         use TorrentStatus::*;
         match val {

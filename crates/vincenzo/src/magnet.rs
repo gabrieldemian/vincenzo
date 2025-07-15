@@ -41,7 +41,7 @@ impl Magnet {
 
     /// Transform the "xt" field from hex, to a slice.
     pub fn parse_xt(&self) -> [u8; 20] {
-        let info_hash = hex::decode(self.hash().clone().unwrap()).unwrap();
+        let info_hash = hex::decode(self.hash().unwrap()).unwrap();
         let mut x = [0u8; 20];
 
         x[..20].copy_from_slice(&info_hash[..20]);
@@ -50,7 +50,7 @@ impl Magnet {
 
     /// Transform the "xt" field from hex, to a slice.
     pub fn parse_xt_infohash(&self) -> InfoHash {
-        let info_hash = hex::decode(self.hash().clone().unwrap()).unwrap();
+        let info_hash = hex::decode(self.hash().unwrap()).unwrap();
         let mut x = [0u8; 20];
 
         x[..20].copy_from_slice(&info_hash[..20]);

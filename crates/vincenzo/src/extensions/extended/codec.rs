@@ -1,21 +1,12 @@
 //! Types for the Extended protocol codec.
 
-use crate::{
-    daemon::DaemonCtx,
-    error::Error,
-    extensions::{CoreCodec, MetadataCodec},
-    peer::{Direction, Peer},
-};
-use std::{convert::Infallible, fmt::Debug, ops::Deref, sync::Arc};
+use crate::daemon::DaemonCtx;
+use std::{fmt::Debug, ops::Deref, sync::Arc};
 
 use bendy::{decoding::FromBencode, encoding::ToBencode};
-use bytes::{BufMut, BytesMut};
-use futures::SinkExt;
+use bytes::BytesMut;
 use tokio_util::codec::{Decoder, Encoder};
-use tracing::debug;
 use vincenzo_macros::{Extension, Message};
-
-use crate::extensions::core::Core;
 
 use super::{CodecTrait, Extension, ExtensionTrait};
 
@@ -44,11 +35,11 @@ impl Deref for Extended {
 #[derive(Debug, Clone)]
 pub struct ExtendedCodec;
 
-impl Into<BytesMut> for Extended {
-    fn into(self) -> BytesMut {
+impl From<Extended> for BytesMut {
+    fn from(val: Extended) -> Self {
         let mut dst = BytesMut::new();
 
-        let Extended::Extension(extension) = self;
+        let Extended::Extension(extension) = val;
         let payload = extension.to_bencode().unwrap();
         dst.extend(payload);
 
@@ -88,6 +79,7 @@ impl Decoder for ExtendedCodec {
 #[extension(id = 0, codec = ExtendedCodec, msg = Extended)]
 pub struct ExtendedExt;
 
+#[allow(dead_code)]
 pub struct ExtendedData {
     extension: Extension,
 }
@@ -104,8 +96,8 @@ impl ExtensionMsgHandler for ExtendedExt {
     fn handle_msg(
         &self,
         msg: &Self::Msg,
-        data: &mut dyn ExtDataTrait,
-        daemon_ctx: Arc<DaemonCtx>,
+        _data: &mut dyn ExtDataTrait,
+        _daemon_ctx: Arc<DaemonCtx>,
     ) -> u8 {
         if msg.m.ut_metadata.is_some() {
             // peer.ext.push(Codec::MetadataCodec(MetadataCodec));

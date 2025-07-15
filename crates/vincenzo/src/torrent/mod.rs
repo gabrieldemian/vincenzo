@@ -20,7 +20,7 @@ use crate::{
         session::ConnectionState, Direction, Peer, PeerBuilder, PeerCtx,
         PeerId, PeerMsg,
     },
-    tracker::{event::Event, Tracker, TrackerCtx, TrackerMsg},
+    tracker::{event::Event, Tracker, TrackerCtx, TrackerMsg, TrackerTrait},
 };
 use bendy::decoding::FromBencode;
 use bitvec::{bitvec, prelude::Msb0};
@@ -55,9 +55,9 @@ pub struct Torrent {
     pub info_pieces: BTreeMap<u32, Vec<u8>>,
     pub have_info: bool,
     /// How many bytes we have uploaded to other peers.
-    pub uploaded: u64,
+    // pub uploaded: u64,
     /// How many bytes we have downloaded from other peers.
-    pub downloaded: u64,
+    // pub downloaded: u64,
     pub daemon_tx: mpsc::Sender<DaemonMsg>,
     pub status: TorrentStatus,
     /// Stats of the current Torrent, returned from tracker on announce
@@ -141,8 +141,6 @@ impl Torrent {
             status: TorrentStatus::default(),
             stats: Stats::default(),
             daemon_tx,
-            uploaded: 0,
-            downloaded: 0,
             info_pieces,
             tracker_ctx,
             ctx,
@@ -163,10 +161,13 @@ impl Torrent {
         let org_trackers = self.ctx.magnet.organize_trackers();
 
         let mut tracker =
-            Tracker::connect(self.ctx.magnet.parse_trackers()).await?;
+            Tracker::connect_to_tracker(self.ctx.magnet.parse_trackers()).await?;
 
-        let (res, peers) =
-            tracker.announce_exchange(&self.ctx.info_hash, listen).await?;
+        let (res, payload) = tracker
+            .announce(Event::Started, self.ctx.info_hash.clone())
+            .await?;
+
+        let peers = tracker.parse_compact_peer_list(payload.as_ref())?;
 
         self.stats = Stats {
             interval: res.interval,
@@ -278,10 +279,10 @@ impl Torrent {
     /// Spawn a new event loop every time a peer connect with us.
     #[tracing::instrument(skip(self))]
     pub async fn spawn_inbound_peers(&self) -> Result<(), Error> {
-        debug!("accepting requests in {:?}", self.tracker_ctx.local_peer_addr);
+        debug!("accepting requests in {:?}", self.tracker_ctx.local_addr);
 
         let local_peer_socket =
-            TcpListener::bind(self.tracker_ctx.local_peer_addr).await?;
+            TcpListener::bind(self.tracker_ctx.local_addr).await?;
         let local_peer_id = self.tracker_ctx.peer_id.clone();
         let ctx = self.ctx.clone();
 
@@ -368,9 +369,9 @@ impl Torrent {
                                     TrackerMsg::Announce {
                                         event: Event::Completed,
                                         info_hash: self.ctx.info_hash.clone(),
-                                        downloaded: self.downloaded,
-                                        uploaded: self.uploaded,
-                                        left: 0,
+                                        // downloaded: self.downloaded,
+                                        // uploaded: self.uploaded,
+                                        // left: 0,
                                         recipient: Some(otx),
                                     })
                                 .await;
@@ -436,7 +437,7 @@ impl Torrent {
                                 let info = Info::from_bencode(&info_bytes).map_err(|_| Error::BencodeError)?;
 
                                 // todo get xt
-                                let m_info = self.ctx.magnet.hash_type().clone().unwrap();
+                                let m_info = self.ctx.magnet.hash_type().unwrap();
 
                                 let mut hash = sha1_smol::Sha1::new();
                                 hash.update(&info_bytes);
@@ -491,21 +492,23 @@ impl Torrent {
                             let bytes = self.info_pieces.get(&index).cloned();
                             let _ = recipient.send(bytes);
                         }
-                        TorrentMsg::IncrementDownloaded(n) => {
-                            self.downloaded += n as u64;
+                        TorrentMsg::IncrementDownloaded(downloaded) => {
+                            let tx = self.tracker_ctx.tx.as_ref().unwrap();
+                            tx.send(TrackerMsg::Increment { downloaded, uploaded: 0 });
 
                             // check if the torrent download is complete
-                            let is_download_complete = self.downloaded >= self.size;
-                            debug!("IncrementDownloaded {:?}", self.downloaded);
+                            let is_download_complete = self.tracker_ctx.downloaded >= self.size;
+                            debug!("IncrementDownloaded {:?}", self.tracker_ctx.downloaded);
                             debug!("size is {}", self.size);
 
                             if is_download_complete {
                                 self.ctx.tx.send(TorrentMsg::DownloadComplete).await?;
                             }
                         }
-                        TorrentMsg::IncrementUploaded(n) => {
-                            self.uploaded += n as u64;
-                            debug!("IncrementUploaded {}", self.uploaded);
+                        TorrentMsg::IncrementUploaded(uploaded) => {
+                            let tx = self.tracker_ctx.tx.as_ref().unwrap();
+                            tx.send(TrackerMsg::Increment { downloaded: 0, uploaded });
+                            debug!("IncrementUploaded {}", self.tracker_ctx.uploaded);
                         }
                         TorrentMsg::TogglePause => {
                             debug!("torrent TogglePause");
@@ -513,7 +516,7 @@ impl Torrent {
                             if self.status == TorrentStatus::Downloading || self.status == TorrentStatus::Seeding || self.status == TorrentStatus::Paused {
                                 info!("Paused torrent {:?}", self.name);
                                 if self.status == TorrentStatus::Paused {
-                                    if self.downloaded >= self.size {
+                                    if self.tracker_ctx.downloaded >= self.size {
                                         self.status = TorrentStatus::Seeding;
                                     } else {
                                         self.status = TorrentStatus::Downloading;
@@ -537,9 +540,11 @@ impl Torrent {
                             info!("Quitting torrent {:?}", self.name);
                             let (otx, orx) = oneshot::channel();
                             let info = self.ctx.info.read().await;
+
+                            // todo: move this left to tracker
                             let left =
-                                if self.downloaded > info.get_size()
-                                    { self.downloaded - info.get_size() }
+                                if self.tracker_ctx.downloaded > info.get_size()
+                                    { self.tracker_ctx.downloaded - info.get_size() }
                                 else { 0 };
 
                             if let Some(tracker_tx) = &tracker_tx {
@@ -547,9 +552,6 @@ impl Torrent {
                                     TrackerMsg::Announce {
                                         event: Event::Stopped,
                                         info_hash: self.ctx.info_hash.clone(),
-                                        downloaded: self.downloaded,
-                                        uploaded: self.uploaded,
-                                        left,
                                         recipient: Some(otx),
                                     })
                                 .await;
@@ -569,20 +571,20 @@ impl Torrent {
                     }
                 }
                 _ = frontend_interval.tick() => {
-                    self.download_rate = self.downloaded - self.last_second_downloaded;
+                    self.download_rate = self.tracker_ctx.downloaded - self.last_second_downloaded;
 
                     let torrent_state = TorrentState {
                         name: self.name.clone(),
                         size: self.size,
-                        downloaded: self.downloaded,
-                        uploaded: self.uploaded,
+                        downloaded: self.tracker_ctx.downloaded,
+                        uploaded: self.tracker_ctx.uploaded,
                         stats: self.stats.clone(),
                         status: self.status.clone(),
                         download_rate: self.download_rate,
                         info_hash: self.ctx.info_hash.clone(),
                     };
 
-                    self.last_second_downloaded = self.downloaded;
+                    self.last_second_downloaded = self.tracker_ctx.downloaded;
                     // debug!(
                     //     "{} {} of {}. Download rate: {}",
                     //     self.name,
@@ -602,7 +604,9 @@ impl Torrent {
                     // we know if the info is downloaded if the piece_length is > 0
                     if info.piece_length > 0 {
                         debug!("sending periodic announce, interval {announce_interval:?}");
-                        let left = if self.downloaded < info.get_size() { info.get_size() } else { self.downloaded - info.get_size() };
+
+                        // todo: move this left to tracker
+                        let left = if self.tracker_ctx.downloaded < info.get_size() { info.get_size() } else { self.tracker_ctx.downloaded - info.get_size() };
 
                         let (otx, orx) = oneshot::channel();
 
@@ -611,9 +615,6 @@ impl Torrent {
                                 TrackerMsg::Announce {
                                     event: Event::None,
                                     info_hash: self.ctx.info_hash.clone(),
-                                    downloaded: self.downloaded,
-                                    uploaded: self.uploaded,
-                                    left,
                                     recipient: Some(otx),
                                 })
                             .await;

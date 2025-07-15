@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use bendy::encoding::ToBencode;
+// use bendy::encoding::ToBencode;
 use bitvec::{array::BitArray, order::Msb0};
 use futures::{SinkExt, StreamExt};
 use tokio::net::TcpStream;
@@ -11,9 +11,8 @@ use crate::{
     bitfield::Reserved,
     error::Error,
     extensions::{
-        extended::{codec::Extended, Extension},
-        CoreCodec, ExtendedMessage, Handshake, HandshakeCodec,
-        IntoExtendedMessage,
+        // extended::Extension,
+        CoreCodec, Handshake, HandshakeCodec,
     },
     peer::{Direction, PeerId},
     torrent::TorrentCtx,
@@ -87,7 +86,7 @@ impl PeerBuilder {
         }
 
         let reserved = Reserved::from(peer_handshake.reserved);
-        let mut core_socket;
+        let core_socket;
 
         // if inbound, he have already received their first handshake,
         // send our second handshake here.
@@ -106,15 +105,15 @@ impl PeerBuilder {
                 // self.ext.push(Codec::ExtendedCodec(ExtendedCodec));
                 debug!("{local} sending extended handshake to {remote}");
 
+                // todo: fix this
                 // we need to have the info downloaded in order to send the
                 // extended message, because it contains the metadata_size
-                let info = torrent_ctx.info.read().await;
-                let metadata_size =
-                    info.to_bencode().ok().map(|v| v.len() as u32);
-                drop(info);
+                // let info = torrent_ctx.info.read().await;
+                // let metadata_size =
+                //     info.to_bencode().ok().map(|v| v.len() as u32);
+                // drop(info);
 
-                let ext = Extension::supported(metadata_size);
-
+                // let ext = Extension::supported(metadata_size);
                 // let msg = Extended::from(ext);
                 // let msg: ExtendedMessage = msg.into();
                 // core_socket.send(msg.into()).await?;

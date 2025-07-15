@@ -8,7 +8,6 @@ mod message;
 // re-exports
 pub use codec::*;
 pub use handshake_codec::*;
-pub use message::*;
 
 use bytes::{BufMut, BytesMut};
 use tokio::io;

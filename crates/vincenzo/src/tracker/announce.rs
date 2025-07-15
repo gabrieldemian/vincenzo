@@ -29,11 +29,35 @@ pub struct Request {
 impl Request {
     pub const LENGTH: usize = 98;
 
+    pub fn from_started(
+        connection_id: u64,
+        info_hash: InfoHash,
+        peer_id: PeerId,
+        port: u16,
+    ) -> Self {
+        let mut rng = rand::rng();
+        Self {
+            connection_id,
+            action: Action::Announce.into(),
+            transaction_id: rng.random(),
+            info_hash,
+            peer_id,
+            downloaded: 0,
+            left: u64::MAX,
+            uploaded: 0,
+            event: Event::Started.into(),
+            ip_address: 0,
+            num_want: u32::MAX,
+            port,
+            compact: 1,
+        }
+    }
+
     pub fn new(
         connection_id: u64,
         info_hash: InfoHash,
         peer_id: PeerId,
-        _ip_address: u32,
+        // _ip_address: u32,
         port: u16,
         event: Event,
     ) -> Self {

@@ -1,6 +1,5 @@
 use vincenzo_macros::declare_message;
 
-use crate::extensions::{CoreExt, ExtendedExt, ExtensionTrait, MetadataExt};
 
 // declare_message!(CoreExt, ExtendedExt, MetadataExt);
 declare_message!(CoreExt, ExtendedExt, MetadataExt);

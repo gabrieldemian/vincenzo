@@ -1,15 +1,13 @@
 use bytes::{Buf, BufMut, BytesMut};
-use futures::SinkExt;
 use std::io::Cursor;
-use tokio::{io, sync::oneshot};
+use tokio::io;
 use tokio_util::codec::{Decoder, Encoder};
-use tracing::{debug, trace, warn};
-use vincenzo_macros::{Extension, Message};
+use tracing::trace;
+use vincenzo_macros::Message;
 
 use super::{Block, BlockInfo};
 use crate::{
-    bitfield::Bitfield, disk::DiskMsg, error::Error,
-    extensions::extended::ExtensionTrait, peer::Peer,
+    bitfield::Bitfield, error::Error,
 };
 
 #[derive(Debug, Clone, PartialEq)]

@@ -165,7 +165,7 @@ impl Disk {
 
                     // increment uploaded count
                     let tx = &self.torrent_ctxs.get(&info_hash).unwrap().tx;
-                    tx.send(TorrentMsg::IncrementUploaded(len)).await?;
+                    tx.send(TorrentMsg::IncrementUploaded(len as u64)).await?;
                 }
                 DiskMsg::WriteBlock { block, info_hash } => {
                     debug!("WriteBlock");
@@ -307,7 +307,7 @@ impl Disk {
         let downloaded_pieces = vec![0; pieces_len as usize];
 
         if piece_order != PieceStrategy::Sequential {
-            r.shuffle(&mut rand::thread_rng());
+            r.shuffle(&mut rand::rng());
         }
 
         // each index of Vec is a piece index, that is a VecDeque of blocks
@@ -450,7 +450,7 @@ impl Disk {
             let (rarest_idx, _) = score.iter().enumerate().min().unwrap();
 
             // get the last
-            let (last_idx, _) = score.iter().enumerate().last().unwrap();
+            let (last_idx, _) = score.iter().enumerate().next_back().unwrap();
 
             pieces.swap(last_idx, rarest_idx);
 
@@ -581,7 +581,7 @@ impl Disk {
             .push(block);
 
         let _ =
-            torrent_tx.send(TorrentMsg::IncrementDownloaded(len as u32)).await;
+            torrent_tx.send(TorrentMsg::IncrementDownloaded(len as u64)).await;
 
         let downloaded_piece_bytes = self
             .downloaded_pieces
@@ -593,7 +593,7 @@ impl Disk {
         *downloaded_piece_bytes += len as u64;
 
         // Check if the entire piece of the `block` has been downloaded
-        if *downloaded_piece_bytes >= self.piece_size(&info_hash, index) as u64
+        if *downloaded_piece_bytes >= self.piece_size(info_hash, index) as u64
         {
             let downloaded_pieces_len = self
                 .downloaded_pieces_len
@@ -867,17 +867,7 @@ impl Disk {
                 .map(|v| v.length)
                 .unwrap();
 
-            let file_offset = if acc_length <= piece_offset {
-                // The piece starts within this file or a previous file,
-                // subtract the accumulated length of previous files from piece
-                // offset.
-                piece_offset - acc_length
-            } else {
-                // The piece starts within this file and we are within the
-                // piece, calculate the offset from the start of
-                // this file.
-                0
-            };
+            let file_offset = piece_offset.saturating_sub(acc_length);
 
             debug!("file_offset {file_offset}");
 

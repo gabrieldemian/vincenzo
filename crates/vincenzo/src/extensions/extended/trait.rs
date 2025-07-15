@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::{
     daemon::DaemonCtx,
     error::Error,
-    extensions::{Core, ExtendedMessage},
+    extensions::ExtendedMessage,
 };
 
 use tokio_util::codec::{Decoder, Encoder};
