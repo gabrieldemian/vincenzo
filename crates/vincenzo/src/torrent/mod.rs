@@ -54,10 +54,6 @@ pub struct Torrent {
     /// After the dict is complete, it will be decoded into [`info`]
     pub info_pieces: BTreeMap<u32, Vec<u8>>,
     pub have_info: bool,
-    /// How many bytes we have uploaded to other peers.
-    // pub uploaded: u64,
-    /// How many bytes we have downloaded from other peers.
-    // pub downloaded: u64,
     pub daemon_tx: mpsc::Sender<DaemonMsg>,
     pub status: TorrentStatus,
     /// Stats of the current Torrent, returned from tracker on announce
@@ -96,7 +92,7 @@ pub struct TorrentCtx {
     pub magnet: Magnet,
     pub info_hash: InfoHash,
     pub bitfield: RwLock<Bitfield>,
-    pub info: RwLock<Info>,
+    pub info: Arc<RwLock<Info>>,
     pub has_at_least_one_piece: AtomicBool,
 }
 
@@ -117,7 +113,7 @@ impl Torrent {
     ) -> Self {
         let name = magnet.parse_dn();
         let bitfield = RwLock::new(Bitfield::default());
-        let info = RwLock::new(Info::default().name(name.clone()));
+        let info = Arc::new(RwLock::new(Info::default().name(name.clone())));
         let info_pieces = BTreeMap::new();
         let tracker_ctx = Arc::new(TrackerCtx::default());
 
@@ -160,12 +156,14 @@ impl Torrent {
     ) -> Result<Vec<SocketAddr>, Error> {
         let org_trackers = self.ctx.magnet.organize_trackers();
 
-        let mut tracker =
-            Tracker::connect_to_tracker(self.ctx.magnet.parse_trackers()).await?;
+        let mut tracker = Tracker::connect_to_tracker(
+            self.ctx.magnet.parse_trackers(),
+            self.ctx.info.clone(),
+            self.ctx.info_hash.clone(),
+        )
+        .await?;
 
-        let (res, payload) = tracker
-            .announce(Event::Started, self.ctx.info_hash.clone())
-            .await?;
+        let (res, payload) = tracker.announce(Event::Started).await?;
 
         let peers = tracker.parse_compact_peer_list(payload.as_ref())?;
 
@@ -368,10 +366,6 @@ impl Torrent {
                                 let _ = tracker_tx.send(
                                     TrackerMsg::Announce {
                                         event: Event::Completed,
-                                        info_hash: self.ctx.info_hash.clone(),
-                                        // downloaded: self.downloaded,
-                                        // uploaded: self.uploaded,
-                                        // left: 0,
                                         recipient: Some(otx),
                                     })
                                 .await;
@@ -379,7 +373,7 @@ impl Torrent {
 
                             if let Ok(Ok(r)) = orx.await {
                                 debug!("announced completion with success {r:#?}");
-                                self.stats = r.into();
+                                self.stats = r.0.into();
                             }
 
                             // tell all peers that we are not interested,
@@ -494,7 +488,7 @@ impl Torrent {
                         }
                         TorrentMsg::IncrementDownloaded(downloaded) => {
                             let tx = self.tracker_ctx.tx.as_ref().unwrap();
-                            tx.send(TrackerMsg::Increment { downloaded, uploaded: 0 });
+                            tx.send(TrackerMsg::Increment { downloaded, uploaded: 0 }).await?;
 
                             // check if the torrent download is complete
                             let is_download_complete = self.tracker_ctx.downloaded >= self.size;
@@ -507,7 +501,7 @@ impl Torrent {
                         }
                         TorrentMsg::IncrementUploaded(uploaded) => {
                             let tx = self.tracker_ctx.tx.as_ref().unwrap();
-                            tx.send(TrackerMsg::Increment { downloaded: 0, uploaded });
+                            tx.send(TrackerMsg::Increment { downloaded: 0, uploaded }).await?;
                             debug!("IncrementUploaded {}", self.tracker_ctx.uploaded);
                         }
                         TorrentMsg::TogglePause => {
@@ -539,19 +533,11 @@ impl Torrent {
                         TorrentMsg::Quit => {
                             info!("Quitting torrent {:?}", self.name);
                             let (otx, orx) = oneshot::channel();
-                            let info = self.ctx.info.read().await;
-
-                            // todo: move this left to tracker
-                            let left =
-                                if self.tracker_ctx.downloaded > info.get_size()
-                                    { self.tracker_ctx.downloaded - info.get_size() }
-                                else { 0 };
 
                             if let Some(tracker_tx) = &tracker_tx {
                                 let _ = tracker_tx.send(
                                     TrackerMsg::Announce {
                                         event: Event::Stopped,
-                                        info_hash: self.ctx.info_hash.clone(),
                                         recipient: Some(otx),
                                     })
                                 .await;
@@ -605,16 +591,12 @@ impl Torrent {
                     if info.piece_length > 0 {
                         debug!("sending periodic announce, interval {announce_interval:?}");
 
-                        // todo: move this left to tracker
-                        let left = if self.tracker_ctx.downloaded < info.get_size() { info.get_size() } else { self.tracker_ctx.downloaded - info.get_size() };
-
                         let (otx, orx) = oneshot::channel();
 
                         if let Some(tracker_tx) = &tracker_tx {
                             let _ = tracker_tx.send(
                                 TrackerMsg::Announce {
                                     event: Event::None,
-                                    info_hash: self.ctx.info_hash.clone(),
                                     recipient: Some(otx),
                                 })
                             .await;
@@ -624,7 +606,7 @@ impl Torrent {
                         debug!("new stats {r:#?}");
 
                         // update our stats, received from the tracker
-                        self.stats = r.into();
+                        self.stats = r.0.into();
 
                         announce_interval = interval(
                             Duration::from_secs(self.stats.interval as u64),

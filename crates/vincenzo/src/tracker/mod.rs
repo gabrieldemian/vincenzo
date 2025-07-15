@@ -9,15 +9,16 @@ use std::{
     fmt::Debug,
     future::Future,
     net::{IpAddr, Ipv4Addr, SocketAddr},
+    sync::Arc,
     time::Duration,
 };
 
-use crate::{error::Error, peer::PeerId, torrent::InfoHash};
+use crate::{error::Error, metainfo::Info, peer::PeerId, torrent::InfoHash};
 use rand::Rng;
 use tokio::{
     net::{ToSocketAddrs, UdpSocket},
     select,
-    sync::{mpsc, oneshot},
+    sync::{mpsc, oneshot, RwLock},
     time::timeout,
 };
 use tracing::{debug, error, warn};
@@ -35,15 +36,6 @@ impl Protocol for Udp {}
 impl Protocol for Http {}
 
 static ANNOUNCE_RES_BUF_LEN: usize = 8192;
-
-/// The generic `P` stands for "Protocol".
-/// Currently, only UDP and HTTP are supported.
-#[derive(Debug)]
-pub struct Tracker<P: Protocol> {
-    pub ctx: TrackerCtx,
-    pub rx: mpsc::Receiver<TrackerMsg>,
-    state: P,
-}
 
 /// Trait that all [`Tracker`]s must implement.
 pub trait TrackerTrait: Sized {
@@ -65,7 +57,6 @@ pub trait TrackerTrait: Sized {
     fn announce(
         &self,
         event: Event,
-        info_hash: InfoHash,
     ) -> impl Future<Output = Result<(announce::Response, Vec<u8>), Error>>;
 
     /// Support for BEP23
@@ -77,6 +68,8 @@ pub trait TrackerTrait: Sized {
     /// Try to connect to one tracker, in order, and return Self.
     fn connect_to_tracker<A>(
         trackers: Vec<A>,
+        info: Arc<RwLock<Info>>,
+        info_hash: InfoHash,
     ) -> impl Future<Output = Result<Self, Error>>
     where
         A: ToSocketAddrs
@@ -87,6 +80,17 @@ pub trait TrackerTrait: Sized {
             + std::fmt::Display
             + Clone,
         A::Iter: Send;
+}
+
+/// The generic `P` stands for "Protocol".
+/// Currently, only UDP and HTTP are supported.
+#[derive(Debug)]
+pub struct Tracker<P: Protocol> {
+    pub ctx: TrackerCtx,
+    pub info: Arc<RwLock<Info>>,
+    pub info_hash: InfoHash,
+    pub rx: mpsc::Receiver<TrackerMsg>,
+    state: P,
 }
 
 #[derive(Debug, Clone)]
@@ -128,20 +132,15 @@ impl Default for TrackerCtx {
 pub enum TrackerMsg {
     Announce {
         event: Event,
-        info_hash: InfoHash,
-        recipient: Option<oneshot::Sender<Result<announce::Response, Error>>>,
+        recipient: Option<
+            oneshot::Sender<Result<(announce::Response, Vec<u8>), Error>>,
+        >,
     },
     Increment {
         downloaded: u64,
         uploaded: u64,
     },
 }
-
-// impl<P> Tracker<P>
-// where
-//     P: Protocol,
-// {
-// }
 
 impl TrackerTrait for Tracker<Udp> {
     #[tracing::instrument(skip(self, buf))]
@@ -191,8 +190,12 @@ impl TrackerTrait for Tracker<Udp> {
     /// Bind UDP socket and send a connect handshake,
     /// to one of the trackers.
     // todo: get a new tracker if download is stale
-    #[tracing::instrument(skip(trackers), name = "tracker::connect")]
-    async fn connect_to_tracker<A>(trackers: Vec<A>) -> Result<Self, Error>
+    #[tracing::instrument(skip(trackers))]
+    async fn connect_to_tracker<A>(
+        trackers: Vec<A>,
+        info: Arc<RwLock<Info>>,
+        info_hash: InfoHash,
+    ) -> Result<Self, Error>
     where
         A: ToSocketAddrs
             + Debug
@@ -230,6 +233,8 @@ impl TrackerTrait for Tracker<Udp> {
                     uploaded: 0,
                     left: 0,
                 },
+                info_hash: info_hash.clone(),
+                info: info.clone(),
                 state: Udp { socket },
                 rx: tracker_rx,
             };
@@ -290,7 +295,6 @@ impl TrackerTrait for Tracker<Udp> {
     async fn announce(
         &self,
         event: Event,
-        info_hash: InfoHash,
     ) -> Result<(announce::Response, Vec<u8>), Error> {
         debug!("announcing {event:#?} to tracker");
 
@@ -298,7 +302,7 @@ impl TrackerTrait for Tracker<Udp> {
             connection_id: self.ctx.connection_id.unwrap_or(0),
             action: Action::Announce.into(),
             transaction_id: rand::rng().random(),
-            info_hash,
+            info_hash: self.info_hash.clone(),
             peer_id: self.ctx.peer_id.clone(),
             downloaded: self.ctx.downloaded,
             left: self.ctx.left,
@@ -368,18 +372,26 @@ impl Tracker<Udp> {
                         TrackerMsg::Increment {downloaded, uploaded} => {
                             self.ctx.downloaded += downloaded;
                             self.ctx.uploaded += uploaded;
+
+                            let info = self.info.read().await;
+
+                            let left =
+                                if self.ctx.downloaded > info.get_size()
+                                    { self.ctx.downloaded - info.get_size() }
+                                else { 0 };
+
+                            self.ctx.left = left;
                         }
                         TrackerMsg::Announce {
-                            info_hash,
                             recipient,
                             event,
                         } => {
-                            let (r, payload) = self
-                                .announce(event.clone(), info_hash)
-                                .await?;
+                            let res = self
+                                .announce(event.clone())
+                                .await;
 
                             if let Some(recipient) = recipient {
-                                let _ = recipient.send(Ok(r));
+                                let _ = recipient.send(res);
                             }
 
                             if event == Event::Stopped {
