@@ -1,12 +1,14 @@
 //! Types for the metadata protocol codec.
 
-use crate::error::Error;
+use crate::{
+    error::Error,
+    extensions::{ExtDataTrait, ExtensionMsgHandler, MsgTrait},
+    peer::MsgConverter,
+};
 use bendy::encoding::ToBencode;
 use bytes::{Buf, BufMut, BytesMut};
 use tokio_util::codec::{Decoder, Encoder};
 use vincenzo_macros::{Extension, Message};
-
-use crate::extensions::ExtensionState;
 
 use super::{Metadata as MetadataDict, MetadataMsgType};
 
@@ -25,6 +27,15 @@ pub enum Metadata {
     /// id: 2
     /// Reject(piece)
     Reject(u32),
+}
+
+pub struct MetadataData;
+
+impl ExtDataTrait for MetadataData {}
+
+impl MsgTrait for Metadata {
+    /// This is the ID of the client for the metadata extension.
+    const ID: u8 = 3;
 }
 
 #[derive(Debug, Clone)]
@@ -119,6 +130,17 @@ impl Metadata {
     }
 }
 
+impl ExtensionMsgHandler<Metadata, MetadataData> for MsgConverter {
+    fn handle_msg(
+        &self,
+        peer: &mut crate::peer::Peer,
+        msg: &Metadata,
+        data: &mut MetadataData,
+    ) -> u8 {
+        todo!()
+    }
+}
+
 // impl TryFrom<Core> for Metadata {
 //     type Error = crate::error::Error;
 //
@@ -169,10 +191,6 @@ impl Metadata {
 //         })
 //     }
 // }
-
-#[derive(Extension, Clone, Copy, Debug)]
-#[extension(id = 3, codec = MetadataCodec, msg = Metadata)]
-pub struct MetadataExt;
 
 // impl ExtensionTrait for MetadataCodec {
 //     async fn handle_msg(

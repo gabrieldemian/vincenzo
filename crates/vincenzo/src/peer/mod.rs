@@ -32,9 +32,7 @@ use tokio::net::TcpStream;
 use tracing::{debug, warn};
 
 use crate::{
-    extensions::{
-        core::CoreCodec, CoreState, ExtensionState,
-    },
+    extensions::{core::CoreCodec, CoreState, MetadataData},
     torrent::InfoHash,
 };
 
@@ -53,20 +51,33 @@ use crate::{
 
 use self::session::Session;
 
+/// States of peer protocols state, including Core.
+/// After a peer handshake, these values may be set if the peer supports them.
+#[derive(Default)]
+struct ExtStates {
+    /// BEP02 : The BitTorrent Protocol Specification
+    core: CoreState,
+
+    /// BEP10 : Extension Protocol
+    extension: Option<Extension>,
+
+    /// BEP09 : Extension for Peers to Send Metadata Files
+    metadata: Option<MetadataData>,
+}
+
 /// Data about a remote Peer that the client is connected to,
 /// but the client itself does not have a Peer struct.
 pub struct Peer {
-    // Codecs/extensions that the Peer supports, can be changed at runtime
-    // after `Extension` is sent by the peer.
-    // pub ext: Vec<Extensions>,
     stream: SplitStream<Framed<TcpStream, CoreCodec>>,
     pub sink: SplitSink<Framed<TcpStream, CoreCodec>, Core>,
-
-    /// Extensions of the protocol that the peer supports.
-    pub extension: Extension,
     pub reserved: BitArray<[u8; 8], Msb0>,
     pub torrent_ctx: Arc<TorrentCtx>,
     pub rx: Receiver<PeerMsg>,
+
+    pub ext_states: ExtStates,
+
+    /// Extensions of the protocol that the peer supports.
+    pub extension: Extension,
 
     /// Context of the Peer which is shared for anyone who needs it.
     pub ctx: Arc<PeerCtx>,
@@ -102,17 +113,24 @@ pub struct Peer {
 /// Ctx that is shared with Torrent and Disk;
 #[derive(Debug)]
 pub struct PeerCtx {
+    /// Who initiated the connection, the local peer or remote.
     pub direction: Direction,
+
     pub tx: mpsc::Sender<PeerMsg>,
+
     /// a `Bitfield` with pieces that this peer has, and hasn't, containing 0s
     /// and 1s
     pub pieces: RwLock<Bitfield>,
+
     /// Updated when the peer sends us its id in the handshake.
     pub id: PeerId,
+
     /// Where the TCP socket of this Peer is connected to.
     pub remote_addr: SocketAddr,
+
     /// Where the TCP socket of this Peer is listening.
     pub local_addr: SocketAddr,
+
     /// The info_hash of the torrent that this Peer belongs to.
     pub info_hash: InfoHash,
 }
@@ -135,6 +153,7 @@ impl From<HandshakedPeer> for Peer {
         let (sink, stream) = value.socket.split();
 
         Peer {
+            ext_states: ExtStates::default(),
             sink,
             stream,
             incoming_requests: HashSet::default(),
@@ -151,10 +170,9 @@ impl From<HandshakedPeer> for Peer {
     }
 }
 
-impl Peer {
-    async fn handle_msg<S: ExtensionState>(&mut self) {
-    }
+pub struct MsgConverter;
 
+impl Peer {
     /// Start the event loop of the Peer, listen to messages sent by others
     /// on the peer wire protocol.
     #[tracing::instrument(skip_all, name = "peer::run")]
@@ -192,7 +210,7 @@ impl Peer {
 
         // todo: implement choke algorithm
         // send Unchoke
-        self.session.state.am_choking = false;
+        self.ext_states.core.am_choking = false;
         self.sink.send(Core::Unchoke).await?;
         // sink.send(Core::Interested).await?;
 
@@ -267,20 +285,20 @@ impl Peer {
                         }
                         PeerMsg::NotInterested => {
                             debug!("{local} NotInterested {remote}");
-                            self.session.state.am_interested = false;
+                            self.ext_states.core.am_interested = false;
                             self.sink.send(Core::NotInterested).await?;
                         }
                         PeerMsg::Pause => {
                             debug!("{local} Pause");
-                            self.session.state.prev_peer_choking = self.session.state.peer_choking;
+                            self.session.prev_peer_choking = self.ext_states.core.peer_choking;
 
-                            if self.session.state.am_interested {
-                                self.session.state.am_interested = false;
+                            if self.ext_states.core.am_interested {
+                                self.ext_states.core.am_interested = false;
                                 let _ = self.sink.send(Core::NotInterested).await;
                             }
 
-                            if !self.session.state.peer_choking {
-                                self.session.state.peer_choking = true;
+                            if !self.ext_states.core.peer_choking {
+                                self.ext_states.core.peer_choking = true;
                                 let _ = self.sink.send(Core::Choke).await;
                             }
 
@@ -292,9 +310,9 @@ impl Peer {
                         }
                         PeerMsg::Resume => {
                             debug!("{local} Resume");
-                            self.session.state.peer_choking = self.session.state.prev_peer_choking;
+                            self.ext_states.core.peer_choking = self.session.prev_peer_choking;
 
-                            if !self.session.state.peer_choking {
+                            if !self.ext_states.core.peer_choking {
                                 self.sink.send(Core::Unchoke).await?;
                             }
 
@@ -302,7 +320,7 @@ impl Peer {
 
                             if peer_has_piece {
                                 debug!("{local} we are interested due to Bitfield");
-                                self.session.state.am_interested = true;
+                                self.ext_states.core.am_interested = true;
                                 self.sink.send(Core::Interested).await?;
 
                                 if self.can_request() {
@@ -332,14 +350,14 @@ impl Peer {
                         }
                         PeerMsg::Quit => {
                             debug!("{local} Quit");
-                            self.session.state.connection = ConnectionState::Quitting;
+                            self.session.connection = ConnectionState::Quitting;
                             return Ok(());
                         }
                         PeerMsg::HaveInfo => {
                             debug!("{local} HaveInfo");
                             self.have_info = true;
-                            let am_interested = self.session.state.am_interested;
-                            let peer_choking = self.session.state.peer_choking;
+                            let am_interested = self.ext_states.core.am_interested;
+                            let peer_choking = self.ext_states.core.peer_choking;
 
                             debug!("{local} am_interested {am_interested}");
                             debug!("{local} peer_choking {peer_choking}");
@@ -363,8 +381,8 @@ impl Peer {
     /// - The torrent is not fully downloaded (peer is not in seed-only mode)
     /// - The capacity of inflight blocks is not full (len of outgoing_requests)
     pub fn can_request(&self) -> bool {
-        let am_interested = self.session.state.am_interested;
-        let am_choking = self.session.state.am_choking;
+        let am_interested = self.ext_states.core.am_interested;
+        let am_choking = self.ext_states.core.am_choking;
         let have_capacity = self.outgoing_requests.len()
             < self.session.target_request_queue_len as usize;
 
@@ -673,8 +691,8 @@ impl Peer {
     /// Calculate the maximum number of block infos to request,
     /// and set this value on `session` of the peer.
     pub async fn prepare_for_download(&mut self) {
-        debug_assert!(self.session.state.am_interested);
-        debug_assert!(!self.session.state.am_choking);
+        debug_assert!(self.ext_states.core.am_interested);
+        debug_assert!(!self.ext_states.core.am_choking);
 
         // let has_one_piece = self
         //     .torrent_ctx

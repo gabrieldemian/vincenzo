@@ -328,7 +328,7 @@ impl Torrent<Connected> {
         // so that other peers can download them. In this case, the peer
         // might be shutting down due to an error or this is malicious peer
         // that we wish to end the connection.
-        if peer.session.state.connection != ConnectionState::Quitting {
+        if peer.session.connection != ConnectionState::Quitting {
             peer.free_pending_blocks().await;
         }
 

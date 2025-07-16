@@ -4,9 +4,10 @@
 use crate::{
     daemon::DaemonCtx,
     extensions::{
-        ExtDataTrait, ExtendedMessage, ExtensionMsgHandler, MsgConverter,
-        MsgTrait, TryIntoExtendedMessage, M,
+        ExtDataTrait, ExtendedMessage, ExtensionMsgHandler, MsgTrait,
+        TryIntoExtendedMessage, M,
     },
+    peer::MsgConverter,
 };
 use std::{fmt::Debug, ops::Deref, sync::Arc};
 
@@ -15,9 +16,7 @@ use bytes::BytesMut;
 use tokio_util::codec::{Decoder, Encoder};
 use vincenzo_macros::{Extension, Message};
 
-use super::{CodecTrait, Extension, ExtensionTraitSecond};
-
-pub trait ExtTrait {}
+use super::{CodecTrait, Extension};
 
 /// Extended handshake from the Extended protocol, other extended messages have
 /// their own enum type.
@@ -29,22 +28,6 @@ pub enum Extended {
 impl MsgTrait for Extended {
     const ID: u8 = 0;
 }
-
-// convert all extended messages (that are not core)
-// into an ExtendedMessage which can be converted to core
-// like Core::Extended(extended_message)
-//
-// todo: make this into a blanked impl - done
-// impl TryIntoExtendedMessage<Extended> for Extension {
-//     type Error = crate::error::Error;
-//     fn try_into_extended_msg(
-//         &self,
-//         msg: Extended,
-//     ) -> Result<ExtendedMessage, Self::Error> {
-//         let mut bytes: BytesMut = msg.into();
-//         Ok(ExtendedMessage(Extended::ID, bytes.to_vec()))
-//     }
-// }
 
 impl From<Extension> for Extended {
     fn from(value: Extension) -> Self {
@@ -104,33 +87,25 @@ impl Decoder for ExtendedCodec {
     }
 }
 
+impl ExtensionMsgHandler<Extended, Extension> for MsgConverter {
+    fn handle_msg(
+        &self,
+        peer: &mut crate::peer::Peer,
+        msg: &Extended,
+        data: &mut Extension,
+    ) -> u8 {
+        todo!()
+    }
+}
+
 // #[derive(Debug, Clone, Extension, Copy)]
 // #[derive(Debug, Clone, Copy)]
 // #[extension(id = 0, codec = ExtendedCodec, msg = Extended)]
 // pub struct ExtendedExt;
 
-// #[allow(dead_code)]
-// pub struct ExtendedData {
-//     extension: Extension,
-// }
-
-// impl ExtDataTrait for ExtendedData {}
-
-// impl ExtensionMsgHandler for ExtendedExt {
-//     type Msg = Extended;
-//     type Data = ExtendedData;
-//     fn handle_msg(&self, msg: &Self::Msg, _data: &mut Self::Data) -> u8 {
-//         if msg.m.ut_metadata.is_some() {
-//         }
-//         2
-//     }
-// }
-
 // impl ExtensionTrait for ExtendedCodec {
 //     type Codec = ExtendedCodec;
 //     type Msg = Extended;
-//
-//     const ID: u8 = 0;
 //
 //     async fn handle_msg(
 //         &self,

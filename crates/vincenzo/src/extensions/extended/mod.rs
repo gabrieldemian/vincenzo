@@ -15,8 +15,6 @@ use bendy::{
     encoding::ToBencode,
 };
 
-use crate::extensions::{CoreState, ExtensionState, ExtensionTraitSecond};
-
 #[repr(u8)]
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum ExtendedMessageId {
@@ -66,7 +64,7 @@ pub struct Extension {
     pub metadata_size: Option<u32>,
 }
 
-pub struct MsgConverter;
+impl ExtDataTrait for Extension {}
 
 impl TryInto<Vec<u8>> for Extension {
     type Error = bendy::encoding::Error;

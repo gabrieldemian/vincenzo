@@ -34,8 +34,6 @@ pub enum ConnectionState {
 /// Contains the state of both sides of the connection.
 #[derive(Clone, Copy, Debug)]
 pub struct CoreState {
-    /// The current state of the connection.
-    pub connection: ConnectionState,
     /// If we're choked, peer doesn't allow us to download pieces from them.
     pub am_choking: bool,
     /// If we're interested, peer has pieces that we don't have.
@@ -44,10 +42,6 @@ pub struct CoreState {
     pub peer_choking: bool,
     /// If peer is interested in us, they mean to download pieces that we have.
     pub peer_interested: bool,
-    // when the torrent is paused, those values will be set, so we can
-    // assign them again when the torrent is resumed.
-    // peer interested will be calculated by parsing the peers pieces
-    pub prev_peer_choking: bool,
 }
 
 impl Default for CoreState {
@@ -55,12 +49,10 @@ impl Default for CoreState {
     /// interested in the other.
     fn default() -> Self {
         Self {
-            connection: Default::default(),
             am_choking: true,
             am_interested: false,
             peer_choking: true,
             peer_interested: false,
-            prev_peer_choking: true,
         }
     }
 }
@@ -68,8 +60,14 @@ impl Default for CoreState {
 /// Holds and provides facilities to modify the state of a peer session.
 #[derive(Debug)]
 pub struct Session {
+    /// The current state of the connection.
+    pub connection: ConnectionState,
     /// The session state.
-    pub state: CoreState,
+    // pub state: CoreState,
+    // when the torrent is paused, those values will be set, so we can
+    // assign them again when the torrent is resumed.
+    // peer interested will be calculated by parsing the peers pieces
+    pub prev_peer_choking: bool,
     /// Measures various transfer statistics.
     pub counters: ThruputCounters,
     /// Whether we're in endgame mode.
@@ -104,7 +102,8 @@ pub struct Session {
 impl Default for Session {
     fn default() -> Self {
         Self {
-            state: CoreState::default(),
+            connection: Default::default(),
+            prev_peer_choking: true,
             counters: ThruputCounters::default(),
             in_endgame: false,
             target_request_queue_len: Session::DEFAULT_REQUEST_QUEUE_LEN,

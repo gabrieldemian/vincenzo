@@ -4,6 +4,7 @@ use crate::{
     daemon::DaemonCtx,
     error::Error,
     extensions::{Core, ExtendedMessage, Extension},
+    peer::Peer,
 };
 
 use bytes::{Buf, BytesMut};
@@ -14,24 +15,12 @@ pub trait MsgTrait {
 }
 pub trait ExtDataTrait {}
 
-// pub trait ExtensionMsgHandler<Msg: MsgTrait, Data: ExtDataTrait>:
-//     ExtensionTrait
-// {
-//     fn handle_msg(&self, msg: &Msg, data: &mut Data) -> u8;
-// }
-
-// pub trait ExtensionMsgHandler: ExtensionTrait {
-pub trait ExtensionMsgHandler {
-    type Msg: MsgTrait;
-    type Data: ExtDataTrait;
-
-    fn handle_msg(&self, msg: &Self::Msg, data: &mut Self::Data) -> u8;
+pub trait ExtensionMsgHandler<Msg: MsgTrait, Data: ExtDataTrait> {
+    fn handle_msg(&self, peer: &mut Peer, msg: &Msg, data: &mut Data) -> u8;
 }
 
 pub trait ExtensionTrait {}
 
-/// Convenience trait inherited by ExtendedMessage for all messages. This trait
-/// means that ExtendedMessage can try into all messages.
 pub trait TryIntoExtendedMessage<Msg>
 where
     Msg: Into<BytesMut> + MsgTrait,
@@ -48,19 +37,19 @@ pub trait CodecTrait<Msg>:
 {
 }
 
-// 1. Make blanket impl so that Extension can convert all the extension
-//    protocols into a core extended message
-// 2. Another blanket impl so that ExtendedMessage can try into all messages:
-//    `TryIntoMessage`
-
 // --- BLANKET IMPLS ---
 
+// Extension can convert all the messages from extension protocols into an
+// extended message can be converted to "Core::Extended(extended_message)".
 impl<M> TryIntoExtendedMessage<M> for Extension
 where
     M: Into<BytesMut> + MsgTrait,
 {
     type Error = Error;
-    fn try_into_extended_msg(&self, msg: M) -> Result<ExtendedMessage, Self::Error> {
+    fn try_into_extended_msg(
+        &self,
+        msg: M,
+    ) -> Result<ExtendedMessage, Self::Error> {
         let bytes: BytesMut = msg.into();
         Ok(ExtendedMessage(M::ID, bytes.to_vec()))
     }
