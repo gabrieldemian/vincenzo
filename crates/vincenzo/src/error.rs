@@ -7,6 +7,18 @@ use crate::{
     disk::DiskMsg, peer::PeerMsg, torrent::TorrentMsg, tracker::TrackerMsg,
 };
 
+impl From<bendy::decoding::Error> for Error {
+    fn from(value: bendy::decoding::Error) -> Self {
+        Self::BencodeError
+    }
+}
+
+impl From<bendy::encoding::Error> for Error {
+    fn from(value: bendy::encoding::Error) -> Self {
+        Self::BencodeError
+    }
+}
+
 #[derive(Error, Debug)]
 pub enum Error {
     #[error("Failed to send a connect request to the tracker")]

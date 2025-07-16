@@ -4,7 +4,7 @@
 use crate::{
     daemon::DaemonCtx,
     extensions::{
-        ExtDataTrait, ExtendedMessage, ExtensionMsgHandler, MsgTrait,
+        ExtData, ExtMsg, ExtMsgHandler, ExtendedMessage,
         TryIntoExtendedMessage, M,
     },
     peer::MsgConverter,
@@ -16,7 +16,7 @@ use bytes::BytesMut;
 use tokio_util::codec::{Decoder, Encoder};
 use vincenzo_macros::{Extension, Message};
 
-use super::{CodecTrait, Extension};
+use super::Extension;
 
 /// Extended handshake from the Extended protocol, other extended messages have
 /// their own enum type.
@@ -25,13 +25,24 @@ pub enum Extended {
     Extension(Extension),
 }
 
-impl MsgTrait for Extended {
+impl ExtMsg for Extended {
     const ID: u8 = 0;
 }
 
 impl From<Extension> for Extended {
     fn from(value: Extension) -> Self {
         Self::Extension(value)
+    }
+}
+
+impl TryFrom<ExtendedMessage> for Extended {
+    type Error = crate::error::Error;
+    fn try_from(value: ExtendedMessage) -> Result<Self, Self::Error> {
+        if value.0 != Extended::ID {
+            return Err(crate::error::Error::PeerIdInvalid);
+        }
+        let extension = Extension::from_bencode(&value.1)?;
+        Ok(Extended::Extension(extension))
     }
 }
 
@@ -87,12 +98,12 @@ impl Decoder for ExtendedCodec {
     }
 }
 
-impl ExtensionMsgHandler<Extended, Extension> for MsgConverter {
+impl ExtMsgHandler<Extended, Extension> for MsgConverter {
     fn handle_msg(
         &self,
         peer: &mut crate::peer::Peer,
         msg: &Extended,
-        data: &mut Extension,
+        // data: &mut Extension,
     ) -> u8 {
         todo!()
     }

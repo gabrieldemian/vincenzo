@@ -32,7 +32,9 @@ use tokio::net::TcpStream;
 use tracing::{debug, warn};
 
 use crate::{
-    extensions::{core::CoreCodec, CoreState, MetadataData},
+    extensions::{
+        core::CoreCodec, CoreState, ExtMsg, ExtMsgHandler, Extended, Metadata, MetadataCodec, MetadataData, MetadataMsg, MetadataMsgType
+    },
     torrent::InfoHash,
 };
 
@@ -43,7 +45,6 @@ use crate::{
     extensions::{
         core::{Block, BlockInfo, Core, CoreId, BLOCK_LEN},
         extended::Extension,
-        metadata::Metadata,
     },
     peer::session::ConnectionState,
     torrent::{TorrentCtx, TorrentMsg},
@@ -54,7 +55,7 @@ use self::session::Session;
 /// States of peer protocols state, including Core.
 /// After a peer handshake, these values may be set if the peer supports them.
 #[derive(Default)]
-struct ExtStates {
+pub struct ExtStates {
     /// BEP02 : The BitTorrent Protocol Specification
     core: CoreState,
 
@@ -241,7 +242,34 @@ impl Peer {
                 _ = keep_alive_timer.tick(), if self.have_info => {
                     self.sink.send(Core::KeepAlive).await?;
                 }
-                Some(Ok(_core)) = self.stream.next() => {
+                Some(Ok(msg)) = self.stream.next() => {
+                    match msg {
+                        Core::Extended(ext) => {
+                            match ext.0 {
+                                <Extended as ExtMsg>::ID => {
+                                    let msg: Extended = ext.try_into()?;
+                                    MsgConverter.handle_msg(
+                                        self,
+                                        &msg,
+                                    );
+                                }
+                                <MetadataMsg as ExtMsg>::ID => {
+                                    let msg: MetadataMsg = ext.try_into()?;
+                                    MsgConverter.handle_msg(
+                                        self,
+                                        &msg,
+                                    );
+                                }
+                                _ => {}
+                            }
+                        }
+                        _ => {
+                            MsgConverter.handle_msg(
+                                self,
+                                &msg,
+                            );
+                        }
+                    }
                 }
                 Some(msg) = self.rx.recv() => {
                     match msg {

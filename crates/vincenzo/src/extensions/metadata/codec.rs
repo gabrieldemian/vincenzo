@@ -2,7 +2,7 @@
 
 use crate::{
     error::Error,
-    extensions::{ExtDataTrait, ExtensionMsgHandler, MsgTrait},
+    extensions::{ExtData, ExtMsg, ExtMsgHandler, ExtendedMessage},
     peer::MsgConverter,
 };
 use bendy::encoding::ToBencode;
@@ -14,26 +14,26 @@ use super::{Metadata as MetadataDict, MetadataMsgType};
 
 /// Messages of the extended metadata protocol, used to exchange pieces of the
 /// `Info` of a metadata file.
-#[derive(Debug, Clone, PartialEq, Message)]
-pub enum Metadata {
-    /// id: 0
-    /// Request(piece)
+#[derive(Debug, Clone, PartialEq)]
+pub enum MetadataMsg {
+    /// id: 0 Request(piece)
     Request(u32),
+
     /// id: 1, also named "Data"
     Response {
         metadata: crate::extensions::metadata::Metadata,
         payload: Vec<u8>,
     },
-    /// id: 2
-    /// Reject(piece)
+
+    /// id: 2, Reject(piece)
     Reject(u32),
 }
 
 pub struct MetadataData;
 
-impl ExtDataTrait for MetadataData {}
+impl ExtData for MetadataData {}
 
-impl MsgTrait for Metadata {
+impl ExtMsg for MetadataMsg {
     /// This is the ID of the client for the metadata extension.
     const ID: u8 = 3;
 }
@@ -50,8 +50,8 @@ pub struct MetadataCodec;
 /// ```ignore
 /// ExtendedMessage(ext_id, payload).into()
 /// ```
-impl From<Metadata> for BytesMut {
-    fn from(val: Metadata) -> Self {
+impl From<MetadataMsg> for BytesMut {
+    fn from(val: MetadataMsg) -> Self {
         // <metadata_msg_type> <payload>
         let mut dst = BytesMut::new();
 
@@ -59,10 +59,10 @@ impl From<Metadata> for BytesMut {
         dst.put_u8(metadata_msg_type as u8);
 
         match val {
-            Metadata::Request(piece) | Metadata::Reject(piece) => {
+            MetadataMsg::Request(piece) | MetadataMsg::Reject(piece) => {
                 dst.put_u32(piece);
             }
-            Metadata::Response { metadata, payload } => {
+            MetadataMsg::Response { metadata, payload } => {
                 dst.extend(metadata.to_bencode().unwrap());
                 dst.extend(payload);
             }
@@ -72,12 +72,12 @@ impl From<Metadata> for BytesMut {
     }
 }
 
-impl Encoder<Metadata> for MetadataCodec {
+impl Encoder<MetadataMsg> for MetadataCodec {
     type Error = Error;
 
     fn encode(
         &mut self,
-        item: Metadata,
+        item: MetadataMsg,
         dst: &mut bytes::BytesMut,
     ) -> Result<(), Self::Error> {
         let mut b: BytesMut = item.into();
@@ -86,9 +86,21 @@ impl Encoder<Metadata> for MetadataCodec {
     }
 }
 
+impl TryFrom<ExtendedMessage> for MetadataMsg {
+    type Error = Error;
+    fn try_from(value: ExtendedMessage) -> Result<Self, Self::Error> {
+        if value.0 != MetadataMsg::ID {
+            return Err(crate::error::Error::PeerIdInvalid);
+        }
+        let mut buf = BytesMut::new();
+        let msg = MetadataCodec.decode(&mut buf)?.ok_or(Error::BencodeError);
+        msg
+    }
+}
+
 impl Decoder for MetadataCodec {
     type Error = Error;
-    type Item = Metadata;
+    type Item = MetadataMsg;
 
     fn decode(
         &mut self,
@@ -104,7 +116,7 @@ impl Decoder for MetadataCodec {
 
         Ok(Some(match meadata_msg_type {
             MetadataMsgType::Request | MetadataMsgType::Reject => {
-                Metadata::Request(src.get_u32())
+                MetadataMsg::Request(src.get_u32())
             }
 
             MetadataMsgType::Response => {
@@ -114,13 +126,13 @@ impl Decoder for MetadataCodec {
 
                 let (metadata, payload) = MetadataDict::extract(payload)?;
 
-                Metadata::Response { metadata, payload }
+                MetadataMsg::Response { metadata, payload }
             }
         }))
     }
 }
 
-impl Metadata {
+impl MetadataMsg {
     pub const fn msg_type(&self) -> MetadataMsgType {
         match self {
             Self::Request(..) => MetadataMsgType::Request,
@@ -130,12 +142,11 @@ impl Metadata {
     }
 }
 
-impl ExtensionMsgHandler<Metadata, MetadataData> for MsgConverter {
+impl ExtMsgHandler<MetadataMsg, MetadataData> for MsgConverter {
     fn handle_msg(
         &self,
         peer: &mut crate::peer::Peer,
-        msg: &Metadata,
-        data: &mut MetadataData,
+        msg: &MetadataMsg,
     ) -> u8 {
         todo!()
     }

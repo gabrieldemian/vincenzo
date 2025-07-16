@@ -9,43 +9,38 @@ use super::{Block, BlockInfo};
 use crate::{
     bitfield::Bitfield,
     error::Error,
-    extensions::{ExtDataTrait, ExtensionMsgHandler, MsgTrait},
+    extensions::{ExtData, ExtMsgHandler, ExtMsg},
     peer::MsgConverter,
 };
-
-// A marker trait implemented by all extensions states, including Core.
-// pub trait ExtensionTraitSecond<S: ExtensionState> {
-//     fn handle(&self, s: S) -> u8;
-// }
-
-/// A marker trait implemented by all extensions states, including Core.
-// pub trait ExtensionState {}
 
 /// State that comes with the Core protocol.
 pub struct CoreState {
     /// If we're choked, peer doesn't allow us to download pieces from them.
     pub am_choking: bool,
+
     /// If we're interested, peer has pieces that we don't have.
     pub am_interested: bool,
+
     /// If peer is choked, we don't allow them to download pieces from us.
     pub peer_choking: bool,
+
     /// If peer is interested in us, they mean to download pieces that we have.
     pub peer_interested: bool,
 }
 
-impl MsgTrait for Core {
+impl ExtMsg for Core {
     // not really used since core does not use this.
     const ID: u8 = u8::MAX;
 }
 
-impl ExtDataTrait for CoreState {}
+impl ExtData for CoreState {}
 
-impl ExtensionMsgHandler<Core, CoreState> for MsgConverter {
+impl ExtMsgHandler<Core, CoreState> for MsgConverter {
     fn handle_msg(
         &self,
         peer: &mut crate::peer::Peer,
         msg: &Core,
-        data: &mut CoreState,
+        // data: &mut CoreState,
     ) -> u8 {
         todo!()
     }
@@ -63,8 +58,6 @@ impl Default for CoreState {
         }
     }
 }
-
-// impl ExtensionState for CoreState {}
 
 /// The first value is decided when the peer sends its extension header, in the
 /// m field.

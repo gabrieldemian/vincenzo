@@ -22,7 +22,7 @@ use crate::{
     daemon_wire::{DaemonCodec, Message},
     disk::DiskMsg,
     error::Error,
-    extensions::{Core, ExtDataTrait},
+    extensions::{Core, ExtData},
     magnet::Magnet,
     peer::PeerId,
     torrent::{InfoHash, Torrent, TorrentMsg, TorrentState, TorrentStatus},
@@ -49,7 +49,7 @@ pub struct Daemon {
     // u8 is the extension ID
     // pub exts: HashMap<PeerId, HashMap<u8, Box<dyn ExtensionState<Msg =
     // Core>>>>,
-    pub ext_data: HashMap<PeerId, HashMap<u8, Box<dyn ExtDataTrait>>>,
+    pub ext_data: HashMap<PeerId, HashMap<u8, Box<dyn ExtData>>>,
     rx: mpsc::Receiver<DaemonMsg>,
 }
 

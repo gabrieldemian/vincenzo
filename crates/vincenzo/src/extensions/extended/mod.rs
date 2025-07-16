@@ -64,7 +64,7 @@ pub struct Extension {
     pub metadata_size: Option<u32>,
 }
 
-impl ExtDataTrait for Extension {}
+impl ExtData for Extension {}
 
 impl TryInto<Vec<u8>> for Extension {
     type Error = bendy::encoding::Error;
