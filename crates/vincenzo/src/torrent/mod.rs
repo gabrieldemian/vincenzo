@@ -56,6 +56,8 @@ pub struct Connected {
     // After it is complete, it will be encoded into [`Info`]
     pub info_pieces: BTreeMap<u32, Vec<u8>>,
 
+    pub downloaded_info_bytes: u32,
+
     pub failed_peers: Vec<SocketAddr>,
 
     /// Peers returned from an announce request to the tracker.
@@ -205,6 +207,7 @@ impl Torrent<Idle> {
 
         Ok(Torrent {
             state: Connected {
+                downloaded_info_bytes: 0,
                 bitfield: Bitfield::default(),
                 stats,
                 peers,
@@ -419,14 +422,6 @@ impl Torrent<Connected> {
                             }
                         }
                         // todo: move to broadcast
-                        TorrentMsg::SendCancelMetadata { from, index } => {
-                            debug!("received SendCancelMetadata {from:?} {index}");
-                            for (k, peer) in self.state.peer_ctxs.iter() {
-                                if *k == from { continue };
-                                let _ = peer.tx.send(PeerMsg::CancelMetadata(index)).await;
-                            }
-                        }
-                        // todo: move to broadcast
                         TorrentMsg::StartEndgame(_peer_id, block_infos) => {
                             info!("Started endgame mode for {}", self.name);
                             for (_id, peer) in self.state.peer_ctxs.iter() {
@@ -440,13 +435,10 @@ impl Torrent<Connected> {
                                 self.status = TorrentStatus::DownloadingMetainfo;
                             }
 
+                            self.state.downloaded_info_bytes += bytes.len() as u32;
                             self.state.info_pieces.insert(index, bytes);
 
-                            let info_len = self.state.info_pieces.values().fold(0, |acc, b| {
-                                acc + b.len()
-                            });
-
-                            let have_all_pieces = info_len as u32 >= total;
+                            let have_all_pieces = self.state.downloaded_info_bytes >= total;
 
                             if have_all_pieces {
                                 // info has a valid bencode format
@@ -454,7 +446,7 @@ impl Torrent<Connected> {
                                     acc.extend_from_slice(b);
                                     acc
                                 });
-                                let info = Info::from_bencode(&info_bytes).map_err(|_| Error::BencodeError)?;
+                                let info = Info::from_bencode(&info_bytes)?;
 
                                 let m_info = self.ctx.magnet.hash().unwrap();
 

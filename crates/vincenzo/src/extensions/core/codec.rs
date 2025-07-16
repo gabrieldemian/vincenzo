@@ -36,13 +36,13 @@ impl ExtMsg for Core {
 impl ExtData for CoreState {}
 
 impl ExtMsgHandler<Core, CoreState> for MsgConverter {
-    fn handle_msg(
+    async fn handle_msg(
         &self,
         peer: &mut crate::peer::Peer,
-        msg: &Core,
+        msg: Core,
         // data: &mut CoreState,
-    ) -> u8 {
-        todo!()
+    ) -> Result<(), Error> {
+        Ok(())
     }
 }
 

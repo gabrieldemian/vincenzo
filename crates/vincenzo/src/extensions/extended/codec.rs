@@ -3,17 +3,20 @@
 
 use crate::{
     daemon::DaemonCtx,
+    error::Error,
     extensions::{
-        ExtData, ExtMsg, ExtMsgHandler, ExtendedMessage,
+        Core, ExtData, ExtMsg, ExtMsgHandler, ExtendedMessage,
         TryIntoExtendedMessage, M,
     },
-    peer::MsgConverter,
+    peer::{Direction, MsgConverter},
 };
 use std::{fmt::Debug, ops::Deref, sync::Arc};
 
 use bendy::{decoding::FromBencode, encoding::ToBencode};
 use bytes::BytesMut;
+use futures::SinkExt;
 use tokio_util::codec::{Decoder, Encoder};
+use tracing::debug;
 use vincenzo_macros::{Extension, Message};
 
 use super::Extension;
@@ -98,67 +101,54 @@ impl Decoder for ExtendedCodec {
     }
 }
 
+impl From<Extended> for Extension {
+    fn from(value: Extended) -> Self {
+        match value {
+            Extended::Extension(ext) => ext,
+        }
+    }
+}
+
 impl ExtMsgHandler<Extended, Extension> for MsgConverter {
-    fn handle_msg(
+    async fn handle_msg(
         &self,
         peer: &mut crate::peer::Peer,
-        msg: &Extended,
-        // data: &mut Extension,
-    ) -> u8 {
-        todo!()
+        msg: Extended,
+    ) -> Result<(), Error> {
+        debug!(
+            "{} extended handshake from {}",
+            peer.ctx.local_addr, peer.ctx.remote_addr
+        );
+
+        let ext: Extension = msg.into();
+
+        if let Some(lt_metadata) = ext.m.lt_metadata {
+            if peer.ctx.direction == Direction::Outbound {
+                let meta_size = match ext.metadata_size {
+                    Some(v) => v,
+                    None => {
+                        let info = peer.torrent_ctx.info.read().await;
+                        if info.pieces() != 0 {
+                            info.metainfo_size() as u32
+                        } else {
+                            0
+                        }
+                    }
+                };
+                let ext = Extension::supported(Some(meta_size)).to_bencode()?;
+                let core: Core = ExtendedMessage(lt_metadata, ext).into();
+
+                peer.sink.send(core).await?;
+                peer.try_request_info().await?;
+            }
+        }
+
+        peer.ext_states.extension = Some(ext);
+
+        Ok(())
     }
 }
 
 // #[derive(Debug, Clone, Extension, Copy)]
-// #[derive(Debug, Clone, Copy)]
 // #[extension(id = 0, codec = ExtendedCodec, msg = Extended)]
 // pub struct ExtendedExt;
-
-// impl ExtensionTrait for ExtendedCodec {
-//     type Codec = ExtendedCodec;
-//     type Msg = Extended;
-//
-//     async fn handle_msg(
-//         &self,
-//         msg: &Self::Msg,
-//         peer: &mut Peer,
-//     ) -> Result<(), Error> {
-//         debug!(
-//             "{} extended handshake from {}",
-//             peer.ctx.local_addr, peer.ctx.remote_addr
-//         );
-//
-//         // todo: maybe make Into<Vec<Codec>> for Extension
-//         if msg.0.m.ut_metadata.is_some() {
-//          // send msg to daemon to update ext and extdata
-//             peer.ext.push(Codec::MetadataCodec(MetadataCodec));
-//         }
-//
-//         peer.extension = msg.0.clone();
-//
-//         if peer.ctx.direction == Direction::Outbound {
-//             let metadata_size = peer.extension.metadata_size.unwrap();
-//
-//             // create our Extension dict, that the local client supports.
-//             let ext = Extension::supported(Some(metadata_size))
-//                 .to_bencode()
-//                 .map_err(|_| Error::BencodeError)?;
-//
-//             // and send to the remote peer
-//             let core = Core::Extended(Self::ID, ext);
-//
-//             peer.sink.send(core.into()).await?;
-//
-//             peer.try_request_info().await?;
-//         }
-//         Ok(())
-//     }
-//
-//     fn is_supported(&self, extension: &Extension) -> bool {
-//         extension.v.is_some()
-//     }
-//
-//     fn codec(&self) -> Self::Codec {
-//         ExtendedCodec
-//     }
-// }

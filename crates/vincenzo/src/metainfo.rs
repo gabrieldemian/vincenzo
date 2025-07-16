@@ -45,6 +45,10 @@ pub struct Info {
 }
 
 impl Info {
+    /// Size of the entire Info file.
+    pub fn metainfo_size(&self) -> usize {
+        4_usize + self.pieces.len() + self.name.len() + self.get_size() as usize
+    }
     pub fn name(mut self, name: String) -> Self {
         self.name = name;
         self
@@ -107,7 +111,7 @@ impl Info {
 
         Ok(block_infos.into())
     }
-    /// Get the total size of the torrent, in bytes.
+    /// Get the size in bytes of the files of the torrent.
     pub fn get_size(&self) -> u64 {
         // multi file torrent
         if let Some(files) = &self.files {

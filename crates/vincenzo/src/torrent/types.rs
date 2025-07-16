@@ -26,13 +26,6 @@ pub enum TorrentMsg {
         from: PeerId,
         block_info: BlockInfo,
     },
-    /// When a peer downloads a piece of a metadata,
-    /// send cancels to all other peers so that we dont receive
-    /// pieces that we already have
-    SendCancelMetadata {
-        from: PeerId,
-        index: u32,
-    },
     StartEndgame(PeerId, Vec<BlockInfo>),
     /// When a peer downloads an info piece,
     /// we need to mutate `info_dict` and maybe

@@ -71,8 +71,7 @@ impl Metadata {
             total_size: Some(info.len() as u32),
         };
 
-        let mut bytes =
-            metadata.to_bencode().map_err(|_| error::Error::BencodeError)?;
+        let mut bytes = metadata.to_bencode()?;
 
         bytes.extend_from_slice(info);
 
@@ -90,7 +89,6 @@ impl Metadata {
     /// This function will return an error if the buffer is not a valid Data
     /// type of the metadata extension protocol
     pub fn extract(mut buf: Vec<u8>) -> Result<(Self, Vec<u8>), error::Error> {
-        // let mut info_buf = Vec::new();
         let mut metadata_buf = Vec::new();
 
         // find end of info dict, which is always the first "ee"
@@ -98,8 +96,7 @@ impl Metadata {
             metadata_buf = buf.drain(..i + 2).collect();
         }
 
-        let metadata = Metadata::from_bencode(&metadata_buf)
-            .map_err(|_| error::Error::BencodeError)?;
+        let metadata = Metadata::from_bencode(&metadata_buf)?;
 
         Ok((metadata, buf))
     }

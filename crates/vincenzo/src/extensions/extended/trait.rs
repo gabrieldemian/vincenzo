@@ -1,6 +1,6 @@
 //! Types for extensions of the peer protocol.
 
-use std::sync::Arc;
+use std::{future::Future, sync::Arc};
 
 use crate::{
     daemon::DaemonCtx,
@@ -27,9 +27,9 @@ pub trait ExtMsgHandler<Msg: ExtMsg, Data: ExtData> {
     fn handle_msg(
         &self,
         peer: &mut Peer,
-        msg: &Msg,
+        msg: Msg,
         // data: &mut Data
-    ) -> u8;
+    ) -> impl Future<Output = Result<(), Error>>;
 }
 
 /// This trait is not implemented manually, but through a blanket

@@ -33,7 +33,8 @@ use tracing::{debug, warn};
 
 use crate::{
     extensions::{
-        core::CoreCodec, CoreState, ExtMsg, ExtMsgHandler, Extended, Metadata, MetadataCodec, MetadataData, MetadataMsg, MetadataMsgType
+        core::CoreCodec, CoreState, ExtMsg, ExtMsgHandler, Extended, Metadata,
+        MetadataCodec, MetadataData, MetadataMsg, MetadataMsgType,
     },
     torrent::InfoHash,
 };
@@ -57,13 +58,13 @@ use self::session::Session;
 #[derive(Default)]
 pub struct ExtStates {
     /// BEP02 : The BitTorrent Protocol Specification
-    core: CoreState,
+    pub core: CoreState,
 
     /// BEP10 : Extension Protocol
-    extension: Option<Extension>,
+    pub extension: Option<Extension>,
 
     /// BEP09 : Extension for Peers to Send Metadata Files
-    metadata: Option<MetadataData>,
+    pub metadata: Option<MetadataData>,
 }
 
 /// Data about a remote Peer that the client is connected to,
@@ -250,15 +251,15 @@ impl Peer {
                                     let msg: Extended = ext.try_into()?;
                                     MsgConverter.handle_msg(
                                         self,
-                                        &msg,
-                                    );
+                                        msg,
+                                    ).await?;
                                 }
                                 <MetadataMsg as ExtMsg>::ID => {
                                     let msg: MetadataMsg = ext.try_into()?;
                                     MsgConverter.handle_msg(
                                         self,
-                                        &msg,
-                                    );
+                                        msg,
+                                    ).await?;
                                 }
                                 _ => {}
                             }
@@ -266,8 +267,8 @@ impl Peer {
                         _ => {
                             MsgConverter.handle_msg(
                                 self,
-                                &msg,
-                            );
+                                msg,
+                            ).await?;
                         }
                     }
                 }
@@ -365,16 +366,6 @@ impl Peer {
                         PeerMsg::SeedOnly => {
                             debug!("{local} SeedOnly");
                             self.session.seed_only = true;
-                        }
-                        PeerMsg::CancelMetadata(index) => {
-                            debug!("{local} CancelMetadata {remote} idx {index}");
-                            // let metadata_reject = Metadata::reject(index);
-                            // let metadata_reject = metadata_reject.to_bencode().unwrap();
-
-                            // todo: fix this
-                            // self.sink.send(
-                            //     Core::Extended(3, metadata_reject).into()
-                            // ).await?;
                         }
                         PeerMsg::Quit => {
                             debug!("{local} Quit");
@@ -661,7 +652,7 @@ impl Peer {
         // and the peer supports the metadata extension protocol
         if !self.have_info {
             // send bep09 request to get the Info
-            if let Some(ut_metadata) = self.extension.m.ut_metadata {
+            if let Some(ut_metadata) = self.extension.m.lt_metadata {
                 debug!(
                     "peer supports ut_metadata {ut_metadata}, sending request"
                 );

@@ -15,6 +15,8 @@ use bendy::{
     encoding::ToBencode,
 };
 
+use crate::extensions::MetadataMsg;
+
 #[repr(u8)]
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum ExtendedMessageId {
@@ -77,7 +79,7 @@ impl TryInto<Vec<u8>> for Extension {
 impl Extension {
     /// Extensions that the client supports
     pub fn supported(metadata_size: Option<u32>) -> Self {
-        let m = M { ut_metadata: Some(3), ut_pex: None };
+        let m = M { lt_metadata: Some(MetadataMsg::ID), ut_pex: None };
 
         Self {
             m,
@@ -96,7 +98,7 @@ impl Extension {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct M {
     /// Added by Metadata protocol BEP 0009.
-    pub ut_metadata: Option<u8>,
+    pub lt_metadata: Option<u8>,
     pub ut_pex: Option<u8>,
 }
 
@@ -108,7 +110,7 @@ impl ToBencode for M {
         encoder: bendy::encoding::SingleItemEncoder,
     ) -> Result<(), bendy::encoding::Error> {
         encoder.emit_dict(|mut e| {
-            if let Some(ut_metadata) = self.ut_metadata {
+            if let Some(ut_metadata) = self.lt_metadata {
                 e.emit_pair(b"ut_metadata", ut_metadata)?;
             }
             if let Some(ut_pex) = self.ut_pex {
@@ -150,7 +152,7 @@ impl FromBencode for M {
                 _ => {}
             }
         }
-        Ok(Self { ut_metadata, ut_pex })
+        Ok(Self { lt_metadata: ut_metadata, ut_pex })
     }
 }
 
@@ -292,7 +294,7 @@ mod tests {
         assert_eq!(
             ext,
             Extension {
-                m: M { ut_metadata: Some(3), ut_pex: Some(1) },
+                m: M { lt_metadata: Some(3), ut_pex: Some(1) },
                 p: Some(51413),
                 v: Some("Transmission 2.94".to_owned()),
                 reqq: Some(512),
@@ -325,7 +327,7 @@ mod tests {
         assert_eq!(
             extension,
             Extension {
-                m: M { ut_metadata: Some(3), ut_pex: Some(1) },
+                m: M { lt_metadata: Some(3), ut_pex: Some(1) },
                 p: Some(51413),
                 v: Some("Transmission 2.94".to_owned()),
                 reqq: Some(512),
