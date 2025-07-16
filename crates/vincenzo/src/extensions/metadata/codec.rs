@@ -6,7 +6,7 @@ use bytes::{Buf, BufMut, BytesMut};
 use tokio_util::codec::{Decoder, Encoder};
 use vincenzo_macros::{Extension, Message};
 
-use crate::extensions::ExtensionTrait;
+use crate::extensions::ExtensionState;
 
 use super::{Metadata as MetadataDict, MetadataMsgType};
 

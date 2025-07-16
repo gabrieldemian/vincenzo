@@ -31,7 +31,12 @@ use tokio_util::codec::Framed;
 use tokio::net::TcpStream;
 use tracing::{debug, warn};
 
-use crate::{extensions::core::CoreCodec, torrent::InfoHash};
+use crate::{
+    extensions::{
+        core::CoreCodec, CoreState, ExtensionState,
+    },
+    torrent::InfoHash,
+};
 
 use crate::{
     bitfield::Bitfield,
@@ -51,11 +56,9 @@ use self::session::Session;
 /// Data about a remote Peer that the client is connected to,
 /// but the client itself does not have a Peer struct.
 pub struct Peer {
-    /// Codecs/extensions that the Peer supports, can be changed at runtime
-    /// after `Extension` is sent by the peer.
+    // Codecs/extensions that the Peer supports, can be changed at runtime
+    // after `Extension` is sent by the peer.
     // pub ext: Vec<Extensions>,
-    pub direction: Direction,
-
     stream: SplitStream<Framed<TcpStream, CoreCodec>>,
     pub sink: SplitSink<Framed<TcpStream, CoreCodec>, Core>,
 
@@ -64,27 +67,33 @@ pub struct Peer {
     pub reserved: BitArray<[u8; 8], Msb0>,
     pub torrent_ctx: Arc<TorrentCtx>,
     pub rx: Receiver<PeerMsg>,
+
     /// Context of the Peer which is shared for anyone who needs it.
     pub ctx: Arc<PeerCtx>,
+
     /// Most of the session's information and state is stored here, i.e. it's
     /// the "context" of the session, with information like: endgame mode, slow
     /// start, download_rate, etc.
     pub session: Session,
+
     /// Our pending requests that we sent to peer. It represents the blocks
     /// that we are expecting.
     ///
     /// If we receive a block whose request entry is here, that entry is
     /// removed. A request is also removed here when it is timed out.
     pub outgoing_requests: HashSet<BlockInfo>,
+
     /// The Instant of each timeout value of [`Self::outgoing_requests`]
     /// blocks.
     pub outgoing_requests_timeout: HashMap<BlockInfo, Instant>,
+
     /// The requests we got from peer.
     ///
     /// The request's entry is removed from here when the block is transmitted
     /// or when the peer cancels it. If a peer sends a request and cancels it
     /// before the disk read is done, the read block is dropped.
     pub incoming_requests: HashSet<BlockInfo>,
+
     /// This is a cache of have_info on Torrent
     /// to avoid using locks or atomics.
     pub have_info: bool,
@@ -109,8 +118,8 @@ pub struct PeerCtx {
 }
 
 impl From<HandshakedPeer> for Peer {
-    fn from(value: HandshakedPeer) -> Self {
-        let (tx, rx) = mpsc::channel::<PeerMsg>(300);
+    fn from(value: HandshakedPeer) -> Peer {
+        let (tx, rx) = mpsc::channel::<PeerMsg>(100);
         let peer = value.peer;
 
         let ctx = Arc::new(PeerCtx {
@@ -125,10 +134,9 @@ impl From<HandshakedPeer> for Peer {
 
         let (sink, stream) = value.socket.split();
 
-        Self {
+        Peer {
             sink,
             stream,
-            direction: peer.direction,
             incoming_requests: HashSet::default(),
             outgoing_requests: HashSet::default(),
             outgoing_requests_timeout: HashMap::new(),
@@ -144,6 +152,9 @@ impl From<HandshakedPeer> for Peer {
 }
 
 impl Peer {
+    async fn handle_msg<S: ExtensionState>(&mut self) {
+    }
+
     /// Start the event loop of the Peer, listen to messages sent by others
     /// on the peer wire protocol.
     #[tracing::instrument(skip_all, name = "peer::run")]

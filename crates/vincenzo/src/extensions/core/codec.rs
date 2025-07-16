@@ -6,10 +6,45 @@ use tracing::trace;
 use vincenzo_macros::Message;
 
 use super::{Block, BlockInfo};
-use crate::{
-    bitfield::Bitfield, error::Error,
-};
+use crate::{bitfield::Bitfield, error::Error};
 
+/// A marker trait implemented by all extensions states, including Core.
+pub trait ExtensionTraitSecond<S: ExtensionState> {
+    fn handle(&self, s: S) -> u8;
+}
+
+/// A marker trait implemented by all extensions states, including Core.
+pub trait ExtensionState {}
+
+/// State that comes with the Core protocol.
+pub struct CoreState {
+    /// If we're choked, peer doesn't allow us to download pieces from them.
+    pub am_choking: bool,
+    /// If we're interested, peer has pieces that we don't have.
+    pub am_interested: bool,
+    /// If peer is choked, we don't allow them to download pieces from us.
+    pub peer_choking: bool,
+    /// If peer is interested in us, they mean to download pieces that we have.
+    pub peer_interested: bool,
+}
+
+impl Default for CoreState {
+    /// By default, both sides of the connection start off as choked and not
+    /// interested in the other.
+    fn default() -> Self {
+        Self {
+            am_choking: true,
+            am_interested: false,
+            peer_choking: true,
+            peer_interested: false,
+        }
+    }
+}
+
+impl ExtensionState for CoreState {}
+
+/// The first value is decided when the peer sends its extension header, in the
+/// m field.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExtendedMessage(pub u8, pub Vec<u8>);
 

@@ -33,7 +33,7 @@ pub enum ConnectionState {
 
 /// Contains the state of both sides of the connection.
 #[derive(Clone, Copy, Debug)]
-pub struct State {
+pub struct CoreState {
     /// The current state of the connection.
     pub connection: ConnectionState,
     /// If we're choked, peer doesn't allow us to download pieces from them.
@@ -50,7 +50,7 @@ pub struct State {
     pub prev_peer_choking: bool,
 }
 
-impl Default for State {
+impl Default for CoreState {
     /// By default, both sides of the connection start off as choked and not
     /// interested in the other.
     fn default() -> Self {
@@ -69,7 +69,7 @@ impl Default for State {
 #[derive(Debug)]
 pub struct Session {
     /// The session state.
-    pub state: State,
+    pub state: CoreState,
     /// Measures various transfer statistics.
     pub counters: ThruputCounters,
     /// Whether we're in endgame mode.
@@ -104,7 +104,7 @@ pub struct Session {
 impl Default for Session {
     fn default() -> Self {
         Self {
-            state: State::default(),
+            state: CoreState::default(),
             counters: ThruputCounters::default(),
             in_endgame: false,
             target_request_queue_len: Session::DEFAULT_REQUEST_QUEUE_LEN,

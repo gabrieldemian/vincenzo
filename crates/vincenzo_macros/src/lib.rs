@@ -108,37 +108,36 @@ pub fn derive_extension(input: TokenStream) -> TokenStream {
     let expanded = quote! {
         use crate::extensions::*;
 
-        impl extended::MessageTrait for #msg {
-            fn extension(&self) -> impl extended::ExtensionTrait {
-                #name
-            }
-        }
+        // impl extended::MsgTrait for #msg {
+            // fn extension(&self) -> impl extended::ExtensionTrait {
+            //     #name
+            // }
+        // }
 
-        impl From<#msg> for core::ExtendedMessage {
-            fn from(val: #msg) -> Self {
-                let payload: bytes::BytesMut = val.into();
-                ExtendedMessage(MetadataExt.id(), payload.to_vec())
-            }
-        }
+        // impl From<#msg> for core::ExtendedMessage {
+        //     fn from(val: #msg) -> Self {
+        //         let payload: bytes::BytesMut = val.into();
+        //         ExtendedMessage(MetadataExt.id(), payload.to_vec())
+        //     }
+        // }
 
-        impl extended::ExtensionTrait for #name {
-            type Msg = #msg;
-
-            fn id(&self) -> u8 {
-                #id
-            }
-
-            fn codec(
-                &self
-            ) ->
-                Box<dyn CodecTrait<Self::Msg>>
-            // impl
-            //     tokio_util::codec::Encoder<Self::Msg, Error = crate::error::Error> +
-            //     tokio_util::codec::Decoder<Item = Self::Msg, Error = crate::error::Error>
-            {
-                Box::new(#codec)
-            }
-        }
+        // impl extended::ExtensionTrait for #name {
+            // type Msg = #msg;
+            //
+            // fn id(&self) -> u8 {
+            //     #id
+            // }
+            //
+            // fn codec(
+            //     &self
+            // ) -> impl CodecTrait<Self::Msg>
+            // // impl
+            // //     tokio_util::codec::Encoder<Self::Msg, Error = crate::error::Error> +
+            // //     tokio_util::codec::Decoder<Item = Self::Msg, Error = crate::error::Error>
+            // {
+            //     Box::new(#codec)
+            // }
+        // }
     };
 
     TokenStream::from(expanded)

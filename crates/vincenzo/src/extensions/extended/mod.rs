@@ -5,6 +5,7 @@
 pub mod codec;
 mod r#trait;
 
+use bytes::BytesMut;
 // re-exports
 pub use codec::*;
 pub use r#trait::*;
@@ -13,6 +14,8 @@ use bendy::{
     decoding::{FromBencode, Object, ResultExt},
     encoding::ToBencode,
 };
+
+use crate::extensions::{CoreState, ExtensionState, ExtensionTraitSecond};
 
 #[repr(u8)]
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -46,18 +49,24 @@ impl TryFrom<u8> for ExtendedMessageId {
 pub struct Extension {
     /// messages (dictionary of supported extensions)
     pub m: M,
+
     /// port
     pub p: Option<u16>,
+
     /// a string identifying the client and the version
     pub v: Option<String>,
+
     /// number of outstanding requests messages this client supports
     /// without dropping any.
     pub reqq: Option<u16>,
+
     /// added by Metadata protocol, BEP 0009
     /// the size of the metadata file, which is the
     /// info-dictionary part of the metainfo(.torrent) file
     pub metadata_size: Option<u32>,
 }
+
+pub struct MsgConverter;
 
 impl TryInto<Vec<u8>> for Extension {
     type Error = bendy::encoding::Error;
@@ -71,6 +80,7 @@ impl Extension {
     /// Extensions that the client supports
     pub fn supported(metadata_size: Option<u32>) -> Self {
         let m = M { ut_metadata: Some(3), ut_pex: None };
+
         Self {
             m,
             p: None,
