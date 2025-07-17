@@ -1,16 +1,14 @@
 use bytes::{Buf, BufMut, BytesMut};
+use futures::SinkExt;
 use std::io::Cursor;
-use tokio::io;
+use tokio::{io, sync::oneshot};
 use tokio_util::codec::{Decoder, Encoder};
-use tracing::trace;
+use tracing::{debug, trace, warn};
 use vincenzo_macros::Message;
 
 use super::{Block, BlockInfo};
 use crate::{
-    bitfield::Bitfield,
-    error::Error,
-    extensions::{ExtData, ExtMsgHandler, ExtMsg},
-    peer::MsgConverter,
+    bitfield::Bitfield, disk::DiskMsg, error::Error, extensions::{ExtData, ExtMsg, ExtMsgHandler}, peer::MsgConverter, torrent::TorrentMsg
 };
 
 /// State that comes with the Core protocol.
@@ -34,17 +32,6 @@ impl ExtMsg for Core {
 }
 
 impl ExtData for CoreState {}
-
-impl ExtMsgHandler<Core, CoreState> for MsgConverter {
-    async fn handle_msg(
-        &self,
-        peer: &mut crate::peer::Peer,
-        msg: Core,
-        // data: &mut CoreState,
-    ) -> Result<(), Error> {
-        Ok(())
-    }
-}
 
 impl Default for CoreState {
     /// By default, both sides of the connection start off as choked and not
@@ -367,393 +354,195 @@ impl Decoder for CoreCodec {
     }
 }
 
-// impl Encoder<Message> for CoreCodec {
-//     type Error = Error;
-//
-//     fn encode(
-//         &mut self,
-//         item: Message,
-//         dst: &mut BytesMut,
-//     ) -> Result<(), Self::Error> {
-//         let Message::CoreExt(item) = item else {
-//             return Err(Error::Timeout);
-//         };
-//
-//         match item {
-//             Core::KeepAlive => {
-//                 dst.put_u32(0);
-//             }
-//             Core::Bitfield(bitfield) => {
-//                 let v = bitfield.into_vec();
-//                 dst.put_u32(1 + v.len() as u32);
-//                 dst.put_u8(CoreId::Bitfield as u8);
-//                 dst.extend_from_slice(&v);
-//             }
-//             Core::Choke => {
-//                 dst.put_u32(1);
-//                 dst.put_u8(CoreId::Choke as u8);
-//             }
-//             Core::Unchoke => {
-//                 dst.put_u32(1);
-//                 dst.put_u8(CoreId::Unchoke as u8);
-//             }
-//             Core::Interested => {
-//                 dst.put_u32(1);
-//                 dst.put_u8(CoreId::Interested as u8);
-//             }
-//             Core::NotInterested => {
-//                 dst.put_u32(1);
-//                 dst.put_u8(CoreId::NotInterested as u8);
-//             }
-//             Core::Have(piece_index) => {
-//                 let msg_len = 1 + 4;
-//                 dst.put_u32(msg_len);
-//                 dst.put_u8(CoreId::Have as u8);
-//                 let piece_index = piece_index.try_into().map_err(|e| {
-//                     io::Error::new(io::ErrorKind::InvalidInput, e)
-//                 })?;
-//                 dst.put_u32(piece_index);
-//             }
-//             // <len=0013><id=6><index><begin><length>
-//             Core::Request(block) => {
-//                 let msg_len = 1 + 4 + 4 + 4;
-//                 dst.put_u32(msg_len);
-//                 dst.put_u8(CoreId::Request as u8);
-//                 block.encode(dst)?;
-//             }
-//             Core::Piece(block) => {
-//                 let Block { index, begin, block } = block;
-//
-//                 let msg_len = 1 + 4 + 4 + block.len() as u32;
-//
-//                 dst.put_u32(msg_len);
-//                 dst.put_u8(CoreId::Piece as u8);
-//
-//                 let index = index.try_into().map_err(|e| {
-//                     io::Error::new(io::ErrorKind::InvalidInput, e)
-//                 })?;
-//
-//                 dst.put_u32(index);
-//                 dst.put_u32(begin);
-//                 dst.put(&block[..]);
-//             }
-//             Core::Cancel(block) => {
-//                 let msg_len = 1 + 4 + 4 + 4;
-//
-//                 dst.put_u32(msg_len);
-//                 dst.put_u8(CoreId::Cancel as u8);
-//
-//                 block.encode(dst)?;
-//             }
-//             Core::Extended(ExtendedMessage(ext_id, payload)) => {
-//                 let msg_len = payload.len() as u32 + 2;
-//
-//                 dst.put_u32(msg_len);
-//                 dst.put_u8(CoreId::Extended as u8);
-//                 dst.put_u8(ext_id);
-//
-//                 if !payload.is_empty() {
-//                     dst.extend_from_slice(&payload);
-//                 }
-//             }
-//         }
-//         Ok(())
-//     }
-// }
-//
-// impl Decoder for CoreCodec {
-//     type Item = Message;
-//     type Error = Error;
-//
-//     fn decode(
-//         &mut self,
-//         src: &mut BytesMut,
-//     ) -> Result<Option<Self::Item>, Self::Error> {
-//         if src.remaining() < 4 {
-//             return Ok(None);
-//         }
-//
-//         let mut tmp_buf = Cursor::new(&src);
-//         let msg_len = tmp_buf.get_u32() as usize;
-//
-//         tmp_buf.set_position(0);
-//
-//         if src.remaining() >= 4 + msg_len {
-//             src.advance(4);
-//             if msg_len == 0 {
-//                 return Ok(Some(Core::KeepAlive.into()));
-//             }
-//         } else {
-//             trace!(
-//                 "Read buffer is {} bytes long but message is {} bytes long",
-//                 src.remaining(),
-//                 msg_len
-//             );
-//             return Ok(None);
-//         }
-//
-//         let msg_id = CoreId::try_from(src.get_u8())?;
-//
-//         let msg = match msg_id {
-//             // <len=0001><id=0>
-//             CoreId::Choke => Core::Choke,
-//             // <len=0001><id=1>
-//             CoreId::Unchoke => Core::Unchoke,
-//             // <len=0001><id=2>
-//             CoreId::Interested => Core::Interested,
-//             // <len=0001><id=3>
-//             CoreId::NotInterested => Core::NotInterested,
-//             // <len=0005><id=4><piece index>
-//             CoreId::Have => {
-//                 let piece_index = src.get_u32();
-//                 Core::Have(piece_index as usize)
-//             }
-//             // <len=0001+X><id=5><bitfield>
-//             CoreId::Bitfield => {
-//                 let mut bitfield = vec![0; msg_len - 1];
-//                 src.copy_to_slice(&mut bitfield);
-//                 Core::Bitfield(Bitfield::from_vec(bitfield))
-//             }
-//             // <len=0013><id=6><index><begin><length>
-//             CoreId::Request => {
-//                 let index = src.get_u32();
-//                 let begin = src.get_u32();
-//                 let len = src.get_u32();
-//
-//                 Core::Request(BlockInfo { index, begin, len })
-//             }
-//             // <len=0009+X><id=7><index><begin><block>
-//             CoreId::Piece => {
-//                 let index = src.get_u32() as usize;
-//                 let begin = src.get_u32();
-//
-//                 let mut block = vec![0; msg_len - 9];
-//                 src.copy_to_slice(&mut block);
-//
-//                 Core::Piece(Block { index, begin, block })
-//             }
-//             // <len=0013><id=8><index><begin><length>
-//             CoreId::Cancel => {
-//                 let index = src.get_u32();
-//                 let begin = src.get_u32();
-//                 let len = src.get_u32();
-//
-//                 Core::Cancel(BlockInfo { index, begin, len })
-//             }
-//             // <len=002 + payload><id=20><ext_id><payload>
-//             CoreId::Extended => {
-//                 let ext_id = src.get_u8();
-//
-//                 let mut payload = vec![0u8; msg_len - 2];
-//                 src.copy_to_slice(&mut payload);
-//
-//                 ExtendedMessage(ext_id, payload).into()
-//             }
-//         };
-//
-//         Ok(Some(msg.into()))
-//     }
-// }
+impl ExtMsgHandler<Core, CoreState> for MsgConverter {
+    async fn handle_msg(
+        &self,
+        peer: &mut crate::peer::Peer,
+        msg: Core,
+    ) -> Result<(), Error> {
+        let local = peer.ctx.local_addr;
+        let remote = peer.ctx.remote_addr;
 
-// impl ExtensionTrait for CoreCodec {
-//     type Codec = CoreCodec;
-//     type Msg = Core;
-//
-//     // Core does not have an extension ID,
-//     // maybe create another trait for an extension that has an id?
-//     const ID: u8 = 255;
-//
-//     async fn handle_msg(
-//         &self,
-//         msg: &Self::Msg,
-//         peer: &mut Peer,
-//     ) -> Result<(), Error> {
-//         let local = peer.ctx.local_addr;
-//         let remote = peer.ctx.remote_addr;
-//
-//         match msg {
-//             Core::KeepAlive => {
-//                 debug!("{local} keepalive");
-//             }
-//             Core::Bitfield(bitfield) => {
-//                 // take entire pieces from bitfield
-//                 // and put in pending_requests
-//                 debug!("{local} bitfield");
-//
-//                 let mut b = peer.ctx.pieces.write().await;
-//                 *b = bitfield.clone();
-//
-//                 // remove excess bits
-//                 let pieces =
-//                     peer.torrent_ctx.info.read().await.pieces() as usize;
-//
-//                 if bitfield.len() != pieces && pieces > 0 && peer.have_info {
-//                     unsafe {
-//                         b.set_len(pieces);
-//                     }
-//                 }
-//
-//                 debug!("{local} bitfield is len {:?}", bitfield.len());
-//                 drop(b);
-//
-//                 let peer_has_piece = peer.has_piece_not_in_local().await;
-//                 debug!("{local} peer_has_piece {peer_has_piece}");
-//
-//                 if peer_has_piece {
-//                     debug!("{local} interested due to Bitfield");
-//
-//                     peer.session.state.am_interested = true;
-//                     peer.sink.send(Core::Interested.into()).await?;
-//
-//                     if peer.can_request() {
-//                         peer.prepare_for_download().await;
-//                         peer.request_block_infos().await?;
-//                     }
-//                 }
-//             }
-//             Core::Unchoke => {
-//                 peer.session.state.peer_choking = false;
-//                 debug!("{local} unchoke");
-//
-//                 if peer.can_request() {
-//                     peer.prepare_for_download().await;
-//                     peer.request_block_infos().await?;
-//                 }
-//             }
-//             Core::Choke => {
-//                 peer.session.state.peer_choking = true;
-//                 debug!("{local} choke");
-//                 peer.free_pending_blocks().await;
-//             }
-//             Core::Interested => {
-//                 debug!("{local} interested");
-//                 peer.session.state.peer_interested = true;
-//             }
-//             Core::NotInterested => {
-//                 debug!("{local} NotInterested");
-//                 peer.session.state.peer_interested = false;
-//             }
-//             Core::Have(piece) => {
-//                 debug!("{local} Have {piece}");
-//                 // Have is usually sent when the peer has downloaded
-//                 // a new piece, however, some peers, after handshake,
-//                 // send an incomplete bitfield followed by a sequence of
-//                 // have's. They do this to try to prevent censhorship
-//                 // from ISPs.
-//                 // Overwrite pieces on bitfield, if the peer has one
-//                 let ctx = peer.ctx.clone();
-//                 let mut pieces = ctx.pieces.write().await;
-//
-//                 if pieces.clone().get(*piece).is_none() {
-//                     warn!(
-//                         "{local} sent Have but it's bitfield is out of
-// bounds"                     );
-//                     warn!("initializing an empty bitfield with the len of the
-// piece {piece}");                     *pieces = Bitfield::from_vec(vec![0u8;
-// *piece]);                 }
-//
-//                 pieces.set(*piece, true);
-//                 drop(pieces);
-//
-//                 let torrent_ctx = peer.torrent_ctx.clone();
-//                 let local_bitfield = torrent_ctx.bitfield.read().await;
-//                 let piece = local_bitfield.get(*piece);
-//
-//                 // maybe become interested in peer and request blocks
-//                 if !peer.session.state.am_interested {
-//                     if let Some(a) = piece {
-//                         if *a {
-//                             debug!("already have this piece, ignoring");
-//                         } else {
-//                             debug!(
-//                                 "We do not have this piece, sending
-// interested"                             );
-//                             debug!("{local} we are interested due to Have");
-//
-//                             peer.session.state.am_interested = true;
-//                             peer.sink.send(Core::Interested.into()).await?;
-//
-//                             if peer.can_request() {
-//                                 peer.prepare_for_download().await;
-//                                 peer.request_block_infos().await?;
-//                             }
-//                         }
-//                     }
-//                 }
-//             }
-//             Core::Piece(block) => {
-//                 debug!("{local} piece {}", block.index);
-//                 debug!(
-//                     "index: {:?}, begin: {:?}, len: {:?}",
-//                     block.index,
-//                     block.begin,
-//                     block.block.len()
-//                 );
-//
-//                 peer.handle_piece_msg(block.clone()).await?;
-//                 if peer.can_request() {
-//                     peer.prepare_for_download().await;
-//                     peer.request_block_infos().await?;
-//                 }
-//             }
-//             Core::Cancel(block_info) => {
-//                 debug!("{local} cancel from {remote}");
-//                 debug!("{block_info:?}");
-//                 peer.incoming_requests.remove(block_info);
-//             }
-//             Core::Request(block_info) => {
-//                 debug!("{local} request from {remote}");
-//                 debug!("{block_info:?}");
-//
-//                 if !peer.session.state.peer_choking {
-//                     let begin = block_info.begin;
-//                     let index = block_info.index as usize;
-//                     let (tx, rx) = oneshot::channel();
-//
-//                     // check if peer is not already requesting this block
-//                     if peer.incoming_requests.contains(block_info) {
-//                         // TODO: if peer keeps spamming us, close connection
-//                         warn!("Peer sent duplicate block request");
-//                     }
-//
-//                     peer.incoming_requests.insert(block_info.clone());
-//
-//                     peer.torrent_ctx
-//                         .disk_tx
-//                         .send(DiskMsg::ReadBlock {
-//                             block_info: block_info.clone(),
-//                             recipient: tx,
-//                             info_hash: peer.torrent_ctx.info_hash.clone(),
-//                         })
-//                         .await?;
-//
-//                     let bytes = rx.await?;
-//
-//                     let block = Block { index, begin, block: bytes };
-//                     let _ = peer.sink.send(Core::Piece(block).into()).await;
-//                 }
-//             }
-//             Core::Extended(_, _) => {
-//                 // this branch is only used when the local peer convert an
-//                 // extended enum message to Core::Message just
-//                 // to send on the sink.
-//             }
-//         }
-//
-//         Ok(())
-//     }
-//
-//     fn codec(&self) -> Self::Codec {
-//         CoreCodec
-//     }
-//
-//     fn is_supported(
-//         &self,
-//         _extension: &crate::extensions::extended::Extension,
-//     ) -> bool {
-//         true
-//     }
-// }
+        match msg {
+            // handled by the extended messages
+            Core::Extended(_) => {
+            }
+            Core::KeepAlive => {
+                debug!("{local} keepalive {remote}");
+            }
+            Core::Bitfield(bitfield) => {
+                // take entire pieces from bitfield
+                // and put in pending_requests
+                debug!("{local} bitfield {remote}");
+
+                let mut b = peer.ctx.pieces.write().await;
+                *b = bitfield.clone();
+
+                // remove excess bits
+                let pieces =
+                    peer.torrent_ctx.info.read().await.pieces() as usize;
+
+                if bitfield.len() != pieces && pieces > 0 && peer.have_info {
+                    unsafe {
+                        b.set_len(pieces);
+                    }
+                }
+
+                debug!("{local} bitfield is len {:?} {remote}", bitfield.len());
+                drop(b);
+
+                let peer_has_piece = peer.has_piece_not_in_local().await?;
+                debug!("{local} peer_has_piece {peer_has_piece} {remote}");
+
+                if peer_has_piece {
+                    debug!("{local} interested due to Bitfield {remote}");
+
+                    peer.ext_states.core.am_interested = true;
+                    peer.sink.send(Core::Interested.into()).await?;
+
+                    if peer.can_request() {
+                        peer.prepare_for_download().await;
+                        peer.request_block_infos().await?;
+                    }
+                }
+            }
+            Core::Unchoke => {
+                peer.ext_states.core.peer_choking = false;
+                debug!("{local} unchoke {remote}");
+
+                if peer.can_request() {
+                    peer.prepare_for_download().await;
+                    peer.request_block_infos().await?;
+                }
+            }
+            Core::Choke => {
+                peer.ext_states.core.peer_choking = true;
+                debug!("{local} choke {remote}");
+                peer.free_pending_blocks().await;
+            }
+            Core::Interested => {
+                debug!("{local} interested {remote}");
+                peer.ext_states.core.peer_interested = true;
+            }
+            Core::NotInterested => {
+                debug!("{local} NotInterested {remote}");
+                peer.ext_states.core.peer_interested = false;
+            }
+            Core::Have(piece) => {
+                debug!("{local} Have {piece} {remote}");
+                // Have is usually sent when the peer has downloaded
+                // a new piece, however, some peers, after handshake,
+                // send an incomplete bitfield followed by a sequence of
+                // have's. They do this to try to prevent censhorship
+                // from ISPs.
+                // Overwrite pieces on bitfield, if the peer has one
+                let ctx = peer.ctx.clone();
+                let mut pieces = ctx.pieces.write().await;
+
+                if pieces.clone().get(piece).is_none() {
+                    warn!(
+                        "{local} sent Have but it's bitfield is out of
+bounds {remote}"
+                    );
+                    warn!(
+                        "initializing an empty bitfield with the len of the
+piece {piece}"
+                    );
+                    *pieces = Bitfield::from_vec(vec![0u8; piece]);
+                }
+
+                pieces.set(piece, true);
+                drop(pieces);
+
+                let (otx, orx) = oneshot::channel();
+                let torrent_ctx = peer.torrent_ctx.clone();
+
+                torrent_ctx.tx.send(TorrentMsg::ReadBitfield(otx)).await?;
+
+                let local_bitfield = orx.await?;
+
+                let piece = local_bitfield.get(piece);
+
+                // maybe become interested in peer and request blocks
+                if !peer.ext_states.core.am_interested {
+                    if let Some(a) = piece {
+                        if *a {
+                            debug!("already have this piece, ignoring");
+                        } else {
+                            debug!(
+                                "We do not have this piece, sending
+interested"
+                            );
+                            debug!("{local} we are interested due to Have");
+
+                            peer.ext_states.core.am_interested = true;
+                            peer.sink.send(Core::Interested).await?;
+
+                            if peer.can_request() {
+                                peer.prepare_for_download().await;
+                                peer.request_block_infos().await?;
+                            }
+                        }
+                    }
+                }
+            }
+            Core::Piece(block) => {
+                debug!("{local} piece {} {remote}", block.index);
+                debug!(
+                    "index: {:?}, begin: {:?}, len: {:?}",
+                    block.index,
+                    block.begin,
+                    block.block.len()
+                );
+
+                peer.handle_piece_msg(block).await?;
+                if peer.can_request() {
+                    peer.prepare_for_download().await;
+                    peer.request_block_infos().await?;
+                }
+            }
+            Core::Cancel(block_info) => {
+                debug!("{local} cancel from {remote}");
+                debug!("{block_info:?}");
+                peer.incoming_requests.remove(&block_info);
+            }
+            Core::Request(block_info) => {
+                debug!("{local} request from {remote}");
+                debug!("{block_info:?}");
+
+                if !peer.ext_states.core.peer_choking {
+                    let begin = block_info.begin;
+                    let index = block_info.index as usize;
+                    let (tx, rx) = oneshot::channel();
+
+                    // check if peer is not already requesting this block
+                    if peer.incoming_requests.contains(&block_info) {
+                        // todo: if peer keeps spamming us, close connection
+                        warn!("Peer sent duplicate block request");
+                    }
+
+                    peer.incoming_requests.insert(block_info.clone());
+
+                    peer.torrent_ctx
+                        .disk_tx
+                        .send(DiskMsg::ReadBlock {
+                            block_info: block_info,
+                            recipient: tx,
+                            info_hash: peer.torrent_ctx.info_hash.clone(),
+                        })
+                        .await?;
+
+                    let bytes = rx.await?;
+
+                    let block = Block { index, begin, block: bytes };
+                    let _ = peer.sink.send(Core::Piece(block)).await;
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
 
 #[cfg(test)]
 mod tests {
