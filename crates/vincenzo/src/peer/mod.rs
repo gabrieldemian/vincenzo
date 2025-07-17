@@ -5,33 +5,24 @@ mod types;
 // re-exports
 pub use types::*;
 
-use bitvec::{
-    bitvec,
-    prelude::{BitArray, Msb0},
-};
-use futures::{
-    stream::{SplitSink, SplitStream},
-    SinkExt, StreamExt,
-};
-use hashbrown::{HashMap, HashSet};
-use std::{collections::VecDeque, net::SocketAddr, sync::Arc, time::Duration};
+use bitvec::{bitvec, prelude::Msb0};
+use futures::{SinkExt, StreamExt};
+use std::{collections::VecDeque, net::SocketAddr, time::Duration};
 use tokio::{
     select,
     sync::{
-        mpsc::{self, Receiver},
+        mpsc::{self},
         oneshot, RwLock,
     },
     time::{interval, interval_at, Instant},
 };
-use tokio_util::codec::Framed;
 
-use tokio::net::TcpStream;
 use tracing::{debug, warn};
 
 use crate::{
     extensions::{
-        core::CoreCodec, CoreState, ExtMsg, ExtMsgHandler, Extended, Metadata,
-        MetadataData, MetadataMsg,
+        CoreState, ExtMsg, ExtMsgHandler, Extended, Metadata, MetadataData,
+        MetadataMsg,
     },
     torrent::InfoHash,
 };
@@ -45,7 +36,7 @@ use crate::{
         extended::Extension,
     },
     peer::session::ConnectionState,
-    torrent::{TorrentCtx, TorrentMsg},
+    torrent::TorrentMsg,
 };
 
 use self::session::Session;
@@ -111,9 +102,7 @@ impl Peer<Connected> {
             .state
             .torrent_ctx
             .tx
-            .send(TorrentMsg::PeerConnected(
-                self.state.ctx.clone(),
-            ))
+            .send(TorrentMsg::PeerConnected(self.state.ctx.clone()))
             .await;
 
         let local = self.state.ctx.local_addr;

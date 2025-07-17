@@ -175,7 +175,8 @@ impl ExtMsgHandler<MetadataMsg, MetadataData> for MsgHandler {
                 );
                 debug!("{metadata:?}");
 
-                peer.state.torrent_ctx
+                peer.state
+                    .torrent_ctx
                     .tx
                     .send(TorrentMsg::DownloadedInfoPiece(
                         metadata.total_size.unwrap_or(u32::MAX),
@@ -193,7 +194,8 @@ impl ExtMsgHandler<MetadataMsg, MetadataData> for MsgHandler {
 
                 let (tx, rx) = oneshot::channel();
 
-                peer.state.torrent_ctx
+                peer.state
+                    .torrent_ctx
                     .tx
                     .send(TorrentMsg::RequestInfoPiece(piece, tx))
                     .await?;

@@ -57,20 +57,11 @@ impl Default for CoreState {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExtendedMessage(pub u8, pub Vec<u8>);
 
-impl ExtendedMessage {
-    pub fn ext_id(&self) -> u8 {
-        self.0
-    }
-    pub fn payload(&self) -> &[u8] {
-        &self.1
-    }
-}
-
 impl From<ExtendedMessage> for Vec<u8> {
     fn from(val: ExtendedMessage) -> Self {
-        let mut buff = Vec::with_capacity(1 + val.payload().len());
-        buff.push(val.ext_id());
-        buff.extend(val.payload());
+        let mut buff = Vec::with_capacity(1 + val.1.len());
+        buff.push(val.0);
+        buff.extend(val.1);
         buff
     }
 }
@@ -239,8 +230,8 @@ impl Encoder<Core> for CoreCodec {
                 block.encode(buf)?;
             }
             Core::Extended(extended_msg) => {
-                let ext_id = extended_msg.ext_id();
-                let payload = extended_msg.payload();
+                let ext_id = extended_msg.0;
+                let payload = extended_msg.1;
 
                 let msg_len = payload.len() as u32 + 2;
 
@@ -249,7 +240,7 @@ impl Encoder<Core> for CoreCodec {
                 buf.put_u8(ext_id);
 
                 if !payload.is_empty() {
-                    buf.extend_from_slice(payload);
+                    buf.extend_from_slice(&payload);
                 }
             }
         }
@@ -387,7 +378,10 @@ impl ExtMsgHandler<Core, CoreState> for MsgHandler {
                 let pieces =
                     peer.state.torrent_ctx.info.read().await.pieces() as usize;
 
-                if bitfield.len() != pieces && pieces > 0 && peer.state.have_info {
+                if bitfield.len() != pieces
+                    && pieces > 0
+                    && peer.state.have_info
+                {
                     unsafe {
                         b.set_len(pieces);
                     }
@@ -527,7 +521,8 @@ interested"
 
                     peer.state.incoming_requests.insert(block_info.clone());
 
-                    peer.state.torrent_ctx
+                    peer.state
+                        .torrent_ctx
                         .disk_tx
                         .send(DiskMsg::ReadBlock {
                             block_info,

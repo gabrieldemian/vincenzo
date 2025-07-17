@@ -1,6 +1,10 @@
 //! Disk is responsible for file I/O of all Torrents.
 use std::{
-    collections::VecDeque, io::SeekFrom, net::SocketAddr, path::{Path, PathBuf}, sync::Arc
+    collections::VecDeque,
+    io::SeekFrom,
+    net::SocketAddr,
+    path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use hashbrown::HashMap;

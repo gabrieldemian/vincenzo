@@ -22,8 +22,8 @@ use crate::{
     bitfield::{Bitfield, Reserved},
     error::Error,
     extensions::{
-        core::BlockInfo, Core, CoreCodec, Extended, ExtendedMessage, Extension,
-        Handshake, HandshakeCodec, TryIntoExtendedMessage,
+        core::BlockInfo, Core, CoreCodec, ExtendedMessage, Extension,
+        Handshake, HandshakeCodec,
     },
     peer::{self, session::Session, ExtStates, PeerCtx},
     torrent::{InfoHash, TorrentCtx, TorrentMsg},
@@ -117,7 +117,8 @@ pub enum PeerMsg {
     /// When the program is being gracefuly shutdown, we need to kill the tokio
     /// green thread of the peer.
     GracefullyShutdown,
-    /// An error happened and we want to quit and also send this peer's blocks back to the torrent.
+    /// An error happened and we want to quit and also send this peer's blocks
+    /// back to the torrent.
     Quit,
 }
 
@@ -154,13 +155,13 @@ impl peer::Peer<Idle> {
     /// Do a handshake (and maybe extended handshake) with the peer and convert
     /// it to a connected peer.
     pub async fn handshake(
-        mut self,
+        self,
         socket: TcpStream,
         torrent_ctx: Arc<TorrentCtx>,
     ) -> Result<peer::Peer<Connected>, Error> {
         let remote = socket.peer_addr()?;
 
-        torrent_ctx.tx.send(TorrentMsg::PeerConnecting(remote.clone())).await?;
+        torrent_ctx.tx.send(TorrentMsg::PeerConnecting(remote)).await?;
 
         let local = socket.local_addr()?;
 

@@ -16,15 +16,11 @@ use crate::{
     error::Error,
     magnet::Magnet,
     metainfo::Info,
-    peer::{
-        self, session::ConnectionState, Direction, Peer, PeerCtx, PeerId,
-        PeerMsg,
-    },
+    peer::{self, Direction, Peer, PeerCtx, PeerId, PeerMsg},
     tracker::{event::Event, Tracker, TrackerCtx, TrackerMsg, TrackerTrait},
 };
 use bendy::decoding::FromBencode;
 use bitvec::{bitvec, prelude::Msb0};
-use hashbrown::HashMap;
 use speedy::{Readable, Writable};
 use std::{collections::BTreeMap, net::SocketAddr, sync::Arc, time::Duration};
 use tokio::{
@@ -324,12 +320,12 @@ impl Torrent<Connected> {
             local_peer_id,
         );
 
-        let mut connecting_peer = idle_peer.handshake(socket, ctx).await;
+        let connecting_peer = idle_peer.handshake(socket, ctx).await;
 
         match connecting_peer {
             Err(r) => {
                 debug!("failed to handshake peer: {}", r);
-                torrent_tx.send(TorrentMsg::PeerConnectingError(addr));
+                let _ = torrent_tx.send(TorrentMsg::PeerConnectingError(addr)).await;
                 Err(r)
             }
             Ok(mut connected_peer) => {
@@ -665,8 +661,8 @@ impl Torrent<Connected> {
 
                         debug!("trying to reconnect peer {addr:?}");
 
-                        if let Ok(socket) = TcpStream::connect(addr.clone()).await {
-                            to_delete.push(addr.clone());
+                        if let Ok(socket) = TcpStream::connect(*addr).await {
+                            to_delete.push(*addr);
 
                         Self::start_and_run_peer(ctx, socket, local_peer_id, Direction::Outbound)
                             .await?;

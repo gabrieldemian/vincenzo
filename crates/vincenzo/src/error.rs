@@ -8,13 +8,13 @@ use crate::{
 };
 
 impl From<bendy::decoding::Error> for Error {
-    fn from(value: bendy::decoding::Error) -> Self {
+    fn from(_value: bendy::decoding::Error) -> Self {
         Self::BencodeError
     }
 }
 
 impl From<bendy::encoding::Error> for Error {
-    fn from(value: bendy::encoding::Error) -> Self {
+    fn from(_value: bendy::encoding::Error) -> Self {
         Self::BencodeError
     }
 }

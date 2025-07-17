@@ -102,9 +102,9 @@ pub fn derive_extension(input: TokenStream) -> TokenStream {
         .to_compile_error()
         .into();
     };
-    let id = parsed.id_value;
-    let codec = parsed.codec_value;
-    let msg = parsed.msg_value;
+    let _id = parsed.id_value;
+    let _codec = parsed.codec_value;
+    let _msg = parsed.msg_value;
 
     let expanded = quote! {
         use crate::extensions::*;
