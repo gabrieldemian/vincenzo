@@ -1,6 +1,5 @@
 use vincenzo_macros::declare_message;
 
-
 // declare_message!(CoreExt, ExtendedExt, MetadataExt);
 declare_message!(CoreExt, ExtendedExt, MetadataExt);
 

@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, ops::Deref, sync::Arc};
+use std::{fmt::Display, net::SocketAddr, ops::Deref, sync::Arc};
 
 use speedy::{Readable, Writable};
 use tokio::sync::oneshot;
@@ -48,9 +48,9 @@ pub enum TorrentMsg {
 #[derive(Clone, PartialEq, Eq, Hash, Default, Readable, Writable)]
 pub struct InfoHash([u8; 20]);
 
-impl ToString for InfoHash {
-    fn to_string(&self) -> String {
-        hex::encode(self.0)
+impl Display for InfoHash {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", hex::encode(self.0))
     }
 }
 

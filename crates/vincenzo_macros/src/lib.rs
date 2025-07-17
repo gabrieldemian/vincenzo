@@ -87,7 +87,8 @@ pub fn derive_extension(input: TokenStream) -> TokenStream {
     let Some(attrs) = input.attrs.get(0..1) else {
         return syn::Error::new(
             name.span(),
-            "Expected attribute `extension(id = `...`, codec = `...`, msg = `...`)`",
+            "Expected attribute `extension(id = `...`, codec = `...`, msg = \
+             `...`)`",
         )
         .to_compile_error()
         .into();

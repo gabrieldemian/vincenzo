@@ -5,7 +5,6 @@
 pub mod codec;
 mod r#trait;
 
-use bytes::BytesMut;
 // re-exports
 pub use codec::*;
 pub use r#trait::*;

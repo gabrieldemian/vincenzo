@@ -8,7 +8,7 @@ use super::tracker::action::Action;
 use std::{
     fmt::Debug,
     future::Future,
-    net::{IpAddr, Ipv4Addr, SocketAddr},
+    net::{IpAddr, SocketAddr},
     time::Duration,
 };
 

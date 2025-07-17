@@ -163,7 +163,10 @@ impl Tui {
                 self.task.abort();
             }
             if counter > 100 {
-                error!("Failed to abort task in 100 milliseconds for unknown reason");
+                error!(
+                    "Failed to abort task in 100 milliseconds for unknown \
+                     reason"
+                );
                 break;
             }
         }

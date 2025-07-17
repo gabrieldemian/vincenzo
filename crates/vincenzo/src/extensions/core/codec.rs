@@ -8,7 +8,12 @@ use vincenzo_macros::Message;
 
 use super::{Block, BlockInfo};
 use crate::{
-    bitfield::Bitfield, disk::DiskMsg, error::Error, extensions::{ExtData, ExtMsg, ExtMsgHandler}, peer::MsgHandler, torrent::TorrentMsg
+    bitfield::Bitfield,
+    disk::DiskMsg,
+    error::Error,
+    extensions::{ExtData, ExtMsg, ExtMsgHandler},
+    peer::MsgHandler,
+    torrent::TorrentMsg,
 };
 
 /// State that comes with the Core protocol.
@@ -365,8 +370,7 @@ impl ExtMsgHandler<Core, CoreState> for MsgHandler {
 
         match msg {
             // handled by the extended messages
-            Core::Extended(_) => {
-            }
+            Core::Extended(_) => {}
             Core::KeepAlive => {
                 debug!("{local} keepalive {remote}");
             }
@@ -398,7 +402,7 @@ impl ExtMsgHandler<Core, CoreState> for MsgHandler {
                     debug!("{local} interested due to Bitfield {remote}");
 
                     peer.ext_states.core.am_interested = true;
-                    peer.sink.send(Core::Interested.into()).await?;
+                    peer.sink.send(Core::Interested).await?;
 
                     if peer.can_request() {
                         peer.prepare_for_download().await;
@@ -525,7 +529,7 @@ interested"
                     peer.torrent_ctx
                         .disk_tx
                         .send(DiskMsg::ReadBlock {
-                            block_info: block_info,
+                            block_info,
                             recipient: tx,
                             info_hash: peer.torrent_ctx.info_hash.clone(),
                         })

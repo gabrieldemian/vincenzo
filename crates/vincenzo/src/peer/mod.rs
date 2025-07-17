@@ -34,7 +34,7 @@ use tracing::{debug, warn};
 use crate::{
     extensions::{
         core::CoreCodec, CoreState, ExtMsg, ExtMsgHandler, Extended, Metadata,
-        MetadataCodec, MetadataData, MetadataMsg, MetadataMsgType,
+        MetadataData, MetadataMsg,
     },
     torrent::InfoHash,
 };

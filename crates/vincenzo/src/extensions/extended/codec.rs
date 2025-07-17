@@ -2,22 +2,18 @@
 //! BEP 10 https://www.bittorrent.org/beps/bep_0010.html
 
 use crate::{
-    daemon::DaemonCtx,
     error::Error,
-    extensions::{
-        Core, ExtData, ExtMsg, ExtMsgHandler, ExtendedMessage,
-        TryIntoExtendedMessage, M,
-    },
+    extensions::{Core, ExtMsg, ExtMsgHandler, ExtendedMessage},
     peer::{Direction, MsgHandler},
 };
-use std::{fmt::Debug, ops::Deref, sync::Arc};
+use std::{fmt::Debug, ops::Deref};
 
 use bendy::{decoding::FromBencode, encoding::ToBencode};
 use bytes::BytesMut;
 use futures::SinkExt;
 use tokio_util::codec::{Decoder, Encoder};
 use tracing::debug;
-use vincenzo_macros::{Extension, Message};
+use vincenzo_macros::Message;
 
 use super::Extension;
 

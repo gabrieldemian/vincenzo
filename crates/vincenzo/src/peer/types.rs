@@ -1,3 +1,5 @@
+use std::fmt::Display;
+
 use speedy::{Readable, Writable};
 
 use crate::extensions::{core::BlockInfo, Core};
@@ -5,9 +7,9 @@ use crate::extensions::{core::BlockInfo, Core};
 #[derive(Clone, PartialEq, Eq, Hash, Default, Readable, Writable)]
 pub struct PeerId([u8; 20]);
 
-impl ToString for PeerId {
-    fn to_string(&self) -> String {
-        hex::encode(self.0)
+impl Display for PeerId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", hex::encode(self.0))
     }
 }
 

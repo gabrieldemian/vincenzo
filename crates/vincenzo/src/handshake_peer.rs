@@ -12,7 +12,9 @@ use crate::{
     error::Error,
     extensions::{
         // extended::Extension,
-        CoreCodec, Handshake, HandshakeCodec,
+        CoreCodec,
+        Handshake,
+        HandshakeCodec,
     },
     peer::{Direction, PeerId},
     torrent::TorrentCtx,

@@ -1,16 +1,14 @@
 //! Types for extensions of the peer protocol.
 
-use std::{future::Future, sync::Arc};
+use std::future::Future;
 
 use crate::{
-    daemon::DaemonCtx,
     error::Error,
-    extensions::{Core, ExtendedMessage, Extension},
+    extensions::{ExtendedMessage, Extension},
     peer::Peer,
 };
 
-use bytes::{Buf, BytesMut};
-use tokio_util::codec::{Decoder, Encoder};
+use bytes::BytesMut;
 
 /// Data that the extension adds to the peer, which is mutated by it's messages.
 pub trait ExtData {}

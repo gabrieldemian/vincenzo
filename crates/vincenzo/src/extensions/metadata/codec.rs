@@ -2,7 +2,7 @@
 
 use crate::{
     error::Error,
-    extensions::{Core, ExtData, ExtMsg, ExtMsgHandler, ExtendedMessage},
+    extensions::{ExtData, ExtMsg, ExtMsgHandler, ExtendedMessage},
     peer::MsgHandler,
     torrent::TorrentMsg,
 };
@@ -11,8 +11,7 @@ use bytes::{Buf, BufMut, BytesMut};
 use futures::SinkExt;
 use tokio::sync::oneshot;
 use tokio_util::codec::{Decoder, Encoder};
-use tracing::{debug, info, warn};
-use vincenzo_macros::{Extension, Message};
+use tracing::{debug, info};
 
 use super::{Metadata as MetadataDict, MetadataMsgType};
 
@@ -97,8 +96,8 @@ impl TryFrom<ExtendedMessage> for MetadataMsg {
             return Err(crate::error::Error::PeerIdInvalid);
         }
         let mut buf = BytesMut::new();
-        let msg = MetadataCodec.decode(&mut buf)?.ok_or(Error::BencodeError);
-        msg
+
+        MetadataCodec.decode(&mut buf)?.ok_or(Error::BencodeError)
     }
 }
 
@@ -152,11 +151,8 @@ impl ExtMsgHandler<MetadataMsg, MetadataData> for MsgHandler {
         peer: &mut crate::peer::Peer,
         msg: MetadataMsg,
     ) -> Result<(), Error> {
-        let Some(remote_ext_id) = peer
-            .ext_states
-            .extension
-            .as_ref()
-            .map_or(None, |v| v.m.lt_metadata)
+        let Some(remote_ext_id) =
+            peer.ext_states.extension.as_ref().and_then(|v| v.m.lt_metadata)
         else {
             debug!(
                 "{} received extended msg but the peer doesnt support the \

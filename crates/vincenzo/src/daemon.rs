@@ -22,7 +22,7 @@ use crate::{
     daemon_wire::{DaemonCodec, Message},
     disk::DiskMsg,
     error::Error,
-    extensions::{Core, ExtData},
+    extensions::ExtData,
     magnet::Magnet,
     peer::PeerId,
     torrent::{InfoHash, Torrent, TorrentMsg, TorrentState, TorrentStatus},
