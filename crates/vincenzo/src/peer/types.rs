@@ -26,7 +26,7 @@ use crate::{
         Handshake, HandshakeCodec, TryIntoExtendedMessage,
     },
     peer::{self, session::Session, ExtStates, PeerCtx},
-    torrent::{InfoHash, TorrentCtx},
+    torrent::{InfoHash, TorrentCtx, TorrentMsg},
 };
 
 #[derive(Clone, PartialEq, Eq, Hash, Default, Readable, Writable)]
@@ -116,6 +116,8 @@ pub enum PeerMsg {
     SeedOnly,
     /// When the program is being gracefuly shutdown, we need to kill the tokio
     /// green thread of the peer.
+    GracefullyShutdown,
+    /// An error happened and we want to quit and also send this peer's blocks back to the torrent.
     Quit,
 }
 
@@ -156,8 +158,12 @@ impl peer::Peer<Idle> {
         socket: TcpStream,
         torrent_ctx: Arc<TorrentCtx>,
     ) -> Result<peer::Peer<Connected>, Error> {
+        let remote = socket.peer_addr()?;
+
+        torrent_ctx.tx.send(TorrentMsg::PeerConnecting(remote.clone())).await?;
+
         let local = socket.local_addr()?;
-        let remote = socket.local_addr()?;
+
         let mut socket = Framed::new(socket, HandshakeCodec);
         let info_hash = self.state.info_hash;
 
@@ -168,13 +174,13 @@ impl peer::Peer<Idle> {
 
         // if we are connecting, send the first handshake
         if self.state.direction == Direction::Outbound {
-            debug!("{local} sending the first handshake to {remote}");
+            debug!("sending the first handshake to {remote}");
             socket.send(our_handshake.clone()).await?;
         }
 
         // wait for, and validate, their handshake
         if let Some(Ok(their_handshake)) = socket.next().await {
-            debug!("{local} received their handshake {remote}");
+            debug!("received their handshake {remote}");
 
             if !their_handshake.validate(&our_handshake) {
                 return Err(Error::HandshakeInvalid);
@@ -182,14 +188,14 @@ impl peer::Peer<Idle> {
 
             peer_handshake = their_handshake;
         } else {
-            warn!("{local} did not send a handshake {remote}");
+            warn!("did not send a handshake {remote}");
             return Err(Error::HandshakeInvalid);
         }
 
         let reserved = Reserved::from(peer_handshake.reserved);
 
         if self.state.direction == Direction::Inbound {
-            debug!("{local} sending the second handshake to {remote}");
+            debug!("sending the second handshake to {remote}");
             socket.send(our_handshake).await?;
         }
 
@@ -204,7 +210,7 @@ impl peer::Peer<Idle> {
         // receive theirs on the main event loop of Peer<Connected> and
         // not here.
         if reserved[43] && self.state.direction == Direction::Inbound {
-            debug!("{local} sending extended handshake to {remote}");
+            debug!("sending extended handshake to {remote}");
 
             let metadata_size = torrent_ctx.info.read().await.metainfo_size();
 
@@ -290,9 +296,20 @@ pub struct Connected {
     pub have_info: bool,
 }
 
-/// A problem happened and the peer cant be reached
+/// Tried to do an oubound connection but peer couldn't be reached.
+// todo:
+// Right now a peer is only converted to this state when we try an outbound
+// connection and it doesn't work, if the peer is connected and returns an
+// error, we should maybe use another type with more information about why it
+// failed, such as a peer being malicious.
 #[derive(Clone)]
 pub struct PeerError {
+    pub addr: SocketAddr,
+}
+
+/// A peer that is being handshaked and soon turned into a connected state.
+#[derive(Clone)]
+pub struct Connecting {
     pub addr: SocketAddr,
 }
 
@@ -304,4 +321,5 @@ impl peer::Peer<PeerError> {
 
 impl PeerState for PeerError {}
 impl PeerState for Connected {}
+impl PeerState for Connecting {}
 impl PeerState for Idle {}

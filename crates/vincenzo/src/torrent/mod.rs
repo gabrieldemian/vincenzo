@@ -17,8 +17,8 @@ use crate::{
     magnet::Magnet,
     metainfo::Info,
     peer::{
-        self, session::ConnectionState, Direction, Peer, PeerCtx, PeerError,
-        PeerId, PeerMsg,
+        self, session::ConnectionState, Direction, Peer, PeerCtx, PeerId,
+        PeerMsg,
     },
     tracker::{event::Event, Tracker, TrackerCtx, TrackerMsg, TrackerTrait},
 };
@@ -57,10 +57,16 @@ pub struct Connected {
 
     pub downloaded_info_bytes: u32,
 
-    pub peer_ctxs: HashMap<PeerId, Arc<PeerCtx>>,
+    /// Idle peers returned from an announce request to the tracker.
+    /// Will be removed from this vec as we connect with them, and added as we
+    /// request more peers to the tracker.
+    pub idle_peers: Vec<SocketAddr>,
 
-    /// Peers returned from an announce request to the tracker.
-    pub peers: Vec<SocketAddr>,
+    /// Idle peers being handshaked and soon moved to `connected_peer`.
+    pub connecting_peers: Vec<SocketAddr>,
+
+    /// Connected peers, removed from `peers`.
+    pub connected_peers: Vec<Arc<PeerCtx>>,
 
     pub error_peers: Vec<Peer<peer::PeerError>>,
 
@@ -208,14 +214,15 @@ impl Torrent<Idle> {
 
         Ok(Torrent {
             state: Connected {
+                connecting_peers: Vec::new(),
                 error_peers: Vec::new(),
                 downloaded_info_bytes: 0,
                 bitfield: Bitfield::default(),
                 stats,
-                peers,
+                idle_peers: peers,
                 tracker_ctx,
                 size: 0,
-                peer_ctxs: HashMap::new(),
+                connected_peers: Vec::new(),
                 have_info: false,
                 info_pieces: BTreeMap::new(),
                 download_rate: 0,
@@ -234,7 +241,7 @@ impl Torrent<Connected> {
     /// Spawn an event loop for each peer
     #[tracing::instrument(skip_all, name = "torrent::start_outbound_peers")]
     pub async fn spawn_outbound_peers(&self) -> Result<(), Error> {
-        for peer in self.state.peers.clone() {
+        for peer in self.state.idle_peers.clone() {
             let ctx = self.ctx.clone();
             let local_peer_id = self.state.tracker_ctx.peer_id.clone();
 
@@ -252,7 +259,7 @@ impl Torrent<Connected> {
                     }
                     Err(e) => {
                         debug!("error with peer: {:?} {e:#?}", peer);
-                        ctx.tx.send(TorrentMsg::FailedPeer(peer)).await?;
+                        ctx.tx.send(TorrentMsg::PeerError(peer)).await?;
                     }
                 }
                 Ok::<(), Error>(())
@@ -277,7 +284,7 @@ impl Torrent<Connected> {
             debug!("accepting requests in {local_peer_socket:?}");
 
             loop {
-                let _local_peer_id = local_peer_id.clone();
+                let local_peer_id = local_peer_id.clone();
 
                 if let Ok((socket, addr)) = local_peer_socket.accept().await {
                     info!("received inbound connection from {addr}");
@@ -287,7 +294,7 @@ impl Torrent<Connected> {
                         Self::start_and_run_peer(
                             ctx,
                             socket,
-                            _local_peer_id,
+                            local_peer_id,
                             Direction::Inbound,
                         )
                         .await?;
@@ -308,33 +315,35 @@ impl Torrent<Connected> {
         local_peer_id: PeerId,
         direction: Direction,
     ) -> Result<Peer<peer::Connected>, Error> {
+        let addr = socket.peer_addr()?;
+        let torrent_tx = ctx.tx.clone();
+
         let idle_peer = Peer::<peer::Idle>::new(
             direction,
             ctx.info_hash.clone(),
             local_peer_id,
         );
 
-        let mut connected_peer = idle_peer.handshake(socket, ctx).await?;
+        let mut connecting_peer = idle_peer.handshake(socket, ctx).await;
 
-        if let Err(r) = connected_peer.run().await {
-            debug!(
-                "{} Peer session stopped due to an error: {}",
-                connected_peer.state.ctx.local_addr, r
-            );
+        match connecting_peer {
+            Err(r) => {
+                debug!("failed to handshake peer: {}", r);
+                torrent_tx.send(TorrentMsg::PeerConnectingError(addr));
+                Err(r)
+            }
+            Ok(mut connected_peer) => {
+                if let Err(r) = connected_peer.run().await {
+                    debug!(
+                        "{} Peer session stopped due to an error: {}",
+                        connected_peer.state.ctx.remote_addr, r
+                    );
+                    connected_peer.free_pending_blocks().await;
+                    return Err(r);
+                }
+                Ok(connected_peer)
+            }
         }
-
-        // if we are gracefully shutting down, we do nothing with the pending
-        // blocks, Rust will drop them when their scope ends naturally.
-        // otherwise, we send the blocks back to the torrent
-        // so that other peers can download them. In this case, the peer
-        // might be shutting down due to an error or this is malicious peer
-        // that we wish to end the connection.
-        if connected_peer.state.session.connection != ConnectionState::Quitting
-        {
-            connected_peer.free_pending_blocks().await;
-        }
-
-        Ok(connected_peer)
     }
 
     /// Run the Torrent main event loop to listen to internal [`TorrentMsg`].
@@ -371,14 +380,38 @@ impl Torrent<Connected> {
                         }
                         TorrentMsg::DownloadedPiece(piece) => {
                             // send Have messages to peers that dont have our pieces
-                            for peer in self.state.peer_ctxs.values() {
+                            for peer in &self.state.connected_peers {
                                 let _ = peer.tx.send(PeerMsg::HavePiece(piece)).await;
                             }
                         }
-                        TorrentMsg::PeerConnected(id, ctx) => {
+                        TorrentMsg::PeerConnecting(addr) => {
+                            self.state.idle_peers.retain(|v| *v != addr);
+                            self.state.connecting_peers.push(addr);
+                        }
+                        TorrentMsg::PeerConnectingError(addr) => {
+                            self.state.connecting_peers.retain(|v| *v != addr);
+                            // we dont push this addr to the error_peers. If the TCP connection was
+                            // made but something happened in the handshake, there is nothing we
+                            // can do but to ignore this peer's existence.
+                        }
+                        TorrentMsg::PeerError(addr) => {
+                            self.state.error_peers.push(Peer::<peer::PeerError>::new(addr));
+                            self.state.connected_peers.retain(|v| v.remote_addr != addr);
+                            self.state.idle_peers.retain(|v| *v != addr);
+
+                            let _ = self
+                                .ctx
+                                .disk_tx
+                                .send(DiskMsg::DeletePeer(addr))
+                                .await;
+                        },
+                        TorrentMsg::PeerConnected(ctx) => {
                             debug!("{} connected with {}", ctx.local_addr, ctx.remote_addr);
 
-                            self.state.peer_ctxs.insert(id, ctx.clone());
+                            self.state.connected_peers.push(ctx.clone());
+                            self.state.connecting_peers.retain(|v| *v != ctx.remote_addr);
+                            // in the case that the PeerConnected arrives after the PeerConnecting
+                            self.state.idle_peers.retain(|v| *v != ctx.remote_addr);
 
                             let _ = self
                                 .ctx
@@ -406,7 +439,7 @@ impl Torrent<Connected> {
 
                             // tell all peers that we are not interested,
                             // we wont request blocks from them anymore
-                            for peer in self.state.peer_ctxs.values() {
+                            for peer in &self.state.connected_peers {
                                 let _ = peer.tx.send(PeerMsg::NotInterested).await;
                                 let _ = peer.tx.send(PeerMsg::SeedOnly).await;
                             }
@@ -415,15 +448,15 @@ impl Torrent<Connected> {
                         // Send Cancel messages to everyone else.
                         // todo: move to broadcast
                         TorrentMsg::SendCancelBlock { from, block_info } => {
-                            for (k, peer) in self.state.peer_ctxs.iter() {
-                                if *k == from { continue };
+                            for peer in &self.state.connected_peers {
+                                if peer.id == from { continue };
                                 let _ = peer.tx.send(PeerMsg::CancelBlock(block_info.clone())).await;
                             }
                         }
                         // todo: move to broadcast
                         TorrentMsg::StartEndgame(_peer_id, block_infos) => {
                             info!("Started endgame mode for {}", self.name);
-                            for (_id, peer) in self.state.peer_ctxs.iter() {
+                            for peer in &self.state.connected_peers {
                                 let _ = peer.tx.send(PeerMsg::RequestBlockInfos(block_infos.clone())).await;
                             }
                         }
@@ -535,7 +568,7 @@ impl Torrent<Connected> {
                                 } else {
                                     self.status = TorrentStatus::Paused;
                                 }
-                                for (_, peer) in &self.state.peer_ctxs {
+                                for peer in &self.state.connected_peers {
                                     if self.status == TorrentStatus::Paused {
                                         let _ = peer.tx.send(PeerMsg::Pause).await;
                                     } else {
@@ -544,9 +577,6 @@ impl Torrent<Connected> {
                                 }
                             }
                         }
-                        TorrentMsg::FailedPeer(addr) => {
-                            self.state.error_peers.push(Peer::<peer::PeerError>::new(addr));
-                        },
                         TorrentMsg::Quit => {
                             info!("Quitting torrent {:?}", self.name);
                             let tracker_tx = &self.state.tracker_ctx.tx;
@@ -558,7 +588,7 @@ impl Torrent<Connected> {
                                 })
                             .await;
 
-                            for peer in self.state.peer_ctxs.values() {
+                            for peer in &self.state.connected_peers {
                                 let tx = peer.tx.clone();
                                 spawn(async move {
                                     let _ = tx.send(PeerMsg::Quit).await;

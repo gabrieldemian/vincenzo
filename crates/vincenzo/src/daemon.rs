@@ -355,7 +355,7 @@ impl Daemon {
     }
 
     async fn quit(&mut self) -> Result<(), Error> {
-        // tell all torrents that we are gracefully shutting down,
+        // tell all torrents that we are quitting the client,
         // each torrent will kill their peers tasks, and their tracker task
         for (_, tx) in std::mem::take(&mut self.torrent_txs) {
             spawn(async move {

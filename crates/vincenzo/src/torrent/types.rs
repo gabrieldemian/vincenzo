@@ -16,10 +16,25 @@ pub enum TorrentMsg {
     /// an entire piece. We send Have messages to peers
     /// that don't have it and update the UI with stats.
     DownloadedPiece(usize),
+    DownloadComplete,
+
+    /// When a peer downloads an info piece,
+    /// we need to mutate `info_dict` and maybe
+    /// generate the entire info.
+    /// total, metadata.index, bytes
+    DownloadedInfoPiece(u32, u32, Vec<u8>),
+
     SetBitfield(usize),
     ReadBitfield(oneshot::Sender<Bitfield>),
-    PeerConnected(PeerId, Arc<PeerCtx>),
-    DownloadComplete,
+
+    PeerConnecting(SocketAddr),
+    PeerConnected(Arc<PeerCtx>),
+    /// When we can't do a TCP connection with the ip of the Peer.
+    PeerError(SocketAddr),
+    /// Error when handshaking a peer, even though the TCP connection was
+    /// established.
+    PeerConnectingError(SocketAddr),
+
     /// When in endgame mode, the first peer that receives this info,
     /// sends this message to send Cancel's to all other peers.
     SendCancelBlock {
@@ -27,11 +42,6 @@ pub enum TorrentMsg {
         block_info: BlockInfo,
     },
     StartEndgame(PeerId, Vec<BlockInfo>),
-    /// When a peer downloads an info piece,
-    /// we need to mutate `info_dict` and maybe
-    /// generate the entire info.
-    /// total, metadata.index, bytes
-    DownloadedInfoPiece(u32, u32, Vec<u8>),
     /// When a peer request a piece of the info
     /// index, recipient
     RequestInfoPiece(u32, oneshot::Sender<Option<Vec<u8>>>),
@@ -39,8 +49,6 @@ pub enum TorrentMsg {
     IncrementUploaded(u64),
     /// Toggle pause torrent and send Pause/Resume message to all Peers
     TogglePause,
-    /// When we can't do a TCP connection with the ip of the Peer.
-    FailedPeer(SocketAddr),
     /// When torrent is being gracefully shutdown
     Quit,
 }

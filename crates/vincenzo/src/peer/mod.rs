@@ -105,18 +105,19 @@ impl Peer<Connected> {
     /// on the peer wire protocol.
     #[tracing::instrument(skip_all, name = "peer::run")]
     pub async fn run(&mut self) -> Result<(), Error> {
-        let local = self.state.ctx.local_addr;
-        let remote = self.state.ctx.remote_addr;
+        self.state.session.connection = ConnectionState::Connecting;
 
         let _ = self
             .state
             .torrent_ctx
             .tx
             .send(TorrentMsg::PeerConnected(
-                self.state.ctx.id.clone(),
                 self.state.ctx.clone(),
             ))
             .await;
+
+        let local = self.state.ctx.local_addr;
+        let remote = self.state.ctx.remote_addr;
 
         let mut tick_timer = interval(Duration::from_secs(1));
 
@@ -164,6 +165,8 @@ impl Peer<Connected> {
             }
         }
 
+        self.state.session.connection = ConnectionState::Connected;
+
         loop {
             select! {
                 // update internal data every 1 second
@@ -209,7 +212,7 @@ impl Peer<Connected> {
                             self.state.sink.send(msg).await?;
                         }
                         PeerMsg::HavePiece(piece) => {
-                            debug!("{local} has piece {piece}");
+                            debug!("{remote} has piece {piece}");
 
                             self.state.have_info = true;
                             let pieces = self.state.ctx.pieces.read().await;
@@ -217,14 +220,14 @@ impl Peer<Connected> {
                             if let Some(b) = pieces.get(piece) {
                                 // send Have to this peer if he doesnt have this piece
                                 if !b {
-                                    debug!("sending have {piece} to peer {local}");
+                                    debug!("{remote} sending have {piece}");
                                     let _ = self.state.sink.send(Core::Have(piece)).await;
                                 }
                             }
                             drop(pieces);
                         }
                         PeerMsg::RequestBlockInfos(block_infos) => {
-                            debug!("{local} RequestBlockInfos len {}", block_infos.len());
+                            debug!("{remote} RequestBlockInfos len {}", block_infos.len());
 
                             let max = self.state.session.target_request_queue_len as usize - self.state.outgoing_requests.len();
 
@@ -244,12 +247,12 @@ impl Peer<Connected> {
                             }
                         }
                         PeerMsg::NotInterested => {
-                            debug!("{local} NotInterested {remote}");
+                            debug!("{remote} NotInterested");
                             self.state.ext_states.core.am_interested = false;
                             self.state.sink.send(Core::NotInterested).await?;
                         }
                         PeerMsg::Pause => {
-                            debug!("{local} Pause");
+                            debug!("{remote} Pause");
                             self.state.session.prev_peer_choking = self.state.ext_states.core.peer_choking;
 
                             if self.state.ext_states.core.am_interested {
@@ -279,7 +282,7 @@ impl Peer<Connected> {
                             let peer_has_piece = self.has_piece_not_in_local().await?;
 
                             if peer_has_piece {
-                                debug!("{local} we are interested due to Bitfield");
+                                debug!("{remote} we are interested due to Bitfield");
                                 self.state.ext_states.core.am_interested = true;
                                 self.state.sink.send(Core::Interested).await?;
 
@@ -289,32 +292,38 @@ impl Peer<Connected> {
                             }
                         }
                         PeerMsg::CancelBlock(block_info) => {
-                            debug!("{local} CancelBlock {remote}");
+                            debug!("{remote} CancelBlock");
                             self.state.outgoing_requests.remove(&block_info);
                             self.state.outgoing_requests_timeout.remove(&block_info);
                             self.state.sink.send(Core::Cancel(block_info)).await?;
                         }
                         PeerMsg::SeedOnly => {
-                            debug!("{local} SeedOnly");
+                            debug!("{remote} SeedOnly");
                             self.state.session.seed_only = true;
                         }
+                        PeerMsg::GracefullyShutdown => {
+                            debug!("{remote} GracefullyShutdown");
+                            self.state.session.connection = ConnectionState::Quitting;
+                            self.free_pending_blocks().await;
+                            return Ok(());
+                        }
                         PeerMsg::Quit => {
-                            debug!("{local} Quit");
+                            debug!("{remote} Quit");
                             self.state.session.connection = ConnectionState::Quitting;
                             return Ok(());
                         }
                         PeerMsg::HaveInfo => {
-                            debug!("{local} HaveInfo");
+                            debug!("{remote} HaveInfo");
                             self.state.have_info = true;
                             let am_interested = self.state.ext_states.core.am_interested;
                             let peer_choking = self.state.ext_states.core.peer_choking;
 
-                            debug!("{local} am_interested {am_interested}");
-                            debug!("{local} peer_choking {peer_choking}");
+                            debug!("{remote} am_interested {am_interested}");
+                            debug!("{remote} peer_choking {peer_choking}");
 
                             if am_interested && !peer_choking {
                                 self.prepare_for_download().await;
-                                debug!("{local} requesting blocks");
+                                debug!("{remote} requesting blocks");
                                 self.request_block_infos().await?;
                             }
                         }

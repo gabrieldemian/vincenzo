@@ -4,27 +4,19 @@ use tokio::time::Instant;
 
 use crate::{avg::SlidingDurationAvg, counter::ThruputCounters};
 
-/// At any given time, a connection with a peer is in one of the below states.
+/// At any given time, a connection with a handshaked(connected) peer has 3
+/// possible states. ConnectionState means TCP connection, Even if the peer is
+/// choked they are still marked here as connected.
 #[derive(Clone, Default, Copy, Debug, PartialEq)]
 pub enum ConnectionState {
-    /// The peer connection has not yet been connected or it had been connected
-    /// before but has been stopped.
+    /// The handshake just happened, probably computing choke algorithm and
+    /// sending bitfield messages.
     #[default]
-    Disconnected,
-    /// The state during which the TCP connection is established.
     Connecting,
-    /// The state after establishing the TCP connection and exchanging the
-    /// initial BitTorrent handshake.
-    Handshaking,
-    // This state is optional, it is used to verify that the bitfield exchange
-    // occurrs after the handshake and not later. It is set once the
-    // handshakes are exchanged and changed as soon as we receive the
-    // bitfield or the the first message that is not a bitfield. Any
-    // subsequent bitfield messages are rejected and the connection is
-    // dropped, as per the standard. AvailabilityExchange,
-    /// This is the normal state of a peer session, in which any messages,
-    /// apart from the 'handshake' and 'bitfield', may be exchanged.
+
+    // Connected and downloading and uploading.
     Connected,
+
     /// This state is set when the program is gracefully shutting down,
     /// In this state, we don't send the outgoing blocks to the tracker on
     /// shutdown.
@@ -36,10 +28,13 @@ pub enum ConnectionState {
 pub struct CoreState {
     /// If we're choked, peer doesn't allow us to download pieces from them.
     pub am_choking: bool,
+
     /// If we're interested, peer has pieces that we don't have.
     pub am_interested: bool,
+
     /// If peer is choked, we don't allow them to download pieces from us.
     pub peer_choking: bool,
+
     /// If peer is interested in us, they mean to download pieces that we have.
     pub peer_interested: bool,
 }

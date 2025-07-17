@@ -1,9 +1,6 @@
 //! Disk is responsible for file I/O of all Torrents.
 use std::{
-    collections::VecDeque,
-    io::SeekFrom,
-    path::{Path, PathBuf},
-    sync::Arc,
+    collections::VecDeque, io::SeekFrom, net::SocketAddr, path::{Path, PathBuf}, sync::Arc
 };
 
 use hashbrown::HashMap;
@@ -32,10 +29,10 @@ pub enum DiskMsg {
     /// sent, to create the skeleton of the torrent on disk (empty files
     /// and folders), and to add the torrent ctx.
     NewTorrent(Arc<TorrentCtx>),
-    /// The Peer does not have an ID until the handshake (that is why it's an
-    /// option), when that happens, this message will be sent immediately
-    /// to add the peer context.
+    /// The Peer does not have an ID until the handshake, when that happens,
+    /// this message will be sent immediately to add the peer context.
     NewPeer(Arc<PeerCtx>),
+    DeletePeer(SocketAddr),
     ReadBlock {
         info_hash: InfoHash,
         block_info: BlockInfo,
@@ -115,18 +112,22 @@ struct TorrentInfo {
 pub struct Disk {
     pub tx: mpsc::Sender<DiskMsg>,
     pub torrent_ctxs: HashMap<InfoHash, Arc<TorrentCtx>>,
-    pub peer_ctxs: HashMap<PeerId, Arc<PeerCtx>>,
+    pub peer_ctxs: Vec<Arc<PeerCtx>>,
+
     /// The sequence in which pieces will be downloaded,
     /// based on `PieceOrder`.
     pub pieces: HashMap<InfoHash, Vec<u32>>,
+
     /// How many pieces were downloaded.
     pub downloaded_pieces_len: HashMap<InfoHash, u32>,
+
     /// How many bytes downloaded for each piece.
     pub downloaded_pieces: HashMap<InfoHash, Vec<u64>>,
     pub piece_strategy: HashMap<InfoHash, PieceStrategy>,
     pub download_dir: String,
     cache: HashMap<InfoHash, Vec<Vec<Block>>>,
     torrent_info: HashMap<InfoHash, TorrentInfo>,
+
     /// The block infos of each piece of a torrent, ordered from 0 to last.
     /// where the index of the VecDeque is a piece.
     pieces_blocks: HashMap<InfoHash, Vec<VecDeque<BlockInfo>>>,
@@ -142,7 +143,7 @@ impl Disk {
             tx,
             download_dir,
             cache: HashMap::new(),
-            peer_ctxs: HashMap::new(),
+            peer_ctxs: Vec::new(),
             torrent_ctxs: HashMap::new(),
             downloaded_pieces_len: HashMap::new(),
             piece_strategy: HashMap::default(),
@@ -158,6 +159,10 @@ impl Disk {
         debug!("disk started event loop");
         while let Some(msg) = self.rx.recv().await {
             match msg {
+                DiskMsg::DeletePeer(addr) => {
+                    debug!("DeletePeer {addr:?}");
+                    self.delete_peer(addr);
+                }
                 DiskMsg::NewTorrent(torrent) => {
                     debug!("NewTorrent");
                     let _ = self.new_torrent(torrent).await;
@@ -204,7 +209,7 @@ impl Disk {
                 }
                 DiskMsg::NewPeer(peer) => {
                     debug!("NewPeer");
-                    self.new_peer(peer).await?;
+                    self.new_peer(peer);
                 }
                 DiskMsg::ReturnBlockInfos(info_hash, block_infos) => {
                     debug!("ReturnBlockInfos");
@@ -347,19 +352,20 @@ impl Disk {
         // tell all peers that the Info is downloaded, and
         // everything is ready to start the download.
         for peer in &self.peer_ctxs {
-            peer.1.tx.send(PeerMsg::HaveInfo).await?;
+            peer.tx.send(PeerMsg::HaveInfo).await?;
         }
 
         Ok(())
     }
 
     /// Add a new peer to `peer_ctxs`.
-    pub async fn new_peer(
-        &mut self,
-        peer_ctx: Arc<PeerCtx>,
-    ) -> Result<(), Error> {
-        self.peer_ctxs.insert(peer_ctx.id.clone(), peer_ctx);
-        Ok(())
+    pub fn new_peer(&mut self, peer_ctx: Arc<PeerCtx>) {
+        self.peer_ctxs.push(peer_ctx);
+    }
+
+    /// Add a new peer to `peer_ctxs`.
+    pub fn delete_peer(&mut self, remote_addr: SocketAddr) {
+        self.peer_ctxs.retain(|v| v.remote_addr != remote_addr);
     }
 
     /// The function will get the next available piece
@@ -377,10 +383,14 @@ impl Disk {
         info_hash: &InfoHash,
         peer_id: &PeerId,
     ) -> Option<(usize, u32)> {
-        let peer_ctx = self.peer_ctxs.get(peer_id);
-        peer_ctx?;
-        let peer_pieces = peer_ctx.unwrap().pieces.read().await;
+        let Some(peer_ctx) = self.peer_ctxs.iter().find(|v| v.id == *peer_id)
+        else {
+            return None;
+        };
+
+        let peer_pieces = peer_ctx.pieces.read().await;
         let downloaded_pieces = self.downloaded_pieces.get(info_hash).unwrap();
+
         self.pieces
             .get(info_hash)
             .unwrap()
@@ -417,7 +427,7 @@ impl Disk {
         // get all peers of the given torrent `info_hash`
         let peer_ctxs: Vec<Arc<PeerCtx>> = self
             .peer_ctxs
-            .values()
+            .iter()
             .filter(|&v| v.info_hash == *info_hash)
             .cloned()
             .collect();
