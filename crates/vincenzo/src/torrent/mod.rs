@@ -17,7 +17,7 @@ use crate::{
     magnet::Magnet,
     metainfo::Info,
     peer::{
-        session::ConnectionState, Direction, Peer, PeerBuilder, PeerCtx,
+        self, session::ConnectionState, Direction, Peer, PeerCtx, PeerError,
         PeerId, PeerMsg,
     },
     tracker::{event::Event, Tracker, TrackerCtx, TrackerMsg, TrackerTrait},
@@ -48,7 +48,6 @@ pub struct Connected {
 
     pub bitfield: Bitfield,
 
-    pub peer_ctxs: HashMap<PeerId, Arc<PeerCtx>>,
     pub have_info: bool,
 
     // If using a Magnet link, the info will be downloaded in pieces
@@ -58,10 +57,12 @@ pub struct Connected {
 
     pub downloaded_info_bytes: u32,
 
-    pub failed_peers: Vec<SocketAddr>,
+    pub peer_ctxs: HashMap<PeerId, Arc<PeerCtx>>,
 
     /// Peers returned from an announce request to the tracker.
     pub peers: Vec<SocketAddr>,
+
+    pub error_peers: Vec<Peer<peer::PeerError>>,
 
     // The downloaded bytes of the previous second,
     // used to get the download rate in seconds.
@@ -207,6 +208,7 @@ impl Torrent<Idle> {
 
         Ok(Torrent {
             state: Connected {
+                error_peers: Vec::new(),
                 downloaded_info_bytes: 0,
                 bitfield: Bitfield::default(),
                 stats,
@@ -216,7 +218,6 @@ impl Torrent<Idle> {
                 peer_ctxs: HashMap::new(),
                 have_info: false,
                 info_pieces: BTreeMap::new(),
-                failed_peers: Vec::new(),
                 download_rate: 0,
                 last_second_downloaded: 0,
             },
@@ -306,36 +307,34 @@ impl Torrent<Connected> {
         socket: TcpStream,
         local_peer_id: PeerId,
         direction: Direction,
-    ) -> Result<Peer, Error> {
-        let handshaked_peer = PeerBuilder::default()
-            .socket(socket)
-            .direction(direction)
-            .local_peer_id(local_peer_id)
-            .torrent_ctx(ctx.clone())
-            .handshake()
-            .await?;
+    ) -> Result<Peer<peer::Connected>, Error> {
+        let idle_peer = Peer::<peer::Idle>::new(
+            direction,
+            ctx.info_hash.clone(),
+            local_peer_id,
+        );
 
-        let mut peer = Peer::from(handshaked_peer);
+        let mut connected_peer = idle_peer.handshake(socket, ctx).await?;
 
-        let r = peer.run().await;
-
-        if let Err(r) = r {
+        if let Err(r) = connected_peer.run().await {
             debug!(
                 "{} Peer session stopped due to an error: {}",
-                peer.ctx.local_addr, r
+                connected_peer.state.ctx.local_addr, r
             );
         }
+
         // if we are gracefully shutting down, we do nothing with the pending
         // blocks, Rust will drop them when their scope ends naturally.
         // otherwise, we send the blocks back to the torrent
         // so that other peers can download them. In this case, the peer
         // might be shutting down due to an error or this is malicious peer
         // that we wish to end the connection.
-        if peer.session.connection != ConnectionState::Quitting {
-            peer.free_pending_blocks().await;
+        if connected_peer.state.session.connection != ConnectionState::Quitting
+        {
+            connected_peer.free_pending_blocks().await;
         }
 
-        Ok(peer)
+        Ok(connected_peer)
     }
 
     /// Run the Torrent main event loop to listen to internal [`TorrentMsg`].
@@ -546,7 +545,7 @@ impl Torrent<Connected> {
                             }
                         }
                         TorrentMsg::FailedPeer(addr) => {
-                            self.state.failed_peers.push(addr);
+                            self.state.error_peers.push(Peer::<peer::PeerError>::new(addr));
                         },
                         TorrentMsg::Quit => {
                             info!("Quitting torrent {:?}", self.name);
@@ -627,16 +626,25 @@ impl Torrent<Connected> {
                 // At every 5 seconds, try to reconnect to peers in which
                 // the TCP connection failed.
                 _ = reconnect_failed_peers.tick() => {
-                    for peer in self.state.failed_peers.clone() {
+                    let mut to_delete = Vec::new();
+
+                    for peer in &self.state.error_peers {
                         let ctx = self.ctx.clone();
                         let local_peer_id = self.state.tracker_ctx.peer_id.clone();
-                        debug!("reconnecting_peer {peer:?}");
+                        let addr = &peer.state.addr;
 
-                        if let Ok(socket) = TcpStream::connect(peer).await {
-                            self.state.failed_peers.retain(|v| *v != peer);
-                            Self::start_and_run_peer(ctx, socket, local_peer_id, Direction::Outbound)
-                                .await?;
+                        debug!("trying to reconnect peer {addr:?}");
+
+                        if let Ok(socket) = TcpStream::connect(addr.clone()).await {
+                            to_delete.push(addr.clone());
+
+                        Self::start_and_run_peer(ctx, socket, local_peer_id, Direction::Outbound)
+                            .await?;
                         }
+                    }
+
+                    for addr in to_delete {
+                        self.state.error_peers.retain(|v| v.state.addr != addr);
                     }
                 }
             }

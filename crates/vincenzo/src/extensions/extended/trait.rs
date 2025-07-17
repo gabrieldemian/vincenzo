@@ -5,7 +5,7 @@ use std::future::Future;
 use crate::{
     error::Error,
     extensions::{ExtendedMessage, Extension},
-    peer::Peer,
+    peer::{self, Peer},
 };
 
 use bytes::BytesMut;
@@ -24,7 +24,7 @@ pub trait ExtMsg {
 pub trait ExtMsgHandler<Msg: ExtMsg, Data: ExtData> {
     fn handle_msg(
         &self,
-        peer: &mut Peer,
+        peer: &mut Peer<peer::Connected>,
         msg: Msg,
         // data: &mut Data
     ) -> impl Future<Output = Result<(), Error>>;

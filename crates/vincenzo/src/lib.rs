@@ -71,7 +71,6 @@ pub mod daemon_wire;
 pub mod disk;
 pub mod error;
 pub mod extensions;
-mod handshake_peer;
 pub mod magnet;
 pub mod metainfo;
 pub mod peer;

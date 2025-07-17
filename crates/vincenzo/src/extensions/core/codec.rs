@@ -12,11 +12,12 @@ use crate::{
     disk::DiskMsg,
     error::Error,
     extensions::{ExtData, ExtMsg, ExtMsgHandler},
-    peer::MsgHandler,
+    peer::{self, MsgHandler},
     torrent::TorrentMsg,
 };
 
 /// State that comes with the Core protocol.
+#[derive(Clone)]
 pub struct CoreState {
     /// If we're choked, peer doesn't allow us to download pieces from them.
     pub am_choking: bool,
@@ -362,11 +363,11 @@ impl Decoder for CoreCodec {
 impl ExtMsgHandler<Core, CoreState> for MsgHandler {
     async fn handle_msg(
         &self,
-        peer: &mut crate::peer::Peer,
+        peer: &mut peer::Peer<peer::Connected>,
         msg: Core,
     ) -> Result<(), Error> {
-        let local = peer.ctx.local_addr;
-        let remote = peer.ctx.remote_addr;
+        let local = peer.state.ctx.local_addr;
+        let remote = peer.state.ctx.remote_addr;
 
         match msg {
             // handled by the extended messages
@@ -379,14 +380,14 @@ impl ExtMsgHandler<Core, CoreState> for MsgHandler {
                 // and put in pending_requests
                 debug!("{local} bitfield {remote}");
 
-                let mut b = peer.ctx.pieces.write().await;
+                let mut b = peer.state.ctx.pieces.write().await;
                 *b = bitfield.clone();
 
                 // remove excess bits
                 let pieces =
-                    peer.torrent_ctx.info.read().await.pieces() as usize;
+                    peer.state.torrent_ctx.info.read().await.pieces() as usize;
 
-                if bitfield.len() != pieces && pieces > 0 && peer.have_info {
+                if bitfield.len() != pieces && pieces > 0 && peer.state.have_info {
                     unsafe {
                         b.set_len(pieces);
                     }
@@ -401,8 +402,8 @@ impl ExtMsgHandler<Core, CoreState> for MsgHandler {
                 if peer_has_piece {
                     debug!("{local} interested due to Bitfield {remote}");
 
-                    peer.ext_states.core.am_interested = true;
-                    peer.sink.send(Core::Interested).await?;
+                    peer.state.ext_states.core.am_interested = true;
+                    peer.state.sink.send(Core::Interested).await?;
 
                     if peer.can_request() {
                         peer.prepare_for_download().await;
@@ -411,7 +412,7 @@ impl ExtMsgHandler<Core, CoreState> for MsgHandler {
                 }
             }
             Core::Unchoke => {
-                peer.ext_states.core.peer_choking = false;
+                peer.state.ext_states.core.peer_choking = false;
                 debug!("{local} unchoke {remote}");
 
                 if peer.can_request() {
@@ -420,17 +421,17 @@ impl ExtMsgHandler<Core, CoreState> for MsgHandler {
                 }
             }
             Core::Choke => {
-                peer.ext_states.core.peer_choking = true;
+                peer.state.ext_states.core.peer_choking = true;
                 debug!("{local} choke {remote}");
                 peer.free_pending_blocks().await;
             }
             Core::Interested => {
                 debug!("{local} interested {remote}");
-                peer.ext_states.core.peer_interested = true;
+                peer.state.ext_states.core.peer_interested = true;
             }
             Core::NotInterested => {
                 debug!("{local} NotInterested {remote}");
-                peer.ext_states.core.peer_interested = false;
+                peer.state.ext_states.core.peer_interested = false;
             }
             Core::Have(piece) => {
                 debug!("{local} Have {piece} {remote}");
@@ -440,7 +441,7 @@ impl ExtMsgHandler<Core, CoreState> for MsgHandler {
                 // have's. They do this to try to prevent censhorship
                 // from ISPs.
                 // Overwrite pieces on bitfield, if the peer has one
-                let mut pieces = peer.ctx.pieces.write().await;
+                let mut pieces = peer.state.ctx.pieces.write().await;
 
                 if pieces.clone().get(piece).is_none() {
                     warn!(
@@ -458,7 +459,7 @@ piece {piece}"
                 drop(pieces);
 
                 let (otx, orx) = oneshot::channel();
-                let torrent_ctx = peer.torrent_ctx.clone();
+                let torrent_ctx = peer.state.torrent_ctx.clone();
 
                 torrent_ctx.tx.send(TorrentMsg::ReadBitfield(otx)).await?;
 
@@ -467,7 +468,7 @@ piece {piece}"
                 let piece = local_bitfield.get(piece);
 
                 // maybe become interested in peer and request blocks
-                if !peer.ext_states.core.am_interested {
+                if !peer.state.ext_states.core.am_interested {
                     if let Some(a) = piece {
                         if *a {
                             debug!("already have this piece, ignoring");
@@ -478,8 +479,8 @@ interested"
                             );
                             debug!("{local} we are interested due to Have");
 
-                            peer.ext_states.core.am_interested = true;
-                            peer.sink.send(Core::Interested).await?;
+                            peer.state.ext_states.core.am_interested = true;
+                            peer.state.sink.send(Core::Interested).await?;
 
                             if peer.can_request() {
                                 peer.prepare_for_download().await;
@@ -507,38 +508,38 @@ interested"
             Core::Cancel(block_info) => {
                 debug!("{local} cancel from {remote}");
                 debug!("{block_info:?}");
-                peer.incoming_requests.remove(&block_info);
+                peer.state.incoming_requests.remove(&block_info);
             }
             Core::Request(block_info) => {
                 debug!("{local} request from {remote}");
                 debug!("{block_info:?}");
 
-                if !peer.ext_states.core.peer_choking {
+                if !peer.state.ext_states.core.peer_choking {
                     let begin = block_info.begin;
                     let index = block_info.index as usize;
                     let (tx, rx) = oneshot::channel();
 
                     // check if peer is not already requesting this block
-                    if peer.incoming_requests.contains(&block_info) {
+                    if peer.state.incoming_requests.contains(&block_info) {
                         // todo: if peer keeps spamming us, close connection
                         warn!("Peer sent duplicate block request");
                     }
 
-                    peer.incoming_requests.insert(block_info.clone());
+                    peer.state.incoming_requests.insert(block_info.clone());
 
-                    peer.torrent_ctx
+                    peer.state.torrent_ctx
                         .disk_tx
                         .send(DiskMsg::ReadBlock {
                             block_info,
                             recipient: tx,
-                            info_hash: peer.torrent_ctx.info_hash.clone(),
+                            info_hash: peer.state.torrent_ctx.info_hash.clone(),
                         })
                         .await?;
 
                     let bytes = rx.await?;
 
                     let block = Block { index, begin, block: bytes };
-                    let _ = peer.sink.send(Core::Piece(block)).await;
+                    let _ = peer.state.sink.send(Core::Piece(block)).await;
                 }
             }
         }

@@ -1,8 +1,33 @@
-use std::fmt::Display;
+use std::{fmt::Display, net::SocketAddr, sync::Arc};
 
+use bitvec::{array::BitArray, order::Msb0};
+use futures::{
+    stream::{SplitSink, SplitStream, StreamExt},
+    SinkExt,
+};
+use hashbrown::{HashMap, HashSet};
 use speedy::{Readable, Writable};
+use tokio::{
+    net::TcpStream,
+    sync::{
+        mpsc::{self, Receiver},
+        RwLock,
+    },
+    time::Instant,
+};
+use tokio_util::codec::{Framed, FramedParts};
+use tracing::{debug, warn};
 
-use crate::extensions::{core::BlockInfo, Core};
+use crate::{
+    bitfield::{Bitfield, Reserved},
+    error::Error,
+    extensions::{
+        core::BlockInfo, Core, CoreCodec, Extended, ExtendedMessage, Extension,
+        Handshake, HandshakeCodec, TryIntoExtendedMessage,
+    },
+    peer::{self, session::Session, ExtStates, PeerCtx},
+    torrent::{InfoHash, TorrentCtx},
+};
 
 #[derive(Clone, PartialEq, Eq, Hash, Default, Readable, Writable)]
 pub struct PeerId([u8; 20]);
@@ -102,3 +127,181 @@ pub enum Direction {
     /// Inbound means the peer initiated the connection
     Inbound,
 }
+
+/// A peer can be: Idle, Connected, or Error.
+pub trait PeerState {}
+
+/// New peers just returned by the tracker, without any type of connection,
+/// ready to be handshaked at any moment.
+#[derive(Clone)]
+pub struct Idle {
+    pub direction: Direction,
+    pub info_hash: InfoHash,
+    pub local_peer_id: PeerId,
+}
+
+impl peer::Peer<Idle> {
+    pub fn new(
+        direction: Direction,
+        info_hash: InfoHash,
+        local_peer_id: PeerId,
+    ) -> Self {
+        Self { state: Idle { direction, info_hash, local_peer_id } }
+    }
+
+    /// Do a handshake (and maybe extended handshake) with the peer and convert
+    /// it to a connected peer.
+    pub async fn handshake(
+        mut self,
+        socket: TcpStream,
+        torrent_ctx: Arc<TorrentCtx>,
+    ) -> Result<peer::Peer<Connected>, Error> {
+        let local = socket.local_addr()?;
+        let remote = socket.local_addr()?;
+        let mut socket = Framed::new(socket, HandshakeCodec);
+        let info_hash = self.state.info_hash;
+
+        let our_handshake =
+            Handshake::new(info_hash.clone(), self.state.local_peer_id);
+
+        let peer_handshake: Handshake;
+
+        // if we are connecting, send the first handshake
+        if self.state.direction == Direction::Outbound {
+            debug!("{local} sending the first handshake to {remote}");
+            socket.send(our_handshake.clone()).await?;
+        }
+
+        // wait for, and validate, their handshake
+        if let Some(Ok(their_handshake)) = socket.next().await {
+            debug!("{local} received their handshake {remote}");
+
+            if !their_handshake.validate(&our_handshake) {
+                return Err(Error::HandshakeInvalid);
+            }
+
+            peer_handshake = their_handshake;
+        } else {
+            warn!("{local} did not send a handshake {remote}");
+            return Err(Error::HandshakeInvalid);
+        }
+
+        let reserved = Reserved::from(peer_handshake.reserved);
+
+        if self.state.direction == Direction::Inbound {
+            debug!("{local} sending the second handshake to {remote}");
+            socket.send(our_handshake).await?;
+        }
+
+        let old_parts = socket.into_parts();
+        let mut new_parts = FramedParts::new(old_parts.io, CoreCodec);
+        new_parts.read_buf = old_parts.read_buf;
+        new_parts.write_buf = old_parts.write_buf;
+        let mut socket = Framed::from_parts(new_parts);
+
+        // on inbound connection and if the peer supports the extended protocol
+        // (BEP010), we send an extended handshake as well, but we
+        // receive theirs on the main event loop of Peer<Connected> and
+        // not here.
+        if reserved[43] && self.state.direction == Direction::Inbound {
+            debug!("{local} sending extended handshake to {remote}");
+
+            let metadata_size = torrent_ctx.info.read().await.metainfo_size();
+
+            let msg: ExtendedMessage =
+                Extension::supported(Some(metadata_size as u32)).try_into()?;
+
+            socket.send(msg.into()).await?;
+        }
+
+        let (tx, rx) = mpsc::channel::<PeerMsg>(100);
+
+        let ctx = PeerCtx {
+            direction: self.state.direction,
+            remote_addr: remote,
+            pieces: RwLock::new(Bitfield::new()),
+            id: peer_handshake.peer_id.into(),
+            tx,
+            info_hash,
+            local_addr: local,
+        };
+
+        let (sink, stream) = socket.split();
+
+        let peer = peer::Peer {
+            state: Connected {
+                ctx: Arc::new(ctx),
+                ext_states: ExtStates::default(),
+                sink,
+                stream,
+                incoming_requests: HashSet::default(),
+                outgoing_requests: HashSet::default(),
+                outgoing_requests_timeout: HashMap::new(),
+                session: Session::default(),
+                have_info: false,
+                reserved,
+                torrent_ctx,
+                rx,
+            },
+        };
+
+        Ok(peer)
+    }
+}
+
+/// Peer is downloading / uploading and working well
+pub struct Connected {
+    pub stream: SplitStream<Framed<TcpStream, CoreCodec>>,
+    pub sink: SplitSink<Framed<TcpStream, CoreCodec>, Core>,
+    pub reserved: BitArray<[u8; 8], Msb0>,
+    pub torrent_ctx: Arc<TorrentCtx>,
+    pub rx: Receiver<PeerMsg>,
+
+    pub ext_states: ExtStates,
+
+    /// Context of the Peer which is shared for anyone who needs it.
+    pub ctx: Arc<PeerCtx>,
+
+    /// Most of the session's information and state is stored here, i.e. it's
+    /// the "context" of the session, with information like: endgame mode, slow
+    /// start, download_rate, etc.
+    pub session: Session,
+
+    /// Our pending requests that we sent to peer. It represents the blocks
+    /// that we are expecting.
+    ///
+    /// If we receive a block whose request entry is here, that entry is
+    /// removed. A request is also removed here when it is timed out.
+    pub outgoing_requests: HashSet<BlockInfo>,
+
+    /// The Instant of each timeout value of [`Self::outgoing_requests`]
+    /// blocks.
+    pub outgoing_requests_timeout: HashMap<BlockInfo, Instant>,
+
+    /// The requests we got from peer.
+    ///
+    /// The request's entry is removed from here when the block is transmitted
+    /// or when the peer cancels it. If a peer sends a request and cancels it
+    /// before the disk read is done, the read block is dropped.
+    pub incoming_requests: HashSet<BlockInfo>,
+
+    /// This is a cache of have_info on Torrent
+    /// to avoid using locks or atomics.
+    pub have_info: bool,
+}
+
+/// A problem happened and the peer cant be reached
+#[derive(Clone)]
+pub struct PeerError {
+    pub addr: SocketAddr,
+}
+
+impl peer::Peer<PeerError> {
+    pub fn new(addr: SocketAddr) -> Self {
+        peer::Peer { state: PeerError { addr } }
+    }
+}
+
+impl PeerState for PeerError {}
+impl PeerState for Connected {}
+impl PeerState for Idle {}

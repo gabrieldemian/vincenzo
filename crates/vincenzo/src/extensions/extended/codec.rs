@@ -4,7 +4,7 @@
 use crate::{
     error::Error,
     extensions::{Core, ExtMsg, ExtMsgHandler, ExtendedMessage},
-    peer::{Direction, MsgHandler},
+    peer::{self, Direction, MsgHandler},
 };
 use std::{fmt::Debug, ops::Deref};
 
@@ -105,25 +105,34 @@ impl From<Extended> for Extension {
     }
 }
 
+impl TryFrom<Extension> for ExtendedMessage {
+    type Error = Error;
+
+    fn try_from(value: Extension) -> Result<Self, Self::Error> {
+        let buf: Vec<u8> = value.try_into()?;
+        Ok(ExtendedMessage(Extended::ID, buf))
+    }
+}
+
 impl ExtMsgHandler<Extended, Extension> for MsgHandler {
     async fn handle_msg(
         &self,
-        peer: &mut crate::peer::Peer,
+        peer: &mut peer::Peer<peer::Connected>,
         msg: Extended,
     ) -> Result<(), Error> {
         debug!(
             "{} extended handshake from {}",
-            peer.ctx.local_addr, peer.ctx.remote_addr
+            peer.state.ctx.local_addr, peer.state.ctx.remote_addr
         );
 
         let ext: Extension = msg.into();
 
         if let Some(lt_metadata) = ext.m.lt_metadata {
-            if peer.ctx.direction == Direction::Outbound {
+            if peer.state.ctx.direction == Direction::Outbound {
                 let meta_size = match ext.metadata_size {
                     Some(v) => v,
                     None => {
-                        let info = peer.torrent_ctx.info.read().await;
+                        let info = peer.state.torrent_ctx.info.read().await;
                         if info.pieces() != 0 {
                             info.metainfo_size() as u32
                         } else {
@@ -134,12 +143,12 @@ impl ExtMsgHandler<Extended, Extension> for MsgHandler {
                 let ext = Extension::supported(Some(meta_size)).to_bencode()?;
                 let core: Core = ExtendedMessage(lt_metadata, ext).into();
 
-                peer.sink.send(core).await?;
+                peer.state.sink.send(core).await?;
                 peer.try_request_info().await?;
             }
         }
 
-        peer.ext_states.extension = Some(ext);
+        peer.state.ext_states.extension = Some(ext);
 
         Ok(())
     }
