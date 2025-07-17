@@ -8,7 +8,7 @@ use crate::{
         Core, ExtData, ExtMsg, ExtMsgHandler, ExtendedMessage,
         TryIntoExtendedMessage, M,
     },
-    peer::{Direction, MsgConverter},
+    peer::{Direction, MsgHandler},
 };
 use std::{fmt::Debug, ops::Deref, sync::Arc};
 
@@ -109,7 +109,7 @@ impl From<Extended> for Extension {
     }
 }
 
-impl ExtMsgHandler<Extended, Extension> for MsgConverter {
+impl ExtMsgHandler<Extended, Extension> for MsgHandler {
     async fn handle_msg(
         &self,
         peer: &mut crate::peer::Peer,

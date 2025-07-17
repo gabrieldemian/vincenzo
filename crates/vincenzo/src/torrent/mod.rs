@@ -400,7 +400,7 @@ impl Torrent<Connected> {
                                 })
                             .await;
 
-                            if let Ok(Ok(r)) = orx.await {
+                            if let Ok(r) = orx.await {
                                 debug!("announced completion with success {r:#?}");
                                 self.state.stats = r.0.into();
                             }
@@ -550,14 +550,12 @@ impl Torrent<Connected> {
                         },
                         TorrentMsg::Quit => {
                             info!("Quitting torrent {:?}", self.name);
-                            let (otx, orx) = oneshot::channel();
-
                             let tracker_tx = &self.state.tracker_ctx.tx;
 
                             let _ = tracker_tx.send(
                                 TrackerMsg::Announce {
                                     event: Event::Stopped,
-                                    recipient: Some(otx),
+                                    recipient: None,
                                 })
                             .await;
 
@@ -567,8 +565,6 @@ impl Torrent<Connected> {
                                     let _ = tx.send(PeerMsg::Quit).await;
                                 });
                             }
-
-                            orx.await??;
 
                             return Ok(());
                         }
@@ -617,7 +613,7 @@ impl Torrent<Connected> {
                             })
                         .await;
 
-                        let r = orx.await??;
+                        let r = orx.await?;
                         debug!("new stats {r:#?}");
 
                         // update our stats, received from the tracker

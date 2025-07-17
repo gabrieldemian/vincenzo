@@ -8,7 +8,7 @@ use vincenzo_macros::Message;
 
 use super::{Block, BlockInfo};
 use crate::{
-    bitfield::Bitfield, disk::DiskMsg, error::Error, extensions::{ExtData, ExtMsg, ExtMsgHandler}, peer::MsgConverter, torrent::TorrentMsg
+    bitfield::Bitfield, disk::DiskMsg, error::Error, extensions::{ExtData, ExtMsg, ExtMsgHandler}, peer::MsgHandler, torrent::TorrentMsg
 };
 
 /// State that comes with the Core protocol.
@@ -354,7 +354,7 @@ impl Decoder for CoreCodec {
     }
 }
 
-impl ExtMsgHandler<Core, CoreState> for MsgConverter {
+impl ExtMsgHandler<Core, CoreState> for MsgHandler {
     async fn handle_msg(
         &self,
         peer: &mut crate::peer::Peer,
@@ -436,8 +436,7 @@ impl ExtMsgHandler<Core, CoreState> for MsgConverter {
                 // have's. They do this to try to prevent censhorship
                 // from ISPs.
                 // Overwrite pieces on bitfield, if the peer has one
-                let ctx = peer.ctx.clone();
-                let mut pieces = ctx.pieces.write().await;
+                let mut pieces = peer.ctx.pieces.write().await;
 
                 if pieces.clone().get(piece).is_none() {
                     warn!(

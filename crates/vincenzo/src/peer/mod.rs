@@ -172,7 +172,10 @@ impl From<HandshakedPeer> for Peer {
     }
 }
 
-pub struct MsgConverter;
+/// Handle peer messages.
+/// Each extension will use this type to implement a trait to handle messages of
+/// its extension.
+pub struct MsgHandler;
 
 impl Peer {
     /// Start the event loop of the Peer, listen to messages sent by others
@@ -249,14 +252,14 @@ impl Peer {
                             match ext.0 {
                                 <Extended as ExtMsg>::ID => {
                                     let msg: Extended = ext.try_into()?;
-                                    MsgConverter.handle_msg(
+                                    MsgHandler.handle_msg(
                                         self,
                                         msg,
                                     ).await?;
                                 }
                                 <MetadataMsg as ExtMsg>::ID => {
                                     let msg: MetadataMsg = ext.try_into()?;
-                                    MsgConverter.handle_msg(
+                                    MsgHandler.handle_msg(
                                         self,
                                         msg,
                                     ).await?;
@@ -265,7 +268,7 @@ impl Peer {
                             }
                         }
                         _ => {
-                            MsgConverter.handle_msg(
+                            MsgHandler.handle_msg(
                                 self,
                                 msg,
                             ).await?;

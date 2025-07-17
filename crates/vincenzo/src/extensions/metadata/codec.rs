@@ -3,7 +3,7 @@
 use crate::{
     error::Error,
     extensions::{Core, ExtData, ExtMsg, ExtMsgHandler, ExtendedMessage},
-    peer::MsgConverter,
+    peer::MsgHandler,
     torrent::TorrentMsg,
 };
 use bendy::encoding::ToBencode;
@@ -146,7 +146,7 @@ impl MetadataMsg {
     }
 }
 
-impl ExtMsgHandler<MetadataMsg, MetadataData> for MsgConverter {
+impl ExtMsgHandler<MetadataMsg, MetadataData> for MsgHandler {
     async fn handle_msg(
         &self,
         peer: &mut crate::peer::Peer,

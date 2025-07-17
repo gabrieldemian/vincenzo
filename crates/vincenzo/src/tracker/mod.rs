@@ -114,9 +114,7 @@ pub struct TrackerCtx {
 pub enum TrackerMsg {
     Announce {
         event: Event,
-        recipient: Option<
-            oneshot::Sender<Result<(announce::Response, Vec<u8>), Error>>,
-        >,
+        recipient: Option<oneshot::Sender<(announce::Response, Vec<u8>)>>,
     },
     Increment {
         downloaded: u64,
@@ -393,7 +391,7 @@ impl Tracker<Udp> {
                         } => {
                             let res = self
                                 .announce(event.clone())
-                                .await;
+                                .await?;
 
                             if let Some(recipient) = recipient {
                                 let _ = recipient.send(res);
