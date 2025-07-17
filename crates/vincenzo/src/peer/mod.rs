@@ -67,6 +67,13 @@ pub struct ExtStates {
     pub metadata: Option<MetadataData>,
 }
 
+/// A peer can be: Idle, Handshaking, Connected, or Error.
+pub trait PeerState {}
+pub struct Idle;
+pub struct Handshaking;
+pub struct Connected;
+pub struct PeerError;
+
 /// Data about a remote Peer that the client is connected to,
 /// but the client itself does not have a Peer struct.
 pub struct Peer {
@@ -77,9 +84,6 @@ pub struct Peer {
     pub rx: Receiver<PeerMsg>,
 
     pub ext_states: ExtStates,
-
-    /// Extensions of the protocol that the peer supports.
-    pub extension: Extension,
 
     /// Context of the Peer which is shared for anyone who needs it.
     pub ctx: Arc<PeerCtx>,
@@ -163,7 +167,6 @@ impl From<HandshakedPeer> for Peer {
             outgoing_requests_timeout: HashMap::new(),
             session: Session::default(),
             have_info: false,
-            extension: Extension::default(),
             reserved: peer.reserved,
             torrent_ctx: peer.torrent_ctx,
             ctx,
@@ -653,32 +656,41 @@ impl Peer {
     pub async fn try_request_info(&mut self) -> Result<(), Error> {
         // only request info if we dont have an Info
         // and the peer supports the metadata extension protocol
-        if !self.have_info {
-            // send bep09 request to get the Info
-            if let Some(ut_metadata) = self.extension.m.lt_metadata {
-                debug!(
-                    "peer supports ut_metadata {ut_metadata}, sending request"
-                );
+        if self.have_info {
+            return Ok(());
+        }
+        // send bep09 request to get the Info
+        let Some(lt_metadata) =
+            self.ext_states.extension.as_ref().and_then(|v| v.m.lt_metadata)
+        else {
+            return Ok(());
+        };
 
-                let t = self.extension.metadata_size.unwrap();
-                let pieces = t as f32 / BLOCK_LEN as f32;
-                let pieces = pieces.ceil() as u32;
-                debug!("this info has {pieces} pieces");
+        debug!("peer supports lt_metadata {lt_metadata}, sending request");
 
-                for i in 0..pieces {
-                    let h = Metadata::request(i);
+        let Some(t) =
+            self.ext_states.extension.as_ref().and_then(|v| v.metadata_size)
+        else {
+            return Ok(());
+        };
 
-                    debug!("requesting info piece {i}");
-                    debug!("request {h:?}");
+        let pieces = t as f32 / BLOCK_LEN as f32;
+        let pieces = pieces.ceil() as u32;
 
-                    // let h = h.to_bencode().map_err(|_| Error::BencodeError)?;
-                    // todo: fix this
-                    // let _ = self
-                    //     .sink
-                    //     .send(Core::Extended(ut_metadata, h).into())
-                    //     .await;
-                }
-            }
+        debug!("this info has {pieces} pieces");
+
+        for i in 0..pieces {
+            let h = Metadata::request(i);
+
+            debug!("requesting info piece {i}");
+            debug!("request {h:?}");
+
+            // let h = h.to_bencode().map_err(|_| Error::BencodeError)?;
+            // todo: fix this
+            // let _ = self
+            //     .sink
+            //     .send(Core::Extended(ut_metadata, h).into())
+            //     .await;
         }
         Ok(())
     }
@@ -722,8 +734,13 @@ impl Peer {
         //     .load(std::sync::atomic::Ordering::Relaxed);
 
         // the max number of block_infos to request
-        let n =
-            self.extension.reqq.unwrap_or(Session::DEFAULT_REQUEST_QUEUE_LEN);
+        let n = self
+            .ext_states
+            .extension
+            .as_ref()
+            .and_then(|v| v.reqq)
+            .unwrap_or(Session::DEFAULT_REQUEST_QUEUE_LEN);
+
         // debug!("has one piece, changing it to {:?}", self.extension.reqq);
 
         if n > 0 {

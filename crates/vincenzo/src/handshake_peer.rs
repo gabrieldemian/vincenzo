@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-// use bendy::encoding::ToBencode;
 use bitvec::{array::BitArray, order::Msb0};
 use futures::{SinkExt, StreamExt};
 use tokio::net::TcpStream;
@@ -10,12 +9,7 @@ use tracing::{debug, warn};
 use crate::{
     bitfield::Reserved,
     error::Error,
-    extensions::{
-        // extended::Extension,
-        CoreCodec,
-        Handshake,
-        HandshakeCodec,
-    },
+    extensions::{CoreCodec, Handshake, HandshakeCodec},
     peer::{Direction, PeerId},
     torrent::TorrentCtx,
 };
