@@ -4,7 +4,7 @@ use thiserror::Error;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::{
-    disk::DiskMsg, peer::PeerMsg, torrent::TorrentMsg, tracker::TrackerMsg,
+    daemon::DaemonMsg, disk::DiskMsg, peer::PeerMsg, torrent::TorrentMsg, tracker::TrackerMsg
 };
 
 impl From<bendy::decoding::Error> for Error {
@@ -101,6 +101,8 @@ pub enum Error {
     MagnetNoInfoHash,
     #[error("Could not send message to Disk")]
     SendErrorDisk(#[from] mpsc::error::SendError<DiskMsg>),
+    #[error("Could not send message to Daemon")]
+    SendDaemonError(#[from] mpsc::error::SendError<DaemonMsg>),
     #[error("Could not receive message from oneshot")]
     ReceiveErrorOneshot(#[from] oneshot::error::RecvError),
     #[error("Could not send message to Peer")]

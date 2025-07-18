@@ -3,7 +3,7 @@ use std::{net::SocketAddr, sync::LazyLock};
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::Error;
+use crate::{daemon::Daemon, error::Error};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Config {
@@ -33,7 +33,9 @@ static CONFIG: LazyLock<config::Config> = LazyLock::new(|| {
         .add_source(config::Environment::default())
         .set_default("download_dir", download_dir)
         .unwrap()
-        .set_default("daemon_addr", "127.0.0.1:3030")
+        .set_default("daemon_addr", Daemon::DEFAULT_LISTENER.to_string())
+        .unwrap()
+        .set_default("max_peers_global", 200)
         .unwrap()
         .set_default("quit_after_complete", false)
         .unwrap()

@@ -43,7 +43,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut disk = Disk::new(config.download_dir);
     let disk_tx = disk.tx.clone();
 
-    let mut daemon = Daemon::new(disk_tx);
+    let mut daemon = Daemon::new(disk_tx, config);
 
     spawn(async move {
         let _ = disk.run().await;

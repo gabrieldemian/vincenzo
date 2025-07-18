@@ -1,6 +1,6 @@
 //! A daemon that runs on the background and handles everything
 //! that is not the UI.
-use futures::{SinkExt, StreamExt};
+use futures::{stream::SplitSink, SinkExt, StreamExt};
 use hashbrown::HashMap;
 use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
@@ -8,12 +8,12 @@ use std::{
     time::Duration,
 };
 use tokio_util::codec::Framed;
-use tracing::{error, info, trace, warn};
+use tracing::{info, trace, warn};
 
 use tokio::{
     net::{TcpListener, TcpStream},
     select, spawn,
-    sync::{mpsc, oneshot, RwLock},
+    sync::{mpsc, oneshot},
     time::interval,
 };
 
@@ -22,9 +22,7 @@ use crate::{
     daemon_wire::{DaemonCodec, Message},
     disk::DiskMsg,
     error::Error,
-    extensions::ExtData,
     magnet::Magnet,
-    peer::PeerId,
     torrent::{InfoHash, Torrent, TorrentMsg, TorrentState, TorrentStatus},
     utils::to_human_readable,
 };
@@ -46,18 +44,15 @@ pub struct Daemon {
     pub ctx: Arc<DaemonCtx>,
     pub torrent_txs: HashMap<InfoHash, mpsc::Sender<TorrentMsg>>,
 
-    // u8 is the extension ID
-    // pub exts: HashMap<PeerId, HashMap<u8, Box<dyn ExtensionState<Msg =
-    // Core>>>>,
-    pub ext_data: HashMap<PeerId, HashMap<u8, Box<dyn ExtData>>>,
+    /// States of all Torrents, updated each second by the Torrent struct.
+    torrent_states: Vec<TorrentState>,
     rx: mpsc::Receiver<DaemonMsg>,
 }
 
 /// Context of the [`Daemon`] that may be shared between other types.
 pub struct DaemonCtx {
     pub tx: mpsc::Sender<DaemonMsg>,
-    /// States of all Torrents, updated each second by the Torrent struct.
-    pub torrent_states: RwLock<HashMap<InfoHash, TorrentState>>,
+    pub config: Config,
 }
 
 /// Messages used by the [`Daemon`] for internal communication.
@@ -68,6 +63,7 @@ pub enum DaemonMsg {
     /// Tell Daemon to add a new torrent and it will immediately
     /// announce to a tracker, connect to the peers, and start the download.
     NewTorrent(Magnet),
+    GetAllTorrentStates(oneshot::Sender<Vec<TorrentState>>),
     /// Message that the Daemon will send to all connectors when the state
     /// of a torrent updates (every 1 second).
     TorrentState(TorrentState),
@@ -83,28 +79,24 @@ pub enum DaemonMsg {
 
 impl Daemon {
     pub const DEFAULT_LISTENER: SocketAddr =
-        SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 3030);
+        SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 51411);
 
     /// Initialize the Daemon struct with the default [`DaemonConfig`].
-    pub fn new(disk_tx: mpsc::Sender<DiskMsg>) -> Self {
+    pub fn new(disk_tx: mpsc::Sender<DiskMsg>, config: Config) -> Self {
         let (tx, rx) = mpsc::channel::<DaemonMsg>(100);
 
         Self {
             disk_tx,
-            // exts: HashMap::new(),
-            ext_data: HashMap::new(),
             rx,
             torrent_txs: HashMap::new(),
-            ctx: Arc::new(DaemonCtx {
-                tx,
-                torrent_states: RwLock::new(HashMap::new()),
-            }),
+            torrent_states: Vec::new(),
+            ctx: Arc::new(DaemonCtx { tx, config }),
         }
     }
 
     /// This function will listen to 3 different event loops:
-    /// - The daemon internal messages via MPSC [`DaemonMsg`] (external)
-    /// - The daemon TCP framed messages [`DaemonCodec`] (internal)
+    /// - The daemon internal messages via MPSC [`DaemonMsg`]
+    /// - The daemon TCP framed messages [`DaemonCodec`]
     /// - The Disk event loop [`Disk`]
     ///
     /// # Important
@@ -120,48 +112,62 @@ impl Daemon {
         let config = Config::load()?;
         let socket = TcpListener::bind(config.daemon_addr).await.unwrap();
 
-        let ctx = self.ctx.clone();
-
         info!("Daemon listening on: {}", config.daemon_addr);
 
-        // Listen to remote TCP messages
-        let handle = spawn(async move {
-            loop {
-                match socket.accept().await {
-                    Ok((socket, addr)) => {
-                        info!("Connected with remote: {addr}");
-
-                        let ctx = ctx.clone();
-
-                        spawn(async move {
-                            let socket = Framed::new(socket, DaemonCodec);
-                            let _ = Self::listen_remote_msgs(socket, ctx).await;
-                        });
-                    }
-                    Err(e) => {
-                        error!("Could not connect with remote: {e:#?}");
-                    }
-                }
-            }
-        });
-
         let ctx = self.ctx.clone();
 
-        // Listen to internal mpsc messages
         loop {
             select! {
+                // listen for remote TCP connections
+                Ok((socket, addr)) = socket.accept() => {
+                    info!("Connected with remote: {addr}");
+
+                    let socket = Framed::new(socket, DaemonCodec);
+                    let (mut sink, mut stream) = socket.split();
+
+                    let ctx = ctx.clone();
+
+                    spawn(async move {
+                        // listen to messages sent locally, from the daemon binary.
+                        // a Torrent that is owned by the Daemon, may send messages to this channel
+                        let mut draw_interval = interval(Duration::from_secs(1));
+                        let ctx = ctx.clone();
+
+                        loop {
+                            select! {
+                                _ = draw_interval.tick() => {
+                                    let (otx, orx) = oneshot::channel();
+                                    ctx.tx.send(DaemonMsg::GetAllTorrentStates(otx)).await?;
+                                    let v = orx.await?;
+
+                                    for state in v {
+                                        sink.send(Message::TorrentState(state))
+                                            .await
+                                            .map_err(|_| Error::SendErrorTcp)?;
+                                    }
+                                }
+                                Some(Ok(msg)) = stream.next() => {
+                                    Self::handle_remote_msgs(&ctx.tx, msg, &mut sink).await?;
+                                }
+                                else => break
+                            }
+                        }
+
+                        Ok::<(), Error>(())
+                    });
+                }
+                // Listen to internal mpsc messages
                 Some(msg) = self.rx.recv() => {
                     match msg {
+                        DaemonMsg::GetAllTorrentStates(tx) => {
+                            let _ = tx.send(self.torrent_states.clone());
+                        }
                         DaemonMsg::TorrentState(torrent_state) => {
-                            let mut torrent_states = self.ctx.torrent_states.write().await;
+                            self.torrent_states.push(torrent_state.clone());
 
-                            torrent_states.insert(torrent_state.info_hash.clone(), torrent_state.clone());
-
-                            if config.quit_after_complete && torrent_states.values().all(|v| v.status == TorrentStatus::Seeding) {
+                            if config.quit_after_complete && self.torrent_states.iter().all(|v| v.status == TorrentStatus::Seeding) {
                                 let _ = ctx.tx.send(DaemonMsg::Quit).await;
                             }
-
-                            drop(torrent_states);
                         }
                         DaemonMsg::NewTorrent(magnet) => {
                             let _ = self.new_torrent(magnet).await;
@@ -170,16 +176,13 @@ impl Daemon {
                             let _ = self.toggle_pause(&info_hash).await;
                         }
                         DaemonMsg::RequestTorrentState(info_hash, recipient) => {
-                            let torrent_states = self.ctx.torrent_states.read().await;
-                            let torrent_state = torrent_states.get(&info_hash);
+                            let torrent_state = self.torrent_states.iter().find(|v| v.info_hash == info_hash);
                             let _ = recipient.send(torrent_state.cloned());
                         }
                         DaemonMsg::PrintTorrentStatus => {
-                            let torrent_states = self.ctx.torrent_states.read().await;
+                            println!("Showing stats of {} torrents.", self.torrent_states.len());
 
-                            println!("Showing stats of {} torrents.", torrent_states.len());
-
-                            for state in torrent_states.values() {
+                            for state in &self.torrent_states {
                                 let status_line: String = match state.status {
                                     TorrentStatus::Downloading => {
                                         format!(
@@ -202,7 +205,6 @@ impl Daemon {
                         }
                         DaemonMsg::Quit => {
                             let _ = self.quit().await;
-                            handle.abort();
                             break;
                         }
                     }
@@ -216,60 +218,54 @@ impl Daemon {
     /// Listen to messages sent remotely via TCP,
     /// A UI can be a standalone binary that is executing on another machine,
     /// and wants to control the daemon using the [`DaemonCodec`] protocol.
-    async fn listen_remote_msgs(
-        socket: Framed<TcpStream, DaemonCodec>,
-        ctx: Arc<DaemonCtx>,
+    async fn handle_remote_msgs(
+        tx: &mpsc::Sender<DaemonMsg>,
+        msg: Message,
+        sink: &mut SplitSink<Framed<TcpStream, DaemonCodec>, Message>,
     ) -> Result<(), Error> {
-        trace!("daemon listen_msgs");
+        // listen to messages sent remotely via TCP, and pass them
+        // to our rx. We do this so we can use the exact same messages
+        // when sent remotely via TCP (i.e UI on remote server),
+        // or locally on the same binary (i.e CLI).
+        match msg {
+            Message::NewTorrent(magnet_link) => {
+                trace!("daemon received NewTorrent {magnet_link}");
 
-        let mut draw_interval = interval(Duration::from_secs(1));
-        let (mut sink, mut stream) = socket.split();
+                let magnet = Magnet::new(&magnet_link);
 
-        loop {
-            select! {
-                // listen to messages sent remotely via TCP, and pass them
-                // to our rx. We do this so we can use the exact same messages
-                // when sent remotely via TCP (i.e UI on remote server),
-                // or locally on the same binary (i.e CLI).
-                Some(Ok(msg)) = stream.next() => {
-                    match msg {
-                        Message::NewTorrent(magnet_link) => {
-                            trace!("daemon received NewTorrent {magnet_link}");
-                            let magnet = Magnet::new(&magnet_link);
-                            if let Ok(magnet) = magnet {
-                                let _ = ctx.tx.send(DaemonMsg::NewTorrent(magnet)).await;
-                            }
-                        }
-                        Message::RequestTorrentState(info_hash) => {
-                            trace!("daemon RequestTorrentState {info_hash:?}");
-                            let (tx, rx) = oneshot::channel();
-                            let _ = ctx.tx.send(DaemonMsg::RequestTorrentState(info_hash, tx)).await;
-                            let r = rx.await?;
-
-                            let _ = sink.send(Message::TorrentState(r)).await;
-                        }
-                        Message::TogglePause(id) => {
-                            trace!("daemon received TogglePause {id:?}");
-                            let _ = ctx.tx.send(DaemonMsg::TogglePause(id)).await;
-                        }
-                        Message::Quit => {
-                            info!("Daemon is quitting");
-                            let _ = ctx.tx.send(DaemonMsg::Quit).await;
-                        }
-                        Message::PrintTorrentStatus => {
-                            trace!("daemon received PrintTorrentStatus");
-                            let _ = ctx.tx.send(DaemonMsg::PrintTorrentStatus).await;
-                        }
-                        _ => {}
-                    }
-                }
-                // listen to messages sent locally, from the daemon binary.
-                // a Torrent that is owned by the Daemon, may send messages to this channel
-                _ = draw_interval.tick() => {
-                    let _ = Self::draw(&mut sink, ctx.clone()).await;
+                if let Ok(magnet) = magnet {
+                    let _ = tx.send(DaemonMsg::NewTorrent(magnet)).await;
                 }
             }
-        }
+            Message::RequestTorrentState(info_hash) => {
+                trace!("daemon RequestTorrentState {info_hash:?}");
+
+                let (otx, orx) = oneshot::channel();
+
+                let _ = tx
+                    .send(DaemonMsg::RequestTorrentState(info_hash, otx))
+                    .await;
+
+                if let Some(r) = orx.await? {
+                    let _ = sink.send(Message::TorrentState(r)).await;
+                }
+            }
+            Message::TogglePause(id) => {
+                trace!("daemon received TogglePause {id:?}");
+                let _ = tx.send(DaemonMsg::TogglePause(id)).await;
+            }
+            Message::Quit => {
+                info!("Daemon is quitting");
+                let _ = tx.send(DaemonMsg::Quit).await;
+            }
+            Message::PrintTorrentStatus => {
+                trace!("daemon received PrintTorrentStatus");
+                let _ = tx.send(DaemonMsg::PrintTorrentStatus).await;
+            }
+            _ => {}
+        };
+
+        Ok(())
     }
 
     /// Pause/resume the torrent, making the download an upload stale.
@@ -287,24 +283,6 @@ impl Daemon {
         Ok(())
     }
 
-    /// Sends a Draw message to the [`UI`] with the updated state of a torrent.
-    async fn draw<T>(sink: &mut T, ctx: Arc<DaemonCtx>) -> Result<(), Error>
-    where
-        T: SinkExt<Message> + Sized + std::marker::Unpin + Send,
-    {
-        let torrent_states = ctx.torrent_states.read().await;
-
-        for state in torrent_states.values().cloned() {
-            // debug!("{state:#?}");
-            sink.send(Message::TorrentState(Some(state)))
-                .await
-                .map_err(|_| Error::SendErrorTcp)?;
-        }
-
-        drop(torrent_states);
-        Ok(())
-    }
-
     /// Create a new [`Torrent`] given a magnet link URL
     /// and run the torrent's event loop.
     ///
@@ -319,9 +297,12 @@ impl Daemon {
         trace!("magnet: {}", *magnet);
         let info_hash = magnet.parse_xt_infohash();
 
-        let mut torrent_states = self.ctx.torrent_states.write().await;
-
-        if torrent_states.get(&info_hash).is_some() {
+        if self
+            .torrent_states
+            .iter()
+            .find(|v| v.info_hash == info_hash)
+            .is_some()
+        {
             warn!("This torrent is already present on the Daemon");
             return Err(Error::NoDuplicateTorrent);
         }
@@ -332,11 +313,10 @@ impl Daemon {
             ..Default::default()
         };
 
-        torrent_states.insert(info_hash.clone(), torrent_state);
-        drop(torrent_states);
+        self.torrent_states.push(torrent_state);
 
         let torrent =
-            Torrent::new(self.disk_tx.clone(), self.ctx.tx.clone(), magnet);
+            Torrent::new(self.disk_tx.clone(), self.ctx.clone(), magnet);
 
         self.torrent_txs.insert(info_hash, torrent.ctx.tx.clone());
         info!("Downloading torrent: {}", torrent.name);

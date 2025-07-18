@@ -30,7 +30,7 @@ pub enum Message {
     /// to all listeners
     ///
     /// <len=1+torrent_state_len><id=2><torrent_state>
-    TorrentState(Option<TorrentState>),
+    TorrentState(TorrentState),
     /// Pause/Resume the torrent with the given info_hash.
     TogglePause(InfoHash),
     /// Ask the Daemon to send a [`TorrentState`] of the torrent with the given
@@ -125,11 +125,10 @@ impl Encoder<Message> for DaemonCodec {
                 buf.put_u8(MessageId::NewTorrent as u8);
                 buf.extend_from_slice(magnet.as_bytes());
             }
-            Message::TorrentState(torrent_info) => {
-                let info_bytes = match torrent_info {
-                    Some(v) => v.write_to_vec_with_ctx(BigEndian {})?,
-                    None => vec![],
-                };
+            Message::TorrentState(torrent_state) => {
+                let info_bytes =
+                    torrent_state.write_to_vec_with_ctx(BigEndian {})?;
+
                 let msg_len = 1 + info_bytes.len() as u32;
 
                 buf.put_u32(msg_len);
@@ -218,17 +217,15 @@ impl Decoder for DaemonCodec {
                 Message::NewTorrent(String::from_utf8(payload).unwrap())
             }
             MessageId::TorrentState => {
-                let mut info: Option<TorrentState> = None;
+                let mut payload = vec![0u8; buf.remaining()];
 
-                if buf.has_remaining() {
-                    let mut payload = vec![0u8; buf.remaining()];
-                    buf.copy_to_slice(&mut payload);
-                    info = TorrentState::read_from_buffer_with_ctx(
-                        BigEndian {},
-                        &payload,
-                    )
-                    .ok();
-                }
+                buf.copy_to_slice(&mut payload);
+
+                let info = TorrentState::read_from_buffer_with_ctx(
+                    BigEndian {},
+                    &payload,
+                )?;
+
                 Message::TorrentState(info)
             }
             MessageId::TogglePause => {
@@ -291,6 +288,7 @@ mod tests {
             uploaded: 44,
             size: 9,
             info_hash: [0u8; 20].into(),
+            ..Default::default()
         };
 
         let a = info.write_to_vec_with_ctx(BigEndian {}).unwrap();

@@ -41,7 +41,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let _ = disk.run().await;
         });
 
-        let mut daemon = Daemon::new(disk_tx);
+        let mut daemon = Daemon::new(disk_tx, config);
 
         daemon.run().await?;
     }

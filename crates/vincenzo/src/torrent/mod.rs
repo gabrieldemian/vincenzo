@@ -11,7 +11,7 @@ pub use types::*;
 
 use crate::{
     bitfield::Bitfield,
-    daemon::DaemonMsg,
+    daemon::{DaemonCtx, DaemonMsg},
     disk::DiskMsg,
     error::Error,
     magnet::Magnet,
@@ -38,19 +38,23 @@ pub trait TorrentTrait {}
 pub struct Idle;
 
 pub struct Connected {
-    // Stats of the current Torrent, returned from tracker on announce
-    // requests.
+    /// Stats of the current Torrent, returned from tracker on announce
+    /// requests.
     pub stats: Stats,
 
+    /// Bitfield representing the presence or absence of pieces for our local
+    /// peer, where each bit is a piece.
     pub bitfield: Bitfield,
 
+    /// If the torrent has the full downloaded info (metadata) or not.
     pub have_info: bool,
 
-    // If using a Magnet link, the info will be downloaded in pieces
-    // and those pieces may come in different order,
-    // After it is complete, it will be encoded into [`Info`]
+    /// If using a Magnet link, the info will be downloaded in pieces
+    /// and those pieces may come in different order,
+    /// After it is complete, it will be encoded into [`Info`]
     pub info_pieces: BTreeMap<u32, Vec<u8>>,
 
+    /// How much of the info was downloaded.
     pub downloaded_info_bytes: u32,
 
     /// Idle peers returned from an announce request to the tracker.
@@ -71,11 +75,13 @@ pub struct Connected {
     // this will be mutated on the frontend event loop.
     pub last_second_downloaded: u64,
 
+    /// How fast the client is downloading this torrent.
     pub download_rate: u64,
 
-    // The total size of the torrent files, in bytes,
-    // this is a cache of ctx.info.get_size()
+    /// The total size of the torrent files, in bytes,
+    /// this is a cache of ctx.info.get_size()
     pub size: u64,
+
     pub tracker_ctx: Arc<TrackerCtx>,
 }
 
@@ -86,7 +92,7 @@ impl TorrentTrait for Connected {}
 /// a torrent download or upload.
 pub struct Torrent<S: TorrentTrait> {
     pub ctx: Arc<TorrentCtx>,
-    pub daemon_tx: mpsc::Sender<DaemonMsg>,
+    pub daemon_ctx: Arc<DaemonCtx>,
     pub name: String,
     pub rx: mpsc::Receiver<TorrentMsg>,
     pub state: S,
@@ -114,6 +120,11 @@ pub struct TorrentState {
     pub uploaded: u64,
     pub size: u64,
     pub info_hash: InfoHash,
+    pub have_info: bool,
+    pub bitfield: Vec<u8>,
+    pub connected_peers: u8,
+    pub connecting_peers: u8,
+    pub idle_peers: u8,
 }
 
 /// Status of the current Torrent, updated at every announce request.
@@ -125,10 +136,10 @@ pub struct Stats {
 }
 
 impl Torrent<Idle> {
-    #[tracing::instrument(skip(disk_tx, daemon_tx), name = "torrent::new")]
+    #[tracing::instrument(skip(disk_tx, daemon_ctx), name = "torrent::new")]
     pub fn new(
         disk_tx: mpsc::Sender<DiskMsg>,
-        daemon_tx: mpsc::Sender<DaemonMsg>,
+        daemon_ctx: Arc<DaemonCtx>,
         magnet: Magnet,
     ) -> Torrent<Idle> {
         let name = magnet.parse_dn();
@@ -148,7 +159,7 @@ impl Torrent<Idle> {
             state: Idle,
             name,
             status: TorrentStatus::default(),
-            daemon_tx,
+            daemon_ctx,
             ctx,
             rx,
         }
@@ -225,7 +236,7 @@ impl Torrent<Idle> {
                 last_second_downloaded: 0,
             },
             ctx: self.ctx,
-            daemon_tx: self.daemon_tx,
+            daemon_ctx: self.daemon_ctx,
             name: self.name,
             rx: self.rx,
             status: self.status,
@@ -325,7 +336,9 @@ impl Torrent<Connected> {
         match connecting_peer {
             Err(r) => {
                 debug!("failed to handshake peer: {}", r);
-                let _ = torrent_tx.send(TorrentMsg::PeerConnectingError(addr)).await;
+                let _ = torrent_tx
+                    .send(TorrentMsg::PeerConnectingError(addr))
+                    .await;
                 Err(r)
             }
             Ok(mut connected_peer) => {
@@ -608,6 +621,11 @@ impl Torrent<Connected> {
                         status: self.status.clone(),
                         download_rate: self.state.download_rate,
                         info_hash: self.ctx.info_hash.clone(),
+                        have_info: self.state.have_info,
+                        bitfield: self.state.bitfield.clone().into_vec(),
+                        connected_peers: self.state.connected_peers.len() as u8,
+                        connecting_peers: self.state.connecting_peers.len() as u8,
+                        idle_peers: self.state.idle_peers.len() as u8,
                     };
 
                     self.state.last_second_downloaded = self.state.tracker_ctx.downloaded;
@@ -620,7 +638,7 @@ impl Torrent<Connected> {
                     // );
 
                     // send updated information to daemon
-                    let _ = self.daemon_tx.send(DaemonMsg::TorrentState(torrent_state)).await;
+                    let _ = self.daemon_ctx.tx.send(DaemonMsg::TorrentState(torrent_state)).await;
                 }
                 // periodically announce to tracker, at the specified interval
                 // to update the tracker about the client's stats.
