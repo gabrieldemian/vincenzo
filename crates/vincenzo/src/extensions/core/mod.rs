@@ -3,7 +3,6 @@
 
 mod codec;
 mod handshake_codec;
-mod message;
 
 // re-exports
 pub use codec::*;

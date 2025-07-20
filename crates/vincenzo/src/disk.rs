@@ -928,9 +928,7 @@ mod tests {
     use rand::{distr::Alphanumeric, Rng};
 
     use crate::{
-        bitfield::Bitfield,
-        config::Config,
-        daemon::{Daemon, DaemonMsg},
+        daemon::Daemon,
         extensions::core::{Block, BLOCK_LEN},
         magnet::Magnet,
         metainfo::{self, Info},
@@ -960,18 +958,15 @@ mod tests {
              3A6969%2Fannounce&amp;tr=udp%3A%2F%2Fopen.stealth.si%3A80%\
              2Fannounce"
         );
-        let (disk_tx, disk_rx) = mpsc::channel::<DiskMsg>(1000);
+        let (disk_tx, _disk_rx) = mpsc::channel::<DiskMsg>(1000);
 
-        let (daemon_tx, _daemon_rx) = mpsc::channel::<DaemonMsg>(1000);
-
-        let config = Config::load().unwrap();
-        let daemon = Daemon::new(disk_tx.clone(), config);
+        let daemon = Daemon::new(disk_tx.clone());
 
         let magnet = Magnet::new(&magnet).unwrap();
         let torrent = Torrent::new(disk_tx, daemon.ctx.clone(), magnet);
         let torrent_ctx = torrent.ctx.clone();
 
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let download_dir: String =
             (0..20).map(|_| rng.sample(Alphanumeric) as char).collect();
 
@@ -1053,7 +1048,7 @@ mod tests {
         // Complex multi file torrent, 64 blocks per piece
         //
         let original_hook = std::panic::take_hook();
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let download_dir: String =
             (0..20).map(|_| rng.sample(Alphanumeric) as char).collect();
         let name = "name_of_torrent_folder".to_owned();
@@ -1100,11 +1095,10 @@ mod tests {
              2Fannounce"
         );
 
-        let (disk_tx, disk_rx) = mpsc::channel::<DiskMsg>(3);
+        let (disk_tx, _disk_rx) = mpsc::channel::<DiskMsg>(3);
 
-        let (fr_tx, _) = mpsc::channel::<DaemonMsg>(300);
         let magnet = Magnet::new(&magnet).unwrap();
-        let daemon = Daemon::new(disk_tx.clone(), Config::load().unwrap());
+        let daemon = Daemon::new(disk_tx.clone());
         let torrent = Torrent::new(disk_tx, daemon.ctx.clone(), magnet);
         let torrent_ctx = torrent.ctx.clone();
         let info_hash: InfoHash = torrent_ctx.info_hash.clone();
@@ -1227,7 +1221,7 @@ mod tests {
              3A6969%2Fannounce&amp;tr=udp%3A%2F%2Fopen.stealth.si%3A80%\
              2Fannounce"
         );
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let download_dir: String =
             (0..20).map(|_| rng.sample(Alphanumeric) as char).collect();
 
@@ -1241,9 +1235,8 @@ mod tests {
 
         let mut disk = Disk::new(download_dir.clone());
 
-        let (fr_tx, _) = mpsc::channel::<DaemonMsg>(300);
         let magnet = Magnet::new(&magnet).unwrap();
-        let daemon = Daemon::new(disk_tx.clone(), Config::load().unwrap());
+        let daemon = Daemon::new(disk_tx.clone());
         let torrent = Torrent::new(disk_tx, daemon.ctx.clone(), magnet);
         let info_hash = torrent.ctx.info_hash.clone();
 
@@ -1354,7 +1347,7 @@ mod tests {
              3A6969%2Fannounce&amp;tr=udp%3A%2F%2Fopen.stealth.si%3A80%\
              2Fannounce"
         );
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let download_dir: String =
             (0..20).map(|_| rng.sample(Alphanumeric) as char).collect();
 
@@ -1368,9 +1361,8 @@ mod tests {
 
         let mut disk = Disk::new(download_dir.clone());
 
-        let (fr_tx, _) = mpsc::channel::<DaemonMsg>(300);
         let magnet = Magnet::new(&magnet).unwrap();
-        let daemon = Daemon::new(disk_tx.clone(), Config::load().unwrap());
+        let daemon = Daemon::new(disk_tx.clone());
         let torrent = Torrent::new(disk_tx, daemon.ctx.clone(), magnet);
         let mut info_t = torrent.ctx.info.write().await;
         *info_t = info.clone();
@@ -1521,7 +1513,7 @@ mod tests {
              3A6969%2Fannounce&amp;tr=udp%3A%2F%2Fopen.stealth.si%3A80%\
              2Fannounce"
         );
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let download_dir: String =
             (0..20).map(|_| rng.sample(Alphanumeric) as char).collect();
 
@@ -1535,9 +1527,8 @@ mod tests {
 
         let mut disk = Disk::new(download_dir.clone());
 
-        let (fr_tx, _) = mpsc::channel::<DaemonMsg>(300);
         let magnet = Magnet::new(&magnet).unwrap();
-        let daemon = Daemon::new(disk_tx.clone(), Config::load().unwrap());
+        let daemon = Daemon::new(disk_tx.clone());
         let torrent = Torrent::new(disk_tx, daemon.ctx.clone(), magnet);
         let mut info_t = torrent.ctx.info.write().await;
         *info_t = info.clone();

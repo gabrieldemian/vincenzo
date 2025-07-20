@@ -4,7 +4,10 @@ use thiserror::Error;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::{
-    daemon::DaemonMsg, disk::DiskMsg, peer::{PeerId, PeerMsg}, torrent::TorrentMsg,
+    daemon::DaemonMsg,
+    disk::DiskMsg,
+    peer::{PeerId, PeerMsg},
+    torrent::TorrentMsg,
     tracker::TrackerMsg,
 };
 
@@ -17,6 +20,12 @@ impl From<bendy::decoding::Error> for Error {
 impl From<bendy::encoding::Error> for Error {
     fn from(_value: bendy::encoding::Error) -> Self {
         Self::BencodeError
+    }
+}
+
+impl From<mpsc::error::SendError<DaemonMsg>> for Error {
+    fn from(value: mpsc::error::SendError<DaemonMsg>) -> Self {
+        Self::SendDaemonError(value.to_string())
     }
 }
 
@@ -144,8 +153,8 @@ pub enum Error {
     #[error("Could not send message to Disk")]
     SendErrorDisk(#[from] mpsc::error::SendError<DiskMsg>),
 
-    #[error("Could not send message to Daemon")]
-    SendDaemonError(#[from] mpsc::error::SendError<DaemonMsg>),
+    #[error("Could not send message to Daemon: {0}")]
+    SendDaemonError(String),
 
     #[error("Could not receive message from oneshot")]
     ReceiveErrorOneshot(#[from] oneshot::error::RecvError),

@@ -58,7 +58,7 @@ async fn main() -> Result<(), Error> {
     let mut disk = Disk::new(config.download_dir.clone());
     let disk_tx = disk.tx.clone();
 
-    let mut daemon = Daemon::new(disk_tx, config);
+    let mut daemon = Daemon::new(disk_tx);
 
     spawn(async move {
         let _ = disk.run().await;

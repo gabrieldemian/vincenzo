@@ -12,7 +12,10 @@ use std::{
     time::Duration,
 };
 
-use crate::{error::Error, metainfo::Info, peer::PeerId, torrent::InfoHash};
+use crate::{
+    config::CONFIG, error::Error, metainfo::Info, peer::PeerId,
+    torrent::InfoHash,
+};
 use rand::Rng;
 use tokio::{
     net::{ToSocketAddrs, UdpSocket},
@@ -89,6 +92,10 @@ pub struct Tracker<P: Protocol> {
     pub info_hash: InfoHash,
     pub rx: mpsc::Receiver<TrackerMsg>,
     pub connection_id: u64,
+
+    /// Remote addr of the tracker.
+    pub tracker_addr: SocketAddr,
+
     state: P,
 }
 
@@ -98,12 +105,6 @@ pub struct TrackerCtx {
 
     /// Our ID for this connected Tracker
     pub peer_id: PeerId,
-
-    /// Remote addr of the tracker.
-    pub tracker_addr: SocketAddr,
-
-    /// Our local socket addr where peers will send handshakes
-    pub local_addr: SocketAddr,
 
     pub downloaded: u64,
     pub uploaded: u64,
@@ -131,7 +132,7 @@ impl TrackerTrait for Tracker<Udp> {
     ) -> Result<Vec<SocketAddr>, Error> {
         let mut peer_list = Vec::<SocketAddr>::new();
 
-        let is_ipv6 = self.ctx.tracker_addr.is_ipv6();
+        let is_ipv6 = self.tracker_addr.is_ipv6();
 
         // in ipv4 the addresses come in packets of 6 bytes,
         // first 4 for ip and 2 for port
@@ -187,7 +188,7 @@ impl TrackerTrait for Tracker<Udp> {
             + Clone,
         A::Iter: Send,
     {
-        debug!("...trying to connect to {:?} trackers", trackers.len());
+        debug!("trying to connect to {:?} trackers", trackers.len());
 
         // Connect to all trackers, return on the first
         // successful handshake.
@@ -209,12 +210,11 @@ impl TrackerTrait for Tracker<Udp> {
                 ctx: TrackerCtx {
                     tx: tracker_tx,
                     peer_id: Tracker::gen_peer_id(),
-                    local_addr: socket.local_addr().unwrap(),
-                    tracker_addr: socket.peer_addr().unwrap(),
                     downloaded: 0,
                     uploaded: 0,
                     left: 0,
                 },
+                tracker_addr: socket.peer_addr().unwrap(),
                 info_hash: info_hash.clone(),
                 info: None,
                 connection_id: 0,
@@ -248,7 +248,7 @@ impl TrackerTrait for Tracker<Udp> {
 
         for i in 1..=7 {
             match timeout(
-                Duration::new(retransmit, 0),
+                Duration::from_secs(retransmit),
                 self.state.socket.recv(&mut buf),
             )
             .await
@@ -257,9 +257,16 @@ impl TrackerTrait for Tracker<Udp> {
                     len = lenn;
                     break;
                 }
-                _ => {
-                    debug!("error receiving connect response");
+                Ok(Err(e)) => {
+                    error!("error connecting to tracker: {e:?}");
+                    return Err(Error::TrackerResponse);
+                }
+                Err(_) => {
                     retransmit = 15 * 2_u64.pow(i);
+                    debug!(
+                        "tracker connect request was lost, trying again in \
+                         {retransmit}s"
+                    );
                     self.state.socket.send(&req.serialize()).await?;
                 }
             }
@@ -303,7 +310,7 @@ impl TrackerTrait for Tracker<Udp> {
             event: event.into(),
             ip_address: 0,
             num_want: u32::MAX,
-            port: self.ctx.local_addr.port(),
+            port: CONFIG.local_peer_port,
             compact: 1,
         };
 
@@ -316,24 +323,31 @@ impl TrackerTrait for Tracker<Udp> {
 
         for i in 1..=7 {
             match timeout(
-                Duration::new(retransmit, 0),
+                Duration::from_secs(retransmit),
                 self.state.socket.recv(&mut res),
             )
             .await
             {
                 Ok(Ok(lenn)) => {
                     len = lenn;
+                    break;
                 }
-                _ => {
-                    self.state.socket.send(&req.serialize()).await?;
+                Ok(Err(e)) => {
+                    error!("error announcing to tracker: {e:?}");
+                    return Err(Error::TrackerResponse);
+                }
+                Err(_) => {
                     retransmit = 15 * 2_u64.pow(i);
-                    warn!("failed to announce");
+                    debug!(
+                        "tracker announce request was lost, trying again in \
+                         {retransmit}s"
+                    );
+                    self.state.socket.send(&req.serialize()).await?;
                 }
             }
         }
 
         let res = &res[..len];
-
         let (res, payload) = announce::Response::deserialize(res)?;
 
         if res.transaction_id != req.transaction_id || res.action != req.action

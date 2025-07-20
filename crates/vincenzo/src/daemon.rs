@@ -18,7 +18,7 @@ use tokio::{
 };
 
 use crate::{
-    config::Config,
+    config::CONFIG,
     daemon_wire::{DaemonCodec, Message},
     disk::DiskMsg,
     error::Error,
@@ -55,7 +55,6 @@ pub struct Daemon {
 /// Context of the [`Daemon`] that may be shared between other types.
 pub struct DaemonCtx {
     pub tx: mpsc::Sender<DaemonMsg>,
-    pub config: Config,
 }
 
 /// Messages used by the [`Daemon`] for internal communication.
@@ -95,7 +94,7 @@ impl Daemon {
         SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 51411);
 
     /// Initialize the Daemon struct with the default [`DaemonConfig`].
-    pub fn new(disk_tx: mpsc::Sender<DiskMsg>, config: Config) -> Self {
+    pub fn new(disk_tx: mpsc::Sender<DiskMsg>) -> Self {
         let (tx, rx) = mpsc::channel::<DaemonMsg>(100);
 
         Self {
@@ -104,7 +103,7 @@ impl Daemon {
             rx,
             torrent_txs: HashMap::new(),
             torrent_states: Vec::new(),
-            ctx: Arc::new(DaemonCtx { tx, config }),
+            ctx: Arc::new(DaemonCtx { tx }),
         }
     }
 
@@ -123,10 +122,9 @@ impl Daemon {
     /// that can be fired remotely (via TCP),
     /// can also be fired internaly (via CLI flags).
     pub async fn run(&mut self) -> Result<(), Error> {
-        let config = Config::load()?;
-        let socket = TcpListener::bind(config.daemon_addr).await.unwrap();
+        let socket = TcpListener::bind(CONFIG.daemon_addr).await.unwrap();
 
-        info!("Daemon listening on: {}", config.daemon_addr);
+        info!("Daemon listening on: {}", CONFIG.daemon_addr);
 
         let ctx = self.ctx.clone();
 
@@ -193,7 +191,7 @@ impl Daemon {
                                 self.torrent_states.push(torrent_state);
                             }
 
-                            if config.quit_after_complete && self.torrent_states.iter().all(|v| v.status == TorrentStatus::Seeding) {
+                            if CONFIG.quit_after_complete && self.torrent_states.iter().all(|v| v.status == TorrentStatus::Seeding) {
                                 let _ = ctx.tx.send(DaemonMsg::Quit).await;
                             }
                         }
@@ -325,12 +323,7 @@ impl Daemon {
         trace!("magnet: {}", *magnet);
         let info_hash = magnet.parse_xt_infohash();
 
-        if self
-            .torrent_states
-            .iter()
-            .find(|v| v.info_hash == info_hash)
-            .is_some()
-        {
+        if self.torrent_states.iter().any(|v| v.info_hash == info_hash) {
             warn!("This torrent is already present on the Daemon");
             return Err(Error::NoDuplicateTorrent);
         }

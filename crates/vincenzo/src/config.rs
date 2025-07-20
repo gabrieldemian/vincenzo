@@ -1,5 +1,5 @@
 //! Config file
-use std::net::SocketAddr;
+use std::{net::SocketAddr, sync::LazyLock};
 
 use serde::{Deserialize, Serialize};
 
@@ -13,6 +13,9 @@ pub struct Config {
     /// Daemon will listen to this addr for UI connections or CLI commands,
     pub daemon_addr: SocketAddr,
 
+    /// Port where the client will listen for connections.
+    pub local_peer_port: u16,
+
     /// Maximum number of peers that the client can have.
     pub max_global_peers: u32,
 
@@ -23,7 +26,7 @@ pub struct Config {
     pub quit_after_complete: bool,
 }
 
-// static CONFIG: LazyLock<Config> = LazyLock::new(|| Config::get().unwrap());
+pub static CONFIG: LazyLock<Config> = LazyLock::new(|| Config::get().unwrap());
 
 impl Config {
     /// Try to load the configuration. Environmental variables have priviledge
@@ -57,6 +60,8 @@ impl Config {
             .set_default("daemon_addr", Daemon::DEFAULT_LISTENER.to_string())
             .unwrap()
             .set_default("max_global_peers", 200)
+            .unwrap()
+            .set_default("local_peer_port", 51413)
             .unwrap()
             .set_default("max_torrent_peers", 50)
             .unwrap()

@@ -54,7 +54,7 @@ async fn main() -> Result<(), Error> {
             let _ = disk.run().await;
         });
 
-        let mut daemon = Daemon::new(disk_tx, config);
+        let mut daemon = Daemon::new(disk_tx);
 
         daemon.run().await?;
     }

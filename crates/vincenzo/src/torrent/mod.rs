@@ -11,6 +11,7 @@ pub use types::*;
 
 use crate::{
     bitfield::Bitfield,
+    config::CONFIG,
     daemon::{DaemonCtx, DaemonMsg},
     disk::DiskMsg,
     error::Error,
@@ -23,7 +24,7 @@ use bendy::decoding::FromBencode;
 use bitvec::{bitvec, prelude::Msb0};
 use std::{
     collections::BTreeMap,
-    net::SocketAddr,
+    net::{IpAddr, Ipv4Addr, SocketAddr},
     sync::{atomic::Ordering, Arc},
     time::Duration,
 };
@@ -183,7 +184,6 @@ impl Torrent<Idle> {
         .await?;
 
         let (res, payload) = tracker.announce(Event::Started).await?;
-
         let peers = tracker.parse_compact_peer_list(payload.as_ref())?;
 
         let stats = Stats {
@@ -239,8 +239,8 @@ impl Torrent<Connected> {
         self.daemon_ctx.tx.send(DaemonMsg::GetConnectedPeers(otx)).await?;
 
         let daemon_connected_peers = orx.await?;
-        let max_global_peers = self.daemon_ctx.config.max_global_peers;
-        let max_torrent_peers = self.daemon_ctx.config.max_torrent_peers;
+        let max_global_peers = CONFIG.max_global_peers;
+        let max_torrent_peers = CONFIG.max_torrent_peers;
 
         // connecting peers will (probably) soon be connected, so we count them
         // too
@@ -288,21 +288,26 @@ impl Torrent<Connected> {
     /// Spawn a new event loop every time a peer connect with us.
     #[tracing::instrument(skip(self))]
     pub async fn spawn_inbound_peers(&self) -> Result<(), Error> {
-        debug!("accepting requests in {:?}", self.state.tracker_ctx.local_addr);
+        debug!("accepting requests on port {:?}", CONFIG.local_peer_port);
 
         let local_peer_id = self.state.tracker_ctx.peer_id.clone();
+
+        let local_addr = SocketAddr::new(
+            IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
+            CONFIG.local_peer_port,
+        );
+
+        let local_socket = TcpListener::bind(local_addr).await?;
         let ctx = self.ctx.clone();
-        let local_peer_socket =
-            TcpListener::bind(self.state.tracker_ctx.local_addr).await?;
 
         // accept connections from other peers
         spawn(async move {
-            debug!("accepting requests in {local_peer_socket:?}");
+            debug!("accepting requests in {local_socket:?}");
 
             loop {
                 let local_peer_id = local_peer_id.clone();
 
-                if let Ok((socket, addr)) = local_peer_socket.accept().await {
+                if let Ok((socket, addr)) = local_socket.accept().await {
                     info!("received inbound connection from {addr}");
                     let ctx = ctx.clone();
 
