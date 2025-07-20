@@ -72,6 +72,13 @@ pub struct Connected {
     /// Connected peers, removed from `peers`.
     pub connected_peers: Vec<Arc<PeerCtx>>,
 
+    /// Maximum of 3 unchoked peers as per the protocol + the optimistically
+    /// unchoked peer = 4. These come from `connected_peers`.
+    pub unchoked_peers: Vec<Arc<PeerCtx>>,
+
+    /// Only one optimistically unchoked peer for 30 seconds.
+    pub opt_unchoked_peer: Option<Arc<PeerCtx>>,
+
     pub error_peers: Vec<Peer<peer::PeerError>>,
 
     // The downloaded bytes of the previous second,
@@ -199,6 +206,8 @@ impl Torrent<Idle> {
 
         Ok(Torrent {
             state: Connected {
+                unchoked_peers: Vec::with_capacity(3),
+                opt_unchoked_peer: None,
                 connecting_peers: Vec::new(),
                 error_peers: Vec::new(),
                 downloaded_info_bytes: 0,
@@ -281,10 +290,10 @@ impl Torrent<Connected> {
     pub async fn spawn_inbound_peers(&self) -> Result<(), Error> {
         debug!("accepting requests in {:?}", self.state.tracker_ctx.local_addr);
 
-        let local_peer_socket =
-            TcpListener::bind(self.state.tracker_ctx.local_addr).await?;
         let local_peer_id = self.state.tracker_ctx.peer_id.clone();
         let ctx = self.ctx.clone();
+        let local_peer_socket =
+            TcpListener::bind(self.state.tracker_ctx.local_addr).await?;
 
         // accept connections from other peers
         spawn(async move {
@@ -375,12 +384,12 @@ impl Torrent<Connected> {
         self.sort_peers_by_rate(n, true, false)
     }
 
-    /// A fast function for returning the best or worst X amount of peers,
-    /// uploaded or downloaded.
+    /// A fast function for returning the best or worst N amount of peers,
+    /// uploaded or downloaded. Note that the maximum value of N is 10.
     /// - Doesn't allocate during sorting, only at the end of the function.
     /// - Cache friendly
-    /// - Single pass through each peer, only 1 atomic read, on x86 a relaxed
-    ///   read is just a add/mov so no performance impact.
+    /// - Single pass through each peer with only 1 atomic read, on x86 a
+    ///   relaxed read is just a add/mov so no performance impact.
     fn sort_peers_by_rate(
         &self,
         n: usize,
@@ -443,6 +452,67 @@ impl Torrent<Connected> {
         buffer[..n].iter().map(|&(_, idx)| peers[idx].clone()).collect()
     }
 
+    /// Become interested in the connected peer.
+    pub async fn interested_peer(&self, id: PeerId) -> Result<(), Error> {
+        if let Some(ctx) =
+            self.state.connected_peers.iter().find(|v| v.id == id)
+        {
+            ctx.tx.send(PeerMsg::Interested).await?;
+            return Ok(());
+        }
+        Err(Error::PeerNotFound(id))
+    }
+
+    /// Become disinterested in the connected peer.
+    pub async fn disinterested_peer(&self, id: PeerId) -> Result<(), Error> {
+        if let Some(ctx) =
+            self.state.connected_peers.iter().find(|v| v.id == id)
+        {
+            ctx.tx.send(PeerMsg::NotInterested).await?;
+            return Ok(());
+        }
+        Err(Error::PeerNotFound(id))
+    }
+
+    /// Unchoke a connected peer and update local state.
+    pub async fn unchoke_peer(&mut self, id: PeerId) -> Result<(), Error> {
+        if self.state.unchoked_peers.len() >= 3 {
+            return Err(Error::MaximumUnchokedPeers);
+        }
+        if let Some(ctx) =
+            self.state.connected_peers.iter().find(|v| v.id == id)
+        {
+            ctx.tx.send(PeerMsg::Unchoke).await?;
+            self.state.unchoked_peers.push(ctx.clone());
+            return Ok(());
+        }
+        Err(Error::PeerNotFound(id))
+    }
+
+    /// Choke a connected peer and update local state without doing any
+    /// checks.
+    pub async fn choke_peer(&mut self, id: PeerId) -> Result<(), Error> {
+        if let Some(ctx) = self.state.unchoked_peers.iter().find(|v| v.id == id)
+        {
+            ctx.tx.send(PeerMsg::Choke).await?;
+            self.state.unchoked_peers.retain(|v| v.id != id);
+            return Ok(());
+        }
+        Err(Error::PeerNotFound(id))
+    }
+
+    /// Optimistically unchoke a connected peer
+    pub async fn opt_unchoke_peer(&mut self, id: PeerId) -> Result<(), Error> {
+        if let Some(ctx) =
+            self.state.connected_peers.iter().find(|v| v.id == id)
+        {
+            ctx.tx.send(PeerMsg::Unchoke).await?;
+            self.state.opt_unchoked_peer = Some(ctx.clone());
+            return Ok(());
+        }
+        Err(Error::PeerNotFound(id))
+    }
+
     /// Run the Torrent main event loop to listen to internal [`TorrentMsg`].
     #[tracing::instrument(skip_all)]
     pub async fn run(&mut self) -> Result<(), Error> {
@@ -500,6 +570,13 @@ impl Torrent<Connected> {
                         TorrentMsg::PeerError(addr) => {
                             self.state.error_peers.push(Peer::<peer::PeerError>::new(addr));
                             self.state.connected_peers.retain(|v| v.remote_addr != addr);
+                            self.state.unchoked_peers.retain(|v| v.remote_addr != addr);
+                            if let Some(opt_addr) = self.state.opt_unchoked_peer.as_ref().map(|v| v.remote_addr) {
+                                if opt_addr == addr {
+                                    self.state.opt_unchoked_peer = None;
+                                }
+
+                            }
                             self.state.idle_peers.retain(|v| *v != addr);
 
                             let _ = self

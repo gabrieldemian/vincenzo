@@ -4,7 +4,7 @@ use thiserror::Error;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::{
-    daemon::DaemonMsg, disk::DiskMsg, peer::PeerMsg, torrent::TorrentMsg,
+    daemon::DaemonMsg, disk::DiskMsg, peer::{PeerId, PeerMsg}, torrent::TorrentMsg,
     tracker::TrackerMsg,
 };
 
@@ -24,6 +24,12 @@ impl From<bendy::encoding::Error> for Error {
 pub enum Error {
     #[error("Failed to send a connect request to the tracker")]
     ConnectSendFailed,
+
+    #[error("The given peer id was not found: {0}")]
+    PeerNotFound(PeerId),
+
+    #[error("Tried to unchoke a peer but the maximum amount is already full")]
+    MaximumUnchokedPeers,
 
     #[error("Configuration error: {0}")]
     ConfigError(String),
