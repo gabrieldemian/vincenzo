@@ -21,8 +21,12 @@ use crate::{
 };
 use bendy::decoding::FromBencode;
 use bitvec::{bitvec, prelude::Msb0};
-use speedy::{Readable, Writable};
-use std::{collections::BTreeMap, net::SocketAddr, sync::Arc, time::Duration};
+use std::{
+    collections::BTreeMap,
+    net::SocketAddr,
+    sync::{atomic::Ordering, Arc},
+    time::Duration,
+};
 use tokio::{
     net::{TcpListener, TcpStream},
     select, spawn,
@@ -107,32 +111,6 @@ pub struct TorrentCtx {
     pub magnet: Magnet,
     pub info_hash: InfoHash,
     pub info: RwLock<Info>,
-}
-
-/// State of a [`Torrent`], used by the UI to present data.
-#[derive(Debug, Clone, Default, PartialEq, Readable, Writable)]
-pub struct TorrentState {
-    pub name: String,
-    pub stats: Stats,
-    pub status: TorrentStatus,
-    pub downloaded: u64,
-    pub download_rate: u64,
-    pub uploaded: u64,
-    pub size: u64,
-    pub info_hash: InfoHash,
-    pub have_info: bool,
-    pub bitfield: Vec<u8>,
-    pub connected_peers: u8,
-    pub connecting_peers: u8,
-    pub idle_peers: u8,
-}
-
-/// Status of the current Torrent, updated at every announce request.
-#[derive(Clone, Debug, PartialEq, Default, Readable, Writable)]
-pub struct Stats {
-    pub interval: u32,
-    pub leechers: u32,
-    pub seeders: u32,
 }
 
 impl Torrent<Idle> {
@@ -248,16 +226,38 @@ impl Torrent<Connected> {
     /// Spawn an event loop for each peer
     #[tracing::instrument(skip_all, name = "torrent::start_outbound_peers")]
     pub async fn spawn_outbound_peers(&self) -> Result<(), Error> {
-        for peer in self.state.idle_peers.clone() {
-            let ctx = self.ctx.clone();
+        let (otx, orx) = oneshot::channel();
+        self.daemon_ctx.tx.send(DaemonMsg::GetConnectedPeers(otx)).await?;
+
+        let daemon_connected_peers = orx.await?;
+        let max_global_peers = self.daemon_ctx.config.max_global_peers;
+        let max_torrent_peers = self.daemon_ctx.config.max_torrent_peers;
+
+        // connecting peers will (probably) soon be connected, so we count them
+        // too
+        let currently_active = self.state.connected_peers.len()
+            + self.state.connecting_peers.len();
+
+        if currently_active == max_torrent_peers as usize
+            || daemon_connected_peers == max_global_peers
+        {
+            return Ok(());
+        }
+
+        let to_request = max_torrent_peers as usize - currently_active;
+
+        let ctx = self.ctx.clone();
+
+        for peer in self.state.idle_peers.iter().take(to_request).cloned() {
             let local_peer_id = self.state.tracker_ctx.peer_id.clone();
+            let ctx = ctx.clone();
 
             // send connections too other peers
             spawn(async move {
                 match TcpStream::connect(peer).await {
                     Ok(socket) => {
                         Self::start_and_run_peer(
-                            ctx,
+                            ctx.clone(),
                             socket,
                             local_peer_id,
                             Direction::Outbound,
@@ -355,27 +355,121 @@ impl Torrent<Connected> {
         }
     }
 
+    /// Get the best n downloaders.
+    pub fn get_best_downloaders(&self, n: usize) -> Vec<Arc<PeerCtx>> {
+        self.sort_peers_by_rate(n, false, true)
+    }
+
+    /// Get the worst n downloaders.
+    pub fn get_worst_downloaders(&self, n: usize) -> Vec<Arc<PeerCtx>> {
+        self.sort_peers_by_rate(n, false, false)
+    }
+
+    /// Get the best n uploaders.
+    pub fn get_best_uploaders(&self, n: usize) -> Vec<Arc<PeerCtx>> {
+        self.sort_peers_by_rate(n, true, true)
+    }
+
+    /// Get the worst n uploaders.
+    pub fn get_worst_uploaders(&self, n: usize) -> Vec<Arc<PeerCtx>> {
+        self.sort_peers_by_rate(n, true, false)
+    }
+
+    /// A fast function for returning the best or worst X amount of peers,
+    /// uploaded or downloaded.
+    /// - Doesn't allocate during sorting, only at the end of the function.
+    /// - Cache friendly
+    /// - Single pass through each peer, only 1 atomic read, on x86 a relaxed
+    ///   read is just a add/mov so no performance impact.
+    fn sort_peers_by_rate(
+        &self,
+        n: usize,
+        get_uploaded: bool,
+        is_asc: bool,
+    ) -> Vec<Arc<PeerCtx>> {
+        let peers = &self.state.connected_peers;
+
+        if n == 0 || peers.is_empty() {
+            return Vec::new();
+        }
+
+        // constrain n to min(10, peers.len())
+        let n = n.min(peers.len()).min(10);
+        let mut buffer = [(u64::MIN, usize::MIN); 10];
+        let mut len = 0;
+
+        for (index, peer) in peers.iter().enumerate() {
+            let uploaded_or_downloaded = if get_uploaded {
+                peer.uploaded.load(Ordering::Relaxed)
+            } else {
+                peer.downloaded.load(Ordering::Relaxed)
+            };
+
+            if len < n {
+                // insert new element
+                buffer[len] = (uploaded_or_downloaded, index);
+                let mut pos = len;
+
+                // bubble up to maintain order
+                while pos > 0
+                    && if is_asc {
+                        buffer[pos].0 > buffer[pos - 1].0
+                    } else {
+                        buffer[pos].0 < buffer[pos - 1].0
+                    }
+                {
+                    buffer.swap(pos, pos - 1);
+                    pos -= 1;
+                }
+                len += 1;
+            } else if if is_asc {
+                uploaded_or_downloaded > buffer[n - 1].0
+            } else {
+                uploaded_or_downloaded < buffer[n - 1].0
+            } {
+                // replace smallest element in top list
+                buffer[n - 1] = (uploaded_or_downloaded, index);
+                let mut pos = n - 1;
+
+                // bubble up to maintain descending order
+                while pos > 0 && buffer[pos].0 > buffer[pos - 1].0 {
+                    buffer.swap(pos, pos - 1);
+                    pos -= 1;
+                }
+            }
+        }
+
+        // extract results (only n clones performed)
+        buffer[..n].iter().map(|&(_, idx)| peers[idx].clone()).collect()
+    }
+
     /// Run the Torrent main event loop to listen to internal [`TorrentMsg`].
     #[tracing::instrument(skip_all)]
     pub async fn run(&mut self) -> Result<(), Error> {
         debug!("running torrent: {:?}", self.name);
 
         let tracker_tx = &self.state.tracker_ctx.tx;
+        let now = Instant::now();
 
         let mut announce_interval = interval_at(
-            Instant::now()
-                + Duration::from_secs(
-                    self.state.stats.interval.max(500).into(),
-                ),
+            now + Duration::from_secs(
+                self.state.stats.interval.max(500).into(),
+            ),
             Duration::from_secs((self.state.stats.interval as u64).max(500)),
         );
 
-        let mut reconnect_failed_peers = interval_at(
-            Instant::now() + Duration::from_secs(5),
-            Duration::from_secs(5),
-        );
+        // unchoke a peer with the fewest pieces and choke the slowest
+        // unchoked peer.
+        let mut optimistic_unchoke_interval = interval(Duration::from_secs(30));
 
-        let mut frontend_interval = interval(Duration::from_secs(1));
+        // send state to the frontend, if connected.
+        let mut heartbeat_interval = interval(Duration::from_secs(1));
+
+        // choke algorithm:
+        // - choose the top 4 interested uploaders and unchoke them.
+        // - unchoke uninterested peers with a better upload rate, and if one
+        //   becomes interested later, choke the worst uploader.
+        let mut unchoke_interval = interval(Duration::from_secs(10));
 
         loop {
             select! {
@@ -413,6 +507,12 @@ impl Torrent<Connected> {
                                 .disk_tx
                                 .send(DiskMsg::DeletePeer(addr))
                                 .await;
+
+                            let _ = self
+                                .daemon_ctx
+                                .tx
+                                .send(DaemonMsg::DecrementConnectedPeers)
+                                .await;
                         },
                         TorrentMsg::PeerConnected(ctx) => {
                             debug!("{} connected with {}", ctx.local_addr, ctx.remote_addr);
@@ -426,6 +526,12 @@ impl Torrent<Connected> {
                                 .ctx
                                 .disk_tx
                                 .send(DiskMsg::NewPeer(ctx))
+                                .await;
+
+                            let _ = self
+                                .daemon_ctx
+                                .tx
+                                .send(DaemonMsg::IncrementConnectedPeers)
                                 .await;
                         }
                         TorrentMsg::DownloadComplete => {
@@ -608,7 +714,7 @@ impl Torrent<Connected> {
                         }
                     }
                 }
-                _ = frontend_interval.tick() => {
+                _ = heartbeat_interval.tick() => {
                     self.state.download_rate =
                             self.state.tracker_ctx.downloaded - self.state.last_second_downloaded;
 
@@ -667,31 +773,157 @@ impl Torrent<Connected> {
                         );
                     }
                 }
-                // At every 5 seconds, try to reconnect to peers in which
-                // the TCP connection failed.
-                _ = reconnect_failed_peers.tick() => {
-                    let mut to_delete = Vec::new();
-
-                    for peer in &self.state.error_peers {
-                        let ctx = self.ctx.clone();
-                        let local_peer_id = self.state.tracker_ctx.peer_id.clone();
-                        let addr = &peer.state.addr;
-
-                        debug!("trying to reconnect peer {addr:?}");
-
-                        if let Ok(socket) = TcpStream::connect(*addr).await {
-                            to_delete.push(*addr);
-
-                        Self::start_and_run_peer(ctx, socket, local_peer_id, Direction::Outbound)
-                            .await?;
-                        }
-                    }
-
-                    for addr in to_delete {
-                        self.state.error_peers.retain(|v| v.state.addr != addr);
-                    }
+                _ = unchoke_interval.tick() => {
+                    // todo
+                }
+                _ = optimistic_unchoke_interval.tick() => {
+                    // todo
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    };
+
+    #[test]
+    fn test_get_top_uploaders() {
+        #[derive(Debug)]
+        struct PeerCtx {
+            uploaded: AtomicU64,
+            downloaded: AtomicU64,
+        }
+        fn get_top_uploaders(
+            peers: Vec<Arc<PeerCtx>>,
+            x: usize,
+            is_uploaders: bool,
+            is_asc: bool,
+        ) -> Vec<Arc<PeerCtx>> {
+            // Handle edge cases
+            if x == 0 || peers.is_empty() {
+                return Vec::new();
+            }
+
+            // Constrain x to min(10, peers.len())
+            let x = x.min(peers.len()).min(10);
+            let mut buffer = [(u64::MIN, usize::MIN); 10];
+            let mut len = 0;
+
+            for (index, peer) in peers.iter().enumerate() {
+                // Relaxed ordering sufficient for snapshot value
+                let uploaded_or_downloaded = if is_uploaders {
+                    peer.uploaded.load(Ordering::Relaxed)
+                } else {
+                    peer.downloaded.load(Ordering::Relaxed)
+                };
+
+                if len < x {
+                    // Insert new element
+                    buffer[len] = (uploaded_or_downloaded, index);
+                    let mut pos = len;
+
+                    // Bubble up to maintain descending order
+                    while pos > 0
+                        && if is_asc {
+                            buffer[pos].0 > buffer[pos - 1].0
+                        } else {
+                            buffer[pos].0 < buffer[pos - 1].0
+                        }
+                    {
+                        buffer.swap(pos, pos - 1);
+                        pos -= 1;
+                    }
+                    len += 1;
+                } else if if is_asc {
+                    uploaded_or_downloaded > buffer[x - 1].0
+                } else {
+                    uploaded_or_downloaded < buffer[x - 1].0
+                } {
+                    // Replace smallest element in top list
+                    buffer[x - 1] = (uploaded_or_downloaded, index);
+                    let mut pos = x - 1;
+
+                    // Bubble up to maintain descending order
+                    while pos > 0 && buffer[pos].0 > buffer[pos - 1].0 {
+                        buffer.swap(pos, pos - 1);
+                        pos -= 1;
+                    }
+                }
+            }
+
+            // Extract results (only x clones performed)
+            buffer[..x].iter().map(|&(_, idx)| peers[idx].clone()).collect()
+        }
+
+        let r = get_top_uploaders(
+            vec![
+                Arc::new(PeerCtx { uploaded: 9.into(), downloaded: 0.into() }),
+                Arc::new(PeerCtx { uploaded: 8.into(), downloaded: 0.into() }),
+                Arc::new(PeerCtx { uploaded: 7.into(), downloaded: 0.into() }),
+                Arc::new(PeerCtx { uploaded: 6.into(), downloaded: 0.into() }),
+                Arc::new(PeerCtx { uploaded: 5.into(), downloaded: 0.into() }),
+                Arc::new(PeerCtx { uploaded: 4.into(), downloaded: 0.into() }),
+                Arc::new(PeerCtx { uploaded: 3.into(), downloaded: 0.into() }),
+                Arc::new(PeerCtx { uploaded: 2.into(), downloaded: 0.into() }),
+                Arc::new(PeerCtx { uploaded: 1.into(), downloaded: 0.into() }),
+                Arc::new(PeerCtx { uploaded: 0.into(), downloaded: 0.into() }),
+            ],
+            4,
+            true,
+            true,
+        );
+        assert_eq!(r[0].uploaded.load(Ordering::Relaxed), 9);
+        assert_eq!(r[1].uploaded.load(Ordering::Relaxed), 8);
+        assert_eq!(r[2].uploaded.load(Ordering::Relaxed), 7);
+        assert_eq!(r[3].uploaded.load(Ordering::Relaxed), 6);
+
+        let r = get_top_uploaders(
+            vec![
+                Arc::new(PeerCtx { uploaded: 9.into(), downloaded: 1.into() }),
+                Arc::new(PeerCtx { uploaded: 8.into(), downloaded: 2.into() }),
+                Arc::new(PeerCtx { uploaded: 7.into(), downloaded: 3.into() }),
+                Arc::new(PeerCtx { uploaded: 6.into(), downloaded: 4.into() }),
+                Arc::new(PeerCtx { uploaded: 5.into(), downloaded: 5.into() }),
+                Arc::new(PeerCtx { uploaded: 4.into(), downloaded: 9.into() }),
+                Arc::new(PeerCtx { uploaded: 3.into(), downloaded: 8.into() }),
+                Arc::new(PeerCtx { uploaded: 2.into(), downloaded: 7.into() }),
+                Arc::new(PeerCtx { uploaded: 1.into(), downloaded: 6.into() }),
+                Arc::new(PeerCtx { uploaded: 0.into(), downloaded: 5.into() }),
+            ],
+            4,
+            false,
+            true,
+        );
+        assert_eq!(r[0].downloaded.load(Ordering::Relaxed), 9);
+        assert_eq!(r[1].downloaded.load(Ordering::Relaxed), 8);
+        assert_eq!(r[2].downloaded.load(Ordering::Relaxed), 7);
+        assert_eq!(r[3].downloaded.load(Ordering::Relaxed), 6);
+
+        let r = get_top_uploaders(
+            vec![
+                Arc::new(PeerCtx { uploaded: 9.into(), downloaded: 1.into() }),
+                Arc::new(PeerCtx { uploaded: 8.into(), downloaded: 2.into() }),
+                Arc::new(PeerCtx { uploaded: 7.into(), downloaded: 3.into() }),
+                Arc::new(PeerCtx { uploaded: 6.into(), downloaded: 4.into() }),
+                Arc::new(PeerCtx { uploaded: 5.into(), downloaded: 5.into() }),
+                Arc::new(PeerCtx { uploaded: 4.into(), downloaded: 9.into() }),
+                Arc::new(PeerCtx { uploaded: 3.into(), downloaded: 8.into() }),
+                Arc::new(PeerCtx { uploaded: 2.into(), downloaded: 7.into() }),
+                Arc::new(PeerCtx { uploaded: 1.into(), downloaded: 6.into() }),
+                Arc::new(PeerCtx { uploaded: 0.into(), downloaded: 5.into() }),
+            ],
+            4,
+            false,
+            false,
+        );
+        assert_eq!(r[0].downloaded.load(Ordering::Relaxed), 1);
+        assert_eq!(r[1].downloaded.load(Ordering::Relaxed), 2);
+        assert_eq!(r[2].downloaded.load(Ordering::Relaxed), 3);
+        assert_eq!(r[3].downloaded.load(Ordering::Relaxed), 4);
     }
 }

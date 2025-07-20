@@ -1,6 +1,6 @@
 use bytes::{Buf, BufMut, BytesMut};
 use futures::SinkExt;
-use std::io::Cursor;
+use std::{io::Cursor, sync::atomic::Ordering};
 use tokio::{io, sync::oneshot};
 use tokio_util::codec::{Decoder, Encoder};
 use tracing::{debug, trace, warn};
@@ -371,12 +371,12 @@ impl ExtMsgHandler<Core, CoreState> for MsgHandler {
                 // and put in pending_requests
                 debug!("{local} bitfield {remote}");
 
-                let mut b = peer.state.ctx.pieces.write().await;
-                *b = bitfield.clone();
-
                 // remove excess bits
                 let pieces =
                     peer.state.torrent_ctx.info.read().await.pieces() as usize;
+
+                let mut b = peer.state.ctx.pieces.write().await;
+                *b = bitfield.clone();
 
                 if bitfield.len() != pieces
                     && pieces > 0
@@ -387,8 +387,8 @@ impl ExtMsgHandler<Core, CoreState> for MsgHandler {
                     }
                 }
 
-                debug!("{local} bitfield is len {:?} {remote}", bitfield.len());
                 drop(b);
+                debug!("{local} bitfield is len {:?} {remote}", bitfield.len());
 
                 let peer_has_piece = peer.has_piece_not_in_local().await?;
                 debug!("{local} peer_has_piece {peer_has_piece} {remote}");
@@ -493,7 +493,13 @@ interested"
                     block.block.len()
                 );
 
+                peer.state
+                    .ctx
+                    .downloaded
+                    .fetch_add(block.block.len() as u64, Ordering::Relaxed);
+
                 peer.handle_piece_msg(block).await?;
+
                 if peer.can_request() {
                     peer.prepare_for_download().await;
                     peer.request_block_infos().await?;
@@ -508,34 +514,35 @@ interested"
                 debug!("{local} request from {remote}");
                 debug!("{block_info:?}");
 
-                if !peer.state.ext_states.core.peer_choking {
-                    let begin = block_info.begin;
-                    let index = block_info.index as usize;
-                    let (tx, rx) = oneshot::channel();
-
-                    // check if peer is not already requesting this block
-                    if peer.state.incoming_requests.contains(&block_info) {
-                        // todo: if peer keeps spamming us, close connection
-                        warn!("Peer sent duplicate block request");
-                    }
-
-                    peer.state.incoming_requests.insert(block_info.clone());
-
-                    peer.state
-                        .torrent_ctx
-                        .disk_tx
-                        .send(DiskMsg::ReadBlock {
-                            block_info,
-                            recipient: tx,
-                            info_hash: peer.state.torrent_ctx.info_hash.clone(),
-                        })
-                        .await?;
-
-                    let bytes = rx.await?;
-
-                    let block = Block { index, begin, block: bytes };
-                    let _ = peer.state.sink.send(Core::Piece(block)).await;
+                if peer.state.ext_states.core.peer_choking {
+                    return Ok(());
                 }
+
+                let begin = block_info.begin;
+                let index = block_info.index as usize;
+                let (tx, rx) = oneshot::channel();
+
+                peer.state.incoming_requests.insert(block_info.clone());
+
+                peer.state
+                    .torrent_ctx
+                    .disk_tx
+                    .send(DiskMsg::ReadBlock {
+                        block_info,
+                        recipient: tx,
+                        info_hash: peer.state.torrent_ctx.info_hash.clone(),
+                    })
+                .await?;
+
+                let bytes = rx.await?;
+
+                peer.state
+                    .ctx
+                    .uploaded
+                    .fetch_add(bytes.len() as u64, Ordering::Relaxed);
+
+                let block = Block { index, begin, block: bytes };
+                let _ = peer.state.sink.send(Core::Piece(block)).await;
             }
         }
 

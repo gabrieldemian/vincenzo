@@ -119,19 +119,18 @@ impl App {
         mut stream: T,
     ) {
         debug!("ui listen_daemon");
-        println!("am i listening to daemon msgs");
+
         loop {
             select! {
                 Some(Ok(msg)) = stream.next() => {
                     match msg {
-                        Message::TorrentState(Some(torrent_state)) => {
+                        Message::TorrentState(torrent_state) => {
                             let _ = tx.send(Action::TorrentState(torrent_state));
                         }
                         Message::Quit => {
-                            println!("ui Quit - noooo");
-                            // debug!("ui Quit");
-                            // let _ = tx.send(Action::Quit);
-                            // break;
+                            debug!("ui Quit");
+                            let _ = tx.send(Action::Quit);
+                            break;
                         }
                         Message::TogglePause(torrent) => {
                             let _ = tx.send(Action::TogglePause(torrent));

@@ -295,27 +295,14 @@ mod tests {
         println!("encoding a {a:?}");
 
         let mut buf = BytesMut::new();
-        let msg = Message::TorrentState(Some(info.clone()));
+        let msg = Message::TorrentState(info.clone());
         DaemonCodec.encode(msg, &mut buf).unwrap();
 
         let msg = DaemonCodec.decode(&mut buf).unwrap().unwrap();
 
         match msg {
             Message::TorrentState(deserialized) => {
-                assert_eq!(deserialized, Some(info));
-            }
-            _ => panic!(),
-        }
-
-        // should send None to inexistent torrent
-        let mut buf = BytesMut::new();
-        let msg = Message::TorrentState(None);
-        DaemonCodec.encode(msg, &mut buf).unwrap();
-
-        let msg = DaemonCodec.decode(&mut buf).unwrap().unwrap();
-        match msg {
-            Message::TorrentState(r) => {
-                assert_eq!(r, None);
+                assert_eq!(deserialized, info);
             }
             _ => panic!(),
         }

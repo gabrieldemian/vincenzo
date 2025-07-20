@@ -13,12 +13,25 @@ use vincenzo::{
     daemon::Daemon,
     daemon_wire::{DaemonCodec, Message},
     disk::Disk,
+    error::Error,
 };
 
 #[tokio::main(flavor = "current_thread")]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<(), Error> {
     let args = Args::parse();
     let config = Config::load()?;
+
+    if config.max_global_peers == 0 || config.max_torrent_peers == 0 {
+        return Err(Error::ConfigError(
+            "max_global_peers or max_torrent_peers cannot be zero".into(),
+        ));
+    }
+
+    if config.max_global_peers < config.max_torrent_peers {
+        return Err(Error::ConfigError(
+            "max_global_peers cannot be less than max_torrent_peers".into(),
+        ));
+    }
 
     let daemon_addr = config.daemon_addr;
 
@@ -34,7 +47,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracing::subscriber::set_global_default(subscriber)
             .expect("setting default subscriber failed");
 
-        let mut disk = Disk::new(config.download_dir);
+        let mut disk = Disk::new(config.download_dir.clone());
         let disk_tx = disk.tx.clone();
 
         spawn(async move {

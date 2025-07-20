@@ -90,33 +90,51 @@ impl TryFrom<Vec<u8>> for PeerId {
 #[derive(Debug)]
 pub enum PeerMsg {
     SendToSink(Core),
+
     /// When we download a full piece, we need to send Have's
     /// to peers that dont Have it.
     HavePiece(usize),
+
     /// Sometimes a peer either takes too long to answer,
     /// or simply does not answer at all. In both cases
     /// we need to request the block again.
     RequestBlockInfos(Vec<BlockInfo>),
+
+    /// Tell this peer that we choked them
+    Choke,
+
+    /// Tell this peer that we unchoked them
+    Unchoke,
+
+    /// Tell this peer that we are interested,
+    Interested,
+
     /// Tell this peer that we are not interested,
-    /// update the local state and send a message to the peer
     NotInterested,
+
     /// Sends a Cancel message to cancel a block info that we
     /// expect the peer to send us, because we requested it previously.
     CancelBlock(BlockInfo),
+
     /// Sent when the torrent has downloaded the entire info of the torrent.
     HaveInfo,
+
     /// Sent when the torrent is paused, it makes the peer pause downloads and
     /// uploads
     Pause,
+
     /// Sent when the torrent was unpaused.
     Resume,
+
     /// Sent to make this peer read-only, the peer won't download
     /// anymore, but it will still seed.
     /// This usually happens when the torrent is fully downloaded.
     SeedOnly,
+
     /// When the program is being gracefuly shutdown, we need to kill the tokio
     /// green thread of the peer.
     GracefullyShutdown,
+
     /// An error happened and we want to quit and also send this peer's blocks
     /// back to the torrent.
     Quit,
@@ -224,6 +242,8 @@ impl peer::Peer<Idle> {
         let (tx, rx) = mpsc::channel::<PeerMsg>(100);
 
         let ctx = PeerCtx {
+            downloaded: 0.into(),
+            uploaded: 0.into(),
             direction: self.state.direction,
             remote_addr: remote,
             pieces: RwLock::new(Bitfield::new()),

@@ -44,6 +44,9 @@ pub struct Daemon {
     pub ctx: Arc<DaemonCtx>,
     pub torrent_txs: HashMap<InfoHash, mpsc::Sender<TorrentMsg>>,
 
+    /// Connected peers of all torrents
+    connected_peers: u32,
+
     /// States of all Torrents, updated each second by the Torrent struct.
     torrent_states: Vec<TorrentState>,
     rx: mpsc::Receiver<DaemonMsg>,
@@ -63,18 +66,28 @@ pub enum DaemonMsg {
     /// Tell Daemon to add a new torrent and it will immediately
     /// announce to a tracker, connect to the peers, and start the download.
     NewTorrent(Magnet),
+
+    GetConnectedPeers(oneshot::Sender<u32>),
+    IncrementConnectedPeers,
+    DecrementConnectedPeers,
+
     GetAllTorrentStates(oneshot::Sender<Vec<TorrentState>>),
+
     /// Message that the Daemon will send to all connectors when the state
     /// of a torrent updates (every 1 second).
     TorrentState(TorrentState),
+
     /// Ask the Daemon to send a [`TorrentState`] of the torrent with the given
     RequestTorrentState(InfoHash, oneshot::Sender<Option<TorrentState>>),
+
     /// Pause/Resume a torrent.
     TogglePause(InfoHash),
-    /// Gracefully shutdown the Daemon
-    Quit,
+
     /// Print the status of all Torrents to stdout
     PrintTorrentStatus,
+
+    /// Gracefully shutdown the Daemon
+    Quit,
 }
 
 impl Daemon {
@@ -86,6 +99,7 @@ impl Daemon {
         let (tx, rx) = mpsc::channel::<DaemonMsg>(100);
 
         Self {
+            connected_peers: 0,
             disk_tx,
             rx,
             torrent_txs: HashMap::new(),
@@ -159,11 +173,25 @@ impl Daemon {
                 // Listen to internal mpsc messages
                 Some(msg) = self.rx.recv() => {
                     match msg {
+                        DaemonMsg::GetConnectedPeers(tx) => {
+                            let _ = tx.send(self.connected_peers);
+                        }
+                        DaemonMsg::IncrementConnectedPeers => self.connected_peers += 1,
+                        DaemonMsg::DecrementConnectedPeers => {
+                            if self.connected_peers > 0 {
+                                self.connected_peers -= 1;
+                            }
+                        },
                         DaemonMsg::GetAllTorrentStates(tx) => {
                             let _ = tx.send(self.torrent_states.clone());
                         }
-                        DaemonMsg::TorrentState(torrent_state) => {
-                            self.torrent_states.push(torrent_state.clone());
+                        DaemonMsg::TorrentState(mut torrent_state) => {
+                            let found = self.torrent_states.iter_mut().find(|v| v.info_hash == torrent_state.info_hash);
+                            if let Some(found) = found {
+                                std::mem::swap(found, &mut torrent_state)
+                            } else {
+                                self.torrent_states.push(torrent_state);
+                            }
 
                             if config.quit_after_complete && self.torrent_states.iter().all(|v| v.status == TorrentStatus::Seeding) {
                                 let _ = ctx.tx.send(DaemonMsg::Quit).await;

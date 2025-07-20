@@ -1,6 +1,5 @@
 [toolchain]
-channel = "nightly-2025-06-20"
-# components = [ "rustfmt", "clippy" ]
-# components = [ "rustfmt" ]
+channel = "nightly-2025-07-18"
+components = [ "rustfmt", "clippy", "rust-docs" ]
 targets = [ "x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc", "x86_64-pc-windows-gnu", "x86_64-apple-darwin", "aarch64-unknown-linux-gnu", "aarch64-apple-darwin" ]
 profile = "default"

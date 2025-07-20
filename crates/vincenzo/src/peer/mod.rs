@@ -5,9 +5,8 @@ mod types;
 // re-exports
 pub use types::*;
 
-use bitvec::{bitvec, prelude::Msb0};
 use futures::{SinkExt, StreamExt};
-use std::{collections::VecDeque, net::SocketAddr, time::Duration};
+use std::{collections::VecDeque, net::SocketAddr, sync::atomic::AtomicU64, time::Duration};
 use tokio::{
     select,
     sync::{
@@ -84,6 +83,12 @@ pub struct PeerCtx {
 
     /// The info_hash of the torrent that this Peer belongs to.
     pub info_hash: InfoHash,
+
+    /// Download bytes in the previous 10 seconds, tracked by the torrent.
+    pub downloaded: AtomicU64,
+
+    /// Upload bytes in the previous 10 seconds, tracked by the torrent.
+    pub uploaded: AtomicU64,
 }
 
 /// Handle peer messages.
@@ -115,7 +120,7 @@ impl Peer<Connected> {
             Duration::from_secs(120),
         );
 
-        // maybe send bitfield
+        // send bitfield
         {
             let (otx, orx) = oneshot::channel();
             let _ = self
@@ -125,33 +130,15 @@ impl Peer<Connected> {
                 .send(TorrentMsg::ReadBitfield(otx))
                 .await;
             let bitfield = orx.await?;
-            if !bitfield.is_empty() {
-                debug!("{local} sending bitfield to {remote}");
-                self.state.sink.send(Core::Bitfield(bitfield.clone())).await?;
-            }
+            debug!("{remote} sending bitfield");
+            self.state.sink.send(Core::Bitfield(bitfield)).await?;
         }
-
-        // todo: implement choke algorithm
-        // send Unchoke
-        self.state.ext_states.core.am_choking = false;
-        self.state.sink.send(Core::Unchoke).await?;
-        // sink.send(Core::Interested).await?;
 
         // when running a new Peer, we might
         // already have the info downloaded.
-        let info = self.state.torrent_ctx.info.read().await;
-        self.state.have_info = info.piece_length > 0;
-        drop(info);
-
         {
             let info = self.state.torrent_ctx.info.read().await;
-            let mut peer_pieces = self.state.ctx.pieces.write().await;
-
-            // if local peer has info, initialize the bitfield
-            // of this peer.
-            if peer_pieces.is_empty() && info.piece_length != 0 {
-                *peer_pieces = bitvec![u8, Msb0; 0; info.pieces() as usize];
-            }
+            self.state.have_info = info.piece_length > 0;
         }
 
         self.state.session.connection = ConnectionState::Connected;
@@ -236,9 +223,24 @@ impl Peer<Connected> {
                             }
                         }
                         PeerMsg::NotInterested => {
-                            debug!("{remote} NotInterested");
+                            debug!("{remote} sending NotInterested");
                             self.state.ext_states.core.am_interested = false;
                             self.state.sink.send(Core::NotInterested).await?;
+                        }
+                        PeerMsg::Interested => {
+                            debug!("{remote} sending Interested");
+                            self.state.ext_states.core.am_interested = true;
+                            self.state.sink.send(Core::Interested).await?;
+                        }
+                        PeerMsg::Choke => {
+                            debug!("{remote} sending Choke");
+                            self.state.ext_states.core.am_choking = true;
+                            self.state.sink.send(Core::Choke).await?;
+                        }
+                        PeerMsg::Unchoke => {
+                            debug!("{remote} sending Unchoke");
+                            self.state.ext_states.core.am_choking = false;
+                            self.state.sink.send(Core::Unchoke).await?;
                         }
                         PeerMsg::Pause => {
                             debug!("{remote} Pause");

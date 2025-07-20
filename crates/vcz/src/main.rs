@@ -3,12 +3,14 @@ use tokio::{join, spawn};
 use tracing::Level;
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::{fmt::time::OffsetTime, FmtSubscriber};
-use vincenzo::{args::Args, config::Config, daemon::Daemon, disk::Disk};
+use vincenzo::{
+    args::Args, config::Config, daemon::Daemon, disk::Disk, error::Error,
+};
 
 use vcz_ui::{action::Action, app::App};
 
 #[tokio::main(flavor = "current_thread")]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<(), Error> {
     let tmp = std::env::temp_dir();
 
     let time = std::time::SystemTime::now();
@@ -40,7 +42,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .expect("setting default subscriber failed");
 
     let config = Config::load()?;
-    let mut disk = Disk::new(config.download_dir);
+
+    if config.max_global_peers == 0 || config.max_torrent_peers == 0 {
+        return Err(Error::ConfigError(
+            "max_global_peers or max_torrent_peers cannot be zero".into(),
+        ));
+    }
+
+    if config.max_global_peers < config.max_torrent_peers {
+        return Err(Error::ConfigError(
+            "max_global_peers cannot be less than max_torrent_peers".into(),
+        ));
+    }
+
+    let mut disk = Disk::new(config.download_dir.clone());
     let disk_tx = disk.tx.clone();
 
     let mut daemon = Daemon::new(disk_tx, config);
@@ -63,7 +78,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let (v1, v2) = join!(daemon.run(), fr.run());
     v1?;
-    v2?;
+    v2.unwrap();
 
     Ok(())
 }

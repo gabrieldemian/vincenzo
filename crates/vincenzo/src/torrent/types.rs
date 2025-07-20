@@ -127,6 +127,32 @@ pub enum TorrentStatus {
     Error,
 }
 
+/// State of a [`Torrent`], used by the UI to present data.
+#[derive(Debug, Clone, Default, PartialEq, Readable, Writable)]
+pub struct TorrentState {
+    pub name: String,
+    pub stats: Stats,
+    pub status: TorrentStatus,
+    pub downloaded: u64,
+    pub download_rate: u64,
+    pub uploaded: u64,
+    pub size: u64,
+    pub info_hash: InfoHash,
+    pub have_info: bool,
+    pub bitfield: Vec<u8>,
+    pub connected_peers: u8,
+    pub connecting_peers: u8,
+    pub idle_peers: u8,
+}
+
+/// Status of the current Torrent, updated at every announce request.
+#[derive(Clone, Debug, PartialEq, Default, Readable, Writable)]
+pub struct Stats {
+    pub interval: u32,
+    pub leechers: u32,
+    pub seeders: u32,
+}
+
 impl From<TorrentStatus> for &str {
     fn from(val: TorrentStatus) -> Self {
         use TorrentStatus::*;

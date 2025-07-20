@@ -929,7 +929,8 @@ mod tests {
 
     use crate::{
         bitfield::Bitfield,
-        daemon::DaemonMsg,
+        config::Config,
+        daemon::{Daemon, DaemonMsg},
         extensions::core::{Block, BLOCK_LEN},
         magnet::Magnet,
         metainfo::{self, Info},
@@ -963,8 +964,11 @@ mod tests {
 
         let (daemon_tx, _daemon_rx) = mpsc::channel::<DaemonMsg>(1000);
 
+        let config = Config::load().unwrap();
+        let daemon = Daemon::new(disk_tx.clone(), config);
+
         let magnet = Magnet::new(&magnet).unwrap();
-        let torrent = Torrent::new(disk_tx.clone(), daemon_tx, magnet);
+        let torrent = Torrent::new(disk_tx, daemon.ctx.clone(), magnet);
         let torrent_ctx = torrent.ctx.clone();
 
         let mut rng = rand::thread_rng();
@@ -1100,7 +1104,8 @@ mod tests {
 
         let (fr_tx, _) = mpsc::channel::<DaemonMsg>(300);
         let magnet = Magnet::new(&magnet).unwrap();
-        let torrent = Torrent::new(disk_tx.clone(), fr_tx, magnet);
+        let daemon = Daemon::new(disk_tx.clone(), Config::load().unwrap());
+        let torrent = Torrent::new(disk_tx, daemon.ctx.clone(), magnet);
         let torrent_ctx = torrent.ctx.clone();
         let info_hash: InfoHash = torrent_ctx.info_hash.clone();
         let mut disk = Disk::new(download_dir.clone());
@@ -1234,12 +1239,12 @@ mod tests {
 
         let (disk_tx, _) = mpsc::channel::<DiskMsg>(3);
 
-        let (_, rx) = mpsc::channel(5);
         let mut disk = Disk::new(download_dir.clone());
 
         let (fr_tx, _) = mpsc::channel::<DaemonMsg>(300);
         let magnet = Magnet::new(&magnet).unwrap();
-        let torrent = Torrent::new(disk_tx, fr_tx, magnet);
+        let daemon = Daemon::new(disk_tx.clone(), Config::load().unwrap());
+        let torrent = Torrent::new(disk_tx, daemon.ctx.clone(), magnet);
         let info_hash = torrent.ctx.info_hash.clone();
 
         let mut info_t = torrent.ctx.info.write().await;
@@ -1361,12 +1366,12 @@ mod tests {
 
         let (disk_tx, _) = mpsc::channel::<DiskMsg>(3);
 
-        let (_, rx) = mpsc::channel(5);
         let mut disk = Disk::new(download_dir.clone());
 
         let (fr_tx, _) = mpsc::channel::<DaemonMsg>(300);
         let magnet = Magnet::new(&magnet).unwrap();
-        let torrent = Torrent::new(disk_tx, fr_tx, magnet);
+        let daemon = Daemon::new(disk_tx.clone(), Config::load().unwrap());
+        let torrent = Torrent::new(disk_tx, daemon.ctx.clone(), magnet);
         let mut info_t = torrent.ctx.info.write().await;
         *info_t = info.clone();
         drop(info_t);
@@ -1528,12 +1533,12 @@ mod tests {
 
         let (disk_tx, _) = mpsc::channel::<DiskMsg>(3);
 
-        let (_, rx) = mpsc::channel(5);
         let mut disk = Disk::new(download_dir.clone());
 
         let (fr_tx, _) = mpsc::channel::<DaemonMsg>(300);
         let magnet = Magnet::new(&magnet).unwrap();
-        let torrent = Torrent::new(disk_tx, fr_tx, magnet);
+        let daemon = Daemon::new(disk_tx.clone(), Config::load().unwrap());
+        let torrent = Torrent::new(disk_tx, daemon.ctx.clone(), magnet);
         let mut info_t = torrent.ctx.info.write().await;
         *info_t = info.clone();
         drop(info_t);
