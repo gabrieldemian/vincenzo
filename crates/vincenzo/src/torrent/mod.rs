@@ -4,6 +4,8 @@
 //! using [`TorrentMsg`], and torrent can send messages to the Peers using
 //! [`PeerMsg`].
 
+use bendy::decoding::FromBencode;
+use bitvec::{bitvec, prelude::Msb0};
 mod types;
 
 // re-exports
@@ -20,8 +22,6 @@ use crate::{
     peer::{self, Direction, Peer, PeerCtx, PeerId, PeerMsg},
     tracker::{event::Event, Tracker, TrackerCtx, TrackerMsg, TrackerTrait},
 };
-use bendy::decoding::FromBencode;
-use bitvec::{bitvec, prelude::Msb0};
 use std::{
     collections::BTreeMap,
     net::{IpAddr, Ipv4Addr, SocketAddr},
@@ -453,7 +453,6 @@ impl Torrent<Connected> {
             }
         }
 
-        // extract results (only n clones performed)
         buffer[..n].iter().map(|&(_, idx)| peers[idx].clone()).collect()
     }
 
@@ -527,10 +526,8 @@ impl Torrent<Connected> {
         let now = Instant::now();
 
         let mut announce_interval = interval_at(
-            now + Duration::from_secs(
-                self.state.stats.interval.max(500).into(),
-            ),
-            Duration::from_secs((self.state.stats.interval as u64).max(500)),
+            now + Duration::from_secs(self.state.stats.interval.into()),
+            Duration::from_secs(self.state.stats.interval.into()),
         );
 
         // unchoke a peer with the fewest pieces and choke the slowest
@@ -545,6 +542,13 @@ impl Torrent<Connected> {
         // - unchoke uninterested peers with a better upload rate, and if one
         //   becomes interested later, choke the worst uploader.
         let mut unchoke_interval = interval(Duration::from_secs(10));
+
+        // interested algorithm:
+        // - 1. if peers contain at least 1 piece which we don't have, send
+        //   interested.
+        // - 2. later, if we already have all pieces which the peer has, and we
+        //   are interested, send not interested.
+        let mut interested_interval = interval(Duration::from_secs(3));
 
         loop {
             select! {
@@ -830,6 +834,15 @@ impl Torrent<Connected> {
                 }
                 // periodically announce to tracker, at the specified interval
                 // to update the tracker about the client's stats.
+                _ = interested_interval.tick() => {
+                    // todo
+                }
+                _ = optimistic_unchoke_interval.tick() => {
+                    // todo
+                }
+                _ = unchoke_interval.tick() => {
+                    // todo
+                }
                 _ = announce_interval.tick() => {
                     if self.state.have_info {
                         debug!("sending periodic announce, interval {announce_interval:?}");
@@ -844,22 +857,16 @@ impl Torrent<Connected> {
                             })
                         .await;
 
-                        let r = orx.await?;
-                        debug!("new stats {r:#?}");
+                        let (resp, _payload) = orx.await?;
+                        debug!("new stats {resp:#?}");
 
                         // update our stats, received from the tracker
-                        self.state.stats = r.0.into();
+                        self.state.stats = resp.into();
 
                         announce_interval = interval(
                             Duration::from_secs(self.state.stats.interval as u64),
                         );
                     }
-                }
-                _ = unchoke_interval.tick() => {
-                    // todo
-                }
-                _ = optimistic_unchoke_interval.tick() => {
-                    // todo
                 }
             }
         }

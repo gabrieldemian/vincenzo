@@ -6,89 +6,33 @@ mod types;
 pub use types::*;
 
 use futures::{SinkExt, StreamExt};
-use std::{collections::VecDeque, net::SocketAddr, sync::atomic::AtomicU64, time::Duration};
+use std::{collections::VecDeque, time::Duration};
 use tokio::{
     select,
-    sync::{
-        mpsc::{self},
-        oneshot, RwLock,
-    },
+    sync::oneshot,
     time::{interval, interval_at, Instant},
 };
 
 use tracing::{debug, warn};
 
-use crate::{
-    extensions::{
-        CoreState, ExtMsg, ExtMsgHandler, Extended, Metadata, MetadataData,
-        MetadataMsg,
-    },
-    torrent::InfoHash,
+use crate::extensions::{
+    ExtMsg, ExtMsgHandler, Extended, Metadata, MetadataMsg,
 };
 
 use crate::{
-    bitfield::Bitfield,
     disk::DiskMsg,
     error::Error,
-    extensions::{
-        core::{Block, BlockInfo, Core, CoreId, BLOCK_LEN},
-        extended::Extension,
-    },
+    extensions::core::{Block, BlockInfo, Core, CoreId, BLOCK_LEN},
     peer::session::ConnectionState,
     torrent::TorrentMsg,
 };
 
 use self::session::Session;
 
-/// States of peer protocols state, including Core.
-/// After a peer handshake, these values may be set if the peer supports them.
-#[derive(Default, Clone)]
-pub struct ExtStates {
-    /// BEP02 : The BitTorrent Protocol Specification
-    pub core: CoreState,
-
-    /// BEP10 : Extension Protocol
-    pub extension: Option<Extension>,
-
-    /// BEP09 : Extension for Peers to Send Metadata Files
-    pub metadata: Option<MetadataData>,
-}
-
 /// Data about a remote Peer that the client is connected to,
 /// but the client itself does not have a Peer struct.
 pub struct Peer<S: PeerState> {
     pub state: S,
-}
-
-/// Ctx that is shared with Torrent and Disk;
-#[derive(Debug)]
-pub struct PeerCtx {
-    /// Who initiated the connection, the local peer or remote.
-    pub direction: Direction,
-
-    pub tx: mpsc::Sender<PeerMsg>,
-
-    /// a `Bitfield` with pieces that this peer has, and hasn't, containing 0s
-    /// and 1s
-    pub pieces: RwLock<Bitfield>,
-
-    /// Id of the remote peer.
-    pub id: PeerId,
-
-    /// Remote addr of this peer.
-    pub remote_addr: SocketAddr,
-
-    /// Our local addr for this peer.
-    pub local_addr: SocketAddr,
-
-    /// The info_hash of the torrent that this Peer belongs to.
-    pub info_hash: InfoHash,
-
-    /// Download bytes in the previous 10 seconds, tracked by the torrent.
-    pub downloaded: AtomicU64,
-
-    /// Upload bytes in the previous 10 seconds, tracked by the torrent.
-    pub uploaded: AtomicU64,
 }
 
 /// Handle peer messages.
@@ -184,23 +128,22 @@ impl Peer<Connected> {
                 }
                 Some(msg) = self.state.rx.recv() => {
                     match msg {
+                        PeerMsg::GetPieces(tx) => {
+                            let _ = tx.send(self.state.pieces.clone());
+                        }
                         PeerMsg::SendToSink(msg) => {
                             self.state.sink.send(msg).await?;
                         }
                         PeerMsg::HavePiece(piece) => {
                             debug!("{remote} has piece {piece}");
 
-                            self.state.have_info = true;
-                            let pieces = self.state.ctx.pieces.read().await;
-
-                            if let Some(b) = pieces.get(piece) {
+                            if let Some(b) = self.state.pieces.get(piece) {
                                 // send Have to this peer if he doesnt have this piece
                                 if !b {
                                     debug!("{remote} sending have {piece}");
                                     let _ = self.state.sink.send(Core::Have(piece)).await;
                                 }
                             }
-                            drop(pieces);
                         }
                         PeerMsg::RequestBlockInfos(block_infos) => {
                             debug!("{remote} RequestBlockInfos len {}", block_infos.len());
@@ -647,9 +590,6 @@ impl Peer<Connected> {
     /// If this Peer has a piece that the local Peer (client)
     /// does not have.
     pub async fn has_piece_not_in_local(&self) -> Result<bool, Error> {
-        // bitfield of the peer
-        let bitfield = self.state.ctx.pieces.read().await;
-
         let (otx, orx) = oneshot::channel();
 
         // local bitfield of the local peer
@@ -663,7 +603,9 @@ impl Peer<Connected> {
             return Ok(true);
         }
 
-        for (local_piece, piece) in local_bitfield.iter().zip(bitfield.iter()) {
+        for (local_piece, piece) in
+            local_bitfield.iter().zip(self.state.pieces.iter())
+        {
             if *piece && !local_piece {
                 return Ok(true);
             }
@@ -675,14 +617,6 @@ impl Peer<Connected> {
     /// Calculate the maximum number of block infos to request,
     /// and set this value on `session` of the peer.
     pub async fn prepare_for_download(&mut self) {
-        debug_assert!(self.state.ext_states.core.am_interested);
-        debug_assert!(!self.state.ext_states.core.am_choking);
-
-        // let has_one_piece = self
-        //     .torrent_ctx
-        //     .has_at_least_one_piece
-        //     .load(std::sync::atomic::Ordering::Relaxed);
-
         // the max number of block_infos to request
         let n = self
             .state
@@ -691,8 +625,6 @@ impl Peer<Connected> {
             .as_ref()
             .and_then(|v| v.reqq)
             .unwrap_or(Session::DEFAULT_REQUEST_QUEUE_LEN);
-
-        // debug!("has one piece, changing it to {:?}", self.extension.reqq);
 
         if n > 0 {
             self.state.session.target_request_queue_len = n;

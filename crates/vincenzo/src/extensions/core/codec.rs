@@ -375,7 +375,7 @@ impl ExtMsgHandler<Core, CoreState> for MsgHandler {
                 let pieces =
                     peer.state.torrent_ctx.info.read().await.pieces() as usize;
 
-                let mut b = peer.state.ctx.pieces.write().await;
+                let b = &mut peer.state.pieces;
                 *b = bitfield.clone();
 
                 if bitfield.len() != pieces
@@ -387,7 +387,6 @@ impl ExtMsgHandler<Core, CoreState> for MsgHandler {
                     }
                 }
 
-                drop(b);
                 debug!("{local} bitfield is len {:?} {remote}", bitfield.len());
 
                 let peer_has_piece = peer.has_piece_not_in_local().await?;
@@ -435,7 +434,7 @@ impl ExtMsgHandler<Core, CoreState> for MsgHandler {
                 // have's. They do this to try to prevent censhorship
                 // from ISPs.
                 // Overwrite pieces on bitfield, if the peer has one
-                let mut pieces = peer.state.ctx.pieces.write().await;
+                let pieces = &mut peer.state.pieces;
 
                 if pieces.clone().get(piece).is_none() {
                     warn!(
@@ -450,7 +449,6 @@ piece {piece}"
                 }
 
                 pieces.set(piece, true);
-                drop(pieces);
 
                 let (otx, orx) = oneshot::channel();
                 let torrent_ctx = peer.state.torrent_ctx.clone();
@@ -532,7 +530,7 @@ interested"
                         recipient: tx,
                         info_hash: peer.state.torrent_ctx.info_hash.clone(),
                     })
-                .await?;
+                    .await?;
 
                 let bytes = rx.await?;
 

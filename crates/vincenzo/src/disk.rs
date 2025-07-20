@@ -14,7 +14,7 @@ use tokio::{
     io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
     sync::{
         mpsc::{self, Receiver},
-        oneshot::Sender,
+        oneshot::{self, Sender},
     },
 };
 use tracing::{debug, warn};
@@ -392,7 +392,13 @@ impl Disk {
             return None;
         };
 
-        let peer_pieces = peer_ctx.pieces.read().await;
+        let (otx, orx) = oneshot::channel();
+        let _ = peer_ctx.tx.send(PeerMsg::GetPieces(otx)).await;
+
+        let Some(peer_pieces) = orx.await.ok() else {
+            return None;
+        };
+
         let downloaded_pieces = self.downloaded_pieces.get(info_hash).unwrap();
 
         self.pieces
@@ -451,11 +457,16 @@ impl Disk {
 
         // traverse pieces of the peers
         for ctx in peer_ctxs {
-            let pieces =
-                ctx.pieces.read().await.clone().into_iter().enumerate();
-            for (i, item) in pieces {
+            let (otx, orx) = oneshot::channel();
+            let _ = ctx.tx.send(PeerMsg::GetPieces(otx)).await;
+
+            let Some(pieces) = orx.await.ok() else {
+                continue;
+            };
+
+            for (i, item) in pieces.iter().enumerate() {
                 // increment each occurence of a piece
-                if item {
+                if *item {
                     if let Some(item) = score.get_mut(i) {
                         *item += 1;
                     }

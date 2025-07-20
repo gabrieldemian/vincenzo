@@ -1,4 +1,8 @@
-use std::{fmt::Display, net::SocketAddr, sync::Arc};
+use std::{
+    fmt::Display,
+    net::SocketAddr,
+    sync::{atomic::AtomicU64, Arc},
+};
 
 use bitvec::{array::BitArray, order::Msb0};
 use futures::{
@@ -11,7 +15,7 @@ use tokio::{
     net::TcpStream,
     sync::{
         mpsc::{self, Receiver},
-        RwLock,
+        oneshot,
     },
     time::Instant,
 };
@@ -22,10 +26,10 @@ use crate::{
     bitfield::{Bitfield, Reserved},
     error::Error,
     extensions::{
-        core::BlockInfo, Core, CoreCodec, ExtendedMessage, Extension,
-        Handshake, HandshakeCodec,
+        core::BlockInfo, Core, CoreCodec, CoreState, ExtendedMessage,
+        Extension, Handshake, HandshakeCodec, MetadataData,
     },
-    peer::{self, session::Session, ExtStates, PeerCtx},
+    peer::{self, session::Session},
     torrent::{InfoHash, TorrentCtx, TorrentMsg},
 };
 
@@ -85,6 +89,33 @@ impl TryFrom<Vec<u8>> for PeerId {
     }
 }
 
+/// Ctx that is shared with Torrent and Disk;
+#[derive(Debug)]
+pub struct PeerCtx {
+    /// Who initiated the connection, the local peer or remote.
+    pub direction: Direction,
+
+    pub tx: mpsc::Sender<PeerMsg>,
+
+    /// Id of the remote peer.
+    pub id: PeerId,
+
+    /// Remote addr of this peer.
+    pub remote_addr: SocketAddr,
+
+    /// Our local addr for this peer.
+    pub local_addr: SocketAddr,
+
+    /// The info_hash of the torrent that this Peer belongs to.
+    pub info_hash: InfoHash,
+
+    /// Download bytes in the previous 10 seconds, tracked by the torrent.
+    pub downloaded: AtomicU64,
+
+    /// Upload bytes in the previous 10 seconds, tracked by the torrent.
+    pub uploaded: AtomicU64,
+}
+
 /// Messages used to control the peer state or to make the peer forward a
 /// message.
 #[derive(Debug)]
@@ -94,6 +125,9 @@ pub enum PeerMsg {
     /// When we download a full piece, we need to send Have's
     /// to peers that dont Have it.
     HavePiece(usize),
+
+    /// Get the pieces of the peer.
+    GetPieces(oneshot::Sender<Bitfield>),
 
     /// Sometimes a peer either takes too long to answer,
     /// or simply does not answer at all. In both cases
@@ -246,7 +280,6 @@ impl peer::Peer<Idle> {
             uploaded: 0.into(),
             direction: self.state.direction,
             remote_addr: remote,
-            pieces: RwLock::new(Bitfield::new()),
             id: peer_handshake.peer_id.into(),
             tx,
             info_hash,
@@ -257,6 +290,7 @@ impl peer::Peer<Idle> {
 
         let peer = peer::Peer {
             state: Connected {
+                pieces: Bitfield::new(),
                 ctx: Arc::new(ctx),
                 ext_states: ExtStates::default(),
                 sink,
@@ -276,6 +310,20 @@ impl peer::Peer<Idle> {
     }
 }
 
+/// States of peer protocols state, including Core.
+/// After a peer handshake, these values may be set if the peer supports them.
+#[derive(Default, Clone)]
+pub struct ExtStates {
+    /// BEP02 : The BitTorrent Protocol Specification
+    pub core: CoreState,
+
+    /// BEP10 : Extension Protocol
+    pub extension: Option<Extension>,
+
+    /// BEP09 : Extension for Peers to Send Metadata Files
+    pub metadata: Option<MetadataData>,
+}
+
 /// Peer is downloading / uploading and working well
 pub struct Connected {
     pub stream: SplitStream<Framed<TcpStream, CoreCodec>>,
@@ -283,6 +331,10 @@ pub struct Connected {
     pub reserved: BitArray<[u8; 8], Msb0>,
     pub torrent_ctx: Arc<TorrentCtx>,
     pub rx: Receiver<PeerMsg>,
+
+    /// a `Bitfield` with pieces that this peer has, and hasn't, containing 0s
+    /// and 1s
+    pub pieces: Bitfield,
 
     pub ext_states: ExtStates,
 
