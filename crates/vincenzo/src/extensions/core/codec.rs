@@ -1,3 +1,4 @@
+use bitvec::bitvec;
 use bytes::{Buf, BufMut, BytesMut};
 use futures::SinkExt;
 use std::{io::Cursor, sync::atomic::Ordering};
@@ -357,19 +358,18 @@ impl ExtMsgHandler<Core, CoreState> for MsgHandler {
         peer: &mut peer::Peer<peer::Connected>,
         msg: Core,
     ) -> Result<(), Error> {
-        let local = peer.state.ctx.local_addr;
         let remote = peer.state.ctx.remote_addr;
 
         match msg {
             // handled by the extended messages
             Core::Extended(_) => {}
             Core::KeepAlive => {
-                debug!("{local} keepalive {remote}");
+                debug!("{remote} keepalive");
             }
             Core::Bitfield(bitfield) => {
                 // take entire pieces from bitfield
                 // and put in pending_requests
-                debug!("{local} bitfield {remote}");
+                debug!("{remote} bitfield");
 
                 // remove excess bits
                 let pieces =
@@ -387,15 +387,85 @@ impl ExtMsgHandler<Core, CoreState> for MsgHandler {
                     }
                 }
 
-                debug!("{local} bitfield is len {:?} {remote}", bitfield.len());
+                debug!("{remote} bitfield is len {:?}", bitfield.len());
+            }
+            Core::Unchoke => {
+                peer.state.ctx.peer_choking.store(false, Ordering::Relaxed);
+                debug!("{remote} unchoke");
 
-                let peer_has_piece = peer.has_piece_not_in_local().await?;
-                debug!("{local} peer_has_piece {peer_has_piece} {remote}");
+                if peer.can_request() {
+                    peer.prepare_for_download().await;
+                    peer.request_block_infos().await?;
+                }
+            }
+            Core::Choke => {
+                peer.state.ctx.peer_choking.store(true, Ordering::Relaxed);
+                debug!("{remote} choke");
+                peer.free_pending_blocks().await;
+            }
+            Core::Interested => {
+                debug!("{remote} interested");
+                peer.state.ctx.peer_interested.store(true, Ordering::Relaxed);
+            }
+            Core::NotInterested => {
+                debug!("{remote} not_interested");
+                peer.state.ctx.peer_interested.store(false, Ordering::Relaxed);
+            }
+            Core::Have(piece) => {
+                debug!("{remote} have {piece}");
 
-                if peer_has_piece {
-                    debug!("{local} interested due to Bitfield {remote}");
+                // Overwrite pieces on bitfield, if the peer has one
+                let peer_pieces = &mut peer.state.pieces;
 
-                    peer.state.ext_states.core.am_interested = true;
+                let (otx, orx) = oneshot::channel();
+
+                peer.state
+                    .torrent_ctx
+                    .tx
+                    .send(TorrentMsg::ReadBitfield(otx))
+                    .await?;
+
+                // local bitfield of the local peer
+                let local_pieces = orx.await?;
+
+                // peer sent a piece which is out of bounds with it's pieces
+                if peer_pieces.get(piece).is_none() {
+                    warn!(
+                        "{remote} sent have but it's bitfield is out of
+bounds"
+                    );
+                    warn!(
+                        "initializing an empty bitfield with the len of the
+piece {piece}"
+                    );
+
+                    // if local peer has full info, calc the difference of the
+                    // bitfields and just append the difference to the peer's
+                    if peer.state.have_info {
+                        let missing_bits =
+                            local_pieces.len() - peer_pieces.len();
+                        peer_pieces
+                            .extend_from_bitslice(&bitvec![0; missing_bits]);
+                    } else {
+                        let missing_bits = piece - peer_pieces.len();
+                        peer_pieces
+                            .extend_from_bitslice(&bitvec![0; missing_bits]);
+                    }
+                }
+
+                peer_pieces.set(piece, true);
+
+                let Some(piece) = local_pieces.get(piece) else {
+                    return Ok(());
+                };
+
+                // maybe become interested in peer and request blocks
+                if !peer.state.ctx.am_interested.load(Ordering::Relaxed)
+                    && !piece
+                {
+                    debug!("{remote} sending interested due to have");
+
+                    peer.state.ctx.am_interested.store(true, Ordering::Relaxed);
                     peer.state.sink.send(Core::Interested).await?;
 
                     if peer.can_request() {
@@ -404,86 +474,8 @@ impl ExtMsgHandler<Core, CoreState> for MsgHandler {
                     }
                 }
             }
-            Core::Unchoke => {
-                peer.state.ext_states.core.peer_choking = false;
-                debug!("{local} unchoke {remote}");
-
-                if peer.can_request() {
-                    peer.prepare_for_download().await;
-                    peer.request_block_infos().await?;
-                }
-            }
-            Core::Choke => {
-                peer.state.ext_states.core.peer_choking = true;
-                debug!("{local} choke {remote}");
-                peer.free_pending_blocks().await;
-            }
-            Core::Interested => {
-                debug!("{local} interested {remote}");
-                peer.state.ext_states.core.peer_interested = true;
-            }
-            Core::NotInterested => {
-                debug!("{local} NotInterested {remote}");
-                peer.state.ext_states.core.peer_interested = false;
-            }
-            Core::Have(piece) => {
-                debug!("{local} Have {piece} {remote}");
-                // Have is usually sent when the peer has downloaded
-                // a new piece, however, some peers, after handshake,
-                // send an incomplete bitfield followed by a sequence of
-                // have's. They do this to try to prevent censhorship
-                // from ISPs.
-                // Overwrite pieces on bitfield, if the peer has one
-                let pieces = &mut peer.state.pieces;
-
-                if pieces.clone().get(piece).is_none() {
-                    warn!(
-                        "{local} sent Have but it's bitfield is out of
-bounds {remote}"
-                    );
-                    warn!(
-                        "initializing an empty bitfield with the len of the
-piece {piece}"
-                    );
-                    *pieces = Bitfield::from_vec(vec![0u8; piece]);
-                }
-
-                pieces.set(piece, true);
-
-                let (otx, orx) = oneshot::channel();
-                let torrent_ctx = peer.state.torrent_ctx.clone();
-
-                torrent_ctx.tx.send(TorrentMsg::ReadBitfield(otx)).await?;
-
-                let local_bitfield = orx.await?;
-
-                let piece = local_bitfield.get(piece);
-
-                // maybe become interested in peer and request blocks
-                if !peer.state.ext_states.core.am_interested {
-                    if let Some(a) = piece {
-                        if *a {
-                            debug!("already have this piece, ignoring");
-                        } else {
-                            debug!(
-                                "We do not have this piece, sending
-interested"
-                            );
-                            debug!("{local} we are interested due to Have");
-
-                            peer.state.ext_states.core.am_interested = true;
-                            peer.state.sink.send(Core::Interested).await?;
-
-                            if peer.can_request() {
-                                peer.prepare_for_download().await;
-                                peer.request_block_infos().await?;
-                            }
-                        }
-                    }
-                }
-            }
             Core::Piece(block) => {
-                debug!("{local} piece {} {remote}", block.index);
+                debug!("{remote} piece {}", block.index);
                 debug!(
                     "index: {:?}, begin: {:?}, len: {:?}",
                     block.index,
@@ -504,15 +496,15 @@ interested"
                 }
             }
             Core::Cancel(block_info) => {
-                debug!("{local} cancel from {remote}");
+                debug!("{remote} cancel from");
                 debug!("{block_info:?}");
                 peer.state.incoming_requests.remove(&block_info);
             }
             Core::Request(block_info) => {
-                debug!("{local} request from {remote}");
+                debug!("{remote} request from");
                 debug!("{block_info:?}");
 
-                if peer.state.ext_states.core.peer_choking {
+                if peer.state.ctx.peer_choking.load(Ordering::Relaxed) {
                     return Ok(());
                 }
 

@@ -1,7 +1,10 @@
 use std::{
     fmt::Display,
     net::SocketAddr,
-    sync::{atomic::AtomicU64, Arc},
+    sync::{
+        atomic::{AtomicBool, AtomicU64},
+        Arc,
+    },
 };
 
 use bitvec::{array::BitArray, order::Msb0};
@@ -26,8 +29,8 @@ use crate::{
     bitfield::{Bitfield, Reserved},
     error::Error,
     extensions::{
-        core::BlockInfo, Core, CoreCodec, CoreState, ExtendedMessage,
-        Extension, Handshake, HandshakeCodec, MetadataData,
+        core::BlockInfo, Core, CoreCodec, ExtendedMessage, Extension,
+        Handshake, HandshakeCodec, MetadataData,
     },
     peer::{self, session::Session},
     torrent::{InfoHash, TorrentCtx, TorrentMsg},
@@ -114,6 +117,18 @@ pub struct PeerCtx {
 
     /// Upload bytes in the previous 10 seconds, tracked by the torrent.
     pub uploaded: AtomicU64,
+
+    /// If we're choked, peer doesn't allow us to download pieces from them.
+    pub am_choking: AtomicBool,
+
+    /// If we're interested, peer has pieces that we don't have.
+    pub am_interested: AtomicBool,
+
+    /// If peer is choked, we don't allow them to download pieces from us.
+    pub peer_choking: AtomicBool,
+
+    /// If peer is interested in us, they mean to download pieces that we have.
+    pub peer_interested: AtomicBool,
 }
 
 /// Messages used to control the peer state or to make the peer forward a
@@ -276,6 +291,10 @@ impl peer::Peer<Idle> {
         let (tx, rx) = mpsc::channel::<PeerMsg>(100);
 
         let ctx = PeerCtx {
+            am_interested: false.into(),
+            am_choking: true.into(),
+            peer_choking: true.into(),
+            peer_interested: false.into(),
             downloaded: 0.into(),
             uploaded: 0.into(),
             direction: self.state.direction,
@@ -314,9 +333,8 @@ impl peer::Peer<Idle> {
 /// After a peer handshake, these values may be set if the peer supports them.
 #[derive(Default, Clone)]
 pub struct ExtStates {
-    /// BEP02 : The BitTorrent Protocol Specification
-    pub core: CoreState,
-
+    // BEP02 : The BitTorrent Protocol Specification
+    // pub core: CoreState,
     /// BEP10 : Extension Protocol
     pub extension: Option<Extension>,
 
