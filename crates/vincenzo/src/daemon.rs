@@ -8,7 +8,7 @@ use std::{
     time::Duration,
 };
 use tokio_util::codec::Framed;
-use tracing::{info, trace, warn};
+use tracing::{debug, info, trace, warn};
 
 use tokio::{
     net::{TcpListener, TcpStream},
@@ -23,7 +23,10 @@ use crate::{
     disk::DiskMsg,
     error::Error,
     magnet::Magnet,
-    torrent::{InfoHash, Torrent, TorrentMsg, TorrentState, TorrentStatus},
+    peer::{DirectionWithInfoHash, PeerId},
+    torrent::{
+        InfoHash, Torrent, TorrentCtx, TorrentMsg, TorrentState, TorrentStatus,
+    },
     utils::to_human_readable,
 };
 
@@ -42,7 +45,7 @@ use crate::{
 pub struct Daemon {
     pub disk_tx: mpsc::Sender<DiskMsg>,
     pub ctx: Arc<DaemonCtx>,
-    pub torrent_txs: HashMap<InfoHash, mpsc::Sender<TorrentMsg>>,
+    pub torrent_ctxs: HashMap<InfoHash, Arc<TorrentCtx>>,
 
     /// Connected peers of all torrents
     connected_peers: u32,
@@ -55,6 +58,7 @@ pub struct Daemon {
 /// Context of the [`Daemon`] that may be shared between other types.
 pub struct DaemonCtx {
     pub tx: mpsc::Sender<DaemonMsg>,
+    pub local_peer_id: PeerId,
 }
 
 /// Messages used by the [`Daemon`] for internal communication.
@@ -67,6 +71,7 @@ pub enum DaemonMsg {
     NewTorrent(Magnet),
 
     GetConnectedPeers(oneshot::Sender<u32>),
+    GetTorrentCtx(oneshot::Sender<Option<Arc<TorrentCtx>>>, InfoHash),
     IncrementConnectedPeers,
     DecrementConnectedPeers,
 
@@ -93,18 +98,66 @@ impl Daemon {
     pub const DEFAULT_LISTENER: SocketAddr =
         SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 51411);
 
+    /// Peer ids should be prefixed with "vcz".
+    pub fn gen_peer_id() -> PeerId {
+        let mut peer_id = [0; 20];
+        peer_id[..3].copy_from_slice(b"vcz");
+        peer_id[3..].copy_from_slice(&rand::random::<[u8; 17]>());
+        peer_id.into()
+    }
+
     /// Initialize the Daemon struct with the default [`DaemonConfig`].
     pub fn new(disk_tx: mpsc::Sender<DiskMsg>) -> Self {
         let (tx, rx) = mpsc::channel::<DaemonMsg>(100);
+
+        let local_peer_id = Self::gen_peer_id();
 
         Self {
             connected_peers: 0,
             disk_tx,
             rx,
-            torrent_txs: HashMap::new(),
+            torrent_ctxs: HashMap::new(),
             torrent_states: Vec::new(),
-            ctx: Arc::new(DaemonCtx { tx }),
+            ctx: Arc::new(DaemonCtx { tx, local_peer_id }),
         }
+    }
+
+    async fn run_local_peer(&self) -> Result<(), Error> {
+        let local_addr = SocketAddr::new(
+            IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
+            CONFIG.local_peer_port,
+        );
+
+        info!("local peer listening on: {local_addr}");
+
+        let local_socket = TcpListener::bind(local_addr).await?;
+        let daemon_ctx = self.ctx.clone();
+
+        // accept connections from other peers
+        spawn(async move {
+            debug!("accepting requests in {local_socket:?}");
+
+            loop {
+                if let Ok((socket, addr)) = local_socket.accept().await {
+                    info!("received inbound connection from {addr}");
+
+                    let daemon_ctx = daemon_ctx.clone();
+
+                    spawn(async move {
+                        Torrent::start_and_run_peer(
+                            daemon_ctx,
+                            socket,
+                            DirectionWithInfoHash::Inbound,
+                        )
+                        .await?;
+
+                        Ok::<(), Error>(())
+                    });
+                }
+            }
+        });
+
+        Ok(())
     }
 
     /// This function will listen to 3 different event loops:
@@ -124,15 +177,17 @@ impl Daemon {
     pub async fn run(&mut self) -> Result<(), Error> {
         let socket = TcpListener::bind(CONFIG.daemon_addr).await.unwrap();
 
-        info!("Daemon listening on: {}", CONFIG.daemon_addr);
+        info!("listening on: {}", CONFIG.daemon_addr);
 
         let ctx = self.ctx.clone();
+
+        self.run_local_peer().await?;
 
         loop {
             select! {
                 // listen for remote TCP connections
                 Ok((socket, addr)) = socket.accept() => {
-                    info!("Connected with remote: {addr}");
+                    info!("connected to remote: {addr}");
 
                     let socket = Framed::new(socket, DaemonCodec);
                     let (mut sink, mut stream) = socket.split();
@@ -159,11 +214,16 @@ impl Daemon {
                                     }
                                 }
                                 Some(Ok(msg)) = stream.next() => {
+                                    if msg == Message::FrontendQuit {
+                                        break;
+                                    }
                                     Self::handle_remote_msgs(&ctx.tx, msg, &mut sink).await?;
                                 }
                                 else => break
                             }
                         }
+
+                        info!("disconnected from remote: {addr}");
 
                         Ok::<(), Error>(())
                     });
@@ -171,6 +231,10 @@ impl Daemon {
                 // Listen to internal mpsc messages
                 Some(msg) = self.rx.recv() => {
                     match msg {
+                        DaemonMsg::GetTorrentCtx(tx, info) => {
+                            let ctx = self.torrent_ctxs.get(&info).cloned();
+                            let _ = tx.send(ctx);
+                        }
                         DaemonMsg::GetConnectedPeers(tx) => {
                             let _ = tx.send(self.connected_peers);
                         }
@@ -299,12 +363,12 @@ impl Daemon {
         &self,
         info_hash: &InfoHash,
     ) -> Result<(), Error> {
-        let tx = self
-            .torrent_txs
+        let ctx = self
+            .torrent_ctxs
             .get(info_hash)
             .ok_or(Error::TorrentDoesNotExist)?;
 
-        tx.send(TorrentMsg::TogglePause).await?;
+        ctx.tx.send(TorrentMsg::TogglePause).await?;
 
         Ok(())
     }
@@ -324,7 +388,7 @@ impl Daemon {
         let info_hash = magnet.parse_xt_infohash();
 
         if self.torrent_states.iter().any(|v| v.info_hash == info_hash) {
-            warn!("This torrent is already present on the Daemon");
+            warn!("this torrent is already present");
             return Err(Error::NoDuplicateTorrent);
         }
 
@@ -339,14 +403,13 @@ impl Daemon {
         let torrent =
             Torrent::new(self.disk_tx.clone(), self.ctx.clone(), magnet);
 
-        self.torrent_txs.insert(info_hash, torrent.ctx.tx.clone());
-        info!("Downloading torrent: {}", torrent.name);
+        self.torrent_ctxs.insert(info_hash, torrent.ctx.clone());
+        info!("downloading torrent: {}", torrent.name);
 
         spawn(async move {
             let mut torrent = torrent.start(None).await?;
 
             torrent.spawn_outbound_peers().await?;
-            torrent.spawn_inbound_peers().await?;
             torrent.run().await?;
 
             Ok::<(), Error>(())
@@ -358,9 +421,9 @@ impl Daemon {
     async fn quit(&mut self) -> Result<(), Error> {
         // tell all torrents that we are quitting the client,
         // each torrent will kill their peers tasks, and their tracker task
-        for (_, tx) in std::mem::take(&mut self.torrent_txs) {
+        for (_, ctx) in std::mem::take(&mut self.torrent_ctxs) {
             spawn(async move {
-                let _ = tx.send(TorrentMsg::Quit).await;
+                let _ = ctx.tx.send(TorrentMsg::Quit).await;
             });
         }
 

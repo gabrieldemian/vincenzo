@@ -7,7 +7,7 @@ use tokio::{
 use tokio_util::codec::Framed;
 use tracing::debug;
 use vincenzo::{
-    config::Config,
+    config::CONFIG,
     daemon_wire::{DaemonCodec, Message},
 };
 
@@ -53,7 +53,7 @@ impl App {
         let tx = self.tx.clone();
         let mut rx = std::mem::take(&mut self.rx).unwrap();
 
-        let daemon_addr = Config::load().unwrap().daemon_addr;
+        let daemon_addr = CONFIG.daemon_addr;
         let socket = TcpStream::connect(daemon_addr).await.unwrap();
 
         // spawn event loop to listen to messages sent by the daemon
@@ -61,7 +61,7 @@ impl App {
         let (mut sink, stream) = socket.split();
         let _tx = self.tx.clone();
 
-        let handle = spawn(async move {
+        let _handle = spawn(async move {
             let _ = Self::listen_daemon(_tx, stream).await;
         });
 
@@ -81,10 +81,10 @@ impl App {
                 }
 
                 if let Action::Quit = action {
-                    if !self.is_detached {
-                        let _ = sink.send(Message::Quit).await;
-                        handle.abort();
-                    }
+                    let _ = sink.send(Message::FrontendQuit).await;
+                    // if !self.is_detached {
+                    //     handle.abort();
+                    // }
                     tui.cancel();
                     self.should_quit = true;
                 }

@@ -14,7 +14,7 @@ use bytes::{BufMut, BytesMut};
 use speedy::{BigEndian, Readable, Writable};
 use tokio_util::codec::{Decoder, Encoder};
 
-use crate::extensions::core::PSTR;
+use crate::{extensions::core::PSTR, peer::PeerId, torrent::InfoHash};
 
 use bytes::Buf;
 
@@ -45,8 +45,8 @@ impl Encoder<Handshake> for HandshakeCodec {
         // payload
         buf.extend_from_slice(&pstr);
         buf.extend_from_slice(&reserved);
-        buf.extend_from_slice(&info_hash);
-        buf.extend_from_slice(&peer_id);
+        buf.extend_from_slice(&info_hash.0);
+        buf.extend_from_slice(&peer_id.0);
 
         Ok(())
     }
@@ -104,8 +104,8 @@ impl Decoder for HandshakeCodec {
             pstr,
             pstr_len: pstr.len() as u8,
             reserved,
-            info_hash,
-            peer_id,
+            info_hash: InfoHash(info_hash),
+            peer_id: PeerId(peer_id),
         }))
     }
 }
@@ -122,8 +122,10 @@ pub struct Handshake {
     pub pstr_len: u8,
     pub pstr: [u8; 19],
     pub reserved: [u8; 8],
-    pub info_hash: [u8; 20],
-    pub peer_id: [u8; 20],
+    // pub info_hash: [u8; 20],
+    pub info_hash: InfoHash,
+    // pub peer_id: [u8; 20],
+    pub peer_id: PeerId,
 }
 
 impl Handshake {
@@ -141,8 +143,8 @@ impl Handshake {
             pstr_len: u8::to_be(19),
             pstr: PSTR,
             reserved,
-            info_hash: info_hash.into(),
-            peer_id: peer_id.into(),
+            info_hash: InfoHash(info_hash.into()),
+            peer_id: PeerId(peer_id.into())
         }
     }
     pub fn serialize(&self) -> Result<[u8; 68], Error> {
@@ -160,7 +162,7 @@ impl Handshake {
             .map_err(Error::SpeedyError)
     }
     pub fn validate(&self, target: &Self) -> bool {
-        if target.peer_id.len() != 20 {
+        if target.peer_id.0.len() != 20 {
             warn!("! invalid peer_id from receiving handshake");
             return false;
         }
@@ -192,8 +194,8 @@ pub mod tests {
 
         assert_eq!(our_handshake.pstr_len, 19);
         assert_eq!(our_handshake.pstr, PSTR);
-        assert_eq!(our_handshake.peer_id, peer_id);
-        assert_eq!(our_handshake.info_hash, info_hash);
+        assert_eq!(our_handshake.peer_id.0, peer_id);
+        assert_eq!(our_handshake.info_hash.0, info_hash);
 
         let our_handshake =
             Handshake::new(info_hash, peer_id).serialize().unwrap();

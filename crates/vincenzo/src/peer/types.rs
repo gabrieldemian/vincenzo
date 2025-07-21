@@ -27,6 +27,7 @@ use tracing::{debug, warn};
 
 use crate::{
     bitfield::{Bitfield, Reserved},
+    daemon::{DaemonCtx, DaemonMsg},
     error::Error,
     extensions::{
         core::BlockInfo, Core, CoreCodec, ExtendedMessage, Extension,
@@ -37,7 +38,7 @@ use crate::{
 };
 
 #[derive(Clone, PartialEq, Eq, Hash, Default, Readable, Writable)]
-pub struct PeerId([u8; 20]);
+pub struct PeerId(pub(crate) [u8; 20]);
 
 impl Display for PeerId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -198,6 +199,24 @@ pub enum Direction {
     Inbound,
 }
 
+/// Determines who initiated the connection.
+#[derive(Clone, Debug, PartialEq)]
+pub enum DirectionWithInfoHash {
+    /// Outbound means we initiated the connection
+    Outbound(InfoHash),
+    /// Inbound means the peer initiated the connection
+    Inbound,
+}
+
+impl From<DirectionWithInfoHash> for Direction {
+    fn from(value: DirectionWithInfoHash) -> Self {
+        match value {
+            DirectionWithInfoHash::Inbound => Direction::Inbound,
+            DirectionWithInfoHash::Outbound(_) => Direction::Outbound,
+        }
+    }
+}
+
 /// A peer can be: Idle, Connected, or Error.
 pub trait PeerState {}
 
@@ -205,18 +224,20 @@ pub trait PeerState {}
 /// ready to be handshaked at any moment.
 #[derive(Clone)]
 pub struct Idle {
-    pub direction: Direction,
-    pub info_hash: InfoHash,
-    pub local_peer_id: PeerId,
+    // pub direction: Direction,
+    // pub info_hash: InfoHash,
+    // pub local_peer_id: PeerId,
+}
+
+impl Default for peer::Peer<Idle> {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl peer::Peer<Idle> {
-    pub fn new(
-        direction: Direction,
-        info_hash: InfoHash,
-        local_peer_id: PeerId,
-    ) -> Self {
-        Self { state: Idle { direction, info_hash, local_peer_id } }
+    pub fn new() -> Self {
+        Self { state: Idle {} }
     }
 
     /// Do a handshake (and maybe extended handshake) with the peer and convert
@@ -224,47 +245,84 @@ impl peer::Peer<Idle> {
     pub async fn handshake(
         self,
         socket: TcpStream,
-        torrent_ctx: Arc<TorrentCtx>,
+        daemon_ctx: Arc<DaemonCtx>,
+        direction: DirectionWithInfoHash,
     ) -> Result<peer::Peer<Connected>, Error> {
         let remote = socket.peer_addr()?;
-
-        torrent_ctx.tx.send(TorrentMsg::PeerConnecting(remote)).await?;
-
         let local = socket.local_addr()?;
 
         let mut socket = Framed::new(socket, HandshakeCodec);
-        let info_hash = self.state.info_hash;
-
-        let our_handshake =
-            Handshake::new(info_hash.clone(), self.state.local_peer_id);
 
         let peer_handshake: Handshake;
+        let our_handshake: Handshake;
 
-        // if we are connecting, send the first handshake
-        if self.state.direction == Direction::Outbound {
-            debug!("sending the first handshake to {remote}");
-            socket.send(our_handshake.clone()).await?;
-        }
+        match &direction {
+            DirectionWithInfoHash::Inbound => {
+                // wait for, and validate, their handshake
+                let Some(Ok(their_handshake)) = socket.next().await else {
+                    warn!("did not send a handshake {remote}");
+                    return Err(Error::HandshakeInvalid);
+                };
 
-        // wait for, and validate, their handshake
-        if let Some(Ok(their_handshake)) = socket.next().await {
-            debug!("received their handshake {remote}");
+                debug!("received their handshake {remote}");
 
-            if !their_handshake.validate(&our_handshake) {
-                return Err(Error::HandshakeInvalid);
+                our_handshake = Handshake::new(
+                    their_handshake.info_hash.clone(),
+                    daemon_ctx.local_peer_id.clone(),
+                );
+
+                if !their_handshake.validate(&our_handshake) {
+                    return Err(Error::HandshakeInvalid);
+                }
+
+                peer_handshake = their_handshake;
             }
+            // if we are connecting, send the first handshake
+            DirectionWithInfoHash::Outbound(info_hash) => {
+                debug!("sending the first handshake to {remote}");
 
-            peer_handshake = their_handshake;
-        } else {
-            warn!("did not send a handshake {remote}");
-            return Err(Error::HandshakeInvalid);
+                our_handshake = Handshake::new(
+                    info_hash.clone(),
+                    daemon_ctx.local_peer_id.clone(),
+                );
+
+                let Some(Ok(their_handshake)) = socket.next().await else {
+                    warn!("peer not send a handshake {remote}");
+                    return Err(Error::HandshakeInvalid);
+                };
+
+                peer_handshake = their_handshake;
+
+                socket.send(our_handshake.clone()).await?;
+            }
         }
+
+        let (otx, orx) = oneshot::channel();
+
+        daemon_ctx
+            .tx
+            .send(DaemonMsg::GetTorrentCtx(
+                otx,
+                peer_handshake.info_hash.clone(),
+            ))
+            .await?;
+
+        let Some(torrent_ctx) = orx.await? else {
+            return Err(Error::TorrentDoesNotExist);
+        };
+
+        torrent_ctx.tx.send(TorrentMsg::PeerConnecting(remote)).await?;
 
         let reserved = Reserved::from(peer_handshake.reserved);
 
-        if self.state.direction == Direction::Inbound {
+        if let DirectionWithInfoHash::Inbound = direction {
             debug!("sending the second handshake to {remote}");
-            socket.send(our_handshake).await?;
+            if socket.send(our_handshake).await.is_err() {
+                torrent_ctx
+                    .tx
+                    .send(TorrentMsg::PeerConnectingError(remote))
+                    .await?;
+            }
         }
 
         let old_parts = socket.into_parts();
@@ -277,7 +335,7 @@ impl peer::Peer<Idle> {
         // (BEP010), we send an extended handshake as well, but we
         // receive theirs on the main event loop of Peer<Connected> and
         // not here.
-        if reserved[43] && self.state.direction == Direction::Inbound {
+        if reserved[43] && DirectionWithInfoHash::Inbound == direction {
             debug!("sending extended handshake to {remote}");
 
             let metadata_size = torrent_ctx.info.read().await.metainfo_size();
@@ -285,7 +343,12 @@ impl peer::Peer<Idle> {
             let msg: ExtendedMessage =
                 Extension::supported(Some(metadata_size as u32)).try_into()?;
 
-            socket.send(msg.into()).await?;
+            if socket.send(msg.into()).await.is_err() {
+                torrent_ctx
+                    .tx
+                    .send(TorrentMsg::PeerConnectingError(remote))
+                    .await?;
+            }
         }
 
         let (tx, rx) = mpsc::channel::<PeerMsg>(100);
@@ -297,11 +360,11 @@ impl peer::Peer<Idle> {
             peer_interested: false.into(),
             downloaded: 0.into(),
             uploaded: 0.into(),
-            direction: self.state.direction,
+            direction: direction.into(),
             remote_addr: remote,
-            id: peer_handshake.peer_id.into(),
+            id: peer_handshake.peer_id,
             tx,
-            info_hash,
+            info_hash: peer_handshake.info_hash,
             local_addr: local,
         };
 

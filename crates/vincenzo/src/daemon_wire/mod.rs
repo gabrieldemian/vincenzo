@@ -22,6 +22,11 @@ pub enum Message {
     ///
     /// Quit does not have a message_id, only the u32 len.
     Quit,
+    /// Daemon will send other Quit messages to all Torrents.
+    /// and Disk. It will close all event loops spawned through `run`.
+    ///
+    /// Quit does not have a message_id, only the u32 len.
+    FrontendQuit,
     /// Add a new torrent given a magnet link.
     ///
     /// <len=1+magnet_link_len><id=1><magnet_link>
@@ -47,6 +52,8 @@ pub enum MessageId {
     GetTorrentState = 3,
     TogglePause = 4,
     PrintTorrentStatus = 5,
+    Quit = 6,
+    FrontendQuit = 7,
 }
 
 impl TryFrom<u8> for MessageId {
@@ -58,6 +65,8 @@ impl TryFrom<u8> for MessageId {
             k if k == NewTorrent as u8 => Ok(NewTorrent),
             k if k == TorrentState as u8 => Ok(TorrentState),
             k if k == GetTorrentState as u8 => Ok(GetTorrentState),
+            k if k == Quit as u8 => Ok(Quit),
+            k if k == FrontendQuit as u8 => Ok(FrontendQuit),
             k if k == PrintTorrentStatus as u8 => Ok(PrintTorrentStatus),
             k if k == TogglePause as u8 => Ok(TogglePause),
             _ => Err(io::Error::new(
@@ -155,8 +164,13 @@ impl Encoder<Message> for DaemonCodec {
                 buf.put_u32(msg_len);
                 buf.put_u8(MessageId::PrintTorrentStatus as u8);
             }
+            Message::FrontendQuit => {
+                buf.put_u32(1);
+                buf.put_u8(MessageId::FrontendQuit as u8);
+            }
             Message::Quit => {
-                buf.put_u32(0);
+                buf.put_u32(1);
+                buf.put_u8(MessageId::Quit as u8);
             }
         }
         Ok(())
@@ -235,6 +249,8 @@ impl Decoder for DaemonCodec {
                 Message::TogglePause(payload.into())
             }
             MessageId::PrintTorrentStatus => Message::PrintTorrentStatus,
+            MessageId::Quit => Message::Quit,
+            MessageId::FrontendQuit => Message::FrontendQuit,
             MessageId::GetTorrentState => {
                 let mut payload = [0u8; 20_usize];
                 buf.copy_to_slice(&mut payload);

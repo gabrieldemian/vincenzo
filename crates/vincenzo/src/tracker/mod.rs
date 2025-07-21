@@ -9,12 +9,13 @@ use std::{
     fmt::Debug,
     future::Future,
     net::{IpAddr, SocketAddr},
+    sync::Arc,
     time::Duration,
 };
 
 use crate::{
-    config::CONFIG, error::Error, metainfo::Info, peer::PeerId,
-    torrent::InfoHash,
+    config::CONFIG, daemon::DaemonCtx, error::Error, metainfo::Info,
+    peer::PeerId, torrent::InfoHash,
 };
 use rand::Rng;
 use tokio::{
@@ -71,6 +72,7 @@ pub trait TrackerTrait: Sized {
     fn connect_to_tracker<A>(
         trackers: Vec<A>,
         info_hash: InfoHash,
+        daemon_ctx: Arc<DaemonCtx>,
     ) -> impl Future<Output = Result<Self, Error>>
     where
         A: ToSocketAddrs
@@ -85,9 +87,10 @@ pub trait TrackerTrait: Sized {
 
 /// The generic `P` stands for "Protocol".
 /// Currently, only UDP and HTTP are supported.
-#[derive(Debug)]
 pub struct Tracker<P: Protocol> {
     pub ctx: TrackerCtx,
+    pub daemon_ctx: Arc<DaemonCtx>,
+
     pub info: Option<Info>,
     pub info_hash: InfoHash,
     pub rx: mpsc::Receiver<TrackerMsg>,
@@ -102,10 +105,6 @@ pub struct Tracker<P: Protocol> {
 #[derive(Debug, Clone)]
 pub struct TrackerCtx {
     pub tx: mpsc::Sender<TrackerMsg>,
-
-    /// Our ID for this connected Tracker
-    pub peer_id: PeerId,
-
     pub downloaded: u64,
     pub uploaded: u64,
     pub left: u64,
@@ -173,10 +172,10 @@ impl TrackerTrait for Tracker<Udp> {
     /// Bind UDP socket and send a connect handshake,
     /// to one of the trackers.
     // todo: get a new tracker if download is stale
-    #[tracing::instrument(skip(trackers))]
     async fn connect_to_tracker<A>(
         trackers: Vec<A>,
         info_hash: InfoHash,
+        daemon_ctx: Arc<DaemonCtx>,
     ) -> Result<Self, Error>
     where
         A: ToSocketAddrs
@@ -209,11 +208,11 @@ impl TrackerTrait for Tracker<Udp> {
             let mut tracker = Tracker {
                 ctx: TrackerCtx {
                     tx: tracker_tx,
-                    peer_id: Tracker::gen_peer_id(),
                     downloaded: 0,
                     uploaded: 0,
                     left: 0,
                 },
+                daemon_ctx: daemon_ctx.clone(),
                 tracker_addr: socket.peer_addr().unwrap(),
                 info_hash: info_hash.clone(),
                 info: None,
@@ -303,7 +302,7 @@ impl TrackerTrait for Tracker<Udp> {
             action: Action::Announce.into(),
             transaction_id: rand::rng().random(),
             info_hash: self.info_hash.clone(),
-            peer_id: self.ctx.peer_id.clone(),
+            peer_id: self.daemon_ctx.local_peer_id.clone(),
             downloaded: self.ctx.downloaded,
             left: self.ctx.left,
             uploaded: self.ctx.uploaded,
@@ -422,7 +421,7 @@ impl Tracker<Udp> {
     }
 
     /// Peer ids should be prefixed with "vcz".
-    fn gen_peer_id() -> PeerId {
+    pub fn gen_peer_id() -> PeerId {
         let mut peer_id = [0; 20];
         peer_id[..3].copy_from_slice(b"vcz");
         peer_id[3..].copy_from_slice(&rand::random::<[u8; 17]>());

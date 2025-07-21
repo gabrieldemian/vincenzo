@@ -19,17 +19,17 @@ use crate::{
     error::Error,
     magnet::Magnet,
     metainfo::Info,
-    peer::{self, Direction, Peer, PeerCtx, PeerId, PeerMsg},
+    peer::{self, DirectionWithInfoHash, Peer, PeerCtx, PeerId, PeerMsg},
     tracker::{event::Event, Tracker, TrackerCtx, TrackerMsg, TrackerTrait},
 };
 use std::{
     collections::BTreeMap,
-    net::{IpAddr, Ipv4Addr, SocketAddr},
+    net::SocketAddr,
     sync::{atomic::Ordering, Arc},
     time::Duration,
 };
 use tokio::{
-    net::{TcpListener, TcpStream},
+    net::TcpStream,
     select, spawn,
     sync::{mpsc, oneshot, RwLock},
     time::{interval, interval_at, Instant},
@@ -160,7 +160,6 @@ impl Torrent<Idle> {
         let mut torrent = self.start(listen).await?;
 
         torrent.spawn_outbound_peers().await?;
-        torrent.spawn_inbound_peers().await?;
         torrent.run().await?;
 
         Ok(())
@@ -180,6 +179,7 @@ impl Torrent<Idle> {
         let mut tracker = Tracker::connect_to_tracker(
             self.ctx.magnet.parse_trackers(),
             self.ctx.info_hash.clone(),
+            self.daemon_ctx.clone(),
         )
         .await?;
 
@@ -256,20 +256,23 @@ impl Torrent<Connected> {
         let to_request = max_torrent_peers as usize - currently_active;
 
         let ctx = self.ctx.clone();
+        let daemon_ctx = self.daemon_ctx.clone();
 
         for peer in self.state.idle_peers.iter().take(to_request).cloned() {
-            let local_peer_id = self.state.tracker_ctx.peer_id.clone();
             let ctx = ctx.clone();
+            let daemon_ctx = daemon_ctx.clone();
 
             // send connections too other peers
             spawn(async move {
                 match TcpStream::connect(peer).await {
                     Ok(socket) => {
                         Self::start_and_run_peer(
-                            ctx.clone(),
+                            // ctx.clone(),
+                            daemon_ctx.clone(),
                             socket,
-                            local_peer_id,
-                            Direction::Outbound,
+                            DirectionWithInfoHash::Outbound(
+                                ctx.info_hash.clone(),
+                            ),
                         )
                         .await?;
                     }
@@ -285,88 +288,26 @@ impl Torrent<Connected> {
         Ok(())
     }
 
-    /// Spawn a new event loop every time a peer connect with us.
-    #[tracing::instrument(skip(self))]
-    pub async fn spawn_inbound_peers(&self) -> Result<(), Error> {
-        debug!("accepting requests on port {:?}", CONFIG.local_peer_port);
-
-        let local_peer_id = self.state.tracker_ctx.peer_id.clone();
-
-        let local_addr = SocketAddr::new(
-            IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
-            CONFIG.local_peer_port,
-        );
-
-        let local_socket = TcpListener::bind(local_addr).await?;
-        let ctx = self.ctx.clone();
-
-        // accept connections from other peers
-        spawn(async move {
-            debug!("accepting requests in {local_socket:?}");
-
-            loop {
-                let local_peer_id = local_peer_id.clone();
-
-                if let Ok((socket, addr)) = local_socket.accept().await {
-                    info!("received inbound connection from {addr}");
-                    let ctx = ctx.clone();
-
-                    spawn(async move {
-                        Self::start_and_run_peer(
-                            ctx,
-                            socket,
-                            local_peer_id,
-                            Direction::Inbound,
-                        )
-                        .await?;
-
-                        Ok::<(), Error>(())
-                    });
-                }
-            }
-        });
-
-        Ok(())
-    }
-
     #[tracing::instrument(skip_all, name = "torrent::start_and_run_peer")]
-    async fn start_and_run_peer(
-        ctx: Arc<TorrentCtx>,
+    pub async fn start_and_run_peer(
+        daemon_ctx: Arc<DaemonCtx>,
         socket: TcpStream,
-        local_peer_id: PeerId,
-        direction: Direction,
+        direction: DirectionWithInfoHash,
     ) -> Result<Peer<peer::Connected>, Error> {
-        let addr = socket.peer_addr()?;
-        let torrent_tx = ctx.tx.clone();
+        let idle_peer = Peer::<peer::Idle>::new();
 
-        let idle_peer = Peer::<peer::Idle>::new(
-            direction,
-            ctx.info_hash.clone(),
-            local_peer_id,
-        );
+        let mut connected_peer =
+            idle_peer.handshake(socket, daemon_ctx, direction).await?;
 
-        let connecting_peer = idle_peer.handshake(socket, ctx).await;
-
-        match connecting_peer {
-            Err(r) => {
-                debug!("failed to handshake peer: {}", r);
-                let _ = torrent_tx
-                    .send(TorrentMsg::PeerConnectingError(addr))
-                    .await;
-                Err(r)
-            }
-            Ok(mut connected_peer) => {
-                if let Err(r) = connected_peer.run().await {
-                    debug!(
-                        "{} Peer session stopped due to an error: {}",
-                        connected_peer.state.ctx.remote_addr, r
-                    );
-                    connected_peer.free_pending_blocks().await;
-                    return Err(r);
-                }
-                Ok(connected_peer)
-            }
+        if let Err(r) = connected_peer.run().await {
+            debug!(
+                "{} Peer session stopped due to an error: {}",
+                connected_peer.state.ctx.remote_addr, r
+            );
+            connected_peer.free_pending_blocks().await;
+            return Err(r);
         }
+        Ok(connected_peer)
     }
 
     /// Get the best n downloaders.
