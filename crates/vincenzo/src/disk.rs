@@ -387,17 +387,12 @@ impl Disk {
         info_hash: &InfoHash,
         peer_id: &PeerId,
     ) -> Option<(usize, u32)> {
-        let Some(peer_ctx) = self.peer_ctxs.iter().find(|v| v.id == *peer_id)
-        else {
-            return None;
-        };
+        let peer_ctx = self.peer_ctxs.iter().find(|v| v.id == *peer_id)?;
 
         let (otx, orx) = oneshot::channel();
         let _ = peer_ctx.tx.send(PeerMsg::GetPieces(otx)).await;
 
-        let Some(peer_pieces) = orx.await.ok() else {
-            return None;
-        };
+        let peer_pieces = orx.await.ok()?;
 
         let downloaded_pieces = self.downloaded_pieces.get(info_hash).unwrap();
 
@@ -554,6 +549,7 @@ impl Disk {
             .read(true)
             .write(true)
             .create(true)
+            .truncate(true)
             .open(&path)
             .await
             .map_err(|_| {
@@ -678,12 +674,11 @@ impl Disk {
     /// Return a seeked tokio::fs::File, given a `BlockInfo`.
     ///
     /// # Use cases:
-    /// - After we receive a Piece msg, we need to
-    /// map the block to a fs::File to be able to write to disk.
+    /// - After we receive a Piece msg, we need to map the block to a fs::File
+    ///   to be able to write to disk.
     ///
-    /// - When a leecher sends a Request msg, we need
-    /// to get the corresponding file seeked on the right offset
-    /// of the block info.
+    /// - When a leecher sends a Request msg, we need to get the corresponding
+    ///   file seeked on the right offset of the block info.
     pub async fn get_file_from_block_info(
         &self,
         block_info: &BlockInfo,

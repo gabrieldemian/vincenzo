@@ -144,7 +144,7 @@ impl Handshake {
             pstr: PSTR,
             reserved,
             info_hash: InfoHash(info_hash.into()),
-            peer_id: PeerId(peer_id.into())
+            peer_id: PeerId(peer_id.into()),
         }
     }
     pub fn serialize(&self) -> Result<[u8; 68], Error> {
