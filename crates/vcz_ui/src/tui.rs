@@ -107,43 +107,43 @@ impl Tui {
                         break;
                     }
                     maybe_event = crossterm_event => {
-                      match maybe_event {
-                        Some(Ok(evt)) => {
-                          match evt {
-                            CrosstermEvent::Key(key) => {
-                              if key.kind == KeyEventKind::Press {
-                                  _event_tx.send(Event::Key(key)).await.unwrap();
-                              }
-                            },
-                            CrosstermEvent::Mouse(mouse) => {
-                                _event_tx.send(Event::Mouse(mouse)).await.unwrap();
-                            },
-                            CrosstermEvent::Resize(x, y) => {
-                                _event_tx.send(Event::Resize(x, y)).await.unwrap();
-                            },
-                            CrosstermEvent::FocusLost => {
-                                _event_tx.send(Event::FocusLost).await.unwrap();
-                            },
-                            CrosstermEvent::FocusGained => {
-                                _event_tx.send(Event::FocusGained).await.unwrap();
-                            },
-                            CrosstermEvent::Paste(s) => {
-                                _event_tx.send(Event::Paste(s)).await.unwrap();
-                            },
-                          }
+                        match maybe_event {
+                            Some(Ok(evt)) => {
+                                match evt {
+                                    CrosstermEvent::Key(key) => {
+                                        if key.kind == KeyEventKind::Press {
+                                            _event_tx.send(Event::Key(key)).await.unwrap();
+                                        }
+                                    },
+                                    CrosstermEvent::Mouse(mouse) => {
+                                        _event_tx.send(Event::Mouse(mouse)).await.unwrap();
+                                    },
+                                    CrosstermEvent::Resize(x, y) => {
+                                        _event_tx.send(Event::Resize(x, y)).await.unwrap();
+                                    },
+                                    CrosstermEvent::FocusLost => {
+                                        _event_tx.send(Event::FocusLost).await.unwrap();
+                                    },
+                                    CrosstermEvent::FocusGained => {
+                                        _event_tx.send(Event::FocusGained).await.unwrap();
+                                    },
+                                    CrosstermEvent::Paste(s) => {
+                                        _event_tx.send(Event::Paste(s)).await.unwrap();
+                                    },
+                                }
+                            }
+                            Some(Err(_)) => {
+                                 _event_tx.send(Event::Error).await.unwrap();
+                            }
+                            None => {},
                         }
-                        Some(Err(_)) => {
-                            _event_tx.send(Event::Error).await.unwrap();
-                        }
-                        None => {},
-                      }
-                  },
-                  _ = tick_delay => {
-                      _event_tx.send(Event::Tick).await.unwrap();
-                  },
-                  _ = render_delay => {
-                      _event_tx.send(Event::Render).await.unwrap();
-                  },
+                    },
+                    _ = tick_delay => {
+                        _event_tx.send(Event::Tick).await.unwrap();
+                    },
+                    _ = render_delay => {
+                        _event_tx.send(Event::Render).await.unwrap();
+                    },
                 }
             }
         });
