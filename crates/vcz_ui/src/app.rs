@@ -61,7 +61,7 @@ impl App {
         let (mut sink, stream) = socket.split();
         let _tx = self.tx.clone();
 
-        let _handle = spawn(async move {
+        let handle = spawn(async move {
             let _ = Self::listen_daemon(_tx, stream).await;
         });
 
@@ -81,10 +81,10 @@ impl App {
                 }
 
                 if let Action::Quit = action {
-                    let _ = sink.send(Message::FrontendQuit).await;
-                    // if !self.is_detached {
-                    //     handle.abort();
-                    // }
+                    if !self.is_detached {
+                        let _ = sink.send(Message::Quit).await;
+                    }
+                    handle.abort();
                     tui.cancel();
                     self.should_quit = true;
                 }
@@ -94,16 +94,15 @@ impl App {
                 }
 
                 if let Action::NewTorrent(magnet) = action {
-                    let _ =
-                        sink.send(Message::NewTorrent(magnet.to_owned())).await;
+                    sink.send(Message::NewTorrent(magnet.to_owned())).await?;
                 }
             }
 
             if self.should_quit {
+                sink.send(Message::FrontendQuit).await?;
                 break;
             }
         }
-        tui.exit()?;
 
         Ok(())
     }
@@ -138,6 +137,7 @@ impl App {
                         _ => {}
                     }
                 }
+                else => break
             }
         }
     }
