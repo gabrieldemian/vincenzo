@@ -208,15 +208,21 @@ impl Torrent<Idle> {
             state: Connected {
                 unchoked_peers: Vec::with_capacity(3),
                 opt_unchoked_peer: None,
-                connecting_peers: Vec::new(),
-                error_peers: Vec::new(),
+                connecting_peers: Vec::with_capacity(
+                    CONFIG.max_torrent_peers as usize,
+                ),
+                error_peers: Vec::with_capacity(
+                    CONFIG.max_torrent_peers as usize,
+                ),
                 downloaded_info_bytes: 0,
                 bitfield: Bitfield::default(),
                 stats,
                 idle_peers: peers,
                 tracker_ctx,
                 size: 0,
-                connected_peers: Vec::new(),
+                connected_peers: Vec::with_capacity(
+                    CONFIG.max_torrent_peers as usize,
+                ),
                 have_info: false,
                 info_pieces: BTreeMap::new(),
                 download_rate: 0,
@@ -236,6 +242,7 @@ impl Torrent<Connected> {
     #[tracing::instrument(skip_all, name = "torrent::start_outbound_peers")]
     pub async fn spawn_outbound_peers(&self) -> Result<(), Error> {
         let (otx, orx) = oneshot::channel();
+
         self.daemon_ctx.tx.send(DaemonMsg::GetConnectedPeers(otx)).await?;
 
         let daemon_connected_peers = orx.await?;
@@ -267,7 +274,6 @@ impl Torrent<Connected> {
                 match TcpStream::connect(peer).await {
                     Ok(socket) => {
                         Self::start_and_run_peer(
-                            // ctx.clone(),
                             daemon_ctx.clone(),
                             socket,
                             DirectionWithInfoHash::Outbound(
@@ -344,6 +350,32 @@ impl Torrent<Connected> {
     /// Get the worst n uploaders.
     pub fn get_worst_uploaders(&self, n: usize) -> Vec<Arc<PeerCtx>> {
         self.sort_peers_by_rate(n, true, false, false)
+    }
+
+    pub fn get_next_opt_unchoked_peer(&self) -> Option<Arc<PeerCtx>> {
+        let mut min = u64::MAX;
+        let mut result = None;
+
+        for peer in &self.state.connected_peers {
+            let peer_uploaded = peer.uploaded.load(Ordering::Relaxed);
+
+            match &self.state.opt_unchoked_peer {
+                Some(opt_unchoked) => {
+                    if peer_uploaded < min && opt_unchoked.id != peer.id {
+                        min = peer_uploaded;
+                        result = Some(opt_unchoked.clone());
+                    }
+                }
+                None => {
+                    if peer_uploaded < min {
+                        min = peer_uploaded;
+                        result = Some(peer.clone());
+                    }
+                }
+            }
+        }
+
+        result
     }
 
     /// A fast function for returning the best or worst N amount of peers,
@@ -495,6 +527,9 @@ impl Torrent<Connected> {
             now + Duration::from_secs(self.state.stats.interval.into()),
             Duration::from_secs(self.state.stats.interval.into()),
         );
+
+        // try to reconnect with errored peers
+        let mut reconnect_interval = interval(Duration::from_secs(5));
 
         // send state to the frontend, if connected.
         let mut heartbeat_interval = interval(Duration::from_secs(1));
@@ -765,6 +800,17 @@ impl Torrent<Connected> {
                         }
                     }
                 }
+                _ = reconnect_interval.tick() => {
+                    let errored: Vec<_> = self.
+                        state.
+                        error_peers
+                        .drain(..)
+                        .map(|v| v.state.addr).collect();
+
+                    self.state.idle_peers.extend(errored);
+
+                    self.spawn_outbound_peers().await?;
+                }
                 _ = heartbeat_interval.tick() => {
                     self.state.download_rate =
                             self.state.tracker_ctx.downloaded - self.state.last_second_downloaded;
@@ -798,24 +844,38 @@ impl Torrent<Connected> {
                     let _ = self.daemon_ctx.tx.send(DaemonMsg::TorrentState(torrent_state)).await;
                 }
                 _ = optimistic_unchoke_interval.tick() => {
-                    let worst_uploader = self.get_worst_uploaders(1);
+                    let worst_uploader = self.get_next_opt_unchoked_peer();
 
-                    for worst_uploader in worst_uploader {
-                        if let Some(prev_opt) = &self.state.opt_unchoked_peer {
-                            let _ = prev_opt.tx.send(PeerMsg::Choke).await;
-                        }
-                        let _ = worst_uploader.tx.send(PeerMsg::Unchoke).await;
-                        self.state.opt_unchoked_peer = Some(worst_uploader);
+                    let Some(worst_uploader) = worst_uploader else { continue };
+
+                    if let Some(prev_opt) = &self.state.opt_unchoked_peer {
+                        let _ = prev_opt.tx.send(PeerMsg::Choke).await;
                     }
+                    let _ = worst_uploader.tx.send(PeerMsg::Unchoke).await;
+                    self.state.opt_unchoked_peer = Some(worst_uploader);
                 }
                 _ = choke_interval.tick() => {
                     if self.state.unchoked_peers.len() < 3 {
                         continue;
                     }
-                    let Some(slowest) = self.state.unchoked_peers.iter().min_by_key(|k| k.downloaded.load(Ordering::Relaxed)).cloned() else {continue};
+                    let Some(slowest) =
+                        self.state.unchoked_peers
+                            .iter()
+                            .min_by_key(
+                                |k| k.downloaded.load(Ordering::Relaxed)
+                            )
+                            .cloned()
+                    else { continue };
+
                     let r = self.get_best_interested_downloaders(1);
-                    let Some(fastest) = r.first() else {continue};
-                    if fastest.downloaded.load(Ordering::Relaxed) <= slowest.downloaded.load(Ordering::Relaxed) {continue};
+
+                    let Some(fastest) = r.first() else { continue };
+
+                    if
+                        fastest.downloaded.load(Ordering::Relaxed)
+                        <=
+                        slowest.downloaded.load(Ordering::Relaxed)
+                    { continue };
 
                     let _ = fastest.tx.send(PeerMsg::Unchoke).await;
                     let _ = slowest.tx.send(PeerMsg::Choke).await;
@@ -827,7 +887,7 @@ impl Torrent<Connected> {
                     let unchoked_count = self.state.unchoked_peers.len().min(3);
                     let to_unchoke = 3 - unchoked_count;
 
-                    if to_unchoke == 0 {continue};
+                    if to_unchoke == 0 { continue };
 
                     let best_downloaders = self.get_best_interested_downloaders(to_unchoke);
 

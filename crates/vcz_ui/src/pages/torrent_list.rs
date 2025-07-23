@@ -160,6 +160,7 @@ impl<'a> TorrentList<'a> {
             // Getting all characters before the selected character.
             let before_char_to_delete =
                 self.input.chars().take(from_left_to_current_index);
+
             // Getting all characters after selected character.
             let after_char_to_delete = self.input.chars().skip(current_index);
 
@@ -168,6 +169,7 @@ impl<'a> TorrentList<'a> {
             // deleted.
             self.input =
                 before_char_to_delete.chain(after_char_to_delete).collect();
+
             self.move_cursor_left();
         }
     }
@@ -302,6 +304,11 @@ impl<'a> Page for TorrentList<'a> {
             {
                 match k.code {
                     KeyCode::Enter => self.submit_magnet_link(),
+                    KeyCode::Esc => {
+                        self.input = "".to_string();
+                        self.reset_cursor();
+                        self.show_popup = false;
+                    }
                     KeyCode::Char(to_insert) => {
                         self.enter_char(to_insert);
                     }

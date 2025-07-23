@@ -1,5 +1,5 @@
 use clap::Parser;
-use tokio::{join, spawn};
+use tokio::{join, spawn, sync::mpsc};
 use tracing::Level;
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::{fmt::time::OffsetTime, FmtSubscriber};
@@ -64,19 +64,20 @@ async fn main() -> Result<(), Error> {
         let _ = disk.run().await;
     });
 
+    let (fr_tx, fr_rx) = mpsc::unbounded_channel();
+
     // Start and run the terminal UI
-    let mut fr = App::new();
-    let fr_tx = fr.tx.clone();
+    let mut fr = App::new(fr_tx.clone());
 
     let args = Args::parse();
 
     // If the user passed a magnet through the CLI,
     // start this torrent immediately
     if let Some(magnet) = args.magnet {
-        fr_tx.send(Action::NewTorrent(magnet)).unwrap();
+        let _ = fr_tx.send(Action::NewTorrent(magnet));
     }
 
-    let (v1, v2) = join!(daemon.run(), fr.run());
+    let (v1, v2) = join!(daemon.run(), fr.run(fr_rx));
     v1?;
     v2.unwrap();
 

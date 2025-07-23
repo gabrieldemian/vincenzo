@@ -2,7 +2,7 @@ use futures::{SinkExt, Stream, StreamExt};
 use tokio::{
     net::TcpStream,
     select, spawn,
-    sync::mpsc::{self, unbounded_channel, UnboundedReceiver, UnboundedSender},
+    sync::mpsc::{UnboundedReceiver, UnboundedSender},
 };
 use tokio_util::codec::Framed;
 use tracing::debug;
@@ -22,14 +22,7 @@ pub struct App {
     pub is_detached: bool,
     pub tx: UnboundedSender<Action>,
     should_quit: bool,
-    rx: Option<UnboundedReceiver<Action>>,
     page: Box<dyn Page>,
-}
-
-impl Default for App {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 impl App {
@@ -38,23 +31,25 @@ impl App {
         self
     }
 
-    pub fn new() -> Self {
-        let (tx, rx) = unbounded_channel();
-
+    pub fn new(tx: UnboundedSender<Action>) -> Self {
         let page = Box::new(TorrentList::new(tx.clone()));
 
-        App { should_quit: false, tx, rx: Some(rx), page, is_detached: false }
+        App { should_quit: false, tx, page, is_detached: false }
     }
 
-    pub async fn run(&mut self) -> Result<(), Error> {
+    pub async fn run(
+        &mut self,
+        mut rx: UnboundedReceiver<Action>,
+    ) -> Result<(), Error> {
         let mut tui = Tui::new()?;
         tui.run()?;
 
         let tx = self.tx.clone();
-        let mut rx = std::mem::take(&mut self.rx).unwrap();
 
         let daemon_addr = CONFIG.daemon_addr;
-        let socket = TcpStream::connect(daemon_addr).await.unwrap();
+        let socket = TcpStream::connect(daemon_addr)
+            .await
+            .map_err(|_| Error::DaemonNotRunning(daemon_addr))?;
 
         // spawn event loop to listen to messages sent by the daemon
         let socket = Framed::new(socket, DaemonCodec);
@@ -114,7 +109,7 @@ impl App {
     pub async fn listen_daemon<
         T: Stream<Item = Result<Message, std::io::Error>> + Unpin,
     >(
-        tx: mpsc::UnboundedSender<Action>,
+        tx: UnboundedSender<Action>,
         mut stream: T,
     ) {
         debug!("ui listen_daemon");

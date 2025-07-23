@@ -20,7 +20,6 @@ use tokio::{
     task::JoinHandle,
 };
 use tokio_util::sync::CancellationToken;
-use tracing::error;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Event {
@@ -112,61 +111,42 @@ impl Tui {
                                 match evt {
                                     CrosstermEvent::Key(key) => {
                                         if key.kind == KeyEventKind::Press {
-                                            _event_tx.send(Event::Key(key)).await.unwrap();
+                                            _event_tx.send(Event::Key(key)).await?;
                                         }
                                     },
                                     CrosstermEvent::Mouse(mouse) => {
-                                        _event_tx.send(Event::Mouse(mouse)).await.unwrap();
+                                        _event_tx.send(Event::Mouse(mouse)).await?;
                                     },
                                     CrosstermEvent::Resize(x, y) => {
-                                        _event_tx.send(Event::Resize(x, y)).await.unwrap();
+                                        _event_tx.send(Event::Resize(x, y)).await?;
                                     },
                                     CrosstermEvent::FocusLost => {
-                                        _event_tx.send(Event::FocusLost).await.unwrap();
+                                        _event_tx.send(Event::FocusLost).await?;
                                     },
                                     CrosstermEvent::FocusGained => {
-                                        _event_tx.send(Event::FocusGained).await.unwrap();
+                                        _event_tx.send(Event::FocusGained).await?;
                                     },
                                     CrosstermEvent::Paste(s) => {
-                                        _event_tx.send(Event::Paste(s)).await.unwrap();
+                                        _event_tx.send(Event::Paste(s)).await?;
                                     },
                                 }
                             }
                             Some(Err(_)) => {
-                                 _event_tx.send(Event::Error).await.unwrap();
+                                 _event_tx.send(Event::Error).await?;
                             }
                             None => {},
                         }
                     },
                     _ = tick_delay => {
-                        _event_tx.send(Event::Tick).await.unwrap();
+                        _event_tx.send(Event::Tick).await?;
                     },
                     _ = render_delay => {
-                        _event_tx.send(Event::Render).await.unwrap();
+                        _event_tx.send(Event::Render).await?;
                     },
                 }
             }
+            Ok::<(), Error>(())
         });
-    }
-
-    pub fn stop(&self) {
-        let mut counter = 0;
-        self.cancel();
-
-        while !self.task.is_finished() {
-            std::thread::sleep(Duration::from_millis(1));
-            counter += 1;
-            if counter > 50 {
-                self.task.abort();
-            }
-            if counter > 100 {
-                error!(
-                    "Failed to abort task in 100 milliseconds for unknown \
-                     reason"
-                );
-                break;
-            }
-        }
     }
 
     pub fn run(&mut self) -> Result<(), Error> {

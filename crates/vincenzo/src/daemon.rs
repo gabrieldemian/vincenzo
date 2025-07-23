@@ -8,7 +8,7 @@ use std::{
     time::Duration,
 };
 use tokio_util::codec::Framed;
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use tokio::{
     net::{TcpListener, TcpStream},
@@ -319,12 +319,14 @@ impl Daemon {
         // or locally on the same binary (i.e CLI).
         match msg {
             Message::NewTorrent(magnet_link) => {
-                trace!("daemon received NewTorrent {magnet_link}");
+                info!("received new_torrent: {magnet_link}");
 
                 let magnet = Magnet::new(&magnet_link);
 
                 if let Ok(magnet) = magnet {
                     let _ = tx.send(DaemonMsg::NewTorrent(magnet)).await;
+                } else {
+                    error!("invalid magnet link");
                 }
             }
             Message::RequestTorrentState(info_hash) => {
@@ -404,6 +406,7 @@ impl Daemon {
             Torrent::new(self.disk_tx.clone(), self.ctx.clone(), magnet);
 
         self.torrent_ctxs.insert(info_hash, torrent.ctx.clone());
+
         info!("downloading torrent: {}", torrent.name);
 
         spawn(async move {
