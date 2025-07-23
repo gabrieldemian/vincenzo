@@ -4,7 +4,7 @@ use tracing::Level;
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::{fmt::time::OffsetTime, FmtSubscriber};
 use vincenzo::{
-    args::Args, config::Config, daemon::Daemon, disk::Disk, error::Error,
+    args::Args, config::CONFIG, daemon::Daemon, disk::Disk, error::Error,
 };
 
 use vcz_ui::{action::Action, app::App};
@@ -41,21 +41,21 @@ async fn main() -> Result<(), Error> {
     tracing::subscriber::set_global_default(subscriber)
         .expect("setting default subscriber failed");
 
-    let config = Config::load()?;
+    tracing::info!("config: {:?}", *CONFIG);
 
-    if config.max_global_peers == 0 || config.max_torrent_peers == 0 {
+    if CONFIG.max_global_peers == 0 || CONFIG.max_torrent_peers == 0 {
         return Err(Error::ConfigError(
             "max_global_peers or max_torrent_peers cannot be zero".into(),
         ));
     }
 
-    if config.max_global_peers < config.max_torrent_peers {
+    if CONFIG.max_global_peers < CONFIG.max_torrent_peers {
         return Err(Error::ConfigError(
             "max_global_peers cannot be less than max_torrent_peers".into(),
         ));
     }
 
-    let mut disk = Disk::new(config.download_dir.clone());
+    let mut disk = Disk::new(CONFIG.download_dir.clone());
     let disk_tx = disk.tx.clone();
 
     let mut daemon = Daemon::new(disk_tx);

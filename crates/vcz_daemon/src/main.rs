@@ -9,7 +9,7 @@ use tracing::Level;
 use tracing_subscriber::FmtSubscriber;
 use vincenzo::{
     args::Args,
-    config::Config,
+    config::CONFIG,
     daemon::Daemon,
     daemon_wire::{DaemonCodec, Message},
     disk::Disk,
@@ -18,36 +18,36 @@ use vincenzo::{
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Error> {
-    let args = Args::parse();
-    let config = Config::load()?;
+    let subscriber = FmtSubscriber::builder()
+        .with_max_level(Level::INFO)
+        .without_time()
+        .finish();
 
-    if config.max_global_peers == 0 || config.max_torrent_peers == 0 {
+    tracing::subscriber::set_global_default(subscriber)
+        .expect("setting default subscriber failed");
+
+    let args = Args::parse();
+
+    tracing::info!("config: {:?}", *CONFIG);
+
+    if CONFIG.max_global_peers == 0 || CONFIG.max_torrent_peers == 0 {
         return Err(Error::ConfigError(
             "max_global_peers or max_torrent_peers cannot be zero".into(),
         ));
     }
 
-    if config.max_global_peers < config.max_torrent_peers {
+    if CONFIG.max_global_peers < CONFIG.max_torrent_peers {
         return Err(Error::ConfigError(
             "max_global_peers cannot be less than max_torrent_peers".into(),
         ));
     }
 
-    let daemon_addr = config.daemon_addr;
-
-    let is_daemon_running = TcpListener::bind(daemon_addr).await.is_err();
+    let is_daemon_running =
+        TcpListener::bind(CONFIG.daemon_addr).await.is_err();
 
     // if the daemon is not running, run it
     if !is_daemon_running {
-        let subscriber = FmtSubscriber::builder()
-            .with_max_level(Level::INFO)
-            .without_time()
-            .finish();
-
-        tracing::subscriber::set_global_default(subscriber)
-            .expect("setting default subscriber failed");
-
-        let mut disk = Disk::new(config.download_dir.clone());
+        let mut disk = Disk::new(CONFIG.download_dir.clone());
         let disk_tx = disk.tx.clone();
 
         spawn(async move {
@@ -65,7 +65,7 @@ async fn main() -> Result<(), Error> {
     // to listen to these flags and send messages to Daemon.
     //
     // 1. Create a TCP connection to Daemon
-    let socket = TcpStream::connect(daemon_addr).await?;
+    let socket = TcpStream::connect(CONFIG.daemon_addr).await?;
 
     let mut socket = Framed::new(socket, DaemonCodec);
 

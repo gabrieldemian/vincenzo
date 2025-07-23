@@ -81,8 +81,6 @@ pub mod tests {
     fn override_config() {
         std::env::set_var("DOWNLOAD_DIR", "/new/download");
 
-        let parsed = Config::load().unwrap();
-
-        assert_eq!(parsed.download_dir, "/new/download".to_owned());
+        assert_eq!(CONFIG.download_dir, "/new/download".to_owned());
     }
 }
