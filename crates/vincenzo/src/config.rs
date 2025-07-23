@@ -22,6 +22,9 @@ pub struct Config {
     /// Maximum number of peers per torrent.
     pub max_torrent_peers: u32,
 
+    /// If the local peer is running on ipv6.
+    pub is_ipv6: bool,
+
     /// Quit the daemon after fully downloading all torrents.
     pub quit_after_complete: bool,
 }
@@ -66,6 +69,8 @@ impl Config {
             .set_default("max_torrent_peers", 50)
             .unwrap()
             .set_default("quit_after_complete", false)
+            .unwrap()
+            .set_default("is_ipv6", false)
             .unwrap()
             .build()?
             .try_deserialize::<Config>()

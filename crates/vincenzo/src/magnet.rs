@@ -66,15 +66,14 @@ impl Magnet {
 
         for x in self.trackers() {
             let x = x.clone();
-            let (protocol, uri) = x.split_once("://").unwrap();
+            let mut uri = urlencoding::decode(&x).unwrap().to_string();
+            let (protocol, _) = x.split_once("%3A").unwrap();
+            // %3A%2F%2F -> ://
 
-            let mut uri = uri.to_owned();
-
-            if uri.starts_with("udp://") {
-                uri = uri.replacen("udp://", "", 1);
-
+            if protocol == "udp" {
+                uri = uri.replace("udp://", "");
                 // remove any /announce
-                if let Some(i) = uri.find('/') {
+                if let Some(i) = uri.find("/announce") {
                     uri = uri[..i].to_string();
                 };
             }
@@ -143,6 +142,24 @@ pub mod tests {
             .build();
 
         println!("Generated magnet URL: {:?}", magnet.trackers());
+
+        assert!(false);
+    }
+
+    #[tokio::test]
+    async fn magnet_from_string() {
+        let s = "magnet:?xt=urn:btih:61084b062ec1a41002810f99e4cddc33057b3bd5&\
+                 dn=%5BSubsPlease%5D%20Dandadan%20-%2013%20%281080p%29%20%\
+                 5BA3CDCC67%5D.mkv&tr=http%3A%2F%2Fnyaa.tracker.wf%3A7777%\
+                 2Fannounce&tr=udp%3A%2F%2Fopen.stealth.si%3A80%2Fannounce&\
+                 tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337%2Fannounce&\
+                 tr=udp%3A%2F%2Fexodus.desync.com%3A6969%2Fannounce&tr=udp%3A%\
+                 2F%2Ftracker.torrent.eu.org%3A451%2Fannounce";
+
+        let magnet = Magnet::new(s).unwrap();
+
+        println!("{magnet:#?}");
+        println!("{:#?}", magnet.organize_trackers());
 
         assert!(false);
     }

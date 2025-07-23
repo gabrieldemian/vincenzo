@@ -3,7 +3,7 @@
 use futures::{stream::SplitSink, SinkExt, StreamExt};
 use hashbrown::HashMap;
 use std::{
-    net::{IpAddr, Ipv4Addr, SocketAddr},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     sync::Arc,
     time::Duration,
 };
@@ -124,7 +124,11 @@ impl Daemon {
 
     async fn run_local_peer(&self) -> Result<(), Error> {
         let local_addr = SocketAddr::new(
-            IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
+            if CONFIG.is_ipv6 {
+                IpAddr::V6(Ipv6Addr::UNSPECIFIED)
+            } else {
+                IpAddr::V4(Ipv4Addr::UNSPECIFIED)
+            },
             CONFIG.local_peer_port,
         );
 
@@ -377,17 +381,12 @@ impl Daemon {
 
     /// Create a new [`Torrent`] given a magnet link URL
     /// and run the torrent's event loop.
-    ///
-    /// # Errors
-    ///
-    /// This fn may return an [`Err`] if the magnet link is invalid
-    ///
-    /// # Panic
-    ///
-    /// This fn will panic if it is being called BEFORE run
     pub async fn new_torrent(&mut self, magnet: Magnet) -> Result<(), Error> {
         trace!("magnet: {}", *magnet);
+
         let info_hash = magnet.parse_xt_infohash();
+
+        info!("received magnet info_hash: {info_hash:?}");
 
         if self.torrent_states.iter().any(|v| v.info_hash == info_hash) {
             warn!("this torrent is already present");
@@ -407,12 +406,10 @@ impl Daemon {
 
         self.torrent_ctxs.insert(info_hash, torrent.ctx.clone());
 
-        info!("downloading torrent: {}", torrent.name);
-
         spawn(async move {
             let mut torrent = torrent.start(None).await?;
 
-            torrent.spawn_outbound_peers().await?;
+            // torrent.spawn_outbound_peers().await?;
             torrent.run().await?;
 
             Ok::<(), Error>(())
@@ -433,5 +430,20 @@ impl Daemon {
         let _ = self.disk_tx.send(DiskMsg::Quit).await;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Daemon;
+
+    #[test]
+    fn peer_ids_prefixed_with_vcz() {
+        // Poor man's fuzzing.
+        let peer_id = Daemon::gen_peer_id();
+        let first_three = &peer_id.to_string()[..3];
+
+        assert_eq!(first_three, "vcz");
+        assert_eq!(peer_id.to_string().len(), 20);
     }
 }

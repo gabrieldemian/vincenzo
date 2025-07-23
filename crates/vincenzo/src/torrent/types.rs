@@ -41,7 +41,7 @@ pub enum TorrentMsg {
         from: PeerId,
         block_info: BlockInfo,
     },
-    StartEndgame(PeerId, Vec<BlockInfo>),
+    StartEndgame(Vec<BlockInfo>),
     /// When a peer request a piece of the info
     /// index, recipient
     RequestInfoPiece(u32, oneshot::Sender<Option<Vec<u8>>>),
@@ -73,7 +73,8 @@ impl Deref for InfoHash {
 impl std::fmt::Debug for InfoHash {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let s = self.to_string();
-        f.write_str(&s)
+        let s = s.get(..7).unwrap();
+        f.write_str(s)
     }
 }
 

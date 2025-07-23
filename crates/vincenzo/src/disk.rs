@@ -353,12 +353,6 @@ impl Disk {
         self.pieces_blocks.insert(info_hash.clone(), pieces_blocks);
         self.downloaded_pieces_len.insert(info_hash.clone(), 0);
 
-        // tell all peers that the Info is downloaded, and
-        // everything is ready to start the download.
-        for peer in &self.peer_ctxs {
-            peer.tx.send(PeerMsg::HaveInfo).await?;
-        }
-
         Ok(())
     }
 
@@ -512,6 +506,7 @@ impl Disk {
             if let Some(piece) = next_piece {
                 let pieces_blocks =
                     self.pieces_blocks.get_mut(info_hash).unwrap();
+
                 let blocks = pieces_blocks.get_mut(piece.1 as usize);
 
                 if let Some(blocks) = blocks {
@@ -647,9 +642,10 @@ impl Disk {
             // validate that the downloaded pieces hash
             // matches the hash of the info.
             let piece_validation = self.validate_piece(info_hash, index).await;
+
             match piece_validation {
                 Ok(_) => {
-                    debug!("Piece {index} is valid.");
+                    debug!("piece {index} is valid.");
 
                     let _ =
                         torrent_tx.send(TorrentMsg::SetBitfield(index)).await;
@@ -658,7 +654,7 @@ impl Disk {
                         .await;
                 }
                 Err(_) => {
-                    warn!("Piece {index} is corrupted.");
+                    warn!("piece {index} is corrupted.");
                 }
             }
 

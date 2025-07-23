@@ -19,7 +19,7 @@ use vincenzo::{
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Error> {
     let subscriber = FmtSubscriber::builder()
-        .with_max_level(Level::INFO)
+        // .with_max_level(Level::INFO)
         .without_time()
         .finish();
 

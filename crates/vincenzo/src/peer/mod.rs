@@ -106,6 +106,7 @@ impl Peer<Connected> {
                     if should_be_interested && !self.state.ctx.am_interested.load(Ordering::Relaxed) {
                         self.state.ctx.am_interested.store(true, Ordering::Relaxed);
                         self.state.sink.send(Core::Interested).await?;
+
                         if self.can_request() {
                             self.prepare_for_download().await;
                             self.request_block_infos().await?;
@@ -272,7 +273,6 @@ impl Peer<Connected> {
                             return Ok(());
                         }
                         PeerMsg::HaveInfo => {
-                            debug!("{remote} have_info");
                             self.state.have_info = true;
                             let am_interested = self.state.ctx.am_interested.load(Ordering::Relaxed);
                             let peer_choking = self.state.ctx.peer_choking.load(Ordering::Relaxed);
@@ -465,8 +465,7 @@ impl Peer<Connected> {
             warn!("Calling request_block_infos when peer is in seed-only mode");
             return Ok(());
         }
-        let local = self.state.ctx.local_addr;
-        // let remote = self.state.ctx.remote_addr;
+        let remote = self.state.ctx.remote_addr;
 
         let target_request_queue_len =
             self.state.session.target_request_queue_len as usize;
@@ -485,7 +484,7 @@ impl Peer<Connected> {
         debug!("target_request_queue_len: {target_request_queue_len}");
 
         if request_len > 0 {
-            debug!("{local} peer requesting l: {:?} block infos", request_len);
+            debug!("{remote} peer requesting l: {:?} block infos", request_len);
             // get a list of unique block_infos from the Disk,
             // those are already marked as requested on Torrent
             let (otx, orx) = oneshot::channel();
@@ -536,7 +535,7 @@ impl Peer<Connected> {
                 self.state.session.counters.protocol.up += req_id;
             }
         } else {
-            debug!("{local} no more blocks to request");
+            debug!("{remote} no more blocks to request");
         }
 
         Ok(())
@@ -555,7 +554,7 @@ impl Peer<Connected> {
             .state
             .torrent_ctx
             .tx
-            .send(TorrentMsg::StartEndgame(self.state.ctx.id.clone(), outgoing))
+            .send(TorrentMsg::StartEndgame(outgoing))
             .await;
     }
 

@@ -223,11 +223,7 @@ pub trait PeerState {}
 /// New peers just returned by the tracker, without any type of connection,
 /// ready to be handshaked at any moment.
 #[derive(Clone)]
-pub struct Idle {
-    // pub direction: Direction,
-    // pub info_hash: InfoHash,
-    // pub local_peer_id: PeerId,
-}
+pub struct Idle {}
 
 impl Default for peer::Peer<Idle> {
     fn default() -> Self {

@@ -24,7 +24,7 @@ use tokio::{
     sync::{mpsc, oneshot},
     time::timeout,
 };
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info, warn};
 
 use self::event::Event;
 
@@ -96,9 +96,6 @@ pub struct Tracker<P: Protocol> {
     pub rx: mpsc::Receiver<TrackerMsg>,
     pub connection_id: u64,
 
-    /// Remote addr of the tracker.
-    pub tracker_addr: SocketAddr,
-
     state: P,
 }
 
@@ -108,6 +105,9 @@ pub struct TrackerCtx {
     pub downloaded: u64,
     pub uploaded: u64,
     pub left: u64,
+
+    /// Remote addr of the tracker.
+    pub tracker_addr: SocketAddr,
 }
 
 #[derive(Debug)]
@@ -131,7 +131,7 @@ impl TrackerTrait for Tracker<Udp> {
     ) -> Result<Vec<SocketAddr>, Error> {
         let mut peer_list = Vec::<SocketAddr>::new();
 
-        let is_ipv6 = self.tracker_addr.is_ipv6();
+        let is_ipv6 = self.ctx.tracker_addr.is_ipv6();
 
         // in ipv4 the addresses come in packets of 6 bytes,
         // first 4 for ip and 2 for port
@@ -187,7 +187,7 @@ impl TrackerTrait for Tracker<Udp> {
             + Clone,
         A::Iter: Send,
     {
-        debug!("trying to connect to {:?} trackers", trackers.len());
+        info!("trying to connect to one of {:?} trackers", trackers.len());
 
         // Connect to all trackers, return on the first
         // successful handshake.
@@ -207,13 +207,13 @@ impl TrackerTrait for Tracker<Udp> {
 
             let mut tracker = Tracker {
                 ctx: TrackerCtx {
+                    tracker_addr: socket.peer_addr().unwrap(),
                     tx: tracker_tx,
                     downloaded: 0,
                     uploaded: 0,
                     left: 0,
                 },
                 daemon_ctx: daemon_ctx.clone(),
-                tracker_addr: socket.peer_addr().unwrap(),
                 info_hash: info_hash.clone(),
                 info: None,
                 connection_id: 0,
@@ -380,12 +380,13 @@ impl Tracker<Udp> {
     #[tracing::instrument(skip(self))]
     pub async fn run(&mut self) -> Result<(), Error> {
         debug!("running tracker");
+
         loop {
             select! {
                 Some(msg) = self.rx.recv() => {
                     match msg {
                         TrackerMsg::Info(info) => self.info = Some(info),
-                        TrackerMsg::Increment {downloaded, uploaded} => {
+                        TrackerMsg::Increment { downloaded, uploaded } => {
                             self.ctx.downloaded += downloaded;
                             self.ctx.uploaded += uploaded;
 
@@ -418,28 +419,5 @@ impl Tracker<Udp> {
                 }
             }
         }
-    }
-
-    /// Peer ids should be prefixed with "vcz".
-    pub fn gen_peer_id() -> PeerId {
-        let mut peer_id = [0; 20];
-        peer_id[..3].copy_from_slice(b"vcz");
-        peer_id[3..].copy_from_slice(&rand::random::<[u8; 17]>());
-        peer_id.into()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::Tracker;
-
-    #[test]
-    fn peer_ids_prefixed_with_vcz() {
-        // Poor man's fuzzing.
-        let peer_id = Tracker::gen_peer_id();
-        let first_three = &peer_id.to_string()[..3];
-
-        assert_eq!(first_three, "vcz");
-        assert_eq!(peer_id.to_string().len(), 20);
     }
 }

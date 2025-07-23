@@ -21,6 +21,7 @@ use crate::{
     metainfo::Info,
     peer::{self, DirectionWithInfoHash, Peer, PeerCtx, PeerId, PeerMsg},
     tracker::{event::Event, Tracker, TrackerCtx, TrackerMsg, TrackerTrait},
+    utils::to_human_readable,
 };
 use std::{
     collections::BTreeMap,
@@ -173,8 +174,8 @@ impl Torrent<Idle> {
         self,
         listen: Option<SocketAddr>,
     ) -> Result<Torrent<Connected>, Error> {
-        let c = self.ctx.clone();
-        let _org_trackers = c.magnet.organize_trackers();
+        // let c = self.ctx.clone();
+        // let _org_trackers = c.magnet.organize_trackers();
 
         let mut tracker = Tracker::connect_to_tracker(
             self.ctx.magnet.parse_trackers(),
@@ -183,14 +184,20 @@ impl Torrent<Idle> {
         )
         .await?;
 
+        info!("connected to tracker: {:?}", tracker.ctx.tracker_addr);
+
         let (res, payload) = tracker.announce(Event::Started).await?;
         let peers = tracker.parse_compact_peer_list(payload.as_ref())?;
+
+        info!("announced and got {} peers", peers.len());
 
         let stats = Stats {
             interval: res.interval,
             seeders: res.seeders,
             leechers: res.leechers,
         };
+
+        info!("stats {stats:?}");
 
         debug!(
             "starting torrent {:?} with stats {:#?}",
@@ -264,6 +271,13 @@ impl Torrent<Connected> {
 
         let ctx = self.ctx.clone();
         let daemon_ctx = self.daemon_ctx.clone();
+
+        if to_request > 0 {
+            info!(
+                "{:?} sending requests to {to_request} peers",
+                self.ctx.info_hash
+            );
+        }
 
         for peer in self.state.idle_peers.iter().take(to_request).cloned() {
             let ctx = ctx.clone();
@@ -655,8 +669,9 @@ impl Torrent<Connected> {
                             }
                         }
                         // todo: move to broadcast
-                        TorrentMsg::StartEndgame(_peer_id, block_infos) => {
-                            info!("Started endgame mode for {}", self.name);
+                        TorrentMsg::StartEndgame(block_infos) => {
+                            info!("started endgame mode for {}", self.name);
+
                             for peer in &self.state.connected_peers {
                                 let _ = peer.tx.send(PeerMsg::RequestBlockInfos(block_infos.clone())).await;
                             }
@@ -674,6 +689,8 @@ impl Torrent<Connected> {
                             let have_all_pieces = self.state.downloaded_info_bytes >= total;
 
                             if have_all_pieces {
+                                info!("{:?} have all info_hash pieces", self.ctx.info_hash);
+
                                 // info has a valid bencode format
                                 let info_bytes = self.state.info_pieces.values().fold(Vec::new(), |mut acc, b| {
                                     acc.extend_from_slice(b);
@@ -716,7 +733,6 @@ impl Torrent<Connected> {
 
                                     debug!("new info piece length {:?}", info.piece_length);
                                     debug!("new info pieces_len {:?}", info.pieces.len());
-                                    debug!("new info pieces_len {:?}", info.pieces.len());
                                     debug!("new info file_length {:?}", info.file_length);
                                     debug!("new info files {:#?}", info.files);
 
@@ -725,8 +741,12 @@ impl Torrent<Connected> {
 
                                     self.status = TorrentStatus::Downloading;
                                     self.ctx.disk_tx.send(DiskMsg::NewTorrent(self.ctx.clone())).await?;
+
+                                    for peer in &self.state.connected_peers {
+                                        let _ = peer.tx.send(PeerMsg::HaveInfo).await;
+                                    }
                                 } else {
-                                    warn!("a peer sent a valid Info, but the hash does not match the hash of the provided magnet link, panicking");
+                                    warn!("the hash does not match the hash of the provided magnet link, panicking");
                                     return Err(Error::PieceInvalid);
                                 }
                             }
@@ -844,17 +864,23 @@ impl Torrent<Connected> {
                     let _ = self.daemon_ctx.tx.send(DaemonMsg::TorrentState(torrent_state)).await;
                 }
                 _ = optimistic_unchoke_interval.tick() => {
+                    debug!("optimistic_unchoke_interval");
+
                     let worst_uploader = self.get_next_opt_unchoked_peer();
 
                     let Some(worst_uploader) = worst_uploader else { continue };
+                    debug!("next opt unchoked: {worst_uploader:?}");
 
                     if let Some(prev_opt) = &self.state.opt_unchoked_peer {
+                        debug!("prev opt unchoked: {worst_uploader:?}");
                         let _ = prev_opt.tx.send(PeerMsg::Choke).await;
                     }
                     let _ = worst_uploader.tx.send(PeerMsg::Unchoke).await;
                     self.state.opt_unchoked_peer = Some(worst_uploader);
                 }
                 _ = choke_interval.tick() => {
+                    debug!("choke_interval");
+
                     if self.state.unchoked_peers.len() < 3 {
                         continue;
                     }
@@ -867,15 +893,29 @@ impl Torrent<Connected> {
                             .cloned()
                     else { continue };
 
+                    debug!(
+                        "slowest downloader: {:?} with {:?}",
+                        slowest.id,
+                        to_human_readable(slowest.downloaded.load(Ordering::Relaxed) as f64)
+                    );
+
                     let r = self.get_best_interested_downloaders(1);
 
                     let Some(fastest) = r.first() else { continue };
 
-                    if
-                        fastest.downloaded.load(Ordering::Relaxed)
+                    debug!(
+                        "fastest downloader: {:?} with {:?}",
+                        fastest.id,
+                        to_human_readable(fastest.downloaded.load(Ordering::Relaxed) as f64)
+                    );
+
+                    if fastest.downloaded.load(Ordering::Relaxed)
                         <=
                         slowest.downloaded.load(Ordering::Relaxed)
-                    { continue };
+                    {
+                        warn!("fastest was slower than the slowest peer");
+                        continue
+                    };
 
                     let _ = fastest.tx.send(PeerMsg::Unchoke).await;
                     let _ = slowest.tx.send(PeerMsg::Choke).await;
@@ -886,10 +926,12 @@ impl Torrent<Connected> {
                 _ = unchoke_interval.tick() => {
                     let unchoked_count = self.state.unchoked_peers.len().min(3);
                     let to_unchoke = 3 - unchoked_count;
+                    debug!("unchoke_interval to_unchoke {to_unchoke}");
 
                     if to_unchoke == 0 { continue };
 
                     let best_downloaders = self.get_best_interested_downloaders(to_unchoke);
+                    debug!("best_downloaders len {}", best_downloaders.len());
 
                     for downloader in best_downloaders {
                         let _ = downloader.tx.send(PeerMsg::Unchoke).await;
@@ -901,30 +943,28 @@ impl Torrent<Connected> {
                         peer.uploaded.store(0, Ordering::Relaxed);
                     }
                 }
-                _ = announce_interval.tick() => {
-                    if self.state.have_info {
-                        debug!("sending periodic announce, interval {announce_interval:?}");
+                _ = announce_interval.tick(), if self.state.have_info => {
+                    debug!("sending periodic announce, interval {announce_interval:?}");
 
-                        let (otx, orx) = oneshot::channel();
-                        let tracker_tx = &self.state.tracker_ctx.tx;
+                    let (otx, orx) = oneshot::channel();
+                    let tracker_tx = &self.state.tracker_ctx.tx;
 
-                        let _ = tracker_tx.send(
-                            TrackerMsg::Announce {
-                                event: Event::None,
-                                recipient: Some(otx),
-                            })
-                        .await;
+                    let _ = tracker_tx.send(
+                        TrackerMsg::Announce {
+                            event: Event::None,
+                            recipient: Some(otx),
+                        })
+                    .await;
 
-                        let (resp, _payload) = orx.await?;
-                        debug!("new stats {resp:#?}");
+                    let (resp, _payload) = orx.await?;
+                    debug!("new stats {resp:#?}");
 
-                        // update our stats, received from the tracker
-                        self.state.stats = resp.into();
+                    // update our stats, received from the tracker
+                    self.state.stats = resp.into();
 
-                        announce_interval = interval(
-                            Duration::from_secs(self.state.stats.interval as u64),
-                        );
-                    }
+                    announce_interval = interval(
+                        Duration::from_secs(self.state.stats.interval as u64),
+                    );
                 }
             }
         }
