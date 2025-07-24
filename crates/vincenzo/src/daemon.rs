@@ -98,19 +98,11 @@ impl Daemon {
     pub const DEFAULT_LISTENER: SocketAddr =
         SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 51411);
 
-    /// Peer ids should be prefixed with "vcz".
-    pub fn gen_peer_id() -> PeerId {
-        let mut peer_id = [0; 20];
-        peer_id[..3].copy_from_slice(b"vcz");
-        peer_id[3..].copy_from_slice(&rand::random::<[u8; 17]>());
-        peer_id.into()
-    }
-
     /// Initialize the Daemon struct with the default [`DaemonConfig`].
     pub fn new(disk_tx: mpsc::Sender<DiskMsg>) -> Self {
         let (tx, rx) = mpsc::channel::<DaemonMsg>(100);
 
-        let local_peer_id = Self::gen_peer_id();
+        let local_peer_id = PeerId::gen();
 
         Self {
             connected_peers: 0,
@@ -430,20 +422,5 @@ impl Daemon {
         let _ = self.disk_tx.send(DiskMsg::Quit).await;
 
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::Daemon;
-
-    #[test]
-    fn peer_ids_prefixed_with_vcz() {
-        // Poor man's fuzzing.
-        let peer_id = Daemon::gen_peer_id();
-        let first_three = &peer_id.to_string()[..3];
-
-        assert_eq!(first_three, "vcz");
-        assert_eq!(peer_id.to_string().len(), 20);
     }
 }

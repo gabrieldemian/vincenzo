@@ -13,6 +13,7 @@ use futures::{
     SinkExt,
 };
 use hashbrown::{HashMap, HashSet};
+use rand::{distr::Alphanumeric, Rng};
 use speedy::{Readable, Writable};
 use tokio::{
     net::TcpStream,
@@ -40,17 +41,34 @@ use crate::{
 #[derive(Clone, PartialEq, Eq, Hash, Default, Readable, Writable)]
 pub struct PeerId(pub(crate) [u8; 20]);
 
+impl PeerId {
+    pub fn gen() -> Self {
+        let mut peer_id = [0; 20];
+        peer_id[..3].copy_from_slice(b"vcz");
+        peer_id[3] = b'-';
+        // 0.00.01
+        peer_id[4..9].copy_from_slice(b"00001");
+        peer_id[9] = b'-';
+
+        for i in 10..20 {
+            peer_id[i] = rand::rng().sample(Alphanumeric);
+        }
+
+        PeerId(peer_id)
+    }
+}
+
 impl Display for PeerId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", hex::encode(self.0))
+        write!(f, "{}", String::from_utf8(self.0.to_vec()).unwrap())
     }
 }
 
 impl TryInto<PeerId> for String {
     type Error = String;
     fn try_into(self) -> Result<PeerId, Self::Error> {
-        let buff = hex::decode(self).map_err(|e| e.to_string())?;
-        let hash = PeerId::try_from(buff)?;
+        let hash: Vec<u8> = self.into();
+        let hash = PeerId::try_from(hash)?;
         Ok(hash)
     }
 }

@@ -95,19 +95,6 @@ impl Magnet {
             .filter(|x| x.starts_with("udp") || x.starts_with("http"))
             .map(|x| x.to_owned())
             .collect();
-        // .filter(|x| x.starts_with("udp"))
-        // .map(|x| {
-        //     *x = urlencoding::decode(x).unwrap().to_string();
-        //     *x = x.replace("udp://", "");
-        //
-        //     // remove any /announce
-        //     if let Some(i) = x.find('/') {
-        //         *x = x[..i].to_string();
-        //     };
-        //
-        //     x.to_owned()
-        // })
-        // .collect();
         tr
     }
 }
@@ -115,7 +102,6 @@ impl Magnet {
 #[cfg(test)]
 pub mod tests {
     use magnet_url::MagnetBuilder;
-    use tokio::net::UdpSocket;
 
     use super::*;
 
@@ -143,7 +129,7 @@ pub mod tests {
 
         println!("Generated magnet URL: {:?}", magnet.trackers());
 
-        assert!(false);
+        // assert!(false);
     }
 
     #[tokio::test]
@@ -157,10 +143,9 @@ pub mod tests {
                  2F%2Ftracker.torrent.eu.org%3A451%2Fannounce";
 
         let magnet = Magnet::new(s).unwrap();
+        // println!("{magnet:#?}");
+        // println!("{:#?}", magnet.organize_trackers());
 
-        println!("{magnet:#?}");
-        println!("{:#?}", magnet.organize_trackers());
-
-        assert!(false);
+        // assert!(false);
     }
 }

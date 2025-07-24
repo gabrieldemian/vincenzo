@@ -174,17 +174,26 @@ impl Torrent<Idle> {
         self,
         listen: Option<SocketAddr>,
     ) -> Result<Torrent<Connected>, Error> {
-        // let c = self.ctx.clone();
-        // let _org_trackers = c.magnet.organize_trackers();
+        let c = self.ctx.clone();
+        let org_trackers = c.magnet.organize_trackers();
+
+        let udp_trackers = org_trackers.get("udp").unwrap();
+
+        if udp_trackers.is_empty() {
+            return Err(Error::MagnetNoTracker);
+        }
 
         let mut tracker = Tracker::connect_to_tracker(
-            self.ctx.magnet.parse_trackers(),
+            udp_trackers,
             self.ctx.info_hash.clone(),
             self.daemon_ctx.clone(),
         )
         .await?;
 
-        info!("connected to tracker: {:?}", tracker.ctx.tracker_addr);
+        info!(
+            "connected to tracker: {:?}, sending announce",
+            tracker.ctx.tracker_addr
+        );
 
         let (res, payload) = tracker.announce(Event::Started).await?;
         let peers = tracker.parse_compact_peer_list(payload.as_ref())?;
@@ -197,7 +206,7 @@ impl Torrent<Idle> {
             leechers: res.leechers,
         };
 
-        info!("stats {stats:?}");
+        info!("{stats:?}");
 
         debug!(
             "starting torrent {:?} with stats {:#?}",

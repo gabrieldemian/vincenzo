@@ -15,7 +15,7 @@ use std::{
 
 use crate::{
     config::CONFIG, daemon::DaemonCtx, error::Error, metainfo::Info,
-    peer::PeerId, torrent::InfoHash,
+    torrent::InfoHash,
 };
 use rand::Rng;
 use tokio::{
@@ -70,7 +70,7 @@ pub trait TrackerTrait: Sized {
 
     /// Try to connect to one tracker, in order, and return Self.
     fn connect_to_tracker<A>(
-        trackers: Vec<A>,
+        trackers: &[A],
         info_hash: InfoHash,
         daemon_ctx: Arc<DaemonCtx>,
     ) -> impl Future<Output = Result<Self, Error>>
@@ -173,7 +173,7 @@ impl TrackerTrait for Tracker<Udp> {
     /// to one of the trackers.
     // todo: get a new tracker if download is stale
     async fn connect_to_tracker<A>(
-        trackers: Vec<A>,
+        trackers: &[A],
         info_hash: InfoHash,
         daemon_ctx: Arc<DaemonCtx>,
     ) -> Result<Self, Error>
