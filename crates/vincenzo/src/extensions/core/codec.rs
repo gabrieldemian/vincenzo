@@ -4,7 +4,7 @@ use futures::SinkExt;
 use std::{io::Cursor, sync::atomic::Ordering};
 use tokio::{io, sync::oneshot};
 use tokio_util::codec::{Decoder, Encoder};
-use tracing::{debug, trace, warn};
+use tracing::{debug, info, trace, warn};
 use vincenzo_macros::Message;
 
 use super::{Block, BlockInfo};
@@ -156,6 +156,191 @@ impl From<Core> for BytesMut {
     }
 }
 
+impl ExtMsgHandler<Core, CoreState> for MsgHandler {
+    async fn handle_msg(
+        &self,
+        peer: &mut peer::Peer<peer::Connected>,
+        msg: Core,
+    ) -> Result<(), Error> {
+        let remote = peer.state.ctx.remote_addr;
+
+        match msg {
+            // handled by the extended messages
+            Core::Extended(_) => {}
+            Core::KeepAlive => {
+                debug!("{remote} keepalive");
+            }
+            Core::Bitfield(bitfield) => {
+                // take entire pieces from bitfield
+                // and put in pending_requests
+                info!("{remote} bitfield");
+
+                // remove excess bits
+                let pieces =
+                    peer.state.torrent_ctx.info.read().await.pieces() as usize;
+
+                let b = &mut peer.state.pieces;
+                *b = bitfield.clone();
+
+                if bitfield.len() != pieces
+                    && pieces > 0
+                    && peer.state.have_info
+                {
+                    unsafe {
+                        b.set_len(pieces);
+                    }
+                }
+
+                debug!("{remote} bitfield is len {:?}", bitfield.len());
+            }
+            Core::Unchoke => {
+                peer.state.ctx.peer_choking.store(false, Ordering::Relaxed);
+                info!("{remote} unchoke");
+
+                if peer.can_request() {
+                    peer.request_block_infos().await?;
+                }
+            }
+            Core::Choke => {
+                info!("{remote} choke");
+                peer.state.ctx.peer_choking.store(true, Ordering::Relaxed);
+                peer.free_pending_blocks().await;
+            }
+            Core::Interested => {
+                debug!("{remote} interested");
+                peer.state.ctx.peer_interested.store(true, Ordering::Relaxed);
+            }
+            Core::NotInterested => {
+                debug!("{remote} not_interested");
+                peer.state.ctx.peer_interested.store(false, Ordering::Relaxed);
+            }
+            Core::Have(piece) => {
+                debug!("{remote} have {piece}");
+
+                // Overwrite pieces on bitfield, if the peer has one
+                let peer_pieces = &mut peer.state.pieces;
+
+                let (otx, orx) = oneshot::channel();
+
+                peer.state
+                    .torrent_ctx
+                    .tx
+                    .send(TorrentMsg::ReadBitfield(otx))
+                    .await?;
+
+                // local bitfield of the local peer
+                let local_pieces = orx.await?;
+
+                // peer sent a piece which is out of bounds with it's pieces
+                if peer_pieces.get(piece).is_none() {
+                    warn!(
+                        "{remote} sent have but it's bitfield is out of
+bounds"
+                    );
+                    warn!(
+                        "initializing an empty bitfield with the len of the
+piece {piece}"
+                    );
+
+                    // if local peer has full info, calc the difference of the
+                    // bitfields and just append the difference to the peer's
+                    if peer.state.have_info {
+                        let missing_bits =
+                            local_pieces.len() - peer_pieces.len();
+                        peer_pieces
+                            .extend_from_bitslice(&bitvec![0; missing_bits]);
+                    } else {
+                        let missing_bits = piece - peer_pieces.len();
+                        peer_pieces
+                            .extend_from_bitslice(&bitvec![0; missing_bits]);
+                    }
+                }
+
+                peer_pieces.set(piece, true);
+
+                let Some(piece) = local_pieces.get(piece) else {
+                    return Ok(());
+                };
+
+                // maybe become interested in peer and request blocks
+                if !peer.state.ctx.am_interested.load(Ordering::Relaxed)
+                    && !piece
+                {
+                    debug!("{remote} sending interested due to have");
+
+                    peer.state.ctx.am_interested.store(true, Ordering::Relaxed);
+                    peer.state.sink.send(Core::Interested).await?;
+
+                    if peer.can_request() {
+                        peer.request_block_infos().await?;
+                    }
+                }
+            }
+            Core::Piece(block) => {
+                debug!("{remote} piece {}", block.index);
+                debug!(
+                    "index: {:?}, begin: {:?}, len: {:?}",
+                    block.index,
+                    block.begin,
+                    block.block.len()
+                );
+
+                peer.state
+                    .ctx
+                    .downloaded
+                    .fetch_add(block.block.len() as u64, Ordering::Relaxed);
+
+                peer.handle_piece_msg(block).await?;
+
+                if peer.can_request() {
+                    peer.request_block_infos().await?;
+                }
+            }
+            Core::Cancel(block_info) => {
+                debug!("{remote} cancel from");
+                debug!("{block_info:?}");
+                peer.state.incoming_requests.remove(&block_info);
+            }
+            Core::Request(block_info) => {
+                debug!("{remote} request from");
+                debug!("{block_info:?}");
+
+                if peer.state.ctx.peer_choking.load(Ordering::Relaxed) {
+                    return Ok(());
+                }
+
+                let begin = block_info.begin;
+                let index = block_info.index as usize;
+                let (tx, rx) = oneshot::channel();
+
+                peer.state.incoming_requests.insert(block_info.clone());
+
+                peer.state
+                    .torrent_ctx
+                    .disk_tx
+                    .send(DiskMsg::ReadBlock {
+                        block_info,
+                        recipient: tx,
+                        info_hash: peer.state.torrent_ctx.info_hash.clone(),
+                    })
+                    .await?;
+
+                let bytes = rx.await?;
+
+                peer.state
+                    .ctx
+                    .uploaded
+                    .fetch_add(bytes.len() as u64, Ordering::Relaxed);
+
+                let block = Block { index, begin, block: bytes };
+                let _ = peer.state.sink.send(Core::Piece(block)).await;
+            }
+        }
+
+        Ok(())
+    }
+}
+
 impl Encoder<Core> for CoreCodec {
     type Error = Error;
 
@@ -239,10 +424,7 @@ impl Encoder<Core> for CoreCodec {
                 buf.put_u32(msg_len);
                 buf.put_u8(CoreId::Extended as u8);
                 buf.put_u8(ext_id);
-
-                if !payload.is_empty() {
-                    buf.extend_from_slice(&payload);
-                }
+                buf.extend_from_slice(&payload);
             }
         }
         Ok(())
@@ -341,6 +523,8 @@ impl Decoder for CoreCodec {
             CoreId::Extended => {
                 let ext_id = buf.get_u8();
 
+                tracing::info!("received ext_id {ext_id}");
+
                 let mut payload = vec![0u8; msg_len - 2];
                 buf.copy_to_slice(&mut payload);
 
@@ -349,194 +533,6 @@ impl Decoder for CoreCodec {
         };
 
         Ok(Some(msg))
-    }
-}
-
-impl ExtMsgHandler<Core, CoreState> for MsgHandler {
-    async fn handle_msg(
-        &self,
-        peer: &mut peer::Peer<peer::Connected>,
-        msg: Core,
-    ) -> Result<(), Error> {
-        let remote = peer.state.ctx.remote_addr;
-
-        match msg {
-            // handled by the extended messages
-            Core::Extended(_) => {}
-            Core::KeepAlive => {
-                debug!("{remote} keepalive");
-            }
-            Core::Bitfield(bitfield) => {
-                // take entire pieces from bitfield
-                // and put in pending_requests
-                debug!("{remote} bitfield");
-
-                // remove excess bits
-                let pieces =
-                    peer.state.torrent_ctx.info.read().await.pieces() as usize;
-
-                let b = &mut peer.state.pieces;
-                *b = bitfield.clone();
-
-                if bitfield.len() != pieces
-                    && pieces > 0
-                    && peer.state.have_info
-                {
-                    unsafe {
-                        b.set_len(pieces);
-                    }
-                }
-
-                debug!("{remote} bitfield is len {:?}", bitfield.len());
-            }
-            Core::Unchoke => {
-                peer.state.ctx.peer_choking.store(false, Ordering::Relaxed);
-                debug!("{remote} unchoke");
-
-                if peer.can_request() {
-                    peer.prepare_for_download().await;
-                    peer.request_block_infos().await?;
-                }
-            }
-            Core::Choke => {
-                peer.state.ctx.peer_choking.store(true, Ordering::Relaxed);
-                debug!("{remote} choke");
-                peer.free_pending_blocks().await;
-            }
-            Core::Interested => {
-                debug!("{remote} interested");
-                peer.state.ctx.peer_interested.store(true, Ordering::Relaxed);
-            }
-            Core::NotInterested => {
-                debug!("{remote} not_interested");
-                peer.state.ctx.peer_interested.store(false, Ordering::Relaxed);
-            }
-            Core::Have(piece) => {
-                debug!("{remote} have {piece}");
-
-                // Overwrite pieces on bitfield, if the peer has one
-                let peer_pieces = &mut peer.state.pieces;
-
-                let (otx, orx) = oneshot::channel();
-
-                peer.state
-                    .torrent_ctx
-                    .tx
-                    .send(TorrentMsg::ReadBitfield(otx))
-                    .await?;
-
-                // local bitfield of the local peer
-                let local_pieces = orx.await?;
-
-                // peer sent a piece which is out of bounds with it's pieces
-                if peer_pieces.get(piece).is_none() {
-                    warn!(
-                        "{remote} sent have but it's bitfield is out of
-bounds"
-                    );
-                    warn!(
-                        "initializing an empty bitfield with the len of the
-piece {piece}"
-                    );
-
-                    // if local peer has full info, calc the difference of the
-                    // bitfields and just append the difference to the peer's
-                    if peer.state.have_info {
-                        let missing_bits =
-                            local_pieces.len() - peer_pieces.len();
-                        peer_pieces
-                            .extend_from_bitslice(&bitvec![0; missing_bits]);
-                    } else {
-                        let missing_bits = piece - peer_pieces.len();
-                        peer_pieces
-                            .extend_from_bitslice(&bitvec![0; missing_bits]);
-                    }
-                }
-
-                peer_pieces.set(piece, true);
-
-                let Some(piece) = local_pieces.get(piece) else {
-                    return Ok(());
-                };
-
-                // maybe become interested in peer and request blocks
-                if !peer.state.ctx.am_interested.load(Ordering::Relaxed)
-                    && !piece
-                {
-                    debug!("{remote} sending interested due to have");
-
-                    peer.state.ctx.am_interested.store(true, Ordering::Relaxed);
-                    peer.state.sink.send(Core::Interested).await?;
-
-                    if peer.can_request() {
-                        peer.prepare_for_download().await;
-                        peer.request_block_infos().await?;
-                    }
-                }
-            }
-            Core::Piece(block) => {
-                debug!("{remote} piece {}", block.index);
-                debug!(
-                    "index: {:?}, begin: {:?}, len: {:?}",
-                    block.index,
-                    block.begin,
-                    block.block.len()
-                );
-
-                peer.state
-                    .ctx
-                    .downloaded
-                    .fetch_add(block.block.len() as u64, Ordering::Relaxed);
-
-                peer.handle_piece_msg(block).await?;
-
-                if peer.can_request() {
-                    peer.prepare_for_download().await;
-                    peer.request_block_infos().await?;
-                }
-            }
-            Core::Cancel(block_info) => {
-                debug!("{remote} cancel from");
-                debug!("{block_info:?}");
-                peer.state.incoming_requests.remove(&block_info);
-            }
-            Core::Request(block_info) => {
-                debug!("{remote} request from");
-                debug!("{block_info:?}");
-
-                if peer.state.ctx.peer_choking.load(Ordering::Relaxed) {
-                    return Ok(());
-                }
-
-                let begin = block_info.begin;
-                let index = block_info.index as usize;
-                let (tx, rx) = oneshot::channel();
-
-                peer.state.incoming_requests.insert(block_info.clone());
-
-                peer.state
-                    .torrent_ctx
-                    .disk_tx
-                    .send(DiskMsg::ReadBlock {
-                        block_info,
-                        recipient: tx,
-                        info_hash: peer.state.torrent_ctx.info_hash.clone(),
-                    })
-                    .await?;
-
-                let bytes = rx.await?;
-
-                peer.state
-                    .ctx
-                    .uploaded
-                    .fetch_add(bytes.len() as u64, Ordering::Relaxed);
-
-                let block = Block { index, begin, block: bytes };
-                let _ = peer.state.sink.send(Core::Piece(block)).await;
-            }
-        }
-
-        Ok(())
     }
 }
 
@@ -612,7 +608,7 @@ mod tests {
     fn request() {
         let mut buf = BytesMut::new();
         let msg = Core::Request(BlockInfo::default());
-        CoreCodec.encode(msg.clone().into(), &mut buf).unwrap();
+        CoreCodec.encode(msg.clone(), &mut buf).unwrap();
 
         // size of buf
         assert_eq!(buf.len(), 17);
@@ -628,7 +624,7 @@ mod tests {
         assert_eq!(buf.get_u32(), BLOCK_LEN);
 
         let mut buf = BytesMut::new();
-        CoreCodec.encode(msg.into(), &mut buf).unwrap();
+        CoreCodec.encode(msg, &mut buf).unwrap();
         let msg = CoreCodec.decode(&mut buf).unwrap().unwrap();
 
         match msg {
@@ -645,7 +641,7 @@ mod tests {
     fn piece() {
         let mut buf = BytesMut::new();
         let msg = Core::Piece(Block { index: 0, begin: 0, block: vec![0] });
-        CoreCodec.encode(msg.clone().into(), &mut buf).unwrap();
+        CoreCodec.encode(msg.clone(), &mut buf).unwrap();
 
         // len
         assert_eq!(buf.get_u32(), 9 + 1);
@@ -661,7 +657,7 @@ mod tests {
         assert_eq!(block.len(), 0);
 
         let mut buf = BytesMut::new();
-        CoreCodec.encode(msg.clone().into(), &mut buf).unwrap();
+        CoreCodec.encode(msg.clone(), &mut buf).unwrap();
         let msg = CoreCodec.decode(&mut buf).unwrap().unwrap();
 
         match msg {

@@ -2,6 +2,8 @@
 pub mod session;
 mod types;
 
+use bendy::encoding::ToBencode;
+use bytes::BytesMut;
 // re-exports
 pub use types::*;
 
@@ -13,10 +15,11 @@ use tokio::{
     time::{interval, interval_at, Instant},
 };
 
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::extensions::{
-    ExtMsg, ExtMsgHandler, Extended, Metadata, MetadataMsg,
+    ExtMsg, ExtMsgHandler, Extended, ExtendedMessage, Extension, Metadata,
+    MetadataMsg, TryIntoExtendedMessage,
 };
 
 use crate::{
@@ -26,8 +29,6 @@ use crate::{
     peer::session::ConnectionState,
     torrent::TorrentMsg,
 };
-
-use self::session::Session;
 
 /// Data about a remote Peer that the client is connected to,
 /// but the client itself does not have a Peer struct.
@@ -65,7 +66,7 @@ impl Peer<Connected> {
         //   interested.
         // - 2. later, if we already have all pieces which the peer has, and we
         //   are interested, send not interested.
-        let mut interested_interval = interval(Duration::from_secs(3));
+        let mut interested_interval = interval(Duration::from_secs(2));
 
         let mut keep_alive_interval = interval_at(
             Instant::now() + Duration::from_secs(120),
@@ -97,18 +98,28 @@ impl Peer<Connected> {
 
         loop {
             select! {
-                _ = tick_interval.tick(), if self.state.have_info => {
-                    self.tick().await?;
+                _ = tick_interval.tick() => {
+                    if !self.state.have_info {
+                        self.try_request_info().await?;
+                    }
+
+                    // resend requests if we have any pending and more time has elapsed
+                    // since the last received block than the current timeout value
+                    if !self.state.outgoing_requests.is_empty() && self.can_request() {
+                        self.check_request_timeout().await?;
+                    }
+                    self.state.session.counters.reset();
                 }
-                _ = interested_interval.tick(), if self.state.have_info => {
+                _ = interested_interval.tick() => {
                     let should_be_interested = self.has_piece_not_in_local().await?;
+                    info!("{remote} should be interested {should_be_interested}");
 
                     if should_be_interested && !self.state.ctx.am_interested.load(Ordering::Relaxed) {
+                        info!("sending interested");
                         self.state.ctx.am_interested.store(true, Ordering::Relaxed);
                         self.state.sink.send(Core::Interested).await?;
 
                         if self.can_request() {
-                            self.prepare_for_download().await;
                             self.request_block_infos().await?;
                         }
                     }
@@ -116,6 +127,7 @@ impl Peer<Connected> {
                     // peer doesn't have any piece that we don't have and we were previously
                     // interested, so, send not interested.
                     if !should_be_interested && self.state.ctx.am_interested.load(Ordering::Relaxed) {
+                        info!("SENDIN NOT INTERESTED");
                         self.state.ctx.am_interested.store(false, Ordering::Relaxed);
                         self.state.sink.send(Core::NotInterested).await?;
                     }
@@ -281,7 +293,6 @@ impl Peer<Connected> {
                             debug!("{remote} peer_choking {peer_choking}");
 
                             if am_interested && !peer_choking {
-                                self.prepare_for_download().await;
                                 debug!("{remote} requesting blocks");
                                 self.request_block_infos().await?;
                             }
@@ -359,23 +370,6 @@ impl Peer<Connected> {
 
         // update stats
         self.state.session.update_download_stats(len as u32);
-
-        Ok(())
-    }
-
-    /// Periodic tick of the [`Peer`]. This function must be called every 1
-    /// seconds to:
-    /// - Check if we can request blocks.
-    /// - Check and resend requests that timed out.
-    /// - Update stats about the Peer.
-    pub async fn tick(&mut self) -> Result<(), Error> {
-        // resend requests if we have any pending and more time has elapsed
-        // since the last received block than the current timeout value
-        if !self.state.outgoing_requests.is_empty() && self.can_request() {
-            self.check_request_timeout().await?;
-        }
-
-        self.state.session.counters.reset();
 
         Ok(())
     }
@@ -564,23 +558,26 @@ impl Peer<Connected> {
     /// - We do not have the info downloaded
     #[tracing::instrument(skip(self))]
     pub async fn try_request_info(&mut self) -> Result<(), Error> {
+        let remote = self.state.ctx.remote_addr;
+
         // only request info if we dont have an Info
         // and the peer supports the metadata extension protocol
         if self.state.have_info {
             return Ok(());
         }
+
         // send bep09 request to get the Info
-        let Some(lt_metadata) = self
+        let Some(ut_metadata) = self
             .state
             .ext_states
             .extension
             .as_ref()
-            .and_then(|v| v.m.lt_metadata)
+            .and_then(|v| v.m.ut_metadata)
         else {
             return Ok(());
         };
 
-        debug!("peer supports lt_metadata {lt_metadata}, sending request");
+        info!("peer supports ut_metadata {ut_metadata}, sending request");
 
         let Some(t) = self
             .state
@@ -598,17 +595,18 @@ impl Peer<Connected> {
         debug!("this info has {pieces} pieces");
 
         for i in 0..pieces {
-            let h = Metadata::request(i);
+            info!("{remote} requesting info piece {i}");
 
-            debug!("requesting info piece {i}");
-            debug!("request {h:?}");
-
-            // let h = h.to_bencode().map_err(|_| Error::BencodeError)?;
-            // todo: fix this
-            // let _ = self
-            //     .sink
-            //     .send(Core::Extended(ut_metadata, h).into())
-            //     .await;
+            let msg = Metadata::request(i);
+            let buf = msg.to_bencode()?;
+            let _ = self
+                .state
+                .sink
+                .send(Core::Extended(ExtendedMessage(ut_metadata, buf)))
+                .await;
+            // let mut msg = MetadataMsg::try_into_extended_msg(msg)?;
+            // msg.0 = ut_metadata;
+            // let _ = self.state.sink.send(msg.into()).await;
         }
         Ok(())
     }
@@ -623,9 +621,12 @@ impl Peer<Connected> {
 
         let local_bitfield = orx.await?;
 
+        info!("local_bitfield {local_bitfield:?}");
+
         // when we don't have the info fully downloaded yet,
         // and the peer has already sent a bitfield or a have.
         if local_bitfield.is_empty() {
+            info!("our local bitfield is empty, returning true");
             return Ok(true);
         }
 
@@ -639,22 +640,5 @@ impl Peer<Connected> {
         }
 
         Ok(false)
-    }
-
-    /// Calculate the maximum number of block infos to request,
-    /// and set this value on `session` of the peer.
-    pub async fn prepare_for_download(&mut self) {
-        // the max number of block_infos to request
-        let n = self
-            .state
-            .ext_states
-            .extension
-            .as_ref()
-            .and_then(|v| v.reqq)
-            .unwrap_or(Session::DEFAULT_REQUEST_QUEUE_LEN);
-
-        if n > 0 {
-            self.state.session.target_request_queue_len = n;
-        }
     }
 }

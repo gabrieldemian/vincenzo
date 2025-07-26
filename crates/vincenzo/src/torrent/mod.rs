@@ -153,7 +153,7 @@ impl Torrent<Idle> {
     }
 
     /// Start the Torrent and immediately spawns all the event loops.
-    #[tracing::instrument(skip(self), name = "torrent::start_and_run")]
+    #[tracing::instrument(skip_all)]
     pub async fn start_and_run(
         self,
         listen: Option<SocketAddr>,
@@ -169,10 +169,10 @@ impl Torrent<Idle> {
     /// Start the Torrent, by sending `connect` and `announce_exchange`
     /// messages to one of the trackers, and returning a list of peers.
     /// But it doesn't run the torrent event loop.
-    #[tracing::instrument(skip(self), name = "torrent::start")]
+    #[tracing::instrument(skip_all)]
     pub async fn start(
         self,
-        listen: Option<SocketAddr>,
+        _listen: Option<SocketAddr>,
     ) -> Result<Torrent<Connected>, Error> {
         let c = self.ctx.clone();
         let org_trackers = c.magnet.organize_trackers();
@@ -255,7 +255,6 @@ impl Torrent<Idle> {
 
 impl Torrent<Connected> {
     /// Spawn an event loop for each peer
-    #[tracing::instrument(skip_all, name = "torrent::start_outbound_peers")]
     pub async fn spawn_outbound_peers(&self) -> Result<(), Error> {
         let (otx, orx) = oneshot::channel();
 
@@ -317,7 +316,6 @@ impl Torrent<Connected> {
         Ok(())
     }
 
-    #[tracing::instrument(skip_all, name = "torrent::start_and_run_peer")]
     pub async fn start_and_run_peer(
         daemon_ctx: Arc<DaemonCtx>,
         socket: TcpStream,
@@ -808,15 +806,8 @@ impl Torrent<Connected> {
                             }
                         }
                         TorrentMsg::Quit => {
-                            info!("Quitting torrent {:?}", self.name);
+                            info!("quitting torrent {:?}", self.name);
                             let tracker_tx = &self.state.tracker_ctx.tx;
-
-                            let _ = tracker_tx.send(
-                                TrackerMsg::Announce {
-                                    event: Event::Stopped,
-                                    recipient: None,
-                                })
-                            .await;
 
                             for peer in &self.state.connected_peers {
                                 let tx = peer.tx.clone();
@@ -825,11 +816,27 @@ impl Torrent<Connected> {
                                 });
                             }
 
+                            let _ = tracker_tx.send(
+                                TrackerMsg::Announce {
+                                    event: Event::Stopped,
+                                    recipient: None,
+                                })
+                            .await;
+
                             return Ok(());
                         }
                     }
                 }
                 _ = reconnect_interval.tick() => {
+                    info!("
+                        reconnect_interval
+                        connected_peers: {}
+                        error_peers: {}
+                    ",
+                        self.state.connected_peers.len(),
+                        self.state.error_peers.len(),
+                    );
+
                     let errored: Vec<_> = self.
                         state.
                         error_peers
@@ -841,6 +848,7 @@ impl Torrent<Connected> {
                     self.spawn_outbound_peers().await?;
                 }
                 _ = heartbeat_interval.tick() => {
+
                     self.state.download_rate =
                             self.state.tracker_ctx.downloaded - self.state.last_second_downloaded;
 
@@ -919,7 +927,7 @@ impl Torrent<Connected> {
                     );
 
                     if fastest.downloaded.load(Ordering::Relaxed)
-                        <=
+                        <
                         slowest.downloaded.load(Ordering::Relaxed)
                     {
                         warn!("fastest was slower than the slowest peer");

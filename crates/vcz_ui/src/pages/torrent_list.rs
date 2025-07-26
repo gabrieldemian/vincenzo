@@ -232,12 +232,14 @@ impl<'a> Page for TorrentList<'a> {
                 line_bottom = line_bottom.patch_style(self.style.highlight_fg);
             }
 
+            // let total = ctx.connected_peers + ctx.idle_peers;
             let mut items = vec![
                 line_top,
                 name.into(),
                 to_human_readable(ctx.size as f64).into(),
                 sl,
                 status_txt.into(),
+                format!("connected to {} peers", ctx.connected_peers).into(),
                 line_bottom,
             ];
 

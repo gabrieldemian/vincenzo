@@ -1,7 +1,12 @@
 //! A daemon that runs on the background and handles everything
 //! that is not the UI.
-use futures::{stream::SplitSink, SinkExt, StreamExt};
+use futures::{
+    stream::{SplitSink, StreamExt},
+    SinkExt,
+};
 use hashbrown::HashMap;
+use signal_hook::consts::signal::*;
+use signal_hook_tokio::Signals;
 use std::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     sync::Arc,
@@ -152,8 +157,23 @@ impl Daemon {
                 }
             }
         });
-
         Ok(())
+    }
+
+    async fn handle_signals(mut signals: Signals, tx: mpsc::Sender<DaemonMsg>) {
+        while let Some(signal) = signals.next().await {
+            match signal {
+                SIGHUP => {
+                    // Reload configuration
+                    // Reopen the log file
+                }
+                sig @ (SIGTERM | SIGINT | SIGQUIT) => {
+                    info!("received SIG {sig}");
+                    let _ = tx.send(DaemonMsg::Quit).await;
+                }
+                _ => unreachable!(),
+            }
+        }
     }
 
     /// This function will listen to 3 different event loops:
@@ -179,7 +199,12 @@ impl Daemon {
 
         self.run_local_peer().await?;
 
-        loop {
+        let signals = Signals::new([SIGHUP, SIGTERM, SIGINT, SIGQUIT])?;
+        let handle = signals.handle();
+        let signals_task =
+            tokio::spawn(Daemon::handle_signals(signals, ctx.tx.clone()));
+
+        'outer: loop {
             select! {
                 // listen for remote TCP connections
                 Ok((socket, addr)) = socket.accept() => {
@@ -190,13 +215,13 @@ impl Daemon {
 
                     let ctx = ctx.clone();
 
-                    spawn(async move {
+                    tokio::spawn(async move {
                         // listen to messages sent locally, from the daemon binary.
                         // a Torrent that is owned by the Daemon, may send messages to this channel
                         let mut draw_interval = interval(Duration::from_secs(1));
                         let ctx = ctx.clone();
 
-                        loop {
+                        'inner: loop {
                             select! {
                                 _ = draw_interval.tick() => {
                                     let (otx, orx) = oneshot::channel();
@@ -204,18 +229,21 @@ impl Daemon {
                                     let v = orx.await?;
 
                                     for state in v {
-                                        sink.send(Message::TorrentState(state))
+                                        if sink.send(Message::TorrentState(state))
                                             .await
-                                            .map_err(|_| Error::SendErrorTcp)?;
+                                            .map_err(|_| Error::SendErrorTcp).is_err()
+                                        {
+                                                break 'inner;
+                                        };
                                     }
                                 }
                                 Some(Ok(msg)) = stream.next() => {
                                     if msg == Message::FrontendQuit {
-                                        break;
+                                        break 'inner;
                                     }
                                     Self::handle_remote_msgs(&ctx.tx, msg, &mut sink).await?;
                                 }
-                                else => break
+                                else => break 'inner
                             }
                         }
 
@@ -251,7 +279,12 @@ impl Daemon {
                                 self.torrent_states.push(torrent_state);
                             }
 
-                            if CONFIG.quit_after_complete && self.torrent_states.iter().all(|v| v.status == TorrentStatus::Seeding) {
+                            if CONFIG.quit_after_complete
+                                &&
+                                self.torrent_states
+                                    .iter()
+                                    .all(|v| v.status == TorrentStatus::Seeding)
+                            {
                                 let _ = ctx.tx.send(DaemonMsg::Quit).await;
                             }
                         }
@@ -290,8 +323,10 @@ impl Daemon {
                             }
                         }
                         DaemonMsg::Quit => {
-                            let _ = self.quit().await;
-                            break;
+                            let _ = self.quit_torrents_and_disk().await;
+                            handle.close();
+                            let _ = signals_task.await;
+                            break 'outer;
                         }
                     }
                 }
@@ -374,11 +409,9 @@ impl Daemon {
     /// Create a new [`Torrent`] given a magnet link URL
     /// and run the torrent's event loop.
     pub async fn new_torrent(&mut self, magnet: Magnet) -> Result<(), Error> {
-        trace!("magnet: {}", *magnet);
-
         let info_hash = magnet.parse_xt_infohash();
 
-        info!("received magnet info_hash: {info_hash:?}");
+        info!("received magnet info_hash: {info_hash:#?}");
 
         if self.torrent_states.iter().any(|v| v.info_hash == info_hash) {
             warn!("this torrent is already present");
@@ -410,7 +443,7 @@ impl Daemon {
         Ok(())
     }
 
-    async fn quit(&mut self) -> Result<(), Error> {
+    async fn quit_torrents_and_disk(&mut self) {
         // tell all torrents that we are quitting the client,
         // each torrent will kill their peers tasks, and their tracker task
         for (_, ctx) in std::mem::take(&mut self.torrent_ctxs) {
@@ -420,7 +453,5 @@ impl Daemon {
         }
 
         let _ = self.disk_tx.send(DiskMsg::Quit).await;
-
-        Ok(())
     }
 }

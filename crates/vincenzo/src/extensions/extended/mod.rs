@@ -16,29 +16,6 @@ use bendy::{
 
 use crate::extensions::MetadataMsg;
 
-#[repr(u8)]
-#[derive(Copy, Clone, Debug, PartialEq)]
-pub enum ExtendedMessageId {
-    Handshake = 0,
-    Metadata = 3,
-}
-
-impl TryFrom<u8> for ExtendedMessageId {
-    type Error = std::io::Error;
-
-    fn try_from(k: u8) -> Result<Self, Self::Error> {
-        use ExtendedMessageId::*;
-        match k {
-            k if k == Handshake as u8 => Ok(Handshake),
-            k if k == Metadata as u8 => Ok(Metadata),
-            _ => Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "Unknown extended message id",
-            )),
-        }
-    }
-}
-
 /// This is the payload of the extension protocol described on:
 /// BEP 0010 - Extension Protocol
 /// <http://www.bittorrent.org/beps/bep_0010.html>
@@ -62,14 +39,13 @@ pub struct Extension {
     /// added by Metadata protocol, BEP 0009
     /// the size of the metadata file, which is the
     /// info-dictionary part of the metainfo(.torrent) file
-    pub metadata_size: Option<u32>,
+    pub metadata_size: Option<u64>,
 }
 
 impl ExtData for Extension {}
 
 impl TryInto<Vec<u8>> for Extension {
     type Error = bendy::encoding::Error;
-
     fn try_into(self) -> Result<Vec<u8>, Self::Error> {
         self.to_bencode()
     }
@@ -77,14 +53,14 @@ impl TryInto<Vec<u8>> for Extension {
 
 impl Extension {
     /// Extensions that the client supports
-    pub fn supported(metadata_size: Option<u32>) -> Self {
-        let m = M { lt_metadata: Some(MetadataMsg::ID), ut_pex: None };
+    pub fn supported(metadata_size: Option<u64>) -> Self {
+        let m = M { ut_metadata: Some(MetadataMsg::ID), ut_pex: None };
 
         Self {
             m,
             p: None,
-            v: Some("Vincenzo 0.0.1".to_owned()),
-            reqq: Some(6),
+            v: Some("vincenzo-0.0.1".to_owned()),
+            reqq: Some(200),
             metadata_size,
         }
     }
@@ -97,7 +73,7 @@ impl Extension {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct M {
     /// Added by Metadata protocol BEP 0009.
-    pub lt_metadata: Option<u8>,
+    pub ut_metadata: Option<u8>,
     pub ut_pex: Option<u8>,
 }
 
@@ -109,7 +85,7 @@ impl ToBencode for M {
         encoder: bendy::encoding::SingleItemEncoder,
     ) -> Result<(), bendy::encoding::Error> {
         encoder.emit_dict(|mut e| {
-            if let Some(ut_metadata) = self.lt_metadata {
+            if let Some(ut_metadata) = self.ut_metadata {
                 e.emit_pair(b"ut_metadata", ut_metadata)?;
             }
             if let Some(ut_pex) = self.ut_pex {
@@ -151,7 +127,7 @@ impl FromBencode for M {
                 _ => {}
             }
         }
-        Ok(Self { lt_metadata: ut_metadata, ut_pex })
+        Ok(Self { ut_metadata, ut_pex })
     }
 }
 
@@ -201,7 +177,7 @@ impl FromBencode for Extension {
                     m = M::decode_bencode_object(value).context("m")?
                 }
                 (b"metadata_size", value) => {
-                    metadata_size = u32::decode_bencode_object(value)
+                    metadata_size = u64::decode_bencode_object(value)
                         .context("metadata_size")
                         .map(Some)?;
                 }
@@ -293,7 +269,7 @@ mod tests {
         assert_eq!(
             ext,
             Extension {
-                m: M { lt_metadata: Some(3), ut_pex: Some(1) },
+                m: M { ut_metadata: Some(3), ut_pex: Some(1) },
                 p: Some(51413),
                 v: Some("Transmission 2.94".to_owned()),
                 reqq: Some(512),
@@ -326,7 +302,7 @@ mod tests {
         assert_eq!(
             extension,
             Extension {
-                m: M { lt_metadata: Some(3), ut_pex: Some(1) },
+                m: M { ut_metadata: Some(3), ut_pex: Some(1) },
                 p: Some(51413),
                 v: Some("Transmission 2.94".to_owned()),
                 reqq: Some(512),

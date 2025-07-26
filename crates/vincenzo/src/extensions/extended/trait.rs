@@ -4,7 +4,7 @@ use std::future::Future;
 
 use crate::{
     error::Error,
-    extensions::{ExtendedMessage, Extension},
+    extensions::ExtendedMessage,
     peer::{self, Peer},
 };
 
@@ -26,7 +26,6 @@ pub trait ExtMsgHandler<Msg: ExtMsg, Data: ExtData> {
         &self,
         peer: &mut Peer<peer::Connected>,
         msg: Msg,
-        // data: &mut Data
     ) -> impl Future<Output = Result<(), Error>>;
 }
 
@@ -37,29 +36,25 @@ pub trait ExtMsgHandler<Msg: ExtMsg, Data: ExtData> {
 /// Core message first.
 ///
 /// ExtMsg -> ExtendedMessage -> Core::Extended(ExtendedMessage)
-pub trait TryIntoExtendedMessage<Msg>
+pub trait TryIntoExtendedMessage<M>
 where
-    Msg: Into<BytesMut> + ExtMsg,
+    M: TryInto<BytesMut> + ExtMsg,
 {
     type Error;
-    fn try_into_extended_msg(
-        &self,
-        msg: Msg,
-    ) -> Result<ExtendedMessage, Self::Error>;
+
+    fn try_into_extended_msg(msg: M) -> Result<ExtendedMessage, Self::Error>;
 }
 
 // --- BLANKET IMPLS ---
 
-impl<M> TryIntoExtendedMessage<M> for Extension
+impl<M> TryIntoExtendedMessage<M> for M
 where
-    M: Into<BytesMut> + ExtMsg,
+    M: TryInto<BytesMut> + ExtMsg,
+    crate::error::Error: From<<M as TryInto<BytesMut>>::Error>,
 {
     type Error = Error;
-    fn try_into_extended_msg(
-        &self,
-        msg: M,
-    ) -> Result<ExtendedMessage, Self::Error> {
-        let bytes: BytesMut = msg.into();
+    fn try_into_extended_msg(msg: M) -> Result<ExtendedMessage, Self::Error> {
+        let bytes: BytesMut = msg.try_into()?;
         Ok(ExtendedMessage(M::ID, bytes.to_vec()))
     }
 }

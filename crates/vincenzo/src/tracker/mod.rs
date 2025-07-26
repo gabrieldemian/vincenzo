@@ -377,7 +377,7 @@ impl Tracker<Udp> {
         Err(Error::TrackerSocketAddr)
     }
 
-    #[tracing::instrument(skip(self))]
+    #[tracing::instrument(skip_all)]
     pub async fn run(&mut self) -> Result<(), Error> {
         debug!("running tracker");
 

@@ -4,7 +4,7 @@
 use crate::{
     error::Error,
     extensions::{Core, ExtMsg, ExtMsgHandler, ExtendedMessage},
-    peer::{self, Direction, MsgHandler},
+    peer::{self, session::Session, Direction, MsgHandler},
 };
 use std::{fmt::Debug, ops::Deref};
 
@@ -12,7 +12,7 @@ use bendy::{decoding::FromBencode, encoding::ToBencode};
 use bytes::BytesMut;
 use futures::SinkExt;
 use tokio_util::codec::{Decoder, Encoder};
-use tracing::debug;
+use tracing::info;
 use vincenzo_macros::Message;
 
 use super::Extension;
@@ -25,6 +25,7 @@ pub enum Extended {
 }
 
 impl ExtMsg for Extended {
+    /// handshake ID
     const ID: u8 = 0;
 }
 
@@ -120,40 +121,42 @@ impl ExtMsgHandler<Extended, Extension> for MsgHandler {
         peer: &mut peer::Peer<peer::Connected>,
         msg: Extended,
     ) -> Result<(), Error> {
-        debug!(
+        tracing::info!(
             "{} extended handshake from {}",
-            peer.state.ctx.local_addr, peer.state.ctx.remote_addr
+            peer.state.ctx.local_addr,
+            peer.state.ctx.remote_addr
         );
 
         let ext: Extension = msg.into();
 
-        if let Some(lt_metadata) = ext.m.lt_metadata {
-            if peer.state.ctx.direction == Direction::Outbound {
-                let meta_size = match ext.metadata_size {
-                    Some(v) => v,
-                    None => {
-                        let info = peer.state.torrent_ctx.info.read().await;
-                        if info.pieces() != 0 {
-                            info.metainfo_size() as u32
-                        } else {
-                            0
-                        }
-                    }
-                };
-                let ext = Extension::supported(Some(meta_size)).to_bencode()?;
-                let core: Core = ExtendedMessage(lt_metadata, ext).into();
+        tracing::info!("ext of peer {:#?}", ext);
 
-                peer.state.sink.send(core).await?;
-                peer.try_request_info().await?;
-            }
+        // send ours extended msg if outbound
+        if peer.state.ctx.direction == Direction::Outbound {
+            let magnet = &peer.state.torrent_ctx.magnet;
+            let info = peer.state.torrent_ctx.info.read().await;
+            let metadata_size =
+                magnet.length().unwrap_or(info.metainfo_size()?);
+
+            drop(info);
+
+            let ext = Extension::supported(Some(metadata_size)).to_bencode()?;
+
+            info!(
+                "sending my extended handshake {:?}",
+                String::from_utf8(ext.clone())
+            );
+            let core: Core = ExtendedMessage(0, ext).into();
+
+            peer.state.sink.send(core).await?;
+            peer.try_request_info().await?;
         }
 
+        // the max number of block_infos to request
+        let n = ext.reqq.unwrap_or(Session::DEFAULT_REQUEST_QUEUE_LEN);
+        peer.state.session.target_request_queue_len = n;
         peer.state.ext_states.extension = Some(ext);
 
         Ok(())
     }
 }
-
-// #[derive(Debug, Clone, Extension, Copy)]
-// #[extension(id = 0, codec = ExtendedCodec, msg = Extended)]
-// pub struct ExtendedExt;

@@ -117,7 +117,7 @@ impl Decoder for HandshakeCodec {
 /// is severed. The reserved field is 8 zero bytes, but will later be used to
 /// set which extensions the peer supports. The peer id is usually the client
 /// name and version.
-#[derive(Clone, Debug, Writable, Readable)]
+#[derive(Clone, Debug, Writable, Readable, Default)]
 pub struct Handshake {
     pub pstr_len: u8,
     pub pstr: [u8; 19],

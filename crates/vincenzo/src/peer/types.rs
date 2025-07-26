@@ -7,6 +7,7 @@ use std::{
     },
 };
 
+use bendy::encoding::ToBencode;
 use bitvec::{array::BitArray, order::Msb0};
 use futures::{
     stream::{SplitSink, SplitStream, StreamExt},
@@ -267,48 +268,31 @@ impl peer::Peer<Idle> {
 
         let mut socket = Framed::new(socket, HandshakeCodec);
 
-        let peer_handshake: Handshake;
-        let our_handshake: Handshake;
+        if let DirectionWithInfoHash::Outbound(info_hash) = &direction {
+            debug!("sending the first handshake to {remote}");
 
-        match &direction {
-            DirectionWithInfoHash::Inbound => {
-                // wait for, and validate, their handshake
-                let Some(Ok(their_handshake)) = socket.next().await else {
-                    warn!("did not send a handshake {remote}");
-                    return Err(Error::HandshakeInvalid);
-                };
+            let our_handshake = Handshake::new(
+                info_hash.clone(),
+                daemon_ctx.local_peer_id.clone(),
+            );
 
-                debug!("received their handshake {remote}");
+            socket.send(our_handshake).await?;
+        }
 
-                our_handshake = Handshake::new(
-                    their_handshake.info_hash.clone(),
-                    daemon_ctx.local_peer_id.clone(),
-                );
+        // wait and validate their handshake
+        let Some(Ok(peer_handshake)) = socket.next().await else {
+            warn!("did not send a handshake {remote}");
+            return Err(Error::HandshakeInvalid);
+        };
 
-                if !their_handshake.validate(&our_handshake) {
-                    return Err(Error::HandshakeInvalid);
-                }
+        let our_handshake = Handshake::new(
+            peer_handshake.info_hash.clone(),
+            daemon_ctx.local_peer_id.clone(),
+        );
 
-                peer_handshake = their_handshake;
-            }
-            // if we are connecting, send the first handshake
-            DirectionWithInfoHash::Outbound(info_hash) => {
-                debug!("sending the first handshake to {remote}");
-
-                our_handshake = Handshake::new(
-                    info_hash.clone(),
-                    daemon_ctx.local_peer_id.clone(),
-                );
-
-                let Some(Ok(their_handshake)) = socket.next().await else {
-                    warn!("peer not send a handshake {remote}");
-                    return Err(Error::HandshakeInvalid);
-                };
-
-                peer_handshake = their_handshake;
-
-                socket.send(our_handshake.clone()).await?;
-            }
+        if !peer_handshake.validate(&our_handshake) {
+            warn!("handshake is invalid");
+            return Err(Error::HandshakeInvalid);
         }
 
         let (otx, orx) = oneshot::channel();
@@ -327,17 +311,19 @@ impl peer::Peer<Idle> {
 
         torrent_ctx.tx.send(TorrentMsg::PeerConnecting(remote)).await?;
 
-        let reserved = Reserved::from(peer_handshake.reserved);
-
-        if let DirectionWithInfoHash::Inbound = direction {
-            debug!("sending the second handshake to {remote}");
+        // if inbound, he have already received their first handshake,
+        // send our second handshake here.
+        if direction == DirectionWithInfoHash::Inbound {
+            debug!("{remote} sending inbound handshake");
             if socket.send(our_handshake).await.is_err() {
                 torrent_ctx
                     .tx
                     .send(TorrentMsg::PeerConnectingError(remote))
                     .await?;
-            }
+            };
         }
+
+        let reserved = Reserved::from(peer_handshake.reserved);
 
         let old_parts = socket.into_parts();
         let mut new_parts = FramedParts::new(old_parts.io, CoreCodec);
@@ -350,12 +336,16 @@ impl peer::Peer<Idle> {
         // receive theirs on the main event loop of Peer<Connected> and
         // not here.
         if reserved[43] && DirectionWithInfoHash::Inbound == direction {
-            debug!("sending extended handshake to {remote}");
+            debug!("{remote} sending extended handshake");
 
-            let metadata_size = torrent_ctx.info.read().await.metainfo_size();
+            let magnet = &torrent_ctx.magnet;
+            let info = torrent_ctx.info.read().await;
 
-            let msg: ExtendedMessage =
-                Extension::supported(Some(metadata_size as u32)).try_into()?;
+            let metadata_size =
+                magnet.length().unwrap_or(info.metainfo_size()?);
+
+            let msg = Extension::supported(Some(metadata_size));
+            let msg = ExtendedMessage(0, msg.to_bencode()?);
 
             if socket.send(msg.into()).await.is_err() {
                 torrent_ctx

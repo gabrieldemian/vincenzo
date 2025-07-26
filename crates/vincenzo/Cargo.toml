@@ -35,3 +35,5 @@ toml = { workspace = true }
 tracing = { workspace = true }
 urlencoding = { workspace = true }
 vincenzo_macros = { workspace = true }
+signal-hook = { workspace = true }
+signal-hook-tokio = { workspace = true }

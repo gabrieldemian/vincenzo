@@ -46,8 +46,8 @@ pub struct Info {
 
 impl Info {
     /// Size of the entire Info file.
-    pub fn metainfo_size(&self) -> usize {
-        4_usize + self.pieces.len() + self.name.len() + self.get_size() as usize
+    pub fn metainfo_size(&self) -> Result<u64, Error> {
+        self.to_bencode().map(|v| v.len() as u64)
     }
     pub fn name(mut self, name: String) -> Self {
         self.name = name;

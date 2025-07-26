@@ -5,7 +5,6 @@ use tokio::{
     spawn,
 };
 use tokio_util::codec::Framed;
-use tracing::Level;
 use tracing_subscriber::FmtSubscriber;
 use vincenzo::{
     args::Args,
