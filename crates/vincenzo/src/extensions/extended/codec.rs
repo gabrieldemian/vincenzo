@@ -5,13 +5,13 @@ use crate::{
     error::Error,
     extensions::{Core, ExtMsg, ExtMsgHandler, ExtendedMessage},
     peer::{self, session::Session, Direction, MsgHandler},
+    torrent::TorrentMsg,
 };
 use std::{fmt::Debug, ops::Deref};
 
 use bendy::{decoding::FromBencode, encoding::ToBencode};
 use bytes::BytesMut;
 use futures::SinkExt;
-use tokio_util::codec::{Decoder, Encoder};
 use tracing::info;
 use vincenzo_macros::Message;
 
@@ -36,12 +36,15 @@ impl From<Extension> for Extended {
 }
 
 impl TryFrom<ExtendedMessage> for Extended {
-    type Error = crate::error::Error;
+    type Error = Error;
+
     fn try_from(value: ExtendedMessage) -> Result<Self, Self::Error> {
         if value.0 != Self::ID {
-            return Err(crate::error::Error::PeerIdInvalid);
+            return Err(Error::PeerIdInvalid);
         }
+
         let extension = Extension::from_bencode(&value.1)?;
+
         Ok(Extended::Extension(extension))
     }
 }
@@ -55,9 +58,6 @@ impl Deref for Extended {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct ExtendedCodec;
-
 impl From<Extended> for BytesMut {
     fn from(val: Extended) -> Self {
         let mut dst = BytesMut::new();
@@ -67,34 +67,6 @@ impl From<Extended> for BytesMut {
         dst.extend(payload);
 
         dst
-    }
-}
-
-impl Encoder<Extended> for ExtendedCodec {
-    type Error = crate::error::Error;
-
-    fn encode(
-        &mut self,
-        item: Extended,
-        dst: &mut bytes::BytesMut,
-    ) -> Result<(), Self::Error> {
-        let mut b: BytesMut = item.into();
-        std::mem::swap(&mut b, dst);
-        Ok(())
-    }
-}
-
-impl Decoder for ExtendedCodec {
-    type Error = crate::error::Error;
-    type Item = Extended;
-
-    fn decode(
-        &mut self,
-        src: &mut bytes::BytesMut,
-    ) -> Result<Option<Self::Item>, Self::Error> {
-        let extension = Extension::from_bencode(src)
-            .map_err(|_| crate::error::Error::BencodeError)?;
-        Ok(Some(Extended::Extension(extension)))
     }
 }
 
@@ -129,18 +101,26 @@ impl ExtMsgHandler<Extended, Extension> for MsgHandler {
 
         let ext: Extension = msg.into();
 
+        if let Some(meta_size) = ext.metadata_size {
+            if !peer.state.have_info {
+                peer.state
+                    .torrent_ctx
+                    .tx
+                    .send(TorrentMsg::MetadataSize(meta_size))
+                    .await?;
+            }
+        }
+
         tracing::info!("ext of peer {:#?}", ext);
 
         // send ours extended msg if outbound
         if peer.state.ctx.direction == Direction::Outbound {
             let magnet = &peer.state.torrent_ctx.magnet;
 
-            let metadata_size = match peer.state.have_info {
-                true => {
-                    let info = peer.state.torrent_ctx.info.read().await;
-                    info.metainfo_size().unwrap_or(0)
-                }
-                false => magnet.length().unwrap_or(0),
+            let info = peer.state.torrent_ctx.info.read().await;
+            let metadata_size = match info.metadata_size {
+                Some(size) => size,
+                None => magnet.length().unwrap_or(0),
             };
 
             let ext = Extension::supported(Some(metadata_size)).to_bencode()?;
@@ -149,7 +129,7 @@ impl ExtMsgHandler<Extended, Extension> for MsgHandler {
                 "sending my extended handshake {:?}",
                 String::from_utf8(ext.clone())
             );
-            let core: Core = ExtendedMessage(0, ext).into();
+            let core: Core = ExtendedMessage(Extended::ID, ext).into();
 
             peer.state.sink.send(core).await?;
         }

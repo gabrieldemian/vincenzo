@@ -981,6 +981,7 @@ mod tests {
         let mut disk = Disk::new(download_dir.clone());
 
         let info = Info {
+            metadata_size: None,
             file_length: None,
             name,
             piece_length: BLOCK_LEN,
@@ -1065,6 +1066,7 @@ mod tests {
         }));
 
         let info = Info {
+            metadata_size: None,
             name: name.clone(),
             piece_length: 1048576,
             file_length: None,
@@ -1195,6 +1197,7 @@ mod tests {
         let original_hook = std::panic::take_hook();
 
         let info = Info {
+            metadata_size: None,
             file_length: None,
             name: name.to_owned(),
             piece_length: 3,
@@ -1308,6 +1311,7 @@ mod tests {
         let name = "qwerty";
 
         let info = Info {
+            metadata_size: None,
             file_length: None,
             name: name.to_owned(),
             piece_length: 12,
@@ -1478,6 +1482,7 @@ mod tests {
         let name = "seekfiles";
 
         let info = Info {
+            metadata_size: None,
             piece_length: 32768,
             pieces: vec![0; 5480], // 274 pieces * 20 bytes each
             name: "name".to_string(),

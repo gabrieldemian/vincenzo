@@ -25,7 +25,7 @@ use tokio::{
     time::Instant,
 };
 use tokio_util::codec::{Framed, FramedParts};
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::{
     bitfield::{Bitfield, Reserved},
@@ -281,7 +281,7 @@ impl peer::Peer<Idle> {
 
         // wait and validate their handshake
         let Some(Ok(peer_handshake)) = socket.next().await else {
-            warn!("did not send a handshake {remote}");
+            // warn!("did not send a handshake {remote}");
             return Err(Error::HandshakeInvalid);
         };
 
@@ -336,15 +336,15 @@ impl peer::Peer<Idle> {
         // receive theirs on the main event loop of Peer<Connected> and
         // not here.
         if reserved[43] && DirectionWithInfoHash::Inbound == direction {
-            debug!("{remote} sending extended handshake");
+            info!("{remote} sending extended handshake");
 
             let magnet = &torrent_ctx.magnet;
             let info = torrent_ctx.info.read().await;
 
             // if we have the metadata yet
-            let metadata_size = match info.pieces() > 0 {
-                true => info.metainfo_size().unwrap_or(0),
-                false => magnet.length().unwrap_or(0),
+            let metadata_size = match info.metadata_size {
+                Some(size) => size,
+                None => magnet.length().unwrap_or(0),
             };
 
             let msg = Extension::supported(Some(metadata_size));

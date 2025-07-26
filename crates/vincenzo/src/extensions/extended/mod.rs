@@ -677,11 +677,9 @@ mod tests {
             186, 231, 213, 188, 209, 224, 45, 82, 236, 80, 170, 243, 219, 102,
             207, 69, 179, 160, 214, 248, 227, 89, 195, 243, 21, 72, 30, 125,
             31, 125, 215, 186, 207, 204, 143, 101,
-        ]
-        .to_vec();
+        ];
 
-        let (_metadata_msg, info) = Metadata::extract(buf).unwrap();
-
-        assert_eq!(info.len(), 5205);
+        let metadata = Metadata::from_bencode(&buf).unwrap();
+        assert_eq!(metadata.payload.len(), 5205);
     }
 }

@@ -91,9 +91,8 @@ pub struct Connected {
     /// How fast the client is downloading this torrent.
     pub download_rate: u64,
 
-    /// The total size of the torrent files, in bytes,
-    /// this is a cache of ctx.info.get_size()
-    pub size: u64,
+    /// Size of the `info` bencoded string.
+    pub metadata_size: u64,
 
     pub tracker_ctx: Arc<TrackerCtx>,
 }
@@ -130,7 +129,14 @@ impl Torrent<Idle> {
         magnet: Magnet,
     ) -> Torrent<Idle> {
         let name = magnet.parse_dn();
-        let info = RwLock::new(Info::default().name(name.clone()));
+
+        let mut info = Info::default().name(name.clone());
+
+        if let Some(size) = magnet.length() {
+            info.metadata_size = Some(size);
+        }
+
+        let info = RwLock::new(info);
 
         let (tx, rx) = mpsc::channel::<TorrentMsg>(100);
 
@@ -235,7 +241,7 @@ impl Torrent<Idle> {
                 stats,
                 idle_peers: peers,
                 tracker_ctx,
-                size: 0,
+                metadata_size: 0,
                 connected_peers: Vec::with_capacity(
                     CONFIG.max_torrent_peers as usize,
                 ),
@@ -575,6 +581,12 @@ impl Torrent<Connected> {
             select! {
                 Some(msg) = self.rx.recv() => {
                     match msg {
+                        TorrentMsg::MetadataSize(meta_size) => {
+                            if !self.state.have_info {
+                                let mut info = self.ctx.info.write().await;
+                                info.metadata_size = Some(meta_size);
+                            }
+                        }
                         TorrentMsg::ReadBitfield(oneshot) => {
                             let _ = oneshot.send(self.state.bitfield.clone());
                         }
@@ -732,7 +744,7 @@ impl Torrent<Connected> {
 
                                     debug!("local_bitfield is now of len {:?}", self.state.bitfield.len());
 
-                                    self.state.size = info.get_size();
+                                    self.state.metadata_size = info.get_size();
                                     self.state.have_info = true;
                                     self.state.tracker_ctx.tx.send(TrackerMsg::Info(info.clone())).await?;
 
@@ -769,9 +781,9 @@ impl Torrent<Connected> {
                             tx.send(TrackerMsg::Increment { downloaded, uploaded: 0 }).await?;
 
                             // check if the torrent download is complete
-                            let is_download_complete = self.state.tracker_ctx.downloaded >= self.state.size;
+                            let is_download_complete = self.state.tracker_ctx.downloaded >= self.state.metadata_size;
                             debug!("IncrementDownloaded {:?}", self.state.tracker_ctx.downloaded);
-                            debug!("size is {}", self.state.size);
+                            debug!("size is {}", self.state.metadata_size);
 
                             if is_download_complete {
                                 self.ctx.tx.send(TorrentMsg::DownloadComplete).await?;
@@ -788,7 +800,7 @@ impl Torrent<Connected> {
                             if self.status == TorrentStatus::Downloading || self.status == TorrentStatus::Seeding || self.status == TorrentStatus::Paused {
                                 info!("Paused torrent {:?}", self.name);
                                 if self.status == TorrentStatus::Paused {
-                                    if self.state.tracker_ctx.downloaded >= self.state.size {
+                                    if self.state.tracker_ctx.downloaded >= self.state.metadata_size {
                                         self.status = TorrentStatus::Seeding;
                                     } else {
                                         self.status = TorrentStatus::Downloading;
@@ -854,7 +866,7 @@ impl Torrent<Connected> {
 
                     let torrent_state = TorrentState {
                         name: self.name.clone(),
-                        size: self.state.size,
+                        size: self.state.metadata_size,
                         downloaded: self.state.tracker_ctx.downloaded,
                         uploaded: self.state.tracker_ctx.uploaded,
                         stats: self.state.stats.clone(),

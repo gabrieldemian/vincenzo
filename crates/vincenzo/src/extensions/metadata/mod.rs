@@ -29,7 +29,7 @@ pub struct Metadata {
     pub msg_type: MetadataMsgType,
     pub piece: u32,
     pub total_size: Option<u32>,
-    payload: Vec<u8>,
+    pub payload: Vec<u8>,
 }
 
 impl ExtMsg for Metadata {
@@ -95,25 +95,6 @@ impl Metadata {
             total_size: None,
             payload: Vec::new(),
         }
-    }
-
-    /// Tries to extract Info from the given buffer.
-    ///
-    /// # Errors
-    ///
-    /// This function will return an error if the buffer is not a valid Data
-    /// type of the metadata extension protocol
-    pub fn extract(mut buf: Vec<u8>) -> Result<(Self, Vec<u8>), error::Error> {
-        let mut metadata_buf = Vec::new();
-
-        // find end of info dict, which is always the first "ee"
-        if let Some(i) = buf.windows(2).position(|w| w == b"ee") {
-            metadata_buf = buf.drain(..i + 2).collect();
-        }
-
-        let metadata = Metadata::from_bencode(&metadata_buf)?;
-
-        Ok((metadata, buf))
     }
 }
 

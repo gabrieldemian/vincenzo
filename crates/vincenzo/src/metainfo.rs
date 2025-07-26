@@ -42,6 +42,7 @@ pub struct Info {
     /// length - bytes of the entire file
     pub file_length: Option<u32>,
     pub files: Option<Vec<File>>,
+    pub metadata_size: Option<u64>,
 }
 
 impl Info {
@@ -377,7 +378,14 @@ impl FromBencode for Info {
             pieces.ok_or_else(|| decoding::Error::missing_field("pieces"))?;
 
         // Check that we discovered all necessary fields
-        Ok(Info { files, file_length, name, piece_length, pieces })
+        Ok(Info {
+            files,
+            file_length,
+            name,
+            piece_length,
+            pieces,
+            metadata_size: None,
+        })
     }
 }
 
@@ -862,6 +870,7 @@ mod tests {
             pieces: vec![0; 5480], // 274 pieces * 20 bytes each
             name: "name".to_string(),
             file_length: None,
+            metadata_size: None,
             files: Some(vec![
                 // 308 blocks
                 File {
@@ -982,6 +991,7 @@ mod tests {
                 ]),
                 info: Info {
                     piece_length: 16_384,
+                    metadata_size: None,
                     pieces: torrent.info.pieces.clone(),
                     name: "book".to_owned(),
                     files: Some(vec![File {
@@ -1014,6 +1024,7 @@ mod tests {
                     "https://cdimage.debian.org/cdimage/archive/9.4.0//srv/cdbuilder.debian.org/dst/deb-cd/weekly-builds/amd64/iso-cd/debian-9.4.0-amd64-netinst.iso".to_owned(),
                 ]),
                 info: Info {
+                    metadata_size: None,
                     piece_length: 262_144,
                     pieces: include_bytes!("../../../test-files/pieces.iso").to_vec(),
                     name: "debian-9.4.0-amd64-netinst.iso".to_owned(),
@@ -1042,6 +1053,7 @@ mod tests {
                 "https://cdimage.debian.org/cdimage/archive/9.4.0//srv/cdbuilder.debian.org/dst/deb-cd/weekly-builds/amd64/iso-cd/debian-9.4.0-amd64-netinst.iso".to_owned(),
             ]),
             info: Info {
+                metadata_size: None,
                 piece_length: 262_144,
                 pieces: include_bytes!("../../../test-files/pieces.iso").to_vec(),
                 name: "debian-9.4.0-amd64-netinst.iso".to_owned(),

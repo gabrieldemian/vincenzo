@@ -17,8 +17,7 @@ use tokio::{
 use tracing::{debug, info, warn};
 
 use crate::extensions::{
-    ExtMsg, ExtMsgHandler, Extended, ExtendedMessage, Extension, Metadata,
-    TryIntoExtendedMessage,
+    ExtMsg, ExtMsgHandler, Extended, ExtendedMessage, Metadata,
 };
 
 use crate::{
@@ -137,9 +136,11 @@ impl Peer<Connected> {
                 Some(Ok(msg)) = self.state.stream.next() => {
                     match msg {
                         Core::Extended(msg @ ExtendedMessage(ext_id, _)) => {
+                            info!("ext_id please {ext_id}");
                             match ext_id {
                                 <Extended as ExtMsg>::ID => {
                                     let msg: Extended = msg.try_into()?;
+
                                     MsgHandler.handle_msg(
                                         self,
                                         msg,
@@ -147,7 +148,9 @@ impl Peer<Connected> {
                                 }
                                 <Metadata as ExtMsg>::ID => {
                                     info!("received meta {:?}", msg);
+
                                     let msg: Metadata = msg.try_into()?;
+
                                     MsgHandler.handle_msg(
                                         self,
                                         msg,
@@ -599,14 +602,12 @@ impl Peer<Connected> {
 
             let msg = Metadata::request(i);
             let buf = msg.to_bencode()?;
+
             let _ = self
                 .state
                 .sink
                 .send(Core::Extended(ExtendedMessage(ut_metadata, buf)))
                 .await;
-            // let mut msg = MetadataMsg::try_into_extended_msg(msg)?;
-            // msg.0 = ut_metadata;
-            // let _ = self.state.sink.send(msg.into()).await;
         }
         Ok(())
     }

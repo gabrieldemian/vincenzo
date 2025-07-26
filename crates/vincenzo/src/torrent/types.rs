@@ -16,6 +16,10 @@ pub enum TorrentMsg {
     /// an entire piece. We send Have messages to peers
     /// that don't have it and update the UI with stats.
     DownloadedPiece(usize),
+
+    /// Received when a peer sent a metadata size on extended handshake.
+    MetadataSize(u64),
+
     DownloadComplete,
 
     /// When a peer downloads an info piece,
