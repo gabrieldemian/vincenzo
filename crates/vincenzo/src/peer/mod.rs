@@ -3,7 +3,6 @@ pub mod session;
 mod types;
 
 use bendy::encoding::ToBencode;
-use bytes::BytesMut;
 // re-exports
 pub use types::*;
 
@@ -19,7 +18,7 @@ use tracing::{debug, info, warn};
 
 use crate::extensions::{
     ExtMsg, ExtMsgHandler, Extended, ExtendedMessage, Extension, Metadata,
-    MetadataMsg, TryIntoExtendedMessage,
+    TryIntoExtendedMessage,
 };
 
 use crate::{
@@ -137,23 +136,24 @@ impl Peer<Connected> {
                 }
                 Some(Ok(msg)) = self.state.stream.next() => {
                     match msg {
-                        Core::Extended(ext) => {
-                            match ext.0 {
+                        Core::Extended(msg @ ExtendedMessage(ext_id, _)) => {
+                            match ext_id {
                                 <Extended as ExtMsg>::ID => {
-                                    let msg: Extended = ext.try_into()?;
+                                    let msg: Extended = msg.try_into()?;
                                     MsgHandler.handle_msg(
                                         self,
                                         msg,
                                     ).await?;
                                 }
-                                <MetadataMsg as ExtMsg>::ID => {
-                                    let msg: MetadataMsg = ext.try_into()?;
+                                <Metadata as ExtMsg>::ID => {
+                                    info!("received meta {:?}", msg);
+                                    let msg: Metadata = msg.try_into()?;
                                     MsgHandler.handle_msg(
                                         self,
                                         msg,
                                     ).await?;
                                 }
-                                _ => {}
+                                _ => info!("other ext_id {ext_id}")
                             }
                         }
                         _ => {

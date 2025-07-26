@@ -124,6 +124,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8133e404c8bec821e531f347dab1247bf64f60882826e7228f8ffeb33a35a658"
 dependencies = [
  "failure",
+ "serde",
+ "serde_bytes",
 ]
 
 [[package]]
@@ -1318,6 +1320,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5f0e2c6ed6606019b4e29e69dbaba95b11854410e5347d525002456dbbb786b6"
 dependencies = [
  "serde_derive",
+]
+
+[[package]]
+name = "serde_bytes"
+version = "0.11.17"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8437fd221bde2d4ca316d61b90e337e9e702b3820b87d63caa9ba6c02bd06d96"
+dependencies = [
+ "serde",
 ]
 
 [[package]]

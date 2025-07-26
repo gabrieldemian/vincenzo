@@ -8,9 +8,11 @@ mod codec;
 pub use codec::*;
 
 use bendy::{
-    decoding::{self, FromBencode, Object, ResultExt},
-    encoding::ToBencode,
+    decoding::{self, Decoder, FromBencode, Object, ResultExt},
+    encoding::{Encoder, ToBencode},
 };
+
+use crate::extensions::ExtMsg;
 
 use super::super::error;
 
@@ -27,6 +29,12 @@ pub struct Metadata {
     pub msg_type: MetadataMsgType,
     pub piece: u32,
     pub total_size: Option<u32>,
+    payload: Vec<u8>,
+}
+
+impl ExtMsg for Metadata {
+    /// This is the ID of the client for the metadata extension.
+    const ID: u8 = 3;
 }
 
 impl TryInto<Vec<u8>> for Metadata {
@@ -61,25 +69,32 @@ impl TryFrom<u8> for MetadataMsgType {
 
 impl Metadata {
     pub fn request(piece: u32) -> Self {
-        Self { msg_type: MetadataMsgType::Request, piece, total_size: None }
+        Self {
+            msg_type: MetadataMsgType::Request,
+            piece,
+            total_size: None,
+            payload: Vec::new(),
+        }
     }
 
-    pub fn data(piece: u32, info: &[u8]) -> Result<Vec<u8>, error::Error> {
+    pub fn data(piece: u32, info: &[u8]) -> Result<Self, error::Error> {
         let metadata = Self {
             msg_type: MetadataMsgType::Response,
             piece,
             total_size: Some(info.len() as u32),
+            payload: info.to_vec(),
         };
 
-        let mut bytes = metadata.to_bencode()?;
-
-        bytes.extend_from_slice(info);
-
-        Ok(bytes)
+        Ok(metadata)
     }
 
     pub fn reject(piece: u32) -> Self {
-        Self { msg_type: MetadataMsgType::Reject, piece, total_size: None }
+        Self {
+            msg_type: MetadataMsgType::Reject,
+            piece,
+            total_size: None,
+            payload: Vec::new(),
+        }
     }
 
     /// Tries to extract Info from the given buffer.
@@ -103,17 +118,40 @@ impl Metadata {
 }
 
 impl FromBencode for Metadata {
-    fn decode_bencode_object(object: Object) -> Result<Self, decoding::Error>
+    // this is never used, just to make the code compile, this fn is required
+    // for the `from_bencode` to work.
+    fn decode_bencode_object(_object: Object) -> Result<Self, decoding::Error>
+    where
+        Self: Sized,
+    {
+        Ok(Self {
+            payload: Vec::new(),
+            msg_type: MetadataMsgType::Reject,
+            piece: 0,
+            total_size: None,
+        })
+    }
+
+    fn from_bencode(bytes: &[u8]) -> Result<Self, decoding::Error>
     where
         Self: Sized,
     {
         let mut msg_type = 0;
         let mut piece = 0;
         let mut total_size = None;
+        let mut payload: Vec<u8> = Vec::new();
 
-        let mut dict_dec = object.try_into_dictionary()?;
+        for (i, byte) in bytes.windows(2).enumerate() {
+            if byte == [101, 101] {
+                payload.extend_from_slice(&bytes[i + 2..]);
+            }
+        }
 
-        while let Some(pair) = dict_dec.next_pair()? {
+        let mut dict_decoder = Decoder::new(bytes);
+        let mut obj =
+            dict_decoder.next_object()?.unwrap().try_into_dictionary()?;
+
+        while let Some(pair) = obj.next_pair()? {
             match pair {
                 (b"msg_type", value) => {
                     msg_type =
@@ -132,18 +170,25 @@ impl FromBencode for Metadata {
             }
         }
 
-        // Check that we discovered all necessary fields
-        Ok(Self { msg_type: msg_type.try_into()?, piece, total_size })
+        Ok(Self { msg_type: msg_type.try_into()?, piece, total_size, payload })
     }
 }
 
 impl ToBencode for Metadata {
     const MAX_DEPTH: usize = 20;
 
+    // this is never used, just to make the code compile, this fn is required
+    // for the `to_bencode` to work.
     fn encode(
         &self,
-        encoder: bendy::encoding::SingleItemEncoder,
+        _encoder: bendy::encoding::SingleItemEncoder,
     ) -> Result<(), bendy::encoding::Error> {
+        Ok(())
+    }
+
+    fn to_bencode(&self) -> Result<Vec<u8>, bendy::encoding::Error> {
+        let mut encoder = Encoder::new();
+
         encoder.emit_dict(|mut e| {
             e.emit_pair(b"msg_type", self.msg_type as u8)?;
             e.emit_pair(b"piece", self.piece)?;
@@ -152,6 +197,35 @@ impl ToBencode for Metadata {
             };
             Ok(())
         })?;
-        Ok(())
+
+        let mut r = encoder.get_output()?;
+        r.extend(self.payload.clone());
+
+        Ok(r)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn metadata_with_payload() {
+        let mut raw = b"d8:msg_typei1e5:piecei2e10:total_sizei34256ee".to_vec();
+
+        let payload = [0, 0, 0, 0, 0, 0, 0, 0];
+        raw.extend(payload);
+
+        println!("{:?}", String::from_utf8(raw.clone()));
+
+        let dict = Metadata::from_bencode(&raw).unwrap();
+        assert_eq!(dict.piece, 2);
+        assert_eq!(dict.msg_type, MetadataMsgType::Response);
+        assert_eq!(dict.total_size, Some(34256));
+        assert_eq!(dict.payload, payload.to_vec());
+
+        let bytes = dict.to_bencode().unwrap();
+
+        assert_eq!(bytes, raw);
     }
 }

@@ -415,10 +415,7 @@ impl Encoder<Core> for CoreCodec {
 
                 block.encode(buf)?;
             }
-            Core::Extended(extended_msg) => {
-                let ext_id = extended_msg.0;
-                let payload = extended_msg.1;
-
+            Core::Extended(ExtendedMessage(ext_id, payload)) => {
                 let msg_len = payload.len() as u32 + 2;
 
                 buf.put_u32(msg_len);

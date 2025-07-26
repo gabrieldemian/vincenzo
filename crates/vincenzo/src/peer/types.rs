@@ -341,8 +341,11 @@ impl peer::Peer<Idle> {
             let magnet = &torrent_ctx.magnet;
             let info = torrent_ctx.info.read().await;
 
-            let metadata_size =
-                magnet.length().unwrap_or(info.metainfo_size()?);
+            // if we have the metadata yet
+            let metadata_size = match info.pieces() > 0 {
+                true => info.metainfo_size().unwrap_or(0),
+                false => magnet.length().unwrap_or(0),
+            };
 
             let msg = Extension::supported(Some(metadata_size));
             let msg = ExtendedMessage(0, msg.to_bencode()?);

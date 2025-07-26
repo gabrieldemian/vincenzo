@@ -13,7 +13,7 @@ resolver = "2"
 quote = "1.0.36"
 syn = "2.0.74"
 derive_builder = "0.20.0"
-bendy = { version = "0.3.3", features = ["std"] }
+bendy = { version = "0.3.3", features = ["std", "serde"] }
 bitvec = "1.0.1"
 bytes = "1.4.0"
 clap = { version = "4.3.4", features = ["derive"] }

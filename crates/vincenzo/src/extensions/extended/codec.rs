@@ -38,7 +38,7 @@ impl From<Extension> for Extended {
 impl TryFrom<ExtendedMessage> for Extended {
     type Error = crate::error::Error;
     fn try_from(value: ExtendedMessage) -> Result<Self, Self::Error> {
-        if value.0 != Extended::ID {
+        if value.0 != Self::ID {
             return Err(crate::error::Error::PeerIdInvalid);
         }
         let extension = Extension::from_bencode(&value.1)?;
@@ -134,11 +134,14 @@ impl ExtMsgHandler<Extended, Extension> for MsgHandler {
         // send ours extended msg if outbound
         if peer.state.ctx.direction == Direction::Outbound {
             let magnet = &peer.state.torrent_ctx.magnet;
-            let info = peer.state.torrent_ctx.info.read().await;
-            let metadata_size =
-                magnet.length().unwrap_or(info.metainfo_size()?);
 
-            drop(info);
+            let metadata_size = match peer.state.have_info {
+                true => {
+                    let info = peer.state.torrent_ctx.info.read().await;
+                    info.metainfo_size().unwrap_or(0)
+                }
+                false => magnet.length().unwrap_or(0),
+            };
 
             let ext = Extension::supported(Some(metadata_size)).to_bencode()?;
 
@@ -149,13 +152,14 @@ impl ExtMsgHandler<Extended, Extension> for MsgHandler {
             let core: Core = ExtendedMessage(0, ext).into();
 
             peer.state.sink.send(core).await?;
-            peer.try_request_info().await?;
         }
 
         // the max number of block_infos to request
         let n = ext.reqq.unwrap_or(Session::DEFAULT_REQUEST_QUEUE_LEN);
         peer.state.session.target_request_queue_len = n;
         peer.state.ext_states.extension = Some(ext);
+
+        peer.try_request_info().await?;
 
         Ok(())
     }
