@@ -13,7 +13,6 @@ use futures::{
     stream::{SplitSink, SplitStream, StreamExt},
     SinkExt,
 };
-use hashbrown::{HashMap, HashSet};
 use rand::{distr::Alphanumeric, Rng};
 use speedy::{Readable, Writable};
 use tokio::{
@@ -22,7 +21,6 @@ use tokio::{
         mpsc::{self, Receiver},
         oneshot,
     },
-    time::Instant,
 };
 use tokio_util::codec::{Framed, FramedParts};
 use tracing::{debug, info, warn};
@@ -384,9 +382,9 @@ impl peer::Peer<Idle> {
                 ext_states: ExtStates::default(),
                 sink,
                 stream,
-                incoming_requests: HashSet::default(),
-                outgoing_requests: HashSet::default(),
-                outgoing_requests_timeout: HashMap::new(),
+                incoming_requests: Vec::with_capacity(50),
+                outgoing_requests: Vec::with_capacity(100),
+                outgoing_requests_info_pieces: Vec::new(),
                 session: Session::default(),
                 have_info: false,
                 reserved,
@@ -439,18 +437,20 @@ pub struct Connected {
     ///
     /// If we receive a block whose request entry is here, that entry is
     /// removed. A request is also removed here when it is timed out.
-    pub outgoing_requests: HashSet<BlockInfo>,
+    pub outgoing_requests: Vec<BlockInfo>,
 
-    /// The Instant of each timeout value of [`Self::outgoing_requests`]
-    /// blocks.
-    pub outgoing_requests_timeout: HashMap<BlockInfo, Instant>,
+    /// Outgoing requests of info pieces.
+    pub outgoing_requests_info_pieces: Vec<u64>,
 
+    // The Instant of each timeout value of [`Self::outgoing_requests`]
+    // blocks.
+    // pub outgoing_requests_timeout: HashMap<BlockInfo, Instant>,
     /// The requests we got from peer.
     ///
     /// The request's entry is removed from here when the block is transmitted
     /// or when the peer cancels it. If a peer sends a request and cancels it
     /// before the disk read is done, the read block is dropped.
-    pub incoming_requests: HashSet<BlockInfo>,
+    pub incoming_requests: Vec<BlockInfo>,
 
     /// This is a cache of have_info on Torrent
     /// to avoid using locks or atomics.

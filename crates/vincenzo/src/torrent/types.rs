@@ -26,7 +26,7 @@ pub enum TorrentMsg {
     /// we need to mutate `info_dict` and maybe
     /// generate the entire info.
     /// total, metadata.index, bytes
-    DownloadedInfoPiece(u32, u32, Vec<u8>),
+    DownloadedInfoPiece(u64, u64, Vec<u8>),
 
     SetBitfield(usize),
     ReadBitfield(oneshot::Sender<Bitfield>),
@@ -48,7 +48,7 @@ pub enum TorrentMsg {
     StartEndgame(Vec<BlockInfo>),
     /// When a peer request a piece of the info
     /// index, recipient
-    RequestInfoPiece(u32, oneshot::Sender<Option<Vec<u8>>>),
+    RequestInfoPiece(u64, oneshot::Sender<Option<Vec<u8>>>),
     IncrementDownloaded(u64),
     IncrementUploaded(u64),
     /// Toggle pause torrent and send Pause/Resume message to all Peers

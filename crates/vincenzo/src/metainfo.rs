@@ -47,7 +47,7 @@ pub struct Info {
 
 impl Info {
     /// Size of the entire Info file.
-    pub fn metainfo_size(&self) -> Result<u64, Error> {
+    pub fn metadata_size(&self) -> Result<u64, Error> {
         self.to_bencode().map(|v| v.len() as u64)
     }
     pub fn name(mut self, name: String) -> Self {
@@ -56,11 +56,11 @@ impl Info {
     }
     /// Calculate how many pieces there are.
     pub fn pieces(&self) -> u32 {
-        self.pieces.len() as u32 / 20
+        (self.pieces.len() as u32).div_ceil(20)
     }
     /// Calculate how many blocks there are in the entire torrent.
     pub fn blocks_len(&self) -> u32 {
-        self.blocks_per_piece() * (self.pieces.len() as u32 / 20)
+        self.blocks_per_piece() * (self.pieces.len() as u32).div_ceil(20)
     }
     /// Calculate how many blocks there are per piece
     pub fn blocks_per_piece(&self) -> u32 {

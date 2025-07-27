@@ -17,10 +17,7 @@ use vincenzo::{
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Error> {
-    let subscriber = FmtSubscriber::builder()
-        // .with_max_level(Level::INFO)
-        .without_time()
-        .finish();
+    let subscriber = FmtSubscriber::builder().without_time().finish();
 
     tracing::subscriber::set_global_default(subscriber)
         .expect("setting default subscriber failed");
@@ -54,8 +51,13 @@ async fn main() -> Result<(), Error> {
         });
 
         let mut daemon = Daemon::new(disk_tx);
-
         daemon.run().await?;
+
+        // spawn(async move {
+        //     let mut daemon = Daemon::new(disk_tx);
+        //     daemon.run().await?;
+        //     Ok::<(), Error>(())
+        // });
     }
 
     // Now that the daemon is running on a process,

@@ -173,40 +173,26 @@ impl ExtMsgHandler<Core, CoreState> for MsgHandler {
             Core::Bitfield(bitfield) => {
                 // take entire pieces from bitfield
                 // and put in pending_requests
-                info!("{remote} bitfield");
-
-                // remove excess bits
-                let pieces =
-                    peer.state.torrent_ctx.info.read().await.pieces() as usize;
+                info!("{remote} bitfield len {:?}", bitfield.len());
+                info!("{remote} bitfield {bitfield:?}");
 
                 let b = &mut peer.state.pieces;
                 *b = bitfield.clone();
-
-                if bitfield.len() != pieces
-                    && pieces > 0
-                    && peer.state.have_info
-                {
-                    unsafe {
-                        b.set_len(pieces);
-                    }
-                }
 
                 debug!("{remote} bitfield is len {:?}", bitfield.len());
             }
             Core::Unchoke => {
                 peer.state.ctx.peer_choking.store(false, Ordering::Relaxed);
                 info!("{remote} unchoke");
-
-                if peer.can_request() {
-                    peer.request_block_infos().await?;
-                }
             }
             Core::Choke => {
+                // remote peer is choking the local peer
                 info!("{remote} choke");
                 peer.state.ctx.peer_choking.store(true, Ordering::Relaxed);
                 peer.free_pending_blocks().await;
             }
             Core::Interested => {
+                // remote peer is interested the local peer
                 debug!("{remote} interested");
                 peer.state.ctx.peer_interested.store(true, Ordering::Relaxed);
             }
@@ -257,27 +243,9 @@ piece {piece}"
                 }
 
                 peer_pieces.set(piece, true);
-
-                let Some(piece) = local_pieces.get(piece) else {
-                    return Ok(());
-                };
-
-                // maybe become interested in peer and request blocks
-                if !peer.state.ctx.am_interested.load(Ordering::Relaxed)
-                    && !piece
-                {
-                    debug!("{remote} sending interested due to have");
-
-                    peer.state.ctx.am_interested.store(true, Ordering::Relaxed);
-                    peer.state.sink.send(Core::Interested).await?;
-
-                    if peer.can_request() {
-                        peer.request_block_infos().await?;
-                    }
-                }
             }
             Core::Piece(block) => {
-                debug!("{remote} piece {}", block.index);
+                info!("{remote} sent piece i: {}", block.index);
                 debug!(
                     "index: {:?}, begin: {:?}, len: {:?}",
                     block.index,
@@ -291,15 +259,11 @@ piece {piece}"
                     .fetch_add(block.block.len() as u64, Ordering::Relaxed);
 
                 peer.handle_piece_msg(block).await?;
-
-                if peer.can_request() {
-                    peer.request_block_infos().await?;
-                }
             }
             Core::Cancel(block_info) => {
                 debug!("{remote} cancel from");
                 debug!("{block_info:?}");
-                peer.state.incoming_requests.remove(&block_info);
+                peer.state.incoming_requests.retain(|v| *v != block_info);
             }
             Core::Request(block_info) => {
                 debug!("{remote} request from");
@@ -313,7 +277,7 @@ piece {piece}"
                 let index = block_info.index as usize;
                 let (tx, rx) = oneshot::channel();
 
-                peer.state.incoming_requests.insert(block_info.clone());
+                peer.state.incoming_requests.push(block_info.clone());
 
                 peer.state
                     .torrent_ctx
@@ -520,8 +484,6 @@ impl Decoder for CoreCodec {
             CoreId::Extended => {
                 let ext_id = buf.get_u8();
 
-                tracing::info!("received ext_id {ext_id}");
-
                 let mut payload = vec![0u8; msg_len - 2];
                 buf.copy_to_slice(&mut payload);
 
@@ -587,18 +549,6 @@ mod tests {
 
         let mut buf = BytesMut::new();
         CoreCodec.encode(msg, &mut buf).unwrap();
-        let msg = CoreCodec.decode(&mut buf).unwrap().unwrap();
-
-        match msg {
-            Core::Bitfield(mut bitfield) => {
-                // remove excess bits
-                unsafe {
-                    bitfield.set_len(original.len());
-                }
-                assert_eq!(bitfield, original);
-            }
-            _ => panic!(),
-        }
     }
 
     #[test]

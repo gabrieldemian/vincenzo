@@ -5,41 +5,41 @@
     flake-utils.url = "github:numtide/flake-utils";
   };
 
-  outputs = {
-    nixpkgs,
-    rust-overlay,
-    flake-utils,
-    ...
-  }:
+  outputs =
+    {
+      nixpkgs,
+      rust-overlay,
+      flake-utils,
+      ...
+    }:
     flake-utils.lib.eachDefaultSystem (
-      system: let
-        overlays = [(import rust-overlay)];
+      system:
+      let
+        overlays = [ (import rust-overlay) ];
         pkgs = import nixpkgs {
           inherit system overlays;
         };
       in
-        with pkgs; {
-          devShells.default = mkShell {
-            shellHook = ''
-              export XDG_DOWNLOAD_DIR="$HOME/downloads";
-              export XDG_CONFIG_HOME="$HOME/.config";
-              export XDG_STATE_HOME="$HOME/.local/state";
-              export XDG_DATA_HOME="$HOME/.local/share";
-            '';
-            buildInputs = [
-              rustup
-              taplo
-              pkg-config
-              glib
-              (
-                rust-bin.fromRustupToolchainFile ./rust-toolchain.toml
-              #   rust-bin.selectLatestNightlyWith (toolchain:
-              #     toolchain.default.override {
-              #       extensions = ["rust-src"];
-              #     })
-              )
-            ];
-          };
-        }
+      with pkgs;
+      {
+        devShells.default = mkShell {
+          shellHook = ''
+            export XDG_DOWNLOAD_DIR="$HOME/downloads";
+            export XDG_CONFIG_HOME="$HOME/.config";
+            export XDG_STATE_HOME="$HOME/.local/state";
+            export XDG_DATA_HOME="$HOME/.local/share";
+          '';
+          buildInputs = [
+            rustup
+            taplo
+            trippy
+            netscanner
+            tcpdump
+            pkg-config
+            glib
+            (rust-bin.fromRustupToolchainFile ./rust-toolchain.toml)
+          ];
+        };
+      }
     );
 }

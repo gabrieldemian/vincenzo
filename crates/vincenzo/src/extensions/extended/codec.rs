@@ -102,16 +102,14 @@ impl ExtMsgHandler<Extended, Extension> for MsgHandler {
         let ext: Extension = msg.into();
 
         if let Some(meta_size) = ext.metadata_size {
-            if !peer.state.have_info {
-                peer.state
-                    .torrent_ctx
-                    .tx
-                    .send(TorrentMsg::MetadataSize(meta_size))
-                    .await?;
-            }
+            peer.state
+                .torrent_ctx
+                .tx
+                .send(TorrentMsg::MetadataSize(meta_size))
+                .await?;
         }
 
-        tracing::info!("ext of peer {:#?}", ext);
+        tracing::info!("ext of peer {:?}", ext);
 
         // send ours extended msg if outbound
         if peer.state.ctx.direction == Direction::Outbound {
@@ -138,8 +136,6 @@ impl ExtMsgHandler<Extended, Extension> for MsgHandler {
         let n = ext.reqq.unwrap_or(Session::DEFAULT_REQUEST_QUEUE_LEN);
         peer.state.session.target_request_queue_len = n;
         peer.state.ext_states.extension = Some(ext);
-
-        peer.try_request_info().await?;
 
         Ok(())
     }

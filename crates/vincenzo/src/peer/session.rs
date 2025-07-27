@@ -124,7 +124,7 @@ impl Session {
     ///
     /// After the extended handshake, this value is not used
     /// in favour of the `reqq`, if the peer has it.
-    pub const DEFAULT_REQUEST_QUEUE_LEN: u16 = 150;
+    pub const DEFAULT_REQUEST_QUEUE_LEN: u16 = 200;
 
     /// The smallest timeout value we can give a peer. Very fast peers will have
     /// an average round-trip-times, so a slight deviation would punish them

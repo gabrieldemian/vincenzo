@@ -17,7 +17,7 @@ use tokio::{
         oneshot::{self, Sender},
     },
 };
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::{
     error::Error,
@@ -161,6 +161,7 @@ impl Disk {
     #[tracing::instrument(skip(self), name = "disk::run")]
     pub async fn run(&mut self) -> Result<(), Error> {
         debug!("disk started event loop");
+
         while let Some(msg) = self.rx.recv().await {
             match msg {
                 DiskMsg::DeletePeer(addr) => {
@@ -168,7 +169,7 @@ impl Disk {
                     self.delete_peer(addr);
                 }
                 DiskMsg::NewTorrent(torrent) => {
-                    debug!("NewTorrent");
+                    info!("new_torrent");
                     let _ = self.new_torrent(torrent).await;
                 }
                 DiskMsg::ReadBlock { block_info, recipient, info_hash } => {
@@ -198,12 +199,12 @@ impl Disk {
                     info_hash,
                     peer_id,
                 } => {
-                    debug!("RequestBlocks");
+                    println!("RequestBlocks");
                     let infos = self
                         .request_blocks(&info_hash, &peer_id, qnt)
                         .await
                         .unwrap_or_default();
-                    debug!("disk sending {}", infos.len());
+                    info!("disk sending {}", infos.len());
                     let _ = recipient.send(infos);
                 }
                 DiskMsg::ValidatePiece { info_hash, recipient, piece } => {
@@ -250,7 +251,6 @@ impl Disk {
         torrent_ctx: Arc<TorrentCtx>,
     ) -> Result<(), Error> {
         let info_hash = &torrent_ctx.info_hash;
-        debug!("new_torrent {info_hash:?}");
 
         self.torrent_ctxs.insert(info_hash.clone(), torrent_ctx.clone());
 
@@ -326,9 +326,12 @@ impl Disk {
             r.shuffle(&mut rand::rng());
         }
 
+        info!("shuffled pieces {r:?}");
+
         // each index of Vec is a piece index, that is a VecDeque of blocks
         let mut pieces_blocks: Vec<VecDeque<BlockInfo>> =
             Vec::with_capacity(r.len());
+
         debug!("self.pieces {:?}", r);
         self.pieces.insert(info_hash.clone(), r);
 
@@ -387,7 +390,6 @@ impl Disk {
         let _ = peer_ctx.tx.send(PeerMsg::GetPieces(otx)).await;
 
         let peer_pieces = orx.await.ok()?;
-
         let downloaded_pieces = self.downloaded_pieces.get(info_hash).unwrap();
 
         self.pieces
@@ -462,9 +464,6 @@ impl Disk {
                 }
             }
         }
-        debug!("pieces random {pieces:?}");
-        debug!("len of pieces random {:?}", pieces.len());
-        debug!("score {score:?}");
 
         while !score.is_empty() {
             // get the rarest, the piece with the least occurences
@@ -480,7 +479,6 @@ impl Disk {
             score.remove(rarest_idx);
         }
 
-        debug!("pieces changed to rarest {pieces:?}");
         let piece_order = self.piece_strategy.get_mut(info_hash).unwrap();
         if *piece_order == PieceStrategy::Random {
             *piece_order = PieceStrategy::Rarest;
@@ -528,7 +526,6 @@ impl Disk {
                 break;
             };
         }
-        debug!("result len {:?}", result.len());
 
         Ok(result)
     }
@@ -544,7 +541,7 @@ impl Disk {
             .read(true)
             .write(true)
             .create(true)
-            .truncate(true)
+            .truncate(false)
             .open(&path)
             .await
             .map_err(|_| {
@@ -925,7 +922,10 @@ impl Disk {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
+    use std::{
+        net::{Ipv4Addr, SocketAddrV4},
+        path::Path,
+    };
 
     use rand::{distr::Alphanumeric, Rng};
 
@@ -1249,6 +1249,30 @@ mod tests {
         *info_t = info.clone();
         drop(info_t);
 
+        let (ptx, prx) = mpsc::channel(100);
+
+        let peer = Arc::new(PeerCtx {
+            tx: ptx,
+            direction: crate::peer::Direction::Outbound,
+            info_hash: info_hash.clone(),
+            id: PeerId::gen(),
+            uploaded: 0.into(),
+            downloaded: 0.into(),
+            am_choking: false.into(),
+            peer_choking: false.into(),
+            am_interested: true.into(),
+            peer_interested: true.into(),
+            local_addr: SocketAddr::V4(SocketAddrV4::new(
+                Ipv4Addr::new(0, 0, 0, 0),
+                0,
+            )),
+            remote_addr: SocketAddr::V4(SocketAddrV4::new(
+                Ipv4Addr::new(0, 0, 0, 0),
+                0,
+            )),
+        });
+
+        disk.new_peer(peer.clone());
         disk.new_torrent(torrent.ctx.clone()).await.unwrap();
 
         *disk.piece_strategy.get_mut(&info_hash).unwrap() =
@@ -1299,6 +1323,23 @@ mod tests {
 
         let mut buf = Vec::new();
         d.read_to_end(&mut buf).await.unwrap();
+
+        let (otx, orx) = oneshot::channel();
+        disk.tx
+            .send(DiskMsg::RequestBlocks {
+                info_hash,
+                peer_id: peer.id.clone(),
+                recipient: otx,
+                qnt: 3,
+            })
+            .await
+            .unwrap();
+
+        let req_blocks = orx.await.unwrap();
+
+        println!("req blocks {req_blocks:?}");
+
+        assert_eq!(req_blocks.len(), 9);
 
         assert_eq!(buf, vec![120, 119, 57]);
         tokio::fs::remove_dir_all(&download_dir).await.unwrap();

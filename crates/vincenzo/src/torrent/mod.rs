@@ -1,4 +1,4 @@
-//! Torrent that is spawned by the Daemon
+//! Torrent that is spawned by the Daemonpeer_choking
 //!
 //! A torrent will manage multiple peers, peers can send messages to the torrent
 //! using [`TorrentMsg`], and torrent can send messages to the Peers using
@@ -21,7 +21,6 @@ use crate::{
     metainfo::Info,
     peer::{self, DirectionWithInfoHash, Peer, PeerCtx, PeerId, PeerMsg},
     tracker::{event::Event, Tracker, TrackerCtx, TrackerMsg, TrackerTrait},
-    utils::to_human_readable,
 };
 use std::{
     collections::BTreeMap,
@@ -58,10 +57,10 @@ pub struct Connected {
     /// If using a Magnet link, the info will be downloaded in pieces
     /// and those pieces may come in different order,
     /// After it is complete, it will be encoded into [`Info`]
-    pub info_pieces: BTreeMap<u32, Vec<u8>>,
+    pub info_pieces: BTreeMap<u64, Vec<u8>>,
 
     /// How much of the info was downloaded.
-    pub downloaded_info_bytes: u32,
+    pub downloaded_info_bytes: u64,
 
     /// Idle peers returned from an announce request to the tracker.
     /// Will be removed from this vec as we connect with them, and added as we
@@ -160,11 +159,8 @@ impl Torrent<Idle> {
 
     /// Start the Torrent and immediately spawns all the event loops.
     #[tracing::instrument(skip_all)]
-    pub async fn start_and_run(
-        self,
-        listen: Option<SocketAddr>,
-    ) -> Result<(), Error> {
-        let mut torrent = self.start(listen).await?;
+    pub async fn start_and_run(self) -> Result<(), Error> {
+        let mut torrent = self.start().await?;
 
         torrent.spawn_outbound_peers().await?;
         torrent.run().await?;
@@ -176,10 +172,7 @@ impl Torrent<Idle> {
     /// messages to one of the trackers, and returning a list of peers.
     /// But it doesn't run the torrent event loop.
     #[tracing::instrument(skip_all)]
-    pub async fn start(
-        self,
-        _listen: Option<SocketAddr>,
-    ) -> Result<Torrent<Connected>, Error> {
+    pub async fn start(self) -> Result<Torrent<Connected>, Error> {
         let c = self.ctx.clone();
         let org_trackers = c.magnet.organize_trackers();
 
@@ -241,7 +234,7 @@ impl Torrent<Idle> {
                 stats,
                 idle_peers: peers,
                 tracker_ctx,
-                metadata_size: 0,
+                metadata_size: self.ctx.magnet.length().unwrap_or(0),
                 connected_peers: Vec::with_capacity(
                     CONFIG.max_torrent_peers as usize,
                 ),
@@ -288,7 +281,7 @@ impl Torrent<Connected> {
 
         if to_request > 0 {
             info!(
-                "{:?} sending requests to {to_request} peers",
+                "{:?} sending handshakes to {to_request} peers",
                 self.ctx.info_hash
             );
         }
@@ -582,10 +575,11 @@ impl Torrent<Connected> {
                 Some(msg) = self.rx.recv() => {
                     match msg {
                         TorrentMsg::MetadataSize(meta_size) => {
-                            if !self.state.have_info {
-                                let mut info = self.ctx.info.write().await;
-                                info.metadata_size = Some(meta_size);
-                            }
+                            if self.state.have_info {continue};
+
+                            let mut info = self.ctx.info.write().await;
+                            info.metadata_size = Some(meta_size);
+                            self.state.metadata_size = meta_size;
                         }
                         TorrentMsg::ReadBitfield(oneshot) => {
                             let _ = oneshot.send(self.state.bitfield.clone());
@@ -594,6 +588,7 @@ impl Torrent<Connected> {
                             self.state.bitfield.set(index, true);
                         }
                         TorrentMsg::DownloadedPiece(piece) => {
+                            info!("downloaded_piece {piece}");
                             // send Have messages to peers that dont have our pieces
                             for peer in &self.state.connected_peers {
                                 let _ = peer.tx.send(PeerMsg::HavePiece(piece)).await;
@@ -613,7 +608,10 @@ impl Torrent<Connected> {
                             self.state.error_peers.push(Peer::<peer::PeerError>::new(addr));
                             self.state.connected_peers.retain(|v| v.remote_addr != addr);
                             self.state.unchoked_peers.retain(|v| v.remote_addr != addr);
-                            if let Some(opt_addr) = self.state.opt_unchoked_peer.as_ref().map(|v| v.remote_addr) {
+
+                            if let Some(opt_addr) =
+                                self.state.opt_unchoked_peer.as_ref().map(|v| v.remote_addr)
+                            {
                                 if opt_addr == addr {
                                     self.state.opt_unchoked_peer = None;
                                 }
@@ -654,7 +652,7 @@ impl Torrent<Connected> {
                                 .await;
                         }
                         TorrentMsg::DownloadComplete => {
-                            info!("Downloaded torrent {:?}", self.name);
+                            info!("downloaded torrent {:?}", self.name);
                             let (otx, orx) = oneshot::channel();
 
                             self.status = TorrentStatus::Seeding;
@@ -692,82 +690,86 @@ impl Torrent<Connected> {
                             info!("started endgame mode for {}", self.name);
 
                             for peer in &self.state.connected_peers {
-                                let _ = peer.tx.send(PeerMsg::RequestBlockInfos(block_infos.clone())).await;
+                                let _ = peer.tx.send(
+                                    PeerMsg::RequestBlockInfos(block_infos.clone())
+                                )
+                                .await;
                             }
                         }
                         TorrentMsg::DownloadedInfoPiece(total, index, bytes) => {
-                            debug!("received DownloadedInfoPiece");
+                            debug!("received downloaded_info_piece");
 
                             if self.status == TorrentStatus::ConnectingTrackers {
                                 self.status = TorrentStatus::DownloadingMetainfo;
                             }
 
-                            self.state.downloaded_info_bytes += bytes.len() as u32;
+                            self.state.downloaded_info_bytes += bytes.len() as u64;
                             self.state.info_pieces.insert(index, bytes);
 
                             let have_all_pieces = self.state.downloaded_info_bytes >= total;
 
-                            if have_all_pieces {
-                                info!("{:?} have all info_hash pieces", self.ctx.info_hash);
+                            if !have_all_pieces { continue };
 
-                                // info has a valid bencode format
-                                let info_bytes = self.state.info_pieces.values().fold(Vec::new(), |mut acc, b| {
+                            info!("{:?} have all info_hash pieces", self.ctx.info_hash);
+
+                            let info_bytes =
+                                self.state.info_pieces
+                                .values()
+                                .fold(Vec::new(), |mut acc, b| {
                                     acc.extend_from_slice(b);
                                     acc
                                 });
-                                let info = Info::from_bencode(&info_bytes)?;
 
-                                let m_info = self.ctx.magnet.hash().unwrap();
+                            let downloaded_info = Info::from_bencode(&info_bytes)?;
+                            let magnet_hash = self.ctx.magnet.hash().unwrap();
 
-                                let mut hash = sha1_smol::Sha1::new();
-                                hash.update(&info_bytes);
+                            let mut hasher = sha1_smol::Sha1::new();
+                            hasher.update(&info_bytes);
 
-                                let hash = hash.digest().bytes();
+                            let hash = hasher.digest().bytes();
 
-                                // validate the hash of the downloaded info
-                                // against the hash of the magnet link
-                                let hash = hex::encode(hash);
+                            // validate the hash of the downloaded info
+                            // against the hash of the magnet link
+                            if
+                                hex::decode(magnet_hash)
+                                .map_err(|_| Error::BencodeError)?
+                                != hash.to_vec()
+                            {
+                                warn!("invalid info hash for info: {:?}", downloaded_info.name);
+                                self.state.info_pieces.clear();
+                                return Err(Error::PieceInvalid);
+                            }
 
-                                if hash.to_uppercase() == m_info.to_uppercase() {
-                                    debug!("the hash of the downloaded info matches the hash of the magnet link");
+                            info!("hash of info is valid");
+                            info!("--info--");
+                            info!("name: {:?}", downloaded_info.name);
+                            info!("files: {:?}", downloaded_info.files);
+                            info!("piece_length: {:?}", downloaded_info.piece_length);
+                            info!("pieces: {:?}", downloaded_info.pieces());
 
-                                    // with the info fully downloaded, we now know the pieces len,
-                                    // this will update the bitfield of the torrent
-                                    self.state.bitfield = bitvec![u8, Msb0; 0; info.pieces() as usize];
+                            let mut info = self.ctx.info.write().await;
 
-                                    // remove excess bits
-                                    if (info.pieces() as usize) < self.state.bitfield.len() {
-                                        unsafe {
-                                            self.state.bitfield.set_len(info.pieces() as usize);
-                                        }
-                                    }
+                            *info = downloaded_info;
 
-                                    debug!("local_bitfield is now of len {:?}", self.state.bitfield.len());
+                            let meta_size = info.metadata_size()?;
+                            info.metadata_size = Some(meta_size);
+                            self.state.metadata_size = info.metadata_size()?;
 
-                                    self.state.metadata_size = info.get_size();
-                                    self.state.have_info = true;
-                                    self.state.tracker_ctx.tx.send(TrackerMsg::Info(info.clone())).await?;
+                            let pieces = info.pieces();
 
-                                    let mut info_l = self.ctx.info.write().await;
+                            self.state.bitfield = bitvec![u8, Msb0; 0; pieces as usize];
 
-                                    debug!("new info piece length {:?}", info.piece_length);
-                                    debug!("new info pieces_len {:?}", info.pieces.len());
-                                    debug!("new info file_length {:?}", info.file_length);
-                                    debug!("new info files {:#?}", info.files);
+                            info!("local_bitfield len {:?}", self.state.bitfield.len());
+                            info!("local_bitfield {:?}", self.state.bitfield);
 
-                                    *info_l = info;
-                                    drop(info_l);
+                            self.state.have_info = true;
+                            self.state.tracker_ctx.tx.send(TrackerMsg::Info(info.clone())).await?;
 
-                                    self.status = TorrentStatus::Downloading;
-                                    self.ctx.disk_tx.send(DiskMsg::NewTorrent(self.ctx.clone())).await?;
+                            self.status = TorrentStatus::Downloading;
+                            self.ctx.disk_tx.send(DiskMsg::NewTorrent(self.ctx.clone())).await?;
 
-                                    for peer in &self.state.connected_peers {
-                                        let _ = peer.tx.send(PeerMsg::HaveInfo).await;
-                                    }
-                                } else {
-                                    warn!("the hash does not match the hash of the provided magnet link, panicking");
-                                    return Err(Error::PieceInvalid);
-                                }
+                            for peer in &self.state.connected_peers {
+                                let _ = peer.tx.send(PeerMsg::HaveInfo).await;
                             }
                         }
                         TorrentMsg::RequestInfoPiece(index, recipient) => {
@@ -840,7 +842,7 @@ impl Torrent<Connected> {
                     }
                 }
                 _ = reconnect_interval.tick() => {
-                    info!("
+                    debug!("
                         reconnect_interval
                         connected_peers: {}
                         error_peers: {}
@@ -895,82 +897,82 @@ impl Torrent<Connected> {
                 _ = optimistic_unchoke_interval.tick() => {
                     debug!("optimistic_unchoke_interval");
 
-                    let worst_uploader = self.get_next_opt_unchoked_peer();
-
-                    let Some(worst_uploader) = worst_uploader else { continue };
-                    debug!("next opt unchoked: {worst_uploader:?}");
-
-                    if let Some(prev_opt) = &self.state.opt_unchoked_peer {
-                        debug!("prev opt unchoked: {worst_uploader:?}");
-                        let _ = prev_opt.tx.send(PeerMsg::Choke).await;
-                    }
-                    let _ = worst_uploader.tx.send(PeerMsg::Unchoke).await;
-                    self.state.opt_unchoked_peer = Some(worst_uploader);
+                    // let worst_uploader = self.get_next_opt_unchoked_peer();
+                    //
+                    // let Some(worst_uploader) = worst_uploader else { continue };
+                    // debug!("next opt unchoked: {worst_uploader:?}");
+                    //
+                    // if let Some(prev_opt) = &self.state.opt_unchoked_peer {
+                    //     debug!("prev opt unchoked: {worst_uploader:?}");
+                    //     let _ = prev_opt.tx.send(PeerMsg::Choke).await;
+                    // }
+                    // let _ = worst_uploader.tx.send(PeerMsg::Unchoke).await;
+                    // self.state.opt_unchoked_peer = Some(worst_uploader);
                 }
                 _ = choke_interval.tick() => {
                     debug!("choke_interval");
 
-                    if self.state.unchoked_peers.len() < 3 {
-                        continue;
-                    }
-                    let Some(slowest) =
-                        self.state.unchoked_peers
-                            .iter()
-                            .min_by_key(
-                                |k| k.downloaded.load(Ordering::Relaxed)
-                            )
-                            .cloned()
-                    else { continue };
-
-                    debug!(
-                        "slowest downloader: {:?} with {:?}",
-                        slowest.id,
-                        to_human_readable(slowest.downloaded.load(Ordering::Relaxed) as f64)
-                    );
-
-                    let r = self.get_best_interested_downloaders(1);
-
-                    let Some(fastest) = r.first() else { continue };
-
-                    debug!(
-                        "fastest downloader: {:?} with {:?}",
-                        fastest.id,
-                        to_human_readable(fastest.downloaded.load(Ordering::Relaxed) as f64)
-                    );
-
-                    if fastest.downloaded.load(Ordering::Relaxed)
-                        <
-                        slowest.downloaded.load(Ordering::Relaxed)
-                    {
-                        warn!("fastest was slower than the slowest peer");
-                        continue
-                    };
-
-                    let _ = fastest.tx.send(PeerMsg::Unchoke).await;
-                    let _ = slowest.tx.send(PeerMsg::Choke).await;
-
-                    self.state.unchoked_peers.retain(|v| v.id != slowest.id);
-                    self.state.unchoked_peers.push(fastest.clone());
+                    // if self.state.unchoked_peers.len() < 3 {
+                    //     continue;
+                    // }
+                    // let Some(slowest) =
+                    //     self.state.unchoked_peers
+                    //         .iter()
+                    //         .min_by_key(
+                    //             |k| k.downloaded.load(Ordering::Relaxed)
+                    //         )
+                    //         .cloned()
+                    // else { continue };
+                    //
+                    // debug!(
+                    //     "slowest downloader: {:?} with {:?}",
+                    //     slowest.id,
+                    //     to_human_readable(slowest.downloaded.load(Ordering::Relaxed) as f64)
+                    // );
+                    //
+                    // let r = self.get_best_interested_downloaders(1);
+                    //
+                    // let Some(fastest) = r.first() else { continue };
+                    //
+                    // debug!(
+                    //     "fastest downloader: {:?} with {:?}",
+                    //     fastest.id,
+                    //     to_human_readable(fastest.downloaded.load(Ordering::Relaxed) as f64)
+                    // );
+                    //
+                    // if fastest.downloaded.load(Ordering::Relaxed)
+                    //     <
+                    //     slowest.downloaded.load(Ordering::Relaxed)
+                    // {
+                    //     warn!("fastest was slower than the slowest peer");
+                    //     continue
+                    // };
+                    //
+                    // let _ = fastest.tx.send(PeerMsg::Unchoke).await;
+                    // let _ = slowest.tx.send(PeerMsg::Choke).await;
+                    //
+                    // self.state.unchoked_peers.retain(|v| v.id != slowest.id);
+                    // self.state.unchoked_peers.push(fastest.clone());
                 }
                 _ = unchoke_interval.tick() => {
-                    let unchoked_count = self.state.unchoked_peers.len().min(3);
-                    let to_unchoke = 3 - unchoked_count;
-                    debug!("unchoke_interval to_unchoke {to_unchoke}");
-
-                    if to_unchoke == 0 { continue };
-
-                    let best_downloaders = self.get_best_interested_downloaders(to_unchoke);
-                    debug!("best_downloaders len {}", best_downloaders.len());
-
-                    for downloader in best_downloaders {
-                        let _ = downloader.tx.send(PeerMsg::Unchoke).await;
-                        self.state.unchoked_peers.push(downloader);
-                    }
-
-                    for peer in &self.state.connected_peers {
-                        peer.downloaded.store(0, Ordering::Relaxed);
-                        peer.uploaded.store(0, Ordering::Relaxed);
-                    }
+                    // let unchoked_count = self.state.unchoked_peers.len().min(3);
+                    // let to_unchoke = 3 - unchoked_count;
+                    // debug!("unchoke_interval to_unchoke {to_unchoke}");
+                    //
+                    // if to_unchoke == 0 { continue };
+                    //
+                    // let best_downloaders = self.get_best_interested_downloaders(to_unchoke);
+                    // debug!("best_downloaders len {}", best_downloaders.len());
+                    //
+                    // for downloader in best_downloaders {
+                    //     let _ = downloader.tx.send(PeerMsg::Unchoke).await;
+                    //     self.state.unchoked_peers.push(downloader);
+                    // }
+                    //
+                    // for peer in &self.state.connected_peers {
+                    //     peer.downloaded.store(0, Ordering::Relaxed);
+                    //     peer.uploaded.store(0, Ordering::Relaxed);
+                    // }
                 }
                 _ = announce_interval.tick(), if self.state.have_info => {
                     debug!("sending periodic announce, interval {announce_interval:?}");

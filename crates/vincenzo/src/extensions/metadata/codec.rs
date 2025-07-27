@@ -41,8 +41,6 @@ impl ExtMsgHandler<MetadataDict, MetadataData> for MsgHandler {
         peer: &mut peer::Peer<peer::Connected>,
         msg: MetadataDict,
     ) -> Result<(), Error> {
-        info!("received meta msg {msg:?}");
-
         let Some(remote_ext_id) = peer
             .state
             .ext_states
@@ -63,10 +61,14 @@ impl ExtMsgHandler<MetadataDict, MetadataData> for MsgHandler {
                 info!("{} metadata res", peer.state.ctx.remote_addr);
 
                 peer.state
+                    .outgoing_requests_info_pieces
+                    .retain(|v| *v != msg.piece);
+
+                peer.state
                     .torrent_ctx
                     .tx
                     .send(TorrentMsg::DownloadedInfoPiece(
-                        msg.total_size.unwrap_or(u32::MAX),
+                        msg.total_size.unwrap_or(u64::MAX),
                         msg.piece,
                         msg.payload.clone(),
                     ))

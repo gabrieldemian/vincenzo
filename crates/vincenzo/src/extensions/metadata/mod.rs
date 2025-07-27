@@ -27,8 +27,8 @@ use super::super::error;
 #[derive(Debug, Clone, PartialEq)]
 pub struct Metadata {
     pub msg_type: MetadataMsgType,
-    pub piece: u32,
-    pub total_size: Option<u32>,
+    pub piece: u64,
+    pub total_size: Option<u64>,
     pub payload: Vec<u8>,
 }
 
@@ -68,7 +68,7 @@ impl TryFrom<u8> for MetadataMsgType {
 }
 
 impl Metadata {
-    pub fn request(piece: u32) -> Self {
+    pub fn request(piece: u64) -> Self {
         Self {
             msg_type: MetadataMsgType::Request,
             piece,
@@ -77,18 +77,18 @@ impl Metadata {
         }
     }
 
-    pub fn data(piece: u32, info: &[u8]) -> Result<Self, error::Error> {
+    pub fn data(piece: u64, info: &[u8]) -> Result<Self, error::Error> {
         let metadata = Self {
             msg_type: MetadataMsgType::Response,
             piece,
-            total_size: Some(info.len() as u32),
+            total_size: Some(info.len() as u64),
             payload: info.to_vec(),
         };
 
         Ok(metadata)
     }
 
-    pub fn reject(piece: u32) -> Self {
+    pub fn reject(piece: u64) -> Self {
         Self {
             msg_type: MetadataMsgType::Reject,
             piece,
@@ -140,10 +140,10 @@ impl FromBencode for Metadata {
                 }
                 (b"piece", value) => {
                     piece =
-                        u32::decode_bencode_object(value).context("piece")?;
+                        u64::decode_bencode_object(value).context("piece")?;
                 }
                 (b"total_size", value) => {
-                    total_size = u32::decode_bencode_object(value)
+                    total_size = u64::decode_bencode_object(value)
                         .context("total_size")
                         .map(Some)?;
                 }
@@ -208,5 +208,13 @@ mod tests {
         let bytes = dict.to_bencode().unwrap();
 
         assert_eq!(bytes, raw);
+    }
+
+    #[test]
+    fn metadata_request() {
+        let meta = Metadata::request(2);
+        let bencoded = meta.to_bencode().unwrap();
+        let raw = b"d8:msg_typei0e5:piecei2ee".to_vec();
+        assert_eq!(bencoded, raw);
     }
 }

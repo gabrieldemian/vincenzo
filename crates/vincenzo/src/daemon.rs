@@ -167,7 +167,7 @@ impl Daemon {
                     // Reload configuration
                     // Reopen the log file
                 }
-                sig @ (SIGTERM | SIGINT | SIGQUIT) => {
+                sig @ (SIGTERM | SIGINT | SIGQUIT | SIGKILL) => {
                     info!("received SIG {sig}");
                     let _ = tx.send(DaemonMsg::Quit).await;
                 }
@@ -432,11 +432,8 @@ impl Daemon {
         self.torrent_ctxs.insert(info_hash, torrent.ctx.clone());
 
         spawn(async move {
-            let mut torrent = torrent.start(None).await?;
-
-            // torrent.spawn_outbound_peers().await?;
+            let mut torrent = torrent.start().await?;
             torrent.run().await?;
-
             Ok::<(), Error>(())
         });
 

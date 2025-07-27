@@ -210,6 +210,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_my_extended_handshake() {
+        let raw = b"d1:md11:ut_metadatai3ee13:metadata_sizei0e4:reqqi200e1:v14:vincenzo-0.0.1e";
+
+        let v = Extension::from_bencode(raw).unwrap();
+        println!("{v:?}");
+    }
+
+    #[test]
     fn metadata_request_roundtrip_serialization() {
         let metadata_request = Metadata::request(0);
         let bencoded =
