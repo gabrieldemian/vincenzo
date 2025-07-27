@@ -241,6 +241,41 @@ impl Disk {
         Ok(())
     }
 
+    /// Create a file tree with a given root directory, but doesn't allocate
+    /// eagerly.
+    pub async fn create_file_tree(
+        // Root dir in which to create the file tree. If this is a single file
+        // torrent, the root will only be the download_dir, otherwise
+        // : torrent_name + download_dir
+        root_dir: &str,
+        meta_files: &Vec<metainfo::File>,
+    ) -> Result<(), Error> {
+        for meta_file in meta_files {
+            if meta_file.path.is_empty() {
+                continue;
+            };
+
+            let mut path = PathBuf::from(root_dir);
+
+            // the last item of the vec will be a file, all the previous ones
+            // will be directories.
+            let Some(file) = meta_file.path.last() else { continue };
+
+            // get an array of the dirs.
+            let Some(dirs) = meta_file.path.get(0..meta_file.path.len() - 1)
+            else {
+                continue;
+            };
+
+            path.extend(dirs);
+            create_dir_all(&path).await?;
+
+            path.push(file);
+            Self::open_file(path).await?;
+        }
+        Ok(())
+    }
+
     /// Initialize necessary data.
     ///
     /// # Important
@@ -930,6 +965,7 @@ mod tests {
     use rand::{distr::Alphanumeric, Rng};
 
     use crate::{
+        config::CONFIG,
         daemon::Daemon,
         extensions::core::{Block, BLOCK_LEN},
         magnet::Magnet,
@@ -938,687 +974,144 @@ mod tests {
     };
 
     use super::*;
-    use tokio::{fs, sync::mpsc};
+    use tokio::{fs, spawn, sync::mpsc};
 
-    // when we send the msg `NewTorrent` the `Disk` must create
-    // the "skeleton" of the torrent tree. Empty folders and empty files.
+    // test all features that Disk provides by simulating, from start to end, a
+    // remote peer that has the torrent fully downloaded and a local peer
+    // trying to download it.
     #[tokio::test]
-    async fn create_file_tree() {
-        let original_hook = std::panic::take_hook();
-        let name = "bla".to_owned();
-        let magnet = format!(
-            "magnet:?xt=urn:btih:9999999999999999999999999999999999999999&amp;\
-             dn={name}&amp;tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%\
-             2Fannounce&amp;tr=udp%3A%2F%2Ftracker.openbittorrent.com%3A6969%\
-             2Fannounce&amp;tr=udp%3A%2F%2Ftracker.bittor.pw%3A1337%\
-             2Fannounce&amp;tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&amp;\
-             tr=udp%3A%2F%2Fbt.xxx-tracker.com%3A2710%2Fannounce&amp;tr=udp%\
-             3A%2F%2Fpublic.popcorn-tracker.org%3A6969%2Fannounce&amp;tr=udp%\
-             3A%2F%2Feddie4.nl%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.\
-             torrent.eu.org%3A451%2Fannounce&amp;tr=udp%3A%2F%2Fp4p.arenabg.\
-             com%3A1337%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.tiny-vps.com%\
-             3A6969%2Fannounce&amp;tr=udp%3A%2F%2Fopen.stealth.si%3A80%\
-             2Fannounce"
-        );
-        let (disk_tx, _disk_rx) = mpsc::channel::<DiskMsg>(1000);
-
-        let daemon = Daemon::new(disk_tx.clone());
-
-        let magnet = Magnet::new(&magnet).unwrap();
-        let torrent = Torrent::new(disk_tx, daemon.ctx.clone(), magnet);
-        let torrent_ctx = torrent.ctx.clone();
-
+    async fn disk_works() -> Result<(), Error> {
+        // =======================
+        // preparing torrent files
+        // =======================
         let mut rng = rand::rng();
-        let download_dir: String =
-            (0..20).map(|_| rng.sample(Alphanumeric) as char).collect();
 
-        let dd = download_dir.clone();
+        let download_dir: String =
+            (0..32).map(|_| rng.sample(Alphanumeric) as char).collect();
+
+        let torrent_dir = "bla".to_owned();
+        let root_dir = format!("/tmp/{download_dir}/{torrent_dir}");
+        let rd = root_dir.clone();
+
+        let original_hook = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |panic| {
-            let _ = std::fs::remove_dir_all(&dd);
+            let _ = std::fs::remove_dir_all(&rd);
             original_hook(panic);
         }));
 
-        let mut disk = Disk::new(download_dir.clone());
-
-        let info = Info {
-            metadata_size: None,
-            file_length: None,
-            name,
-            piece_length: BLOCK_LEN,
-            pieces: vec![],
-            files: Some(vec![
-                metainfo::File {
-                    length: BLOCK_LEN * 2,
-                    path: vec!["foo.txt".to_owned()],
-                },
-                metainfo::File {
-                    length: BLOCK_LEN * 2,
-                    path: vec!["bar".to_owned(), "baz.txt".to_owned()],
-                },
-                metainfo::File {
-                    length: BLOCK_LEN * 2,
-                    path: vec![
-                        "bar".to_owned(),
-                        "buzz".to_owned(),
-                        "bee.txt".to_owned(),
-                    ],
-                },
-            ]),
-        };
-
-        disk.torrent_ctxs
-            .insert(torrent_ctx.info_hash.clone(), torrent_ctx.clone());
-
-        let mut info_ctx = torrent.ctx.info.write().await;
-        *info_ctx = info.clone();
-        drop(info_ctx);
-
-        disk.new_torrent(torrent_ctx.clone()).await.unwrap();
-
-        let mut path = PathBuf::new();
-        path.push(&download_dir);
-        path.push(&info.name);
-        path.push("foo.txt");
-
-        let result = Disk::open_file(path).await;
-        assert!(result.is_ok());
-
-        let mut path = PathBuf::new();
-        path.push(&download_dir);
-        path.push(&info.name);
-        path.push("bar/baz.txt");
-        let result = Disk::open_file(path).await;
-        assert!(result.is_ok());
-
-        let mut path = PathBuf::new();
-        path.push(&download_dir);
-        path.push(&info.name);
-        path.push("bar/buzz/bee.txt");
-        let result = Disk::open_file(path).await;
-        assert!(result.is_ok());
-
-        assert!(Path::new(&format!("{download_dir}/bla/foo.txt")).is_file());
-        assert!(Path::new(&format!("{download_dir}/bla/bar/baz.txt")).is_file());
-        assert!(Path::new(&format!("{download_dir}/bla/bar/buzz/bee.txt"))
-            .is_file());
-
-        tokio::fs::remove_dir_all(download_dir).await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn get_file_from_block_info() {
-        //
-        // Complex multi file torrent, 64 blocks per piece
-        //
-        let original_hook = std::panic::take_hook();
-        let mut rng = rand::rng();
-        let download_dir: String =
-            (0..20).map(|_| rng.sample(Alphanumeric) as char).collect();
-        let name = "name_of_torrent_folder".to_owned();
-        let file_a = "file_a";
-        let file_b = "file_b";
-        let file_c = "file_c";
-
-        let dd = download_dir.clone();
-        std::panic::set_hook(Box::new(move |panic| {
-            let _ = std::fs::remove_dir_all(&dd);
-            original_hook(panic);
-        }));
-
-        let info = Info {
-            metadata_size: None,
-            name: name.clone(),
-            piece_length: 1048576,
-            file_length: None,
-            pieces: vec![0u8; 660],
-            files: Some(vec![
-                metainfo::File {
-                    length: 26384160,
-                    path: vec![file_a.to_owned()],
-                },
-                metainfo::File {
-                    length: 8281625,
-                    path: vec![file_b.to_owned()],
-                },
-                metainfo::File { length: 46, path: vec![file_c.to_owned()] },
-            ]),
-        };
-
         let magnet = format!(
             "magnet:?xt=urn:btih:9999999999999999999999999999999999999999&amp;\
-             dn={name}&amp;tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%\
-             2Fannounce&amp;tr=udp%3A%2F%2Ftracker.openbittorrent.com%3A6969%\
-             2Fannounce&amp;tr=udp%3A%2F%2Ftracker.bittor.pw%3A1337%\
-             2Fannounce&amp;tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&amp;\
-             tr=udp%3A%2F%2Fbt.xxx-tracker.com%3A2710%2Fannounce&amp;tr=udp%\
-             3A%2F%2Fpublic.popcorn-tracker.org%3A6969%2Fannounce&amp;tr=udp%\
-             3A%2F%2Feddie4.nl%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.\
-             torrent.eu.org%3A451%2Fannounce&amp;tr=udp%3A%2F%2Fp4p.arenabg.\
-             com%3A1337%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.tiny-vps.com%\
-             3A6969%2Fannounce&amp;tr=udp%3A%2F%2Fopen.stealth.si%3A80%\
-             2Fannounce"
+             dn={torrent_dir}&amp;tr=udp%3A%2F%2Ftracker.coppersurfer.tk%\
+             3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.openbittorrent.com%\
+             3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.bittor.pw%3A1337%"
         );
 
-        let (disk_tx, _disk_rx) = mpsc::channel::<DiskMsg>(3);
+        let files = vec![
+            metainfo::File {
+                length: BLOCK_LEN * 2,
+                path: vec!["foo.txt".to_owned()],
+            },
+            metainfo::File {
+                length: BLOCK_LEN * 2,
+                path: vec!["bar".to_owned(), "baz.txt".to_owned()],
+            },
+            metainfo::File {
+                length: BLOCK_LEN * 2,
+                path: vec![
+                    "bar".to_owned(),
+                    "buzz".to_owned(),
+                    "bee.txt".to_owned(),
+                ],
+            },
+        ];
 
-        let magnet = Magnet::new(&magnet).unwrap();
-        let daemon = Daemon::new(disk_tx.clone());
-        let torrent = Torrent::new(disk_tx, daemon.ctx.clone(), magnet);
-        let torrent_ctx = torrent.ctx.clone();
-        let info_hash: InfoHash = torrent_ctx.info_hash.clone();
-        let mut disk = Disk::new(download_dir.clone());
+        Disk::create_file_tree(&root_dir, &files).await?;
 
-        let mut info_ctx = torrent.ctx.info.write().await;
-        *info_ctx = info.clone();
-        drop(info_ctx);
+        for df in &files {
+            let mut path = PathBuf::from(&root_dir);
+            path.extend(&df.path);
 
-        disk.new_torrent(torrent_ctx).await.unwrap();
-
-        // write 0s to all files with their sizes
-        for file in &info.files.clone().unwrap() {
-            let mut path = PathBuf::new();
-
-            path.push(download_dir.clone());
-            path.push(name.clone());
-            path.push(file.path[0].clone());
-
-            let mut fs_file = fs::File::create(path).await.unwrap();
-
-            fs_file.write_all(&vec![0_u8; file.length as usize]).await.unwrap();
+            assert!(Disk::open_file(&path).await.is_ok());
+            assert!(Path::new(&path).is_file());
         }
+        // =======================
+        // spawning boilerplate
+        // =======================
 
-        let (_, meta_file) = disk
-            .get_file_from_block_info(
-                &BlockInfo { index: 0, begin: 0, len: BLOCK_LEN },
-                &info_hash,
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(meta_file, info.files.as_ref().unwrap()[0]);
-
-        // first block of the last piece
-        let block = BlockInfo { index: 25, begin: 0, len: 16384 };
-
-        let (_, meta_file) =
-            disk.get_file_from_block_info(&block, &info_hash).await.unwrap();
-
-        assert_eq!(meta_file, info.files.as_ref().unwrap()[0]);
-
-        // last block of the first file
-        let last_block = BlockInfo { index: 25, begin: 163840, len: 5920 };
-
-        let (_, meta_file) = disk
-            .get_file_from_block_info(&last_block, &info_hash)
-            .await
-            .unwrap();
-
-        assert_eq!(meta_file, info.files.as_ref().unwrap()[0]);
-
-        // first block of second file
-        let block = BlockInfo { index: 25, begin: 169760, len: BLOCK_LEN };
-
-        let (_, meta_file) =
-            disk.get_file_from_block_info(&block, &info_hash).await.unwrap();
-
-        assert_eq!(meta_file, info.files.as_ref().unwrap()[1]);
-
-        // second block of second file
-        let block =
-            BlockInfo { index: 25, begin: 169760 + BLOCK_LEN, len: BLOCK_LEN };
-
-        let (_, meta_file) =
-            disk.get_file_from_block_info(&block, &info_hash).await.unwrap();
-
-        assert_eq!(meta_file, info.files.as_ref().unwrap()[1]);
-
-        // last of second file
-        let block = BlockInfo { index: 33, begin: 49152, len: 13625 };
-
-        let (_, meta_file) =
-            disk.get_file_from_block_info(&block, &info_hash).await.unwrap();
-
-        assert_eq!(meta_file, info.files.as_ref().unwrap()[1]);
-
-        // last file of torrent
-        let block = BlockInfo { index: 33, begin: 62777, len: 46 };
-
-        let (_, meta_file) =
-            disk.get_file_from_block_info(&block, &info_hash).await.unwrap();
-
-        assert_eq!(meta_file, info.files.as_ref().unwrap()[2]);
-
-        tokio::fs::remove_dir_all(download_dir).await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn write_out_of_order() {
-        let name = "arch";
-        let original_hook = std::panic::take_hook();
-
-        let info = Info {
-            metadata_size: None,
-            file_length: None,
-            name: name.to_owned(),
-            piece_length: 3,
-            pieces: vec![
-                25, 24, 125, 201, 141, 206, 82, 250, 76, 78, 142, 5, 179, 65,
-                169, 183, 122, 81, 253, 38, 138, 247, 91, 50, 219, 108, 241,
-                131, 238, 114, 179, 138, 39, 171, 85, 195, 131, 111, 27, 237,
-            ],
-            files: Some(vec![
-                metainfo::File { length: 3, path: vec!["out.txt".to_owned()] },
-                metainfo::File { length: 3, path: vec!["last.txt".to_owned()] },
-            ]),
-        };
-
-        let magnet = format!(
-            "magnet:?xt=urn:btih:9999999999999999999999999999999999999999&amp;\
-             dn={name}&amp;tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%\
-             2Fannounce&amp;tr=udp%3A%2F%2Ftracker.openbittorrent.com%3A6969%\
-             2Fannounce&amp;tr=udp%3A%2F%2Ftracker.bittor.pw%3A1337%\
-             2Fannounce&amp;tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&amp;\
-             tr=udp%3A%2F%2Fbt.xxx-tracker.com%3A2710%2Fannounce&amp;tr=udp%\
-             3A%2F%2Fpublic.popcorn-tracker.org%3A6969%2Fannounce&amp;tr=udp%\
-             3A%2F%2Feddie4.nl%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.\
-             torrent.eu.org%3A451%2Fannounce&amp;tr=udp%3A%2F%2Fp4p.arenabg.\
-             com%3A1337%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.tiny-vps.com%\
-             3A6969%2Fannounce&amp;tr=udp%3A%2F%2Fopen.stealth.si%3A80%\
-             2Fannounce"
-        );
-        let mut rng = rand::rng();
-        let download_dir: String =
-            (0..20).map(|_| rng.sample(Alphanumeric) as char).collect();
-
-        let dd = download_dir.clone();
-        std::panic::set_hook(Box::new(move |panic| {
-            let _ = std::fs::remove_dir_all(&dd);
-            original_hook(panic);
-        }));
-
-        let (disk_tx, _) = mpsc::channel::<DiskMsg>(3);
-
-        let mut disk = Disk::new(download_dir.clone());
-
-        let magnet = Magnet::new(&magnet).unwrap();
-        let daemon = Daemon::new(disk_tx.clone());
-        let torrent = Torrent::new(disk_tx, daemon.ctx.clone(), magnet);
-        let info_hash = torrent.ctx.info_hash.clone();
-
-        let mut info_t = torrent.ctx.info.write().await;
-        *info_t = info.clone();
-        drop(info_t);
-
-        let (ptx, prx) = mpsc::channel(100);
-
-        let peer = Arc::new(PeerCtx {
-            tx: ptx,
-            direction: crate::peer::Direction::Outbound,
-            info_hash: info_hash.clone(),
-            id: PeerId::gen(),
-            uploaded: 0.into(),
-            downloaded: 0.into(),
-            am_choking: false.into(),
-            peer_choking: false.into(),
-            am_interested: true.into(),
-            peer_interested: true.into(),
-            local_addr: SocketAddr::V4(SocketAddrV4::new(
-                Ipv4Addr::new(0, 0, 0, 0),
-                0,
-            )),
-            remote_addr: SocketAddr::V4(SocketAddrV4::new(
-                Ipv4Addr::new(0, 0, 0, 0),
-                0,
-            )),
-        });
-
-        disk.new_peer(peer.clone());
-        disk.new_torrent(torrent.ctx.clone()).await.unwrap();
-
-        *disk.piece_strategy.get_mut(&info_hash).unwrap() =
-            PieceStrategy::Sequential;
-
-        // let mut p = torrent.ctx.bitfield.write().await;
-        // *p = Bitfield::from_vec(vec![255]);
-        drop(info);
-        // drop(p);
-
+        // let (disk_tx, _disk_rx) = mpsc::channel::<DiskMsg>(100);
+        // let mut disk = Disk::new(CONFIG.download_dir.clone());
+        // let disk_tx = disk.tx.clone();
         //
-        //  WRITE
+        // spawn(async move {
+        //     let _ = disk.run().await;
+        // });
         //
-
-        // second file
-        let block =
-            Block { index: 1, begin: 2, block: "9".as_bytes().to_owned() };
-        disk.write_block(&info_hash, block).await.unwrap();
-        let block =
-            Block { index: 1, begin: 1, block: "w".as_bytes().to_owned() };
-        disk.write_block(&info_hash, block).await.unwrap();
-        let block =
-            Block { index: 1, begin: 0, block: "x".as_bytes().to_owned() };
-        disk.write_block(&info_hash, block).await.unwrap();
-
-        // first file
-        let block =
-            Block { index: 0, begin: 2, block: "3".as_bytes().to_owned() };
-        disk.write_block(&info_hash, block).await.unwrap();
-        let block =
-            Block { index: 0, begin: 1, block: "1".as_bytes().to_owned() };
-        disk.write_block(&info_hash, block).await.unwrap();
-        let block =
-            Block { index: 0, begin: 0, block: "2".as_bytes().to_owned() };
-        disk.write_block(&info_hash, block).await.unwrap();
-
-        let mut d = Disk::open_file(format!("{download_dir}/arch/out.txt"))
-            .await
-            .unwrap();
-
-        let mut buf = Vec::new();
-        d.read_to_end(&mut buf).await.unwrap();
-        assert_eq!(buf, vec![50, 49, 51]);
-
-        let mut d = Disk::open_file(format!("{download_dir}/arch/last.txt"))
-            .await
-            .unwrap();
-
-        let mut buf = Vec::new();
-        d.read_to_end(&mut buf).await.unwrap();
-
-        let (otx, orx) = oneshot::channel();
-        disk.tx
-            .send(DiskMsg::RequestBlocks {
-                info_hash,
-                peer_id: peer.id.clone(),
-                recipient: otx,
-                qnt: 3,
-            })
-            .await
-            .unwrap();
-
-        let req_blocks = orx.await.unwrap();
-
-        println!("req blocks {req_blocks:?}");
-
-        assert_eq!(req_blocks.len(), 9);
-
-        assert_eq!(buf, vec![120, 119, 57]);
-        tokio::fs::remove_dir_all(&download_dir).await.unwrap();
-    }
-
-    // if we can write, read blocks, and then validate the hash of the pieces
-    #[tokio::test]
-    async fn read_write_blocks_and_validate_pieces() {
-        let original_hook = std::panic::take_hook();
-        let name = "qwerty";
-
-        let info = Info {
-            metadata_size: None,
-            file_length: None,
-            name: name.to_owned(),
-            piece_length: 12,
-            pieces: vec![
-                38, 217, 37, 110, 112, 21, 210, 221, 197, 150, 173, 23, 34,
-                152, 198, 113, 27, 205, 25, 45, 194, 40, 51, 230, 54, 11, 105,
-                175, 141, 19, 33, 54, 17, 20, 203, 34, 160, 241, 116, 6, 203,
-                60, 156, 40, 208, 56, 192, 60, 224, 249, 43, 30, 49, 0, 62, 13,
-                220, 56, 176, 42,
-            ],
-            files: Some(vec![
-                metainfo::File { length: 12, path: vec!["foo.txt".to_owned()] },
-                metainfo::File {
-                    length: 12,
-                    path: vec!["bar".to_owned(), "baz.txt".to_owned()],
-                },
-                metainfo::File {
-                    length: 12,
-                    path: vec![
-                        "bar".to_owned(),
-                        "buzz".to_owned(),
-                        "bee.txt".to_owned(),
-                    ],
-                },
-            ]),
-        };
-
-        let magnet = format!(
-            "magnet:?xt=urn:btih:9999999999999999999999999999999999999999&amp;\
-             dn={name}&amp;tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%\
-             2Fannounce&amp;tr=udp%3A%2F%2Ftracker.openbittorrent.com%3A6969%\
-             2Fannounce&amp;tr=udp%3A%2F%2Ftracker.bittor.pw%3A1337%\
-             2Fannounce&amp;tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&amp;\
-             tr=udp%3A%2F%2Fbt.xxx-tracker.com%3A2710%2Fannounce&amp;tr=udp%\
-             3A%2F%2Fpublic.popcorn-tracker.org%3A6969%2Fannounce&amp;tr=udp%\
-             3A%2F%2Feddie4.nl%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.\
-             torrent.eu.org%3A451%2Fannounce&amp;tr=udp%3A%2F%2Fp4p.arenabg.\
-             com%3A1337%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.tiny-vps.com%\
-             3A6969%2Fannounce&amp;tr=udp%3A%2F%2Fopen.stealth.si%3A80%\
-             2Fannounce"
-        );
-        let mut rng = rand::rng();
-        let download_dir: String =
-            (0..20).map(|_| rng.sample(Alphanumeric) as char).collect();
-
-        let dd = download_dir.clone();
-        std::panic::set_hook(Box::new(move |panic| {
-            let _ = std::fs::remove_dir_all(&dd);
-            original_hook(panic);
-        }));
-
-        let (disk_tx, _) = mpsc::channel::<DiskMsg>(3);
-
-        let mut disk = Disk::new(download_dir.clone());
-
-        let magnet = Magnet::new(&magnet).unwrap();
-        let daemon = Daemon::new(disk_tx.clone());
-        let torrent = Torrent::new(disk_tx, daemon.ctx.clone(), magnet);
-        let mut info_t = torrent.ctx.info.write().await;
-        *info_t = info.clone();
-        drop(info_t);
-
-        disk.new_torrent(torrent.ctx.clone()).await.unwrap();
-
-        let info_hash = torrent.ctx.info_hash.clone();
-        *disk.piece_strategy.get_mut(&info_hash).unwrap() =
-            PieceStrategy::Sequential;
-
-        // let mut p = torrent.ctx.bitfield.write().await;
-        // *p = Bitfield::from_vec(vec![255, 255, 255, 255]);
-        drop(info);
-        // drop(p);
-
+        // let mut daemon = Daemon::new(disk_tx);
+        // daemon.run().await?;
         //
-        //  WRITE BLOCKS
+        // let daemon = Daemon::new(disk_tx.clone());
         //
-
-        // write a block before reading it
-        // write entire first file (foo.txt)
-        let block = Block {
-            index: 0,
-            begin: 0,
-            block: vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
-        };
-
-        let result = disk.write_block(&info_hash, block.clone()).await;
-        assert!(result.is_ok());
-
-        // validate that the first file contains the bytes that we wrote
-        let block_info =
-            BlockInfo { index: 0, begin: 0, len: block.block.len() as u32 };
-        let result = disk.read_block(&info_hash, block_info).await;
-        assert_eq!(result.unwrap(), block.block);
-
-        // write a block before reading it
-        // write entire second file (/bar/baz.txt)
-        let block = Block {
-            index: 1,
-            begin: 0,
-            block: vec![13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24],
-        };
-
-        let result = disk.write_block(&info_hash, block.clone()).await;
-        assert!(result.is_ok());
-
-        // validate that the second file contains the bytes that we wrote
-        let block_info = BlockInfo { index: 1, begin: 0, len: 12 };
-        let result = disk.read_block(&info_hash, block_info).await;
-        assert_eq!(result.unwrap(), block.block);
-
-        // write a block before reading it
-        // write entire third file (/bar/buzz/bee.txt)
-        let block = Block {
-            index: 2,
-            begin: 0,
-            block: vec![25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36],
-        };
-
-        let result = disk.write_block(&info_hash, block.clone()).await;
-        assert!(result.is_ok());
-
-        // validate that the third file contains the bytes that we wrote
-        let block_info = BlockInfo { index: 2, begin: 0, len: 12 };
-        let result = disk.read_block(&info_hash, block_info).await;
-        assert_eq!(result.unwrap(), block.block);
-
+        // let magnet = Magnet::new(&magnet).unwrap();
+        // let torrent = Torrent::new(disk_tx, daemon.ctx.clone(), magnet);
+        // let torrent_ctx = torrent.ctx.clone();
         //
-        //  READ BLOCKS with offsets
+        // let mut disk = Disk::new(download_dir.clone());
         //
-
-        let block_info = BlockInfo { index: 0, begin: 1, len: 3 };
-
-        // read piece 1 block from first file
-        let result = disk.read_block(&info_hash, block_info).await;
-        assert_eq!(result.unwrap(), vec![2, 3, 4]);
-
-        let block_info = BlockInfo { index: 0, begin: 9, len: 3 };
-
-        // read piece 0 block from first file
-        let result = disk.read_block(&info_hash, block_info).await;
-        assert_eq!(result.unwrap(), vec![10, 11, 12]);
-
-        // last three bytes of file
-        let block_info = BlockInfo { index: 1, begin: 9, len: 3 };
-
-        // read piece 2 block from second file
-        let result = disk.read_block(&info_hash, block_info).await;
-        assert_eq!(result.unwrap(), vec![22, 23, 24]);
-
-        let block_info = BlockInfo { index: 1, begin: 1, len: 6 };
-
-        // read piece 2 block from second file
-        let result = disk.read_block(&info_hash, block_info).await;
-        assert_eq!(result.unwrap(), vec![14, 15, 16, 17, 18, 19]);
-
-        let block_info = BlockInfo { index: 2, begin: 0, len: 6 };
-
-        // read piece 3 block from third file
-        let result = disk.read_block(&info_hash, block_info).await;
-        assert_eq!(result.unwrap(), vec![25, 26, 27, 28, 29, 30]);
-
-        tokio::fs::remove_dir_all(&download_dir).await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn seek_files() {
-        let original_hook = std::panic::take_hook();
-        let name = "seekfiles";
-
-        let info = Info {
-            metadata_size: None,
-            piece_length: 32768,
-            pieces: vec![0; 5480], // 274 pieces * 20 bytes each
-            name: "name".to_string(),
-            file_length: None,
-            files: Some(vec![
-                // 308 blocks
-                metainfo::File {
-                    length: 5034059,
-                    path: vec!["dir".to_string(), "file_a.pdf".to_string()],
-                },
-                // 1 block
-                metainfo::File {
-                    length: 62,
-                    path: vec!["file_1.txt".to_string()],
-                },
-                // 1 block
-                metainfo::File {
-                    length: 237,
-                    path: vec!["file_2.txt".to_string()],
-                },
-            ]),
-        };
-
-        let magnet = format!(
-            "magnet:?xt=urn:btih:9999999999999999999999999999999999999999&amp;\
-             dn={name}&amp;tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%\
-             2Fannounce&amp;tr=udp%3A%2F%2Ftracker.openbittorrent.com%3A6969%\
-             2Fannounce&amp;tr=udp%3A%2F%2Ftracker.bittor.pw%3A1337%\
-             2Fannounce&amp;tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&amp;\
-             tr=udp%3A%2F%2Fbt.xxx-tracker.com%3A2710%2Fannounce&amp;tr=udp%\
-             3A%2F%2Fpublic.popcorn-tracker.org%3A6969%2Fannounce&amp;tr=udp%\
-             3A%2F%2Feddie4.nl%3A6969%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.\
-             torrent.eu.org%3A451%2Fannounce&amp;tr=udp%3A%2F%2Fp4p.arenabg.\
-             com%3A1337%2Fannounce&amp;tr=udp%3A%2F%2Ftracker.tiny-vps.com%\
-             3A6969%2Fannounce&amp;tr=udp%3A%2F%2Fopen.stealth.si%3A80%\
-             2Fannounce"
-        );
-        let mut rng = rand::rng();
-        let download_dir: String =
-            (0..20).map(|_| rng.sample(Alphanumeric) as char).collect();
-
-        let dd = download_dir.clone();
-        std::panic::set_hook(Box::new(move |panic| {
-            let _ = std::fs::remove_dir_all(&dd);
-            original_hook(panic);
-        }));
-
-        let (disk_tx, _) = mpsc::channel::<DiskMsg>(3);
-
-        let mut disk = Disk::new(download_dir.clone());
-
-        let magnet = Magnet::new(&magnet).unwrap();
-        let daemon = Daemon::new(disk_tx.clone());
-        let torrent = Torrent::new(disk_tx, daemon.ctx.clone(), magnet);
-        let mut info_t = torrent.ctx.info.write().await;
-        *info_t = info.clone();
-        drop(info_t);
-
-        disk.new_torrent(torrent.ctx.clone()).await.unwrap();
-
-        let info_hash = torrent.ctx.info_hash.clone();
-        *disk.piece_strategy.get_mut(&info_hash).unwrap() =
-            PieceStrategy::Sequential;
-
-        // let mut p = torrent.ctx.bitfield.write().await;
-        // *p = Bitfield::from_vec(vec![
-        //     255, 255, 255, 255, 255, 255, 255, 255, 255,
-        // ]);
-        drop(info);
-        // drop(p);
-
-        //
-        //  WRITE BLOCKS
-        //
-
-        // write a block before reading it
-        let block = Block { index: 0, begin: 0, block: vec![0; 5034059] };
-
-        let result = disk.write_block(&info_hash, block.clone()).await;
-        assert!(result.is_ok());
-
-        // write a block before reading it
-        let block = Block { index: 153, begin: 20555, block: vec![0; 62] };
-
-        let result = disk.write_block(&info_hash, block.clone()).await;
-        assert!(result.is_ok());
-
-        // let block_info = Block {
-        //     index: 153,
-        //     begin: 20617,
-        //     block: vec![0; 237],
+        // let info = Info {
+        //     metadata_size: None,
+        //     file_length: None,
+        //     name,
+        //     piece_length: BLOCK_LEN,
+        //     pieces: vec![],
+        //     files: Some(files.clone()),
         // };
-        let result = disk.write_block(&info_hash, block.clone()).await;
-        assert!(result.is_ok());
 
-        tokio::fs::remove_dir_all(&download_dir).await.unwrap();
+        //
+        // can write files
+        //
+
+        //
+        // can open files
+        //
+
+        // disk.torrent_ctxs
+        //     .insert(torrent_ctx.info_hash.clone(), torrent_ctx.clone());
+        //
+        // let mut info_ctx = torrent.ctx.info.write().await;
+        // *info_ctx = info.clone();
+        // drop(info_ctx);
+        //
+        // disk.new_torrent(torrent_ctx.clone()).await.unwrap();
+        //
+        // let mut path = PathBuf::new();
+        // path.push(&download_dir);
+        // path.push(&info.name);
+        // path.push("foo.txt");
+        //
+        // let result = Disk::open_file(path).await;
+        // assert!(result.is_ok());
+        //
+        // let mut path = PathBuf::new();
+        // path.push(&download_dir);
+        // path.push(&info.name);
+        // path.push("bar/baz.txt");
+        // let result = Disk::open_file(path).await;
+        // assert!(result.is_ok());
+        //
+        // let mut path = PathBuf::new();
+        // path.push(&download_dir);
+        // path.push(&info.name);
+        // path.push("bar/buzz/bee.txt");
+        // let result = Disk::open_file(path).await;
+        // assert!(result.is_ok());
+        //
+        // assert!(Path::new(&format!("{download_dir}/bla/foo.txt")).is_file());
+        // assert!(Path::new(&format!("{download_dir}/bla/bar/baz.txt")).
+        // is_file()); assert!(Path::new(&format!("{download_dir}/bla/
+        // bar/buzz/bee.txt"))     .is_file());
+
+        tokio::fs::remove_dir_all(root_dir).await.unwrap();
+
+        Ok(())
     }
 }
