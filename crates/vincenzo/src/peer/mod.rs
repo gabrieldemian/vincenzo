@@ -7,7 +7,7 @@ use bendy::encoding::ToBencode;
 pub use types::*;
 
 use futures::{SinkExt, StreamExt};
-use std::{collections::VecDeque, sync::atomic::Ordering, time::Duration};
+use std::{sync::atomic::Ordering, time::Duration};
 use tokio::{
     select,
     sync::oneshot,
@@ -30,6 +30,7 @@ use crate::{
 
 /// Data about a remote Peer that the client is connected to,
 /// but the client itself does not have a Peer struct.
+#[derive(Default)]
 pub struct Peer<S: PeerState> {
     pub state: S,
 }
@@ -431,7 +432,7 @@ impl Peer<Connected> {
         let local = self.state.ctx.local_addr;
         let remote = self.state.ctx.remote_addr;
 
-        let blocks: VecDeque<BlockInfo> =
+        let blocks: Vec<BlockInfo> =
             self.state.outgoing_requests.drain(..).collect();
 
         self.state.session.timed_out_request_count = 0;
@@ -500,8 +501,6 @@ impl Peer<Connected> {
             .await;
 
         let r = orx.await?;
-        let f = r.front();
-        debug!("first block requested {f:?}");
 
         info!("disk sent {:?} blocks", r.len());
         // self.state.session.last_outgoing_request_time =

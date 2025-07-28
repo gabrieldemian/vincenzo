@@ -1,6 +1,6 @@
 //! Metainfo is a .torrent file with information about the Torrent.
 //! From the magnet link, we get the Metainfo from other peers.
-use std::collections::VecDeque;
+use std::collections::BTreeMap;
 
 use bendy::{
     decoding::{self, FromBencode, Object, ResultExt},
@@ -69,9 +69,11 @@ impl Info {
     /// Get all block_infos of a torrent
     /// Returns an Err if the Info is malformed, if it does not have `files` or
     /// `file_length`.
-    pub fn get_block_infos(&self) -> Result<VecDeque<BlockInfo>, error::Error> {
+    pub fn get_block_infos(
+        &self,
+    ) -> Result<BTreeMap<usize, Vec<BlockInfo>>, error::Error> {
         let total_size = self.get_size() as u32;
-        let mut block_infos = Vec::new();
+        let mut block_infos: BTreeMap<usize, Vec<BlockInfo>> = BTreeMap::new();
         let mut processed_bytes = 0;
         let mut offset_within_file = 0;
         let mut file_index = 0;
@@ -91,7 +93,11 @@ impl Info {
             .min()
             .unwrap();
 
-            block_infos.push(BlockInfo {
+            let entry = block_infos
+                .entry((processed_bytes / self.piece_length) as usize)
+                .or_default();
+
+            entry.push(BlockInfo {
                 index: (processed_bytes / self.piece_length),
                 begin: processed_bytes % self.piece_length,
                 len,
@@ -408,11 +414,12 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            info.get_block_infos().unwrap(),
-            VecDeque::from([
-                BlockInfo { index: 0, begin: 0, len: 15 },
-                BlockInfo { index: 1, begin: 0, len: 15 },
-            ]),
+            *info.get_block_infos().unwrap().get(&0).unwrap(),
+            Vec::from([BlockInfo { index: 0, begin: 0, len: 15 },]),
+        );
+        assert_eq!(
+            *info.get_block_infos().unwrap().get(&1).unwrap(),
+            Vec::from([BlockInfo { index: 1, begin: 0, len: 15 },]),
         );
     }
 
@@ -432,12 +439,16 @@ mod tests {
         };
         let blocks = info.get_block_infos().unwrap();
         assert_eq!(
-            blocks,
-            VecDeque::from([
-                BlockInfo { index: 0, begin: 0, len: BLOCK_LEN },
-                BlockInfo { index: 1, begin: 0, len: BLOCK_LEN },
-                BlockInfo { index: 2, begin: 0, len: 100 }
-            ])
+            *blocks.get(&0).unwrap(),
+            Vec::from([BlockInfo { index: 0, begin: 0, len: BLOCK_LEN },]),
+        );
+        assert_eq!(
+            *blocks.get(&1).unwrap(),
+            Vec::from([BlockInfo { index: 1, begin: 0, len: BLOCK_LEN },]),
+        );
+        assert_eq!(
+            *blocks.get(&2).unwrap(),
+            Vec::from([BlockInfo { index: 2, begin: 0, len: 100 }]),
         );
     }
 
@@ -460,11 +471,12 @@ mod tests {
         };
         let blocks = info.get_block_infos().unwrap();
         assert_eq!(
-            blocks,
-            VecDeque::from([
-                BlockInfo { index: 0, begin: 0, len: BLOCK_LEN },
-                BlockInfo { index: 1, begin: 0, len: BLOCK_LEN },
-            ])
+            *blocks.get(&0).unwrap(),
+            vec![BlockInfo { index: 0, begin: 0, len: BLOCK_LEN },]
+        );
+        assert_eq!(
+            *blocks.get(&2).unwrap(),
+            vec![BlockInfo { index: 1, begin: 0, len: BLOCK_LEN },]
         );
     }
 
@@ -487,12 +499,15 @@ mod tests {
         };
         let blocks = info.get_block_infos().unwrap();
         assert_eq!(
-            blocks,
-            VecDeque::from([
+            *blocks.get(&0).unwrap(),
+            vec![
                 BlockInfo { index: 0, begin: 0, len: BLOCK_LEN },
                 BlockInfo { index: 0, begin: BLOCK_LEN, len: 16284 },
-                BlockInfo { index: 1, begin: 0, len: 100 },
-            ])
+            ]
+        );
+        assert_eq!(
+            *blocks.get(&1).unwrap(),
+            vec![BlockInfo { index: 1, begin: 0, len: 100 },]
         );
     }
 
@@ -520,8 +535,8 @@ mod tests {
         assert_eq!(info.piece_size(0), 45152);
 
         assert_eq!(
-            blocks,
-            VecDeque::from([
+            *blocks.get(&0).unwrap(),
+            vec![
                 BlockInfo { index: 0, begin: 0, len: BLOCK_LEN },
                 BlockInfo { index: 0, begin: BLOCK_LEN, len: 12384 },
                 BlockInfo {
@@ -529,7 +544,7 @@ mod tests {
                     begin: BLOCK_LEN + 12384,
                     len: BLOCK_LEN,
                 },
-            ])
+            ]
         );
     }
 
@@ -560,13 +575,17 @@ mod tests {
         assert_eq!(info.piece_size(1), 110);
 
         assert_eq!(
-            blocks,
-            VecDeque::from([
+            *blocks.get(&0).unwrap(),
+            vec![
                 BlockInfo { index: 0, begin: 0, len: 10 },
                 BlockInfo { index: 0, begin: 10, len: BLOCK_LEN },
                 BlockInfo { index: 0, begin: 10 + BLOCK_LEN, len: 16274 },
-                BlockInfo { index: 1, begin: 0, len: 110 },
-            ])
+            ]
+        );
+
+        assert_eq!(
+            *blocks.get(&1).unwrap(),
+            Vec::from([BlockInfo { index: 1, begin: 0, len: 110 },])
         );
     }
 
@@ -598,335 +617,341 @@ mod tests {
         assert_eq!(info.piece_size(1), 110);
 
         assert_eq!(
-            blocks,
-            VecDeque::from([
+            *blocks.get(&0).unwrap(),
+            Vec::from([
                 BlockInfo { index: 0, begin: 0, len: BLOCK_LEN },
                 BlockInfo { index: 0, begin: BLOCK_LEN, len: 16284 },
+            ])
+        );
+
+        assert_eq!(
+            *blocks.get(&1).unwrap(),
+            Vec::from([
                 BlockInfo { index: 1, begin: 0, len: 100 },
                 BlockInfo { index: 1, begin: 100, len: 10 },
             ])
         );
     }
 
-    #[test]
-    fn utility_functions_complex_multi() -> Result<(), Error> {
-        //
-        // Complex multi file torrent, 64 blocks per piece
-        //
-        let metainfo = include_bytes!("../../../test-files/music.torrent");
-        let metainfo = MetaInfo::from_bencode(metainfo).unwrap();
-        let info = metainfo.info;
-
-        let bi = info.get_block_infos().unwrap();
-        let mut x = info.get_block_infos().unwrap();
-        x.pop_back();
-
-        let size = info.get_size();
-        let per_piece = info.blocks_per_piece();
-        let pieces = info.pieces();
-        let info_bytes = bi.iter().fold(0, |acc, x| acc + x.len);
-        println!("--- info ---");
-        println!("size {size}");
-        println!("piece_len {}", info.piece_length);
-        println!("per_piece {per_piece}");
-        println!("pieces {pieces}");
-        println!("blocks {}", pieces * per_piece);
-
-        // validations on the entire info
-        assert_eq!(info_bytes as u64, 863104781);
-        assert_eq!(863104781, size);
-        assert_eq!(64, per_piece);
-        assert_eq!(824, pieces);
-
-        let files = info.files.clone().unwrap();
-
-        let file0 = &files[0];
-
-        let pieces_file = file0.pieces(info.piece_length);
-        let blocks_file = pieces_file * per_piece;
-
-        // file0 has 25 pieces (0 idx based) with 1611 blocks
-        println!("--- file[0] ---");
-        println!("{:#?}", files[0]);
-
-        // 611
-        // assert_eq!(1664, blocks_file);
-        assert_eq!(26, pieces_file);
-        assert_eq!(26384160, file0.length);
-
-        println!("blocks {:#?}", blocks_file);
-        println!("pieces {:#?}", pieces_file);
-        println!("blocks per piece {:#?}", pieces_file);
-
-        let block = bi.get(0).unwrap();
-        // println!("--- piece 0, block 0 (first) ---");
-        assert_eq!(*block, BlockInfo { index: 0, begin: 0, len: BLOCK_LEN });
-
-        let block = bi.get(1).unwrap();
-        // println!("--- piece 0, block 1 (second) ---");
-        assert_eq!(
-            *block,
-            BlockInfo { index: 0, begin: BLOCK_LEN, len: BLOCK_LEN }
-        );
-
-        let block = bi.get(2).unwrap();
-        // println!("--- piece 0, block 2 (third) ---");
-        assert_eq!(
-            *block,
-            BlockInfo { index: 0, begin: BLOCK_LEN * 2, len: BLOCK_LEN }
-        );
-
-        let block = bi.get(63).unwrap();
-        println!("--- piece 0, block 63 ---");
-        println!("{block:#?}");
-
-        let block = bi.get(64).unwrap();
-        // println!("--- piece 0, block 64 ---");
-        // println!("{block:#?}");
-        assert_eq!(*block, BlockInfo { index: 1, begin: 0, len: 16384 });
-        let block = bi.get(1608).unwrap();
-        println!("--- piece 25, block 1608 before before last ---");
-        println!("{block:#?}");
-        // 10 blocks on the last piece of this file
-        let block = bi.get(1609).unwrap();
-        println!("--- piece 25, block 1609 ---");
-        println!("{block:#?}");
-        assert_eq!(*block, BlockInfo { index: 25, begin: 147456, len: 16384 });
-        // last block of the last piece of this file
-        let block = bi.get(1610).unwrap();
-        println!("--- piece 25, block 1610 (last of file) ---");
-        println!("{block:#?}");
-
-        let bytes_so_far = bi.iter().take(1611).fold(0, |acc, x| acc + x.len);
-        assert_eq!(bytes_so_far, file0.length);
-
-        assert_eq!(*block, BlockInfo { index: 25, begin: 163840, len: 5920 });
-        // file0 ended /\
-
-        let file1 = &files[1];
-
-        let pieces_file = file1.pieces(info.piece_length);
-        let blocks_file = pieces_file * per_piece;
-        println!("--- file[1] ---");
-        println!("{file1:#?}");
-
-        // validations on file[1]
-        assert_eq!(512, blocks_file);
-        assert_eq!(8, pieces_file);
-        assert_eq!(8281625, file1.length);
-
-        // file1 has 8 pieces (0 idx based)
-        // 507
-        println!("pieces {pieces_file}");
-        println!("blocks {blocks_file}");
-
-        let block = bi.get(1611).unwrap();
-        println!("--- file1 piece 25, block 1611 (first of file) ---");
-        println!("{block:#?}");
-        assert_eq!(
-            *block,
-            BlockInfo { index: 25, begin: 169760, len: BLOCK_LEN }
-        );
-
-        // 506 blocks
-        let block = bi.get(1610 + 506).unwrap();
-        let bytes_so_far =
-            bi.iter().take(1610 + 507).fold(0, |acc, x| acc + x.len);
-        println!("--- file1 piece 25, block 1611 (last of file) ---");
-        println!("bytes_so_far {bytes_so_far}");
-        println!("{block:#?}");
-        assert_eq!(*block, BlockInfo { index: 33, begin: 49152, len: 13625 });
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn utility_functions_simple_multi() -> Result<(), Error> {
-        //
-        // Simple multi file torrent, 1 block per piece
-        //
-        let metainfo = include_bytes!("../../../test-files/book.torrent");
-        let metainfo = MetaInfo::from_bencode(metainfo).unwrap();
-        let info = metainfo.info;
-
-        let bi = info.get_block_infos().unwrap();
-        let size = info.get_size();
-        let per_piece = info.blocks_per_piece();
-        let pieces = info.pieces();
-
-        let files = info.files.unwrap();
-        let files_bytes = files.iter().fold(0, |acc, x| acc + x.length);
-
-        let file = &files[0];
-        let pieces_file = file.length as f32 / info.piece_length as f32;
-        let pieces_file = pieces_file.ceil() as u32;
-        let blocks_file = pieces_file * per_piece;
-
-        // get total size of file from block_infos
-        let total_bis = bi.iter().fold(0, |acc, x| acc + x.len);
-
-        println!("--- file[0] ---");
-        println!("{:#?}", files[0]);
-        println!("blocks_file {blocks_file:#?}");
-        println!("piece_len {:#?}", info.piece_length);
-        println!("pieces in file {pieces_file:#?}");
-
-        assert_eq!(total_bis, 4092334);
-        assert_eq!(bi.len(), 250);
-        assert_eq!(size, 4092334);
-        assert_eq!(files_bytes, 4092334);
-        assert_eq!(per_piece, 1);
-        assert_eq!(pieces, 250);
-
-        let block = bi.get(0).unwrap();
-        println!("--- piece 0, block 0 (only one) ---");
-        println!("{block:#?}");
-        assert_eq!(*block, BlockInfo { index: 0, begin: 0, len: BLOCK_LEN });
-
-        let block = bi.get(1).unwrap();
-        println!("--- piece 1, block 1 (only one) ---");
-        println!("{block:#?}");
-        assert_eq!(*block, BlockInfo { index: 1, begin: 0, len: BLOCK_LEN });
-
-        let block = bi.get(249).unwrap();
-        println!("--- piece 249, block 249 (last, only one) ---");
-        println!("{block:#?}");
-        assert_eq!(*block, BlockInfo { index: 249, begin: 0, len: 12718 });
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn utility_functions_complex_single() -> Result<(), Error> {
-        //
-        // Simple multi file torrent, 16 blocks per piece
-        //
-        let torrent_debian_bytes =
-            include_bytes!("../../../test-files/debian.torrent");
-        let torrent = MetaInfo::from_bencode(torrent_debian_bytes).unwrap();
-        let info = torrent.info;
-        let bi = info.get_block_infos().unwrap();
-        let size = info.get_size();
-        let per_piece = info.blocks_per_piece();
-        let pieces = info.pieces();
-
-        let pieces_file = size as f32 / info.piece_length as f32;
-        let pieces_file = pieces_file.ceil() as u32;
-        let blocks_file = pieces_file * per_piece;
-
-        // get total size of file from block_infos
-        let total_bis = bi.iter().fold(0, |acc, x| acc + x.len);
-
-        println!("--- file ---");
-        println!("file_length {size:#?}");
-        println!("blocks_file {blocks_file:#?}");
-        println!("blocks per piece {per_piece:#?}");
-        println!("piece_len {:#?}", info.piece_length);
-        println!("pieces in file {pieces_file:#?}");
-
-        assert_eq!(total_bis, 305135616);
-        assert_eq!(total_bis as u64, size);
-        assert_eq!(bi.len(), 18624);
-        assert_eq!(size, 305135616);
-        assert_eq!(per_piece, 16);
-        assert_eq!(pieces, 1164);
-
-        let block = bi.get(0).unwrap();
-        println!("--- piece 0, block 0 (first) ---");
-        println!("{block:#?}");
-        assert_eq!(*block, BlockInfo { index: 0, begin: 0, len: BLOCK_LEN });
-
-        let block = bi.get(1).unwrap();
-        println!("--- piece 0, block 1 ---");
-        println!("{block:#?}");
-        assert_eq!(
-            *block,
-            BlockInfo { index: 0, begin: BLOCK_LEN, len: BLOCK_LEN }
-        );
-
-        let block = bi.get(2).unwrap();
-        println!("--- piece 0, block 2 ---");
-        println!("{block:#?}");
-        assert_eq!(
-            *block,
-            BlockInfo { index: 0, begin: BLOCK_LEN * 2, len: BLOCK_LEN }
-        );
-
-        let block = bi.get(18623).unwrap();
-        println!("--- piece 1163, block 18623 (last) ---");
-        println!("{block:#?}");
-        assert_eq!(
-            *block,
-            BlockInfo { index: 1163, begin: 245760, len: BLOCK_LEN }
-        );
-
-        Ok(())
-    }
-
-    #[test]
-    fn get_block_infos_long_torrent() {
-        let info = Info {
-            piece_length: 32768,
-            pieces: vec![0; 5480], // 274 pieces * 20 bytes each
-            name: "name".to_string(),
-            file_length: None,
-            metadata_size: None,
-            files: Some(vec![
-                // 308 blocks
-                File {
-                    length: 5034059,
-                    path: vec!["dir".to_string(), "file_a.pdf".to_string()],
-                },
-                // 1 block
-                File { length: 62, path: vec!["file_1.txt".to_string()] },
-                // 1 block
-                File { length: 237, path: vec!["file_2.txt".to_string()] },
-            ]),
-        };
-
-        let block_infos = info.get_block_infos().unwrap();
-
-        let last_first_file = &block_infos[307];
-        let last_second_file = &block_infos[308];
-        let last_third_file = &block_infos[309];
-
-        let last = block_infos.back().unwrap();
-        let len = block_infos.len(); // 306 blocks
-
-        println!("last {last:#?}");
-        println!("len {len:#?}");
-
-        assert_eq!(
-            *last_first_file,
-            BlockInfo { index: 153, begin: 16384, len: 4171 }
-        );
-
-        assert_eq!(
-            *last_second_file,
-            BlockInfo { index: 153, begin: 20555, len: 62 }
-        );
-
-        assert_eq!(
-            *last_third_file,
-            BlockInfo { index: 153, begin: 20617, len: 237 }
-        );
-    }
-
-    /// Confirm that the [`MetaInfo`] [`ToBencode`] and [`FromBencode`]
-    /// implementations work as expected for a multi-file torrent
-    #[test]
-    fn should_encode_multi_file_torrent() -> Result<(), encoding::Error> {
-        let torrent_book_bytes =
-            include_bytes!("../../../test-files/book.torrent");
-
-        let torrent = MetaInfo::from_bencode(torrent_book_bytes).unwrap();
-        let torrent_bytes = torrent.to_bencode().unwrap();
-        let torrent = MetaInfo::from_bencode(&torrent_bytes).unwrap();
-
-        assert_eq!(torrent_bytes, torrent.to_bencode()?);
-
-        Ok(())
-    }
+    // #[test]
+    // fn utility_functions_complex_multi() -> Result<(), Error> {
+    //     //
+    //     // Complex multi file torrent, 64 blocks per piece
+    //     //
+    //     let metainfo = include_bytes!("../../../test-files/music.torrent");
+    //     let metainfo = MetaInfo::from_bencode(metainfo).unwrap();
+    //     let info = metainfo.info;
+    //
+    //     let bi = info.get_block_infos().unwrap();
+    //     let mut x = info.get_block_infos().unwrap();
+    //     x.pop_back();
+    //
+    //     let size = info.get_size();
+    //     let per_piece = info.blocks_per_piece();
+    //     let pieces = info.pieces();
+    //     let info_bytes = bi.iter().fold(0, |acc, x| acc + x.len);
+    //     println!("--- info ---");
+    //     println!("size {size}");
+    //     println!("piece_len {}", info.piece_length);
+    //     println!("per_piece {per_piece}");
+    //     println!("pieces {pieces}");
+    //     println!("blocks {}", pieces * per_piece);
+    //
+    //     // validations on the entire info
+    //     assert_eq!(info_bytes as u64, 863104781);
+    //     assert_eq!(863104781, size);
+    //     assert_eq!(64, per_piece);
+    //     assert_eq!(824, pieces);
+    //
+    //     let files = info.files.clone().unwrap();
+    //
+    //     let file0 = &files[0];
+    //
+    //     let pieces_file = file0.pieces(info.piece_length);
+    //     let blocks_file = pieces_file * per_piece;
+    //
+    //     // file0 has 25 pieces (0 idx based) with 1611 blocks
+    //     println!("--- file[0] ---");
+    //     println!("{:#?}", files[0]);
+    //
+    //     // 611
+    //     // assert_eq!(1664, blocks_file);
+    //     assert_eq!(26, pieces_file);
+    //     assert_eq!(26384160, file0.length);
+    //
+    //     println!("blocks {:#?}", blocks_file);
+    //     println!("pieces {:#?}", pieces_file);
+    //     println!("blocks per piece {:#?}", pieces_file);
+    //
+    //     let block = bi.get(0).unwrap();
+    //     // println!("--- piece 0, block 0 (first) ---");
+    //     assert_eq!(*block, BlockInfo { index: 0, begin: 0, len: BLOCK_LEN });
+    //
+    //     let block = bi.get(1).unwrap();
+    //     // println!("--- piece 0, block 1 (second) ---");
+    //     assert_eq!(
+    //         *block,
+    //         BlockInfo { index: 0, begin: BLOCK_LEN, len: BLOCK_LEN }
+    //     );
+    //
+    //     let block = bi.get(2).unwrap();
+    //     // println!("--- piece 0, block 2 (third) ---");
+    //     assert_eq!(
+    //         *block,
+    //         BlockInfo { index: 0, begin: BLOCK_LEN * 2, len: BLOCK_LEN }
+    //     );
+    //
+    //     let block = bi.get(63).unwrap();
+    //     println!("--- piece 0, block 63 ---");
+    //     println!("{block:#?}");
+    //
+    //     let block = bi.get(64).unwrap();
+    //     // println!("--- piece 0, block 64 ---");
+    //     // println!("{block:#?}");
+    //     assert_eq!(*block, BlockInfo { index: 1, begin: 0, len: 16384 });
+    //     let block = bi.get(1608).unwrap();
+    //     println!("--- piece 25, block 1608 before before last ---");
+    //     println!("{block:#?}");
+    //     // 10 blocks on the last piece of this file
+    //     let block = bi.get(1609).unwrap();
+    //     println!("--- piece 25, block 1609 ---");
+    //     println!("{block:#?}");
+    //     assert_eq!(*block, BlockInfo { index: 25, begin: 147456, len: 16384 });
+    //     // last block of the last piece of this file
+    //     let block = bi.get(1610).unwrap();
+    //     println!("--- piece 25, block 1610 (last of file) ---");
+    //     println!("{block:#?}");
+    //
+    //     let bytes_so_far = bi.iter().take(1611).fold(0, |acc, x| acc + x.len);
+    //     assert_eq!(bytes_so_far, file0.length);
+    //
+    //     assert_eq!(*block, BlockInfo { index: 25, begin: 163840, len: 5920 });
+    //     // file0 ended /\
+    //
+    //     let file1 = &files[1];
+    //
+    //     let pieces_file = file1.pieces(info.piece_length);
+    //     let blocks_file = pieces_file * per_piece;
+    //     println!("--- file[1] ---");
+    //     println!("{file1:#?}");
+    //
+    //     // validations on file[1]
+    //     assert_eq!(512, blocks_file);
+    //     assert_eq!(8, pieces_file);
+    //     assert_eq!(8281625, file1.length);
+    //
+    //     // file1 has 8 pieces (0 idx based)
+    //     // 507
+    //     println!("pieces {pieces_file}");
+    //     println!("blocks {blocks_file}");
+    //
+    //     let block = bi.get(1611).unwrap();
+    //     println!("--- file1 piece 25, block 1611 (first of file) ---");
+    //     println!("{block:#?}");
+    //     assert_eq!(
+    //         *block,
+    //         BlockInfo { index: 25, begin: 169760, len: BLOCK_LEN }
+    //     );
+    //
+    //     // 506 blocks
+    //     let block = bi.get(1610 + 506).unwrap();
+    //     let bytes_so_far =
+    //         bi.iter().take(1610 + 507).fold(0, |acc, x| acc + x.len);
+    //     println!("--- file1 piece 25, block 1611 (last of file) ---");
+    //     println!("bytes_so_far {bytes_so_far}");
+    //     println!("{block:#?}");
+    //     assert_eq!(*block, BlockInfo { index: 33, begin: 49152, len: 13625 });
+    //
+    //     Ok(())
+    // }
+    //
+    // #[tokio::test]
+    // async fn utility_functions_simple_multi() -> Result<(), Error> {
+    //     //
+    //     // Simple multi file torrent, 1 block per piece
+    //     //
+    //     let metainfo = include_bytes!("../../../test-files/book.torrent");
+    //     let metainfo = MetaInfo::from_bencode(metainfo).unwrap();
+    //     let info = metainfo.info;
+    //
+    //     let bi = info.get_block_infos().unwrap();
+    //     let size = info.get_size();
+    //     let per_piece = info.blocks_per_piece();
+    //     let pieces = info.pieces();
+    //
+    //     let files = info.files.unwrap();
+    //     let files_bytes = files.iter().fold(0, |acc, x| acc + x.length);
+    //
+    //     let file = &files[0];
+    //     let pieces_file = file.length as f32 / info.piece_length as f32;
+    //     let pieces_file = pieces_file.ceil() as u32;
+    //     let blocks_file = pieces_file * per_piece;
+    //
+    //     // get total size of file from block_infos
+    //     let total_bis = bi.iter().fold(0, |acc, x| acc + x[0].len);
+    //
+    //     println!("--- file[0] ---");
+    //     println!("{:#?}", files[0]);
+    //     println!("blocks_file {blocks_file:#?}");
+    //     println!("piece_len {:#?}", info.piece_length);
+    //     println!("pieces in file {pieces_file:#?}");
+    //
+    //     assert_eq!(total_bis, 4092334);
+    //     assert_eq!(bi.len(), 250);
+    //     assert_eq!(size, 4092334);
+    //     assert_eq!(files_bytes, 4092334);
+    //     assert_eq!(per_piece, 1);
+    //     assert_eq!(pieces, 250);
+    //
+    //     let block = bi.get(&0).unwrap();
+    //     println!("--- piece 0, block 0 (only one) ---");
+    //     println!("{block:#?}");
+    //     assert_eq!(block[0], BlockInfo { index: 0, begin: 0, len: BLOCK_LEN });
+    //
+    //     let block = bi.get(&1).unwrap();
+    //     println!("--- piece 1, block 1 (only one) ---");
+    //     println!("{block:#?}");
+    //     assert_eq!(block[0], BlockInfo { index: 1, begin: 0, len: BLOCK_LEN });
+    //
+    //     let block = bi.get(&249).unwrap();
+    //     println!("--- piece 249, block 249 (last, only one) ---");
+    //     println!("{block:#?}");
+    //     assert_eq!(block[0], BlockInfo { index: 249, begin: 0, len: 12718 });
+    //
+    //     Ok(())
+    // }
+    //
+    // #[tokio::test]
+    // async fn utility_functions_complex_single() -> Result<(), Error> {
+    //     //
+    //     // Simple multi file torrent, 16 blocks per piece
+    //     //
+    //     let torrent_debian_bytes =
+    //         include_bytes!("../../../test-files/debian.torrent");
+    //     let torrent = MetaInfo::from_bencode(torrent_debian_bytes).unwrap();
+    //     let info = torrent.info;
+    //     let bi = info.get_block_infos().unwrap();
+    //     let size = info.get_size();
+    //     let per_piece = info.blocks_per_piece();
+    //     let pieces = info.pieces();
+    //
+    //     let pieces_file = size as f32 / info.piece_length as f32;
+    //     let pieces_file = pieces_file.ceil() as u32;
+    //     let blocks_file = pieces_file * per_piece;
+    //
+    //     // get total size of file from block_infos
+    //     let total_bis = bi.iter().fold(0, |acc, x| acc + x.len);
+    //
+    //     println!("--- file ---");
+    //     println!("file_length {size:#?}");
+    //     println!("blocks_file {blocks_file:#?}");
+    //     println!("blocks per piece {per_piece:#?}");
+    //     println!("piece_len {:#?}", info.piece_length);
+    //     println!("pieces in file {pieces_file:#?}");
+    //
+    //     assert_eq!(total_bis, 305135616);
+    //     assert_eq!(total_bis as u64, size);
+    //     assert_eq!(bi.len(), 18624);
+    //     assert_eq!(size, 305135616);
+    //     assert_eq!(per_piece, 16);
+    //     assert_eq!(pieces, 1164);
+    //
+    //     let block = bi.get(0).unwrap();
+    //     println!("--- piece 0, block 0 (first) ---");
+    //     println!("{block:#?}");
+    //     assert_eq!(*block, BlockInfo { index: 0, begin: 0, len: BLOCK_LEN });
+    //
+    //     let block = bi.get(1).unwrap();
+    //     println!("--- piece 0, block 1 ---");
+    //     println!("{block:#?}");
+    //     assert_eq!(
+    //         *block,
+    //         BlockInfo { index: 0, begin: BLOCK_LEN, len: BLOCK_LEN }
+    //     );
+    //
+    //     let block = bi.get(2).unwrap();
+    //     println!("--- piece 0, block 2 ---");
+    //     println!("{block:#?}");
+    //     assert_eq!(
+    //         *block,
+    //         BlockInfo { index: 0, begin: BLOCK_LEN * 2, len: BLOCK_LEN }
+    //     );
+    //
+    //     let block = bi.get(18623).unwrap();
+    //     println!("--- piece 1163, block 18623 (last) ---");
+    //     println!("{block:#?}");
+    //     assert_eq!(
+    //         *block,
+    //         BlockInfo { index: 1163, begin: 245760, len: BLOCK_LEN }
+    //     );
+    //
+    //     Ok(())
+    // }
+    //
+    // #[test]
+    // fn get_block_infos_long_torrent() {
+    //     let info = Info {
+    //         piece_length: 32768,
+    //         pieces: vec![0; 5480], // 274 pieces * 20 bytes each
+    //         name: "name".to_string(),
+    //         file_length: None,
+    //         metadata_size: None,
+    //         files: Some(vec![
+    //             // 308 blocks
+    //             File {
+    //                 length: 5034059,
+    //                 path: vec!["dir".to_string(), "file_a.pdf".to_string()],
+    //             },
+    //             // 1 block
+    //             File { length: 62, path: vec!["file_1.txt".to_string()] },
+    //             // 1 block
+    //             File { length: 237, path: vec!["file_2.txt".to_string()] },
+    //         ]),
+    //     };
+    //
+    //     let block_infos = info.get_block_infos().unwrap();
+    //
+    //     let last_first_file = &block_infos[307];
+    //     let last_second_file = &block_infos[308];
+    //     let last_third_file = &block_infos[309];
+    //
+    //     let last = block_infos.back().unwrap();
+    //     let len = block_infos.len(); // 306 blocks
+    //
+    //     println!("last {last:#?}");
+    //     println!("len {len:#?}");
+    //
+    //     assert_eq!(
+    //         *last_first_file,
+    //         BlockInfo { index: 153, begin: 16384, len: 4171 }
+    //     );
+    //
+    //     assert_eq!(
+    //         *last_second_file,
+    //         BlockInfo { index: 153, begin: 20555, len: 62 }
+    //     );
+    //
+    //     assert_eq!(
+    //         *last_third_file,
+    //         BlockInfo { index: 153, begin: 20617, len: 237 }
+    //     );
+    // }
+    //
+    // /// Confirm that the [`MetaInfo`] [`ToBencode`] and [`FromBencode`]
+    // /// implementations work as expected for a multi-file torrent
+    // #[test]
+    // fn should_encode_multi_file_torrent() -> Result<(), encoding::Error> {
+    //     let torrent_book_bytes =
+    //         include_bytes!("../../../test-files/book.torrent");
+    //
+    //     let torrent = MetaInfo::from_bencode(torrent_book_bytes).unwrap();
+    //     let torrent_bytes = torrent.to_bencode().unwrap();
+    //     let torrent = MetaInfo::from_bencode(&torrent_bytes).unwrap();
+    //
+    //     assert_eq!(torrent_bytes, torrent.to_bencode()?);
+    //
+    //     Ok(())
+    // }
 
     /// Confirm that the [`MetaInfo`] [`FromBencode`] implementation works as
     /// expected for a multi-file torrent

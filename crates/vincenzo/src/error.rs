@@ -1,4 +1,4 @@
-use std::io;
+use std::{collections::BTreeMap, io};
 
 use thiserror::Error;
 use tokio::sync::{mpsc, oneshot};
@@ -6,6 +6,7 @@ use tokio::sync::{mpsc, oneshot};
 use crate::{
     daemon::DaemonMsg,
     disk::DiskMsg,
+    extensions::Block,
     peer::{PeerId, PeerMsg},
     torrent::TorrentMsg,
     tracker::TrackerMsg,
@@ -26,6 +27,12 @@ impl From<bendy::encoding::Error> for Error {
 impl From<mpsc::error::SendError<DaemonMsg>> for Error {
     fn from(value: mpsc::error::SendError<DaemonMsg>) -> Self {
         Self::SendDaemonError(value.to_string())
+    }
+}
+
+impl From<Option<BTreeMap<u32, Block>>> for Error {
+    fn from(_value: Option<BTreeMap<u32, Block>>) -> Self {
+        Self::TorrentDoesNotExist
     }
 }
 
