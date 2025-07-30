@@ -168,7 +168,6 @@ impl Disk {
                     tx.send(TorrentMsg::IncrementUploaded(len as u64)).await?;
                 }
                 DiskMsg::WriteBlock { block, info_hash } => {
-                    debug!("WriteBlock");
                     self.write_block(&info_hash, block).await?;
                 }
                 DiskMsg::OpenFile(path, tx) => {
@@ -254,7 +253,9 @@ impl Disk {
             create_dir_all(&path).await?;
 
             path.push(file);
-            Self::open_file(path).await?;
+            let mut f = Self::open_file(path).await?;
+            f.write_all(&vec![0u8; meta_file.length as usize]).await?;
+            f.flush().await?;
         }
         Ok(())
     }
@@ -277,7 +278,6 @@ impl Disk {
         self.torrent_info.insert(info_hash.clone(), info.clone());
 
         let base = self.base_path(info_hash);
-        let pieces_len = info.pieces();
 
         let files = match &info.files {
             Some(files) => files.clone(),
@@ -293,7 +293,7 @@ impl Disk {
         self.piece_strategy.insert(info_hash.clone(), PieceStrategy::default());
         let piece_order = self.piece_strategy.get(info_hash).cloned().unwrap();
 
-        let mut all_pieces: Vec<u32> = (0..pieces_len).collect();
+        let mut all_pieces: Vec<u32> = (0..info.pieces()).collect();
 
         if piece_order != PieceStrategy::Sequential {
             all_pieces.shuffle(&mut rand::rng());
@@ -304,13 +304,11 @@ impl Disk {
         self.pieces.insert(info_hash.clone(), all_pieces);
         self.cache.insert(info_hash.clone(), BTreeMap::new());
 
-        // generate all block_infos of this torrent
-        let blocks = info.get_block_infos()?;
-
         let pieces_blocks =
             self.pieces_blocks.entry(info_hash.clone()).or_default();
 
-        *pieces_blocks = blocks;
+        // generate all block_infos of this torrent
+        *pieces_blocks = info.get_block_infos()?;
 
         self.downloaded_pieces_len.insert(info_hash.clone(), 0);
 
@@ -526,7 +524,6 @@ impl Disk {
     ///
     /// If the download algorithm of the pieces is "Random", and it has
     /// downloaded the first piece, change the algorithm to rarest-first.
-    #[tracing::instrument(skip(self, block))]
     pub async fn write_block(
         &mut self,
         info_hash: &InfoHash,
@@ -542,12 +539,14 @@ impl Disk {
             .ok_or(Error::TorrentDoesNotExist)?
             .clone();
 
-        self.cache
+        let cache = self
+            .cache
             .get_mut(info_hash)
             .ok_or(Error::TorrentDoesNotExist)?
-            .get_mut(&index)
-            .ok_or(Error::TorrentDoesNotExist)?
-            .push(block);
+            .entry(index)
+            .or_default();
+
+        cache.push(block);
 
         // continue function if the piece was fully downloaded
         if self
@@ -604,7 +603,7 @@ impl Disk {
                 "first piece downloaded, and piece order is random, switching \
                  to rarest-first"
             );
-            self.rarest_first(info_hash).await?;
+            // self.rarest_first(info_hash).await?;
         }
 
         Ok(())
@@ -643,18 +642,17 @@ impl Disk {
                 {
                     path.extend(&file_info.path);
 
-                    let mut file = Self::open_file(&path).await?;
-
                     let file_relative_offset =
                         absolute_offset - accumulated_length;
 
+                    let mut file = Self::open_file(&path).await?;
+                    println!("seeking {file_relative_offset:?} {file:?}");
                     file.seek(SeekFrom::Start(file_relative_offset)).await?;
 
                     return Ok((file, file_info.clone()));
                 }
                 accumulated_length += file_info.length as u64;
             }
-
             Err(Error::FileOpenError("Offset exceeds file sizes".to_owned()))
         } else {
             let mut file = Self::open_file(path).await?;
@@ -755,8 +753,6 @@ impl Disk {
 
         let hash_from_info = pieces[b..e].to_owned();
 
-        let mut hash = sha1_smol::Sha1::new();
-
         let blocks = self
             .cache
             .get_mut(info_hash)
@@ -766,13 +762,14 @@ impl Disk {
 
         blocks.sort();
 
+        let mut hasher = sha1_smol::Sha1::new();
         for block in blocks {
-            hash.update(&block.block);
+            hasher.update(&block.block);
         }
 
-        let hash = hash.digest().bytes();
+        let hash = hasher.digest().bytes();
 
-        if hash_from_info != hash {
+        if *hash_from_info != hash {
             return Err(Error::PieceInvalid);
         }
 
@@ -786,16 +783,14 @@ impl Disk {
         info_hash: &InfoHash,
         piece: usize,
     ) -> Result<(), Error> {
-        let mut blocks: Vec<Block> = self
+        let blocks = self
             .cache
             .get_mut(info_hash)
             .ok_or(Error::TorrentDoesNotExist)?
-            .get_mut(&piece)
-            .ok_or(Error::TorrentDoesNotExist)?
-            .drain(..)
-            .collect();
+            .entry(piece)
+            .or_default();
 
-        blocks.sort();
+        let blocks: Vec<Block> = std::mem::take(blocks);
 
         let info = self
             .torrent_info
@@ -813,6 +808,16 @@ impl Disk {
         let piece_length = info.piece_length as u64;
         let piece_offset = piece as u64 * piece_length;
 
+        // Precompute file start offsets
+        let mut file_offsets = HashMap::new();
+        let mut current_offset = 0u64;
+
+        for file in &files {
+            let path = PathBuf::from_iter(&file.path);
+            file_offsets.insert(path, (current_offset, file.length as u64));
+            current_offset += file.length as u64;
+        }
+
         let mut file_to_blocks: HashMap<PathBuf, Vec<Block>> = HashMap::new();
 
         // Distribute blocks to corresponding files
@@ -827,40 +832,45 @@ impl Disk {
             let (mut _file, mt_file) =
                 self.get_file_from_block_info(&block_info, info_hash).await?;
 
-            let mut file_path = PathBuf::new();
-            file_path.extend(mt_file.path);
-
+            let file_path = PathBuf::from_iter(&mt_file.path);
             file_to_blocks.entry(file_path).or_default().push(block);
         }
 
         // Write the blocks to their corresponding file
-        for (file_path_buf, blocks) in file_to_blocks {
-            let mut bytes: Vec<u8> = Vec::new();
-
-            for block in &blocks {
-                bytes.extend_from_slice(&block.block);
-            }
-
-            // Construct the file path
+        for (file_path, blocks) in file_to_blocks {
+            // Construct full file path
             let mut full_file_path = self.base_path(info_hash);
-            full_file_path.extend(&file_path_buf);
+            full_file_path.extend(&file_path);
+
+            // Get file's start offset and length
+            let (file_start, file_len) =
+                file_offsets.get(&file_path).ok_or(Error::NoPeers)?;
+
+            // Sort blocks by their begin offset
+            let mut blocks = blocks;
+            blocks.sort_by_key(|b| b.begin);
 
             let mut file = Self::open_file(&full_file_path).await?;
 
-            // The accumulated length of all the files of the torrent
-            // up to the current file.
-            let file_len = files
-                .iter()
-                .find(|f| PathBuf::from_iter(&f.path) == file_path_buf)
-                .map(|v| v.length)
-                .unwrap();
+            for block in blocks {
+                // Calculate absolute position in torrent
+                let block_global_offset = piece_offset + block.begin as u64;
 
-            let file_offset = piece_offset.saturating_sub(file_len as u64);
+                // Verify block is within this file
+                if block_global_offset < *file_start
+                    || block_global_offset >= file_start + file_len
+                {
+                    return Err(Error::NoPeers);
+                }
 
-            debug!("file_offset {file_offset}");
+                // Calculate position within this specific file
+                let file_offset = block_global_offset - file_start;
 
-            file.seek(SeekFrom::Start(file_offset)).await?;
-            file.write_all(&bytes).await?;
+                println!("seeking file {file:?}: {file_offset}");
+                // Seek to correct position and write block
+                file.seek(SeekFrom::Start(file_offset)).await?;
+                file.write_all(&block.block).await?;
+            }
         }
 
         Ok(())
@@ -900,18 +910,18 @@ impl Disk {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        collections::BTreeMap,
-        net::{Ipv4Addr, SocketAddrV4},
-        time::Duration,
-    };
+    use super::*;
 
     use futures::StreamExt;
     use rand::{distr::Alphanumeric, Rng};
+    use std::{
+        net::{Ipv4Addr, SocketAddrV4},
+        time::Duration,
+    };
+    use tokio::{sync::RwLock, time::sleep};
     use tokio_util::codec::Framed;
 
     use crate::{
-        bitfield::Bitfield,
         daemon::Daemon,
         extensions::{core::BLOCK_LEN, CoreCodec},
         magnet::Magnet,
@@ -921,11 +931,10 @@ mod tests {
         tracker::{TrackerCtx, TrackerMsg},
     };
 
-    use super::*;
     use tokio::{
         net::{TcpListener, TcpStream},
         spawn,
-        sync::{mpsc, RwLock},
+        sync::mpsc,
     };
 
     // test all features that Disk provides by simulating, from start to end, a
@@ -1012,6 +1021,7 @@ mod tests {
         let mut hasher = sha1_smol::Sha1::new();
         hasher.update(&[7u8; (BLOCK_LEN) as usize]);
         let hash = hasher.digest().bytes();
+        println!("hash root is {hash:?}");
 
         let mut pieces = vec![];
         for _ in 0..6 {
@@ -1157,30 +1167,76 @@ mod tests {
             peer.run().await.unwrap();
         });
 
+        // disk_tx
+        //     .send(DiskMsg::WriteBlock {
+        //         info_hash: info_hash.clone(),
+        //         block: Block {
+        //             index: 0,
+        //             begin: 0,
+        //             block: vec![7u8; BLOCK_LEN as usize],
+        //         },
+        //     })
+        //     .await?;
+        // disk_tx
+        //     .send(DiskMsg::WriteBlock {
+        //         info_hash: info_hash.clone(),
+        //         block: Block {
+        //             index: 1,
+        //             begin: 0,
+        //             block: vec![7u8; BLOCK_LEN as usize],
+        //         },
+        //     })
+        //     .await?;
+        //
+        // disk_tx
+        //     .send(DiskMsg::WriteBlock {
+        //         info_hash: info_hash.clone(),
+        //         block: Block {
+        //             index: 2,
+        //             begin: 0,
+        //             block: vec![7u8; BLOCK_LEN as usize],
+        //         },
+        //     })
+        //     .await?;
+
         let (otx, orx) = oneshot::channel();
         disk_tx
             .send(DiskMsg::RequestBlocks {
-                info_hash,
+                info_hash: info_hash.clone(),
                 peer_id: peer_ctx.id.clone(),
                 recipient: otx,
                 qnt: 3,
             })
             .await?;
         let blocks = orx.await?;
-        println!("blocks {blocks:#?}");
+        // println!("blocks {blocks:#?}");
 
         assert_eq!(
             blocks,
             vec![
                 BlockInfo { index: 0, begin: 0, len: BLOCK_LEN },
                 BlockInfo { index: 1, begin: 0, len: BLOCK_LEN },
-                BlockInfo { index: 3, begin: 0, len: BLOCK_LEN },
+                BlockInfo { index: 2, begin: 0, len: BLOCK_LEN },
             ]
         );
 
-        let _ = tokio::fs::remove_dir_all(format!("/tmp/{download_dir}")).await;
+        disk_tx
+            .send(DiskMsg::WriteBlock {
+                info_hash: info_hash.clone(),
+                block: Block {
+                    index: 1,
+                    begin: 0,
+                    block: vec![7u8; BLOCK_LEN as usize],
+                },
+            })
+            .await?;
 
-        assert!(false);
+        sleep(Duration::from_millis(300)).await;
+
+        // let _ = tokio::fs::remove_dir_all(format!("/tmp/{download_dir}")).
+        // await;
+
+        // assert!(false);
 
         Ok(())
     }

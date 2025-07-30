@@ -14,7 +14,7 @@ use tokio::{
     time::{interval, interval_at, Instant},
 };
 
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 use crate::extensions::{
     ExtMsg, ExtMsgHandler, Extended, ExtendedMessage, Metadata,
@@ -66,7 +66,7 @@ impl Peer<Connected> {
         );
 
         // rerequest block infos
-        let mut rerequest_blocks = interval(Duration::from_secs(3));
+        let mut _rerequest_blocks = interval(Duration::from_secs(3));
 
         // interested algorithm:
         // - 1. if peers contain at least 1 piece which we don't have, send

@@ -236,8 +236,6 @@ mod tests {
         let metainfo = MetaInfo::from_bencode(metainfo_bytes).unwrap();
 
         let info = metainfo.info;
-        let metadata_data =
-            Metadata::data(0, &info.clone().to_bencode().unwrap()).unwrap();
 
         let mut r = b"d8:msg_typei1e5:piecei0e10:total_sizei5095ee".to_vec();
         r.extend_from_slice(&info.to_bencode().unwrap());

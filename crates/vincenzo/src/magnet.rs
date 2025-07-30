@@ -142,7 +142,7 @@ pub mod tests {
                  tr=udp%3A%2F%2Fexodus.desync.com%3A6969%2Fannounce&tr=udp%3A%\
                  2F%2Ftracker.torrent.eu.org%3A451%2Fannounce";
 
-        let magnet = Magnet::new(s).unwrap();
+        let _magnet = Magnet::new(s).unwrap();
         // println!("{magnet:#?}");
         // println!("{:#?}", magnet.organize_trackers());
 
