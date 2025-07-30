@@ -60,6 +60,7 @@
 //! ```
 
 #![feature(macro_metavar_expr)]
+#![feature(new_range_api)]
 
 pub mod args;
 pub mod avg;

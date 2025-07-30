@@ -273,8 +273,6 @@ piece {piece}"
                     return Ok(());
                 }
 
-                let begin = block_info.begin;
-                let index = block_info.index as usize;
                 let (tx, rx) = oneshot::channel();
 
                 peer.state.incoming_requests.push(block_info.clone());
@@ -289,14 +287,13 @@ piece {piece}"
                     })
                     .await?;
 
-                let bytes = rx.await?;
+                let block = rx.await?;
 
                 peer.state
                     .ctx
                     .uploaded
-                    .fetch_add(bytes.len() as u64, Ordering::Relaxed);
+                    .fetch_add(block.block.len() as u64, Ordering::Relaxed);
 
-                let block = Block { index, begin, block: bytes };
                 let _ = peer.state.sink.send(Core::Piece(block)).await;
             }
         }
