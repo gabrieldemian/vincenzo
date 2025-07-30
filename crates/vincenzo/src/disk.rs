@@ -637,7 +637,7 @@ impl Disk {
             let mut accumulated_length = 0_u64;
 
             for file_info in files.iter() {
-                if accumulated_length + file_info.length as u64
+                if accumulated_length + file_info.length
                     > absolute_offset
                 {
                     path.extend(&file_info.path);
@@ -651,7 +651,7 @@ impl Disk {
 
                     return Ok((file, file_info.clone()));
                 }
-                accumulated_length += file_info.length as u64;
+                accumulated_length += file_info.length;
             }
             Err(Error::FileOpenError("Offset exceeds file sizes".to_owned()))
         } else {
@@ -684,7 +684,7 @@ impl Disk {
         if let Some(files) = &info.files {
             let mut acc = 0;
             let file_info = files.iter().find(|f| {
-                let pieces = f.pieces(piece_len) as u64 + acc;
+                let pieces = f.pieces(piece_len as u64) + acc;
                 acc = pieces;
                 piece as u64 >= pieces
             });
@@ -791,7 +791,6 @@ impl Disk {
             .or_default();
 
         let blocks: Vec<Block> = std::mem::take(blocks);
-
         let info = self
             .torrent_info
             .get(info_hash)
@@ -806,71 +805,71 @@ impl Disk {
         };
 
         let piece_length = info.piece_length as u64;
-        let piece_offset = piece as u64 * piece_length;
+        let piece_start = piece as u64 * piece_length;
+        let piece_end = piece_start + piece_length;
 
-        // Precompute file start offsets
+        // Precompute file start offsets and total length
         let mut file_offsets = HashMap::new();
         let mut current_offset = 0u64;
 
         for file in &files {
             let path = PathBuf::from_iter(&file.path);
-            file_offsets.insert(path, (current_offset, file.length as u64));
-            current_offset += file.length as u64;
+            file_offsets.insert(path, (current_offset, file.length));
+            current_offset += file.length;
         }
 
-        let mut file_to_blocks: HashMap<PathBuf, Vec<Block>> = HashMap::new();
+        // Combine all blocks into a single contiguous piece buffer
+        let piece_total_length =
+            blocks.iter().map(|b| b.block.len()).sum::<usize>();
 
-        // Distribute blocks to corresponding files
-        for block in blocks {
-            let block_info = BlockInfo {
-                index: block.index as u32,
-                begin: block.begin,
-                len: block.block.len() as u32,
-            };
+        let mut piece_buffer = Vec::with_capacity(piece_total_length);
 
-            // get the file path of this block
-            let (mut _file, mt_file) =
-                self.get_file_from_block_info(&block_info, info_hash).await?;
-
-            let file_path = PathBuf::from_iter(&mt_file.path);
-            file_to_blocks.entry(file_path).or_default().push(block);
+        for mut block in blocks {
+            piece_buffer.append(&mut block.block);
         }
 
-        // Write the blocks to their corresponding file
-        for (file_path, blocks) in file_to_blocks {
+        // Find all files this piece spans
+        let mut spanned_files = Vec::new();
+
+        for (path, (file_start, file_length)) in &file_offsets {
+            let file_end = file_start + file_length;
+            let overlap_start = piece_start.max(*file_start);
+            let overlap_end = piece_end.min(file_end);
+
+            if overlap_start < overlap_end {
+                spanned_files.push((
+                    path.clone(),
+                    *file_start,
+                    overlap_start,
+                    overlap_end,
+                ));
+            }
+        }
+
+        // Sort spanned files by their start position
+        spanned_files.sort_by_key(|(_, start, _, _)| *start);
+
+        // Write to each spanned file
+        for (file_path, file_start, overlap_start, overlap_end) in spanned_files
+        {
+            // Calculate offsets
+            let file_offset = overlap_start - file_start;
+            let piece_offset = overlap_start - piece_start;
+            let length = (overlap_end - overlap_start) as usize;
+
+            // Get slice of piece buffer for this file segment
+            let data = &piece_buffer
+                [piece_offset as usize..(piece_offset as usize + length)];
+
             // Construct full file path
             let mut full_file_path = self.base_path(info_hash);
             full_file_path.extend(&file_path);
 
-            // Get file's start offset and length
-            let (file_start, file_len) =
-                file_offsets.get(&file_path).ok_or(Error::NoPeers)?;
-
-            // Sort blocks by their begin offset
-            let mut blocks = blocks;
-            blocks.sort_by_key(|b| b.begin);
-
+            // Write to file
             let mut file = Self::open_file(&full_file_path).await?;
-
-            for block in blocks {
-                // Calculate absolute position in torrent
-                let block_global_offset = piece_offset + block.begin as u64;
-
-                // Verify block is within this file
-                if block_global_offset < *file_start
-                    || block_global_offset >= file_start + file_len
-                {
-                    return Err(Error::NoPeers);
-                }
-
-                // Calculate position within this specific file
-                let file_offset = block_global_offset - file_start;
-
-                println!("seeking file {file:?}: {file_offset}");
-                // Seek to correct position and write block
-                file.seek(SeekFrom::Start(file_offset)).await?;
-                file.write_all(&block.block).await?;
-            }
+            println!("seeking {file_offset}");
+            file.seek(SeekFrom::Start(file_offset)).await?;
+            file.write_all(data).await?;
         }
 
         Ok(())
@@ -973,15 +972,15 @@ mod tests {
 
         let files = vec![
             metainfo::File {
-                length: BLOCK_LEN * 2,
+                length: BLOCK_LEN as u64 * 2,
                 path: vec!["foo.txt".to_owned()],
             },
             metainfo::File {
-                length: BLOCK_LEN * 2,
+                length: BLOCK_LEN as u64 * 2,
                 path: vec!["bar".to_owned(), "baz.txt".to_owned()],
             },
             metainfo::File {
-                length: BLOCK_LEN * 2,
+                length: BLOCK_LEN as u64 * 2,
                 path: vec![
                     "bar".to_owned(),
                     "buzz".to_owned(),
