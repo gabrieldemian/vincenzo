@@ -174,7 +174,7 @@ impl ExtMsgHandler<Core, CoreState> for MsgHandler {
                 // take entire pieces from bitfield
                 // and put in pending_requests
                 info!("{remote} bitfield len {:?}", bitfield.len());
-                info!("{remote} bitfield {bitfield:?}");
+                debug!("{remote} bitfield {bitfield:?}");
 
                 let b = &mut peer.state.pieces;
                 *b = bitfield.clone();

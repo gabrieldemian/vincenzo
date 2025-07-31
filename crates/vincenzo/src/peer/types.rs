@@ -13,6 +13,7 @@ use futures::{
     stream::{SplitSink, SplitStream, StreamExt},
     SinkExt,
 };
+use hashbrown::HashMap;
 use rand::{distr::Alphanumeric, Rng};
 use speedy::{Readable, Writable};
 use tokio::{
@@ -21,6 +22,7 @@ use tokio::{
         mpsc::{self, Receiver},
         oneshot,
     },
+    time::Instant,
 };
 use tokio_util::codec::{Framed, FramedParts};
 use tracing::{debug, info, warn};
@@ -59,7 +61,7 @@ impl PeerId {
 
 impl Display for PeerId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", String::from_utf8(self.0.to_vec()).unwrap())
+        write!(f, "{}", String::from_utf8_lossy(&self.0))
     }
 }
 
@@ -138,17 +140,19 @@ pub struct PeerCtx {
     /// torrent.
     pub uploaded: AtomicU64,
 
-    /// If we're choked, peer doesn't allow us to download pieces from them.
+    /// Client is choking the peer.
     pub am_choking: AtomicBool,
 
-    /// If we're interested, peer has pieces that we don't have.
+    /// Client is interested in downloading from peer.
     pub am_interested: AtomicBool,
 
-    /// If peer is choked, we don't allow them to download pieces from us.
+    /// The peer is choking the client.
     pub peer_choking: AtomicBool,
 
-    /// If peer is interested in us, they mean to download pieces that we have.
+    /// The peer is interested in downloading from client.
     pub peer_interested: AtomicBool,
+
+    pub outgoing_requests_timeout: HashMap<BlockInfo, Instant>,
 }
 
 /// Messages used to control the peer state or to make the peer forward a
@@ -361,6 +365,7 @@ impl peer::Peer<Idle> {
         let (tx, rx) = mpsc::channel::<PeerMsg>(100);
 
         let ctx = PeerCtx {
+            outgoing_requests_timeout: HashMap::new(),
             am_interested: false.into(),
             am_choking: true.into(),
             peer_choking: true.into(),
@@ -379,6 +384,8 @@ impl peer::Peer<Idle> {
 
         let peer = peer::Peer {
             state: Connected {
+                outgoing_requests_info_pieces_times: HashMap::new(),
+                outgoing_requests_timeout: HashMap::new(),
                 pieces: Bitfield::new(),
                 ctx: Arc::new(ctx),
                 ext_states: ExtStates::default(),
@@ -444,9 +451,12 @@ pub struct Connected {
     /// Outgoing requests of info pieces.
     pub outgoing_requests_info_pieces: Vec<u64>,
 
+    pub outgoing_requests_info_pieces_times: HashMap<u64, Instant>,
+
     // The Instant of each timeout value of [`Self::outgoing_requests`]
     // blocks.
-    // pub outgoing_requests_timeout: HashMap<BlockInfo, Instant>,
+    pub outgoing_requests_timeout: HashMap<BlockInfo, Instant>,
+
     /// The requests we got from peer.
     ///
     /// The request's entry is removed from here when the block is transmitted

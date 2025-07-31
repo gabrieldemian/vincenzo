@@ -23,7 +23,7 @@ use crate::extensions::{
 use crate::{
     disk::DiskMsg,
     error::Error,
-    extensions::core::{Block, BlockInfo, Core, CoreId, BLOCK_LEN},
+    extensions::core::{Block, BlockInfo, Core, BLOCK_LEN},
     peer::session::ConnectionState,
     torrent::TorrentMsg,
 };
@@ -60,21 +60,23 @@ impl Peer<Connected> {
         let mut tick_interval = interval(Duration::from_secs(1));
 
         // request info
-        let mut info_interval = interval_at(
-            Instant::now() + Duration::from_secs(3),
-            Duration::from_secs(3),
-        );
+        let mut info_interval = interval(Duration::from_secs(1));
 
-        // rerequest block infos
-        let mut _rerequest_blocks = interval(Duration::from_secs(3));
+        // request block infos
+        let mut request_interval = interval(Duration::from_millis(500));
 
-        // interested algorithm:
+        // rerequest timedout blocks
+        let mut rerequest_timeout_interval = interval(Duration::from_secs(5));
+
+        // send interested or uninterested.
+        // algorithm:
         // - 1. if peers contain at least 1 piece which we don't have, send
         //   interested.
         // - 2. later, if we already have all pieces which the peer has, and we
         //   are interested, send not interested.
-        let mut interested_interval = interval(Duration::from_secs(2));
+        let mut interested_interval = interval(Duration::from_secs(3));
 
+        // send message to keep the connection alive
         let mut keep_alive_interval = interval_at(
             Instant::now() + Duration::from_secs(120),
             Duration::from_secs(120),
@@ -108,8 +110,10 @@ impl Peer<Connected> {
                 // try to rerequest timedout meta info requests,
                 // and request new ones if the peer can accept more.
                 _ = info_interval.tick(), if !self.state.have_info => {
-
                     self.try_request_info().await?;
+
+                    // only re-request timed-out pieces if we have some
+                    if self.state.outgoing_requests_info_pieces.is_empty() { continue };
 
                     let Some(ut_metadata) = self
                         .state
@@ -120,32 +124,44 @@ impl Peer<Connected> {
                     else {
                         continue;
                     };
-                    debug!(
-                        "{remote} rerequesting {} meta pieces",
-                        self.state.outgoing_requests_info_pieces.len()
+
+                    let now = Instant::now();
+                    let mut to_rerequest = Vec::new();
+
+                    // Check for timed-out requests (10 seconds)
+                    for (piece, &request_time) in &self.state.outgoing_requests_info_pieces_times {
+                        if now.duration_since(request_time) > Duration::from_secs(10) {
+                            to_rerequest.push(*piece);
+                        }
+                    }
+
+                    if to_rerequest.is_empty() { continue }
+
+                    info!(
+                        "{remote} rerequesting {} timed-out meta pieces",
+                        to_rerequest.len()
                     );
-                    for p in &self.state.outgoing_requests_info_pieces {
-                        let msg = Metadata::request(*p);
+
+                    for piece in to_rerequest {
+                        let msg = Metadata::request(piece);
                         let buf = msg.to_bencode()?;
                         let _ = self
                             .state
                             .sink
                             .send(Core::Extended(ExtendedMessage(ut_metadata, buf)))
                             .await;
+
+                        // Update request time
+                        self.state.outgoing_requests_info_pieces_times.insert(piece, now);
                     }
                 }
+                _ = request_interval.tick(), if self.can_request() && self.state.have_info => {
+                    self.request_block_infos().await?;
+                }
+                _ = rerequest_timeout_interval.tick(), if self.state.have_info => {
+                    self.check_request_timeout().await?;
+                }
                 _ = tick_interval.tick(), if self.state.have_info => {
-                    if self.can_request() {
-                        self.request_block_infos().await?;
-                    }
-
-                    // resend requests if we have any pending and more time has elapsed
-                    // since the last received block than the current timeout value
-                    if !self.state.outgoing_requests.is_empty()
-                        && self.can_request()
-                    {
-                        self.check_request_timeout().await?;
-                    }
                     self.state.session.counters.reset();
                 }
                 _ = interested_interval.tick() => {
@@ -162,9 +178,9 @@ impl Peer<Connected> {
 
                     // sorry, you're not the problem, it's me.
                     if !should_be_interested && self.state.ctx.am_interested.load(Ordering::Relaxed) {
-                        // info!("{remote} sending not interested");
-                        // self.state.ctx.am_interested.store(false, Ordering::Relaxed);
-                        // self.state.sink.send(Core::NotInterested).await?;
+                        info!("{remote} sending not interested");
+                        self.state.ctx.am_interested.store(false, Ordering::Relaxed);
+                        self.state.sink.send(Core::NotInterested).await?;
                     }
                 }
                 _ = keep_alive_interval.tick() => {
@@ -349,6 +365,7 @@ impl Peer<Connected> {
 
         // remove pending block request
         self.state.outgoing_requests.retain(|v| *v != block_info);
+        self.state.outgoing_requests_timeout.remove(&block_info);
 
         // if in endgame, send cancels to all other peers
         if self.state.session.in_endgame {
@@ -386,6 +403,34 @@ impl Peer<Connected> {
 
     /// Re-request blocks that timed-out
     async fn check_request_timeout(&mut self) -> Result<(), Error> {
+        let now = Instant::now();
+        let timeout = Duration::from_secs(15); // 15-second timeout
+        let remote = self.state.ctx.remote_addr;
+        let mut to_rerequest = Vec::new();
+
+        // Identify timed-out requests
+        for (block_info, request_time) in &self.state.outgoing_requests_timeout
+        {
+            if now.duration_since(*request_time) >= timeout {
+                debug!("{remote} block {:?} timed out", block_info);
+                to_rerequest.push(block_info.clone());
+            }
+        }
+
+        // Re-request timed-out blocks
+        for block_info in to_rerequest {
+            // Update request time
+            if let Some(entry) =
+                self.state.outgoing_requests_timeout.get_mut(&block_info)
+            {
+                *entry = Instant::now();
+            }
+
+            // Send request
+            self.state.sink.send(Core::Request(block_info.clone())).await?;
+            debug!("{remote} re-requesting timed out block {:?}", block_info);
+        }
+
         // if self.session.timed_out_request_count >= 10 {
         //     self.free_pending_blocks().await;
         //     return Ok(());
@@ -467,13 +512,11 @@ impl Peer<Connected> {
         let target_request_queue_len =
             self.state.session.target_request_queue_len as usize;
 
+        let current_requests = self.state.outgoing_requests.len();
+
         // the number of blocks we can request right now
         let request_len =
-            if self.state.outgoing_requests.len() >= target_request_queue_len {
-                0
-            } else {
-                target_request_queue_len - self.state.outgoing_requests.len()
-            };
+            target_request_queue_len.saturating_sub(current_requests);
 
         info!("{remote} requesting {request_len} blocks");
         debug!("inflight: {}", self.state.outgoing_requests.len());
@@ -503,19 +546,14 @@ impl Peer<Connected> {
         let r = orx.await?;
 
         info!("disk sent {:?} blocks", r.len());
-        // self.state.session.last_outgoing_request_time =
-        //     Some(Instant::now());
 
         for block_info in r {
-            // debug!("{local} requesting \n {block_info:#?} to {remote}");
             self.state.outgoing_requests.push(block_info.clone());
+            self.state
+                .outgoing_requests_timeout
+                .insert(block_info.clone(), Instant::now());
 
-            let _ =
-                self.state.sink.send(Core::Request(block_info.clone())).await;
-
-            let req_id: u64 = CoreId::Request as u64;
-
-            self.state.session.counters.protocol.up += req_id;
+            let _ = self.state.sink.send(Core::Request(block_info)).await;
         }
 
         Ok(())
@@ -544,21 +582,10 @@ impl Peer<Connected> {
     ///   protocol
     /// - We do not have the info downloaded
     pub async fn try_request_info(&mut self) -> Result<(), Error> {
-        let peer_max_requests = self.state.session.target_request_queue_len;
-
-        if self.state.outgoing_requests_info_pieces.len()
-            >= peer_max_requests as usize
-        {
-            return Ok(());
-        }
-
-        // only request info if we dont have an Info
-        // and the peer supports the metadata extension protocol
         if self.state.have_info {
             return Ok(());
         }
 
-        // send bep09 request to get the Info
         let Some(ut_metadata) = self
             .state
             .ext_states
@@ -568,8 +595,6 @@ impl Peer<Connected> {
         else {
             return Ok(());
         };
-
-        debug!("peer supports ut_metadata {ut_metadata}, sending info request");
 
         let Some(meta_size) = self
             .state
@@ -581,30 +606,52 @@ impl Peer<Connected> {
             return Ok(());
         };
 
-        let pieces = meta_size as f32 / BLOCK_LEN as f32;
-        let pieces = pieces.ceil() as u64;
+        // Calculate total pieces needed
+        let total_pieces = meta_size.div_ceil(BLOCK_LEN as u64);
 
-        // the number of blocks we can request right now
-        let request_len = peer_max_requests as u64
-            - self.state.outgoing_requests_info_pieces.len() as u64;
+        // Determine which pieces we still need to request
+        let mut needed_pieces = Vec::with_capacity(total_pieces as usize);
 
-        let request_len = pieces.min(request_len);
-
-        debug!("pieces {pieces}");
-        debug!("requesting {request_len} info blocks");
-
-        for i in 0..request_len {
-            let msg = Metadata::request(i);
-            let buf = msg.to_bencode()?;
-
-            if !self.state.outgoing_requests_info_pieces.contains(&i) {
-                let _ = self
-                    .state
-                    .sink
-                    .send(Core::Extended(ExtendedMessage(ut_metadata, buf)))
-                    .await;
-                self.state.outgoing_requests_info_pieces.push(i);
+        for piece in 0..total_pieces {
+            if !self.state.outgoing_requests_info_pieces.contains(&piece) {
+                needed_pieces.push(piece);
             }
+        }
+
+        if needed_pieces.is_empty() {
+            return Ok(());
+        }
+
+        // Determine how many new pieces we can request
+        let max_requests = self.state.session.target_request_queue_len as usize;
+        let available_slots = max_requests
+            .saturating_sub(self.state.outgoing_requests_info_pieces.len());
+
+        if available_slots == 0 {
+            return Ok(());
+        }
+
+        // Request up to available slots
+        for piece in needed_pieces.into_iter().take(available_slots) {
+            info!(
+                "requesting metadata piece {} from {:?}",
+                piece, self.state.ctx.remote_addr
+            );
+
+            let msg = Metadata::request(piece);
+            let buf = msg.to_bencode()?;
+            info!("{:?}", String::from_utf8(buf.clone()).unwrap());
+
+            self.state
+                .sink
+                .send(Core::Extended(ExtendedMessage(ut_metadata, buf)))
+                .await?;
+
+            // Track requested piece and request time
+            self.state.outgoing_requests_info_pieces.push(piece);
+            self.state
+                .outgoing_requests_info_pieces_times
+                .insert(piece, Instant::now());
         }
 
         Ok(())

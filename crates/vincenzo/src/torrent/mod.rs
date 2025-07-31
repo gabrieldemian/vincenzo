@@ -784,7 +784,7 @@ impl Torrent<Connected> {
                             self.state.bitfield = bitvec![u8, Msb0; 0; pieces as usize];
 
                             info!("local_bitfield len {:?}", self.state.bitfield.len());
-                            info!("local_bitfield {:?}", self.state.bitfield);
+                            debug!("local_bitfield {:?}", self.state.bitfield);
 
                             self.state.have_info = true;
                             self.state.tracker_ctx.tx.send(TrackerMsg::Info(info.clone())).await?;
@@ -941,11 +941,11 @@ impl Torrent<Connected> {
                     for uploader in &best_uploaders {
                         if !self.state.unchoked_peers.iter().any(|p| p.id == uploader.id) {
                             info!("unchoking peer {:?}", uploader.id);
+
                             let _ = uploader.tx.send(PeerMsg::Unchoke).await;
+                            self.state.unchoked_peers.push(uploader.clone());
                         }
                     }
-
-                    self.state.unchoked_peers = best_uploaders;
 
                     for peer in &self.state.connected_peers {
                         peer.downloaded.store(0, Ordering::Relaxed);
