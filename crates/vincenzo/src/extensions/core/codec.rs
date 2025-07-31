@@ -255,7 +255,7 @@ piece {piece}"
 
                 peer.state
                     .ctx
-                    .downloaded
+                    .uploaded
                     .fetch_add(block.block.len() as u64, Ordering::Relaxed);
 
                 peer.handle_piece_msg(block).await?;
@@ -291,7 +291,7 @@ piece {piece}"
 
                 peer.state
                     .ctx
-                    .uploaded
+                    .downloaded
                     .fetch_add(block.block.len() as u64, Ordering::Relaxed);
 
                 let _ = peer.state.sink.send(Core::Piece(block)).await;

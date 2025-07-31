@@ -130,10 +130,12 @@ pub struct PeerCtx {
     /// The info_hash of the torrent that this Peer belongs to.
     pub info_hash: InfoHash,
 
-    /// Download bytes in the previous 10 seconds, tracked by the torrent.
+    /// Download bytes of remote peer in the previous 10 seconds, tracked by
+    /// the torrent.
     pub downloaded: AtomicU64,
 
-    /// Upload bytes in the previous 10 seconds, tracked by the torrent.
+    /// Upload bytes of remote peer in the previous 10 seconds, tracked by the
+    /// torrent.
     pub uploaded: AtomicU64,
 
     /// If we're choked, peer doesn't allow us to download pieces from them.

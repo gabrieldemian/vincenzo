@@ -548,6 +548,18 @@ impl Disk {
             })
     }
 
+    // pub async fn maintain_cache(&mut self) {
+    //     let now = Instant::now();
+    //     self.file_handle_cache.iter_mut().for_each(|(_, file)| {
+    //         if now.duration_since(file.last_accessed) > Duration::from_secs(300) {
+    //             file.cleanup().await;  // Custom flush/close logic
+    //         }
+    //     });
+    //     
+    //     let new_size = /* calculation */;
+    //     self.file_handle_cache.resize(new_size);
+    // }
+
     pub async fn read_block(
         &mut self,
         info_hash: &InfoHash,
@@ -896,11 +908,8 @@ mod tests {
 
     use futures::StreamExt;
     use rand::{distr::Alphanumeric, Rng};
-    use std::{
-        net::{Ipv4Addr, SocketAddrV4},
-        time::Duration,
-    };
-    use tokio::{sync::RwLock, time::sleep};
+    use std::net::{Ipv4Addr, SocketAddrV4};
+    use tokio::sync::RwLock;
     use tokio_util::codec::Framed;
 
     use crate::{
