@@ -1,4 +1,9 @@
-use std::{fmt::Display, net::SocketAddr, ops::Deref, sync::Arc};
+use std::{
+    fmt::Display,
+    net::{IpAddr, SocketAddr},
+    ops::Deref,
+    sync::Arc,
+};
 
 use speedy::{Readable, Writable};
 use tokio::sync::oneshot;
@@ -31,10 +36,15 @@ pub enum TorrentMsg {
     SetBitfield(usize),
     ReadBitfield(oneshot::Sender<Bitfield>),
 
+    /// Sent when the peer is acting as a relay for the holepunch protocol.
+    ReadPeerByIp(IpAddr, u16, oneshot::Sender<Option<Arc<PeerCtx>>>),
+
     PeerConnecting(SocketAddr),
     PeerConnected(Arc<PeerCtx>),
+
     /// When we can't do a TCP connection with the ip of the Peer.
     PeerError(SocketAddr),
+
     /// Error when handshaking a peer, even though the TCP connection was
     /// established.
     PeerConnectingError(SocketAddr),
@@ -45,14 +55,19 @@ pub enum TorrentMsg {
         from: PeerId,
         block_info: BlockInfo,
     },
+
     StartEndgame(Vec<BlockInfo>),
+
     /// When a peer request a piece of the info
     /// index, recipient
     RequestInfoPiece(u64, oneshot::Sender<Option<Vec<u8>>>),
+
     IncrementDownloaded(u64),
     IncrementUploaded(u64),
+
     /// Toggle pause torrent and send Pause/Resume message to all Peers
     TogglePause,
+
     /// When torrent is being gracefully shutdown
     Quit,
 }

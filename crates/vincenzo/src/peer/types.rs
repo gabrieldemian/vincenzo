@@ -1,6 +1,6 @@
 use std::{
     fmt::Display,
-    net::SocketAddr,
+    net::{IpAddr, SocketAddr},
     sync::{
         atomic::{AtomicBool, AtomicU64},
         Arc,
@@ -33,7 +33,7 @@ use crate::{
     error::Error,
     extensions::{
         core::BlockInfo, Core, CoreCodec, ExtendedMessage, Extension,
-        Handshake, HandshakeCodec, MetadataData,
+        Handshake, HandshakeCodec, HolepunchData, MetadataData,
     },
     peer::{self, session::Session},
     torrent::{InfoHash, TorrentCtx, TorrentMsg},
@@ -155,6 +155,31 @@ pub struct PeerCtx {
     pub outgoing_requests_timeout: HashMap<BlockInfo, Instant>,
 }
 
+impl PeerCtx {
+    pub fn is_remote_behind_nat(&self) -> bool {
+        // Private IP ranges: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
+        match self.remote_addr.ip() {
+            IpAddr::V4(ipv4) => {
+                ipv4.is_private() || ipv4.is_loopback() || ipv4.is_link_local()
+            }
+            IpAddr::V6(ipv6) => {
+                ipv6.is_loopback() || ipv6.is_unicast_link_local()
+            }
+        }
+    }
+    pub fn is_local_behind_nat(&self) -> bool {
+        // Private IP ranges: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
+        match self.local_addr.ip() {
+            IpAddr::V4(ipv4) => {
+                ipv4.is_private() || ipv4.is_loopback() || ipv4.is_link_local()
+            }
+            IpAddr::V6(ipv6) => {
+                ipv6.is_loopback() || ipv6.is_unicast_link_local()
+            }
+        }
+    }
+}
+
 /// Messages used to control the peer state or to make the peer forward a
 /// message.
 #[derive(Debug)]
@@ -168,6 +193,8 @@ pub enum PeerMsg {
     /// Get the pieces of the peer.
     GetPieces(oneshot::Sender<Bitfield>),
 
+    // If the peer supports the local extension id
+    // SupportsExt(u8, oneshot::Sender<bool>),
     /// Sometimes a peer either takes too long to answer,
     /// or simply does not answer at all. In both cases
     /// we need to request the block again.
@@ -417,6 +444,9 @@ pub struct ExtStates {
 
     /// BEP09 : Extension for Peers to Send Metadata Files
     pub metadata: Option<MetadataData>,
+
+    /// BEP055 : Holepunch extension
+    pub holepunch: Option<HolepunchData>,
 }
 
 /// Peer is downloading / uploading and working well

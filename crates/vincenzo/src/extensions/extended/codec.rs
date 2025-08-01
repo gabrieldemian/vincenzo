@@ -3,7 +3,10 @@
 
 use crate::{
     error::Error,
-    extensions::{Core, ExtMsg, ExtMsgHandler, ExtendedMessage},
+    extensions::{
+        Core, ExtMsg, ExtMsgHandler, ExtendedMessage, HolepunchData,
+        MetadataData,
+    },
     peer::{self, session::Session, Direction, MsgHandler},
     torrent::TorrentMsg,
 };
@@ -134,7 +137,18 @@ impl ExtMsgHandler<Extended, Extension> for MsgHandler {
 
         // the max number of block_infos to request
         let n = ext.reqq.unwrap_or(Session::DEFAULT_REQUEST_QUEUE_LEN);
+
         peer.state.session.target_request_queue_len = n;
+
+        // set the peer's extensions
+        if ext.m.ut_metadata.is_some() {
+            peer.state.ext_states.metadata = Some(MetadataData());
+        }
+
+        if ext.m.ut_holepunch.is_some() {
+            peer.state.ext_states.holepunch = Some(HolepunchData());
+        }
+
         peer.state.ext_states.extension = Some(ext);
 
         Ok(())

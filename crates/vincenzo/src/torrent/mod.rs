@@ -598,6 +598,16 @@ impl Torrent<Connected> {
             select! {
                 Some(msg) = self.rx.recv() => {
                     match msg {
+                        TorrentMsg::ReadPeerByIp(ip, port, otx) => {
+                            if let Some(peer_ctx) =
+                                self.state.connected_peers
+                                .iter()
+                                .find(|&p| p.remote_addr.ip() == ip && port == p.remote_addr.port()) {
+                                let _ = otx.send(Some(peer_ctx.clone()));
+                                continue;
+                            }
+                            let _ = otx.send(None);
+                        }
                         TorrentMsg::MetadataSize(meta_size) => {
                             if self.state.have_info {continue};
 

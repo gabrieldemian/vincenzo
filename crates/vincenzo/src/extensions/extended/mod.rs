@@ -54,7 +54,11 @@ impl TryInto<Vec<u8>> for Extension {
 impl Extension {
     /// Extensions that the client supports
     pub fn supported(metadata_size: Option<u64>) -> Self {
-        let m = M { ut_metadata: Some(Metadata::ID), ut_pex: None };
+        let m = M {
+            ut_metadata: Some(Metadata::ID),
+            ut_pex: None,
+            ut_holepunch: None,
+        };
 
         Self {
             m,
@@ -72,9 +76,14 @@ impl Extension {
 /// and naturally, we are only interested in reading this part of the metadata
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct M {
-    /// Added by Metadata protocol BEP 0009.
+    /// BEP 0009.
     pub ut_metadata: Option<u8>,
+
+    /// BEP 0011.
     pub ut_pex: Option<u8>,
+
+    /// BEP 0055.
+    pub ut_holepunch: Option<u8>,
 }
 
 impl ToBencode for M {
@@ -111,6 +120,7 @@ impl FromBencode for M {
         // inside this dict we have other data structures
         let mut ut_metadata = None;
         let mut ut_pex = None;
+        let mut ut_holepunch = None;
 
         while let Some(pair) = dict.next_pair()? {
             match pair {
@@ -124,10 +134,15 @@ impl FromBencode for M {
                         .context("ut_pex")
                         .map(Some)?;
                 }
+                (b"ut_holepunch", value) => {
+                    ut_holepunch = u8::decode_bencode_object(value)
+                        .context("ut_holepunch")
+                        .map(Some)?;
+                }
                 _ => {}
             }
         }
-        Ok(Self { ut_metadata, ut_pex })
+        Ok(Self { ut_metadata, ut_pex, ut_holepunch })
     }
 }
 
@@ -275,7 +290,11 @@ mod tests {
         assert_eq!(
             ext,
             Extension {
-                m: M { ut_metadata: Some(3), ut_pex: Some(1) },
+                m: M {
+                    ut_metadata: Some(3),
+                    ut_pex: Some(1),
+                    ut_holepunch: None
+                },
                 p: Some(51413),
                 v: Some("Transmission 2.94".to_owned()),
                 reqq: Some(512),
@@ -308,7 +327,11 @@ mod tests {
         assert_eq!(
             extension,
             Extension {
-                m: M { ut_metadata: Some(3), ut_pex: Some(1) },
+                m: M {
+                    ut_metadata: Some(3),
+                    ut_pex: Some(1),
+                    ut_holepunch: None
+                },
                 p: Some(51413),
                 v: Some("Transmission 2.94".to_owned()),
                 reqq: Some(512),
