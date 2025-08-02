@@ -210,6 +210,7 @@ impl Disk {
                     peer_id,
                 } => {
                     info!("disk received request_blocks");
+                    println!("disk received request_blocks");
 
                     let infos = self
                         .request_blocks(&info_hash, &peer_id, qnt)
@@ -217,6 +218,7 @@ impl Disk {
                         .unwrap_or_default();
 
                     info!("disk sending {}", infos.len());
+                    println!("disk sending {}", infos.len());
 
                     let _ = recipient.send(infos);
                 }
@@ -1045,6 +1047,7 @@ mod tests {
                 8080,
             )),
             info_hash: magnet.parse_xt_infohash(),
+            outgoing_requests_timeout: HashMap::new(),
             tx: peer_tx.clone(),
             peer_interested: true.into(),
             uploaded: 0.into(),
@@ -1134,6 +1137,8 @@ mod tests {
                     incoming_requests: Vec::new(),
                     outgoing_requests: Vec::new(),
                     outgoing_requests_info_pieces: Vec::new(),
+                    outgoing_requests_timeout: HashMap::new(),
+                    outgoing_requests_info_pieces_times: HashMap::new(),
                     session: peer::session::Session::default(),
                     have_info: true,
                     reserved: bitvec::bitarr![u8, bitvec::prelude::Msb0; 0; 8 * 8],
