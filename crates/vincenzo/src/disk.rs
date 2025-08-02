@@ -44,6 +44,8 @@ pub enum DiskMsg {
 
     DeletePeer(SocketAddr),
 
+    DeleteTorrent(InfoHash),
+
     ReadBlock {
         info_hash: InfoHash,
         block_info: BlockInfo,
@@ -179,6 +181,17 @@ impl Disk {
 
         while let Some(msg) = self.rx.recv().await {
             match msg {
+                DiskMsg::DeleteTorrent(info_hash) => {
+                    self.torrent_cache.remove_entry(&info_hash);
+                    self.cache.remove_entry(&info_hash);
+                    self.torrent_ctxs.remove_entry(&info_hash);
+                    self.downloaded_pieces_len.remove_entry(&info_hash);
+                    self.piece_strategy.remove_entry(&info_hash);
+                    self.pieces_blocks.remove_entry(&info_hash);
+                    self.torrent_info.remove_entry(&info_hash);
+                    self.pieces.remove_entry(&info_hash);
+                    self.peer_ctxs.retain(|v| v.info_hash != info_hash);
+                }
                 DiskMsg::DeletePeer(addr) => {
                     debug!("DeletePeer {addr:?}");
                     self.delete_peer(addr);

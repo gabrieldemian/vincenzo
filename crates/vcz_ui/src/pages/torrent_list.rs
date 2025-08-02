@@ -1,5 +1,4 @@
 use crossterm::event::{KeyCode, KeyEventKind};
-use hashbrown::HashMap;
 use ratatui::{
     prelude::*,
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
@@ -24,7 +23,6 @@ pub struct TorrentList<'a> {
     pub focused: bool,
     pub state: ListState,
     pub style: AppStyle,
-    // pub torrent_infos: HashMap<InfoHash, TorrentState>,
     pub torrent_infos: Vec<TorrentState>,
     pub tx: mpsc::UnboundedSender<Action>,
 }
@@ -42,6 +40,8 @@ impl<'a> TorrentList<'a> {
             " add torrent ".into(),
             Span::styled("p".to_string(), style.highlight_fg),
             " pause/resume ".into(),
+            Span::styled("d".to_string(), style.highlight_fg),
+            " delete ".into(),
             Span::styled("q".to_string(), style.highlight_fg),
             " quit".into(),
         ]
@@ -145,6 +145,12 @@ impl<'a> TorrentList<'a> {
     fn enter_char(&mut self, new_char: char) {
         self.input.insert(self.cursor_position, new_char);
         self.move_cursor_right();
+    }
+
+    fn delete_torrent(&self) {
+        if let Some(active_torrent) = &self.active_torrent {
+            let _ = self.tx.send(Action::DeleteTorrent(active_torrent.clone()));
+        }
     }
 
     fn delete_char(&mut self) {
@@ -331,6 +337,9 @@ impl<'a> Page for TorrentList<'a> {
                 }
                 KeyCode::Down | KeyCode::Char('j') => {
                     self.next();
+                }
+                KeyCode::Char('d') => {
+                    self.delete_torrent();
                 }
                 KeyCode::Up | KeyCode::Char('k') => {
                     self.previous();

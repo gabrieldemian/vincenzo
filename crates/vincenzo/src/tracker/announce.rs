@@ -44,7 +44,7 @@ impl Default for Request {
             event: Event::default(),
             ip_address: 0,
             key: CONFIG.key,
-            num_want: 30,
+            num_want: CONFIG.max_torrent_peers,
             port: CONFIG.local_peer_port,
             compact: 1,
         }

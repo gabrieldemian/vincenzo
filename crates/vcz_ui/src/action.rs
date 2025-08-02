@@ -23,6 +23,7 @@ pub enum Action {
 
     NewTorrent(String),
     TogglePause(InfoHash),
+    DeleteTorrent(InfoHash),
     TorrentState(TorrentState),
     TorrentStates(Vec<TorrentState>),
 }

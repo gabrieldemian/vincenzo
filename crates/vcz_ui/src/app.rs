@@ -89,6 +89,11 @@ impl App {
                     sink.send(Message::NewTorrent(magnet.to_owned())).await?;
                 }
 
+                if let Action::DeleteTorrent(info_hash) = &action {
+                    sink.send(Message::DeleteTorrent(info_hash.clone()))
+                        .await?;
+                }
+
                 self.page.handle_action(action);
             }
 

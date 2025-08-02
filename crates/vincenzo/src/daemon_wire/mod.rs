@@ -45,8 +45,11 @@ pub enum Message {
     /// Pause/Resume the torrent with the given info_hash.
     TogglePause(InfoHash),
 
+    /// Delete a torrent but doesn't delete any files from disk.
+    DeleteTorrent(InfoHash),
+
     /// Ask the Daemon to send a [`TorrentState`] of the torrent with the given
-    RequestTorrentState(InfoHash),
+    GetTorrentState(InfoHash),
 
     /// Print the status of all Torrents to stdout
     PrintTorrentStatus,
@@ -63,6 +66,7 @@ pub enum MessageId {
     Quit = 6,
     FrontendQuit = 7,
     TorrentStates = 8,
+    DeleteTorrent = 9,
 }
 
 impl TryFrom<u8> for MessageId {
@@ -75,6 +79,7 @@ impl TryFrom<u8> for MessageId {
             k if k == TorrentState as u8 => Ok(TorrentState),
             k if k == TorrentStates as u8 => Ok(TorrentStates),
             k if k == GetTorrentState as u8 => Ok(GetTorrentState),
+            k if k == DeleteTorrent as u8 => Ok(DeleteTorrent),
             k if k == Quit as u8 => Ok(Quit),
             k if k == FrontendQuit as u8 => Ok(FrontendQuit),
             k if k == PrintTorrentStatus as u8 => Ok(PrintTorrentStatus),
@@ -164,7 +169,7 @@ impl Encoder<Message> for DaemonCodec {
                 buf.put_u8(MessageId::TorrentStates as u8);
                 buf.extend_from_slice(&bytes);
             }
-            Message::RequestTorrentState(info_hash) => {
+            Message::GetTorrentState(info_hash) => {
                 let msg_len = 1 + info_hash.len() as u32;
 
                 buf.put_u32(msg_len);
@@ -176,6 +181,13 @@ impl Encoder<Message> for DaemonCodec {
 
                 buf.put_u32(msg_len);
                 buf.put_u8(MessageId::TogglePause as u8);
+                buf.extend_from_slice(&*info_hash);
+            }
+            Message::DeleteTorrent(info_hash) => {
+                let msg_len = 1 + info_hash.len() as u32;
+
+                buf.put_u32(msg_len);
+                buf.put_u8(MessageId::DeleteTorrent as u8);
                 buf.extend_from_slice(&*info_hash);
             }
             Message::PrintTorrentStatus => {
@@ -278,6 +290,12 @@ impl Decoder for DaemonCodec {
 
                 Message::TogglePause(payload.into())
             }
+            MessageId::DeleteTorrent => {
+                let mut payload = [0u8; 20_usize];
+                buf.copy_to_slice(&mut payload);
+
+                Message::DeleteTorrent(payload.into())
+            }
             MessageId::PrintTorrentStatus => Message::PrintTorrentStatus,
             MessageId::Quit => Message::Quit,
             MessageId::FrontendQuit => Message::FrontendQuit,
@@ -285,7 +303,7 @@ impl Decoder for DaemonCodec {
                 let mut payload = [0u8; 20_usize];
                 buf.copy_to_slice(&mut payload);
 
-                Message::RequestTorrentState(payload.into())
+                Message::GetTorrentState(payload.into())
             }
         };
 
@@ -394,7 +412,7 @@ mod tests {
     #[test]
     fn request_torrent_state() {
         let mut buf = BytesMut::new();
-        let msg = Message::RequestTorrentState([1u8; 20].into());
+        let msg = Message::GetTorrentState([1u8; 20].into());
         DaemonCodec.encode(msg, &mut buf).unwrap();
 
         println!("encoded {buf:?}");
@@ -404,7 +422,7 @@ mod tests {
         println!("decoded {msg:?}");
 
         match msg {
-            Message::RequestTorrentState(info_hash) => {
+            Message::GetTorrentState(info_hash) => {
                 assert_eq!(info_hash, [1u8; 20].into());
             }
             _ => panic!(),

@@ -79,6 +79,7 @@ pub enum DaemonMsg {
     GetTorrentCtx(oneshot::Sender<Option<Arc<TorrentCtx>>>, InfoHash),
     IncrementConnectedPeers,
     DecrementConnectedPeers,
+    DeleteTorrent(InfoHash),
 
     GetAllTorrentStates(oneshot::Sender<Vec<TorrentState>>),
 
@@ -258,6 +259,16 @@ impl Daemon {
                         DaemonMsg::GetConnectedPeers(tx) => {
                             let _ = tx.send(self.connected_peers);
                         }
+                        DaemonMsg::DeleteTorrent(info_hash) => {
+                            info!("deleting torrent {info_hash:?}");
+
+                            let Some(ctx) = self.torrent_ctxs.get(&info_hash) else {
+                                continue
+                            };
+                            ctx.tx.send(TorrentMsg::Quit).await?;
+                            ctx.disk_tx.send(DiskMsg::DeleteTorrent(info_hash.clone())).await?;
+                            self.torrent_states.retain(|v| v.info_hash != info_hash);
+                        }
                         DaemonMsg::IncrementConnectedPeers => self.connected_peers += 1,
                         DaemonMsg::DecrementConnectedPeers => {
                             if self.connected_peers > 0 {
@@ -349,6 +360,9 @@ impl Daemon {
         // when sent remotely via TCP (i.e UI on remote server),
         // or locally on the same binary (i.e CLI).
         match msg {
+            Message::DeleteTorrent(info_hash) => {
+                tx.send(DaemonMsg::DeleteTorrent(info_hash)).await?;
+            }
             Message::NewTorrent(magnet_link) => {
                 info!("received new_torrent: {magnet_link}");
 
@@ -360,7 +374,7 @@ impl Daemon {
                     error!("invalid magnet link");
                 }
             }
-            Message::RequestTorrentState(info_hash) => {
+            Message::GetTorrentState(info_hash) => {
                 trace!("daemon RequestTorrentState {info_hash:?}");
 
                 let (otx, orx) = oneshot::channel();
