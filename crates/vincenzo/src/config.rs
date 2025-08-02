@@ -27,6 +27,8 @@ pub struct Config {
 
     /// Quit the daemon after fully downloading all torrents.
     pub quit_after_complete: bool,
+
+    pub key: u32,
 }
 
 pub static CONFIG: LazyLock<Config> = LazyLock::new(|| Config::get().unwrap());
@@ -55,6 +57,8 @@ impl Config {
             .map(|v| format!("{v}/vincenzo/config"))
             .unwrap_or(format!("{home}/.config/vincenzo/config"));
 
+        let key: u32 = rand::random();
+
         config::Config::builder()
             .add_source(config::File::with_name(&config_file).required(false))
             .add_source(config::Environment::default())
@@ -71,6 +75,8 @@ impl Config {
             .set_default("quit_after_complete", false)
             .unwrap()
             .set_default("is_ipv6", false)
+            .unwrap()
+            .set_default("key", key)
             .unwrap()
             .build()?
             .try_deserialize::<Config>()

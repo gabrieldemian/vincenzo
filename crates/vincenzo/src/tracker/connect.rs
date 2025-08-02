@@ -8,7 +8,7 @@ use super::action::Action;
 #[derive(Debug, PartialEq, Clone, Readable, Writable)]
 pub struct Request {
     pub protocol_id: u64,
-    pub action: u32,
+    pub action: Action,
     pub transaction_id: u32,
 }
 
@@ -25,7 +25,7 @@ impl Request {
     pub fn new() -> Self {
         Self {
             protocol_id: Self::MAGIC,
-            action: Action::Connect.into(),
+            action: Action::Connect,
             transaction_id: rand::random::<u32>(),
         }
     }
@@ -34,7 +34,7 @@ impl Request {
         debug!("sending connect request {self:#?}");
         let mut buf = [0u8; 16];
         buf[..8].copy_from_slice(&Self::MAGIC.to_be_bytes());
-        buf[8..12].copy_from_slice(&self.action.to_be_bytes());
+        buf[8..12].copy_from_slice(&(self.action as u32).to_be_bytes());
         buf[12..16].copy_from_slice(&self.transaction_id.to_be_bytes());
         buf
     }

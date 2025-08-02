@@ -77,10 +77,7 @@ impl Peer<Connected> {
         let mut interested_interval = interval(Duration::from_secs(3));
 
         // send message to keep the connection alive
-        let mut keep_alive_interval = interval_at(
-            Instant::now() + Duration::from_secs(120),
-            Duration::from_secs(120),
-        );
+        let mut keep_alive_interval = interval(Duration::from_secs(60));
 
         // send bitfield
         {
@@ -431,41 +428,6 @@ impl Peer<Connected> {
             debug!("{remote} re-requesting timed out block {:?}", block_info);
         }
 
-        // if self.session.timed_out_request_count >= 10 {
-        //     self.free_pending_blocks().await;
-        //     return Ok(());
-        // }
-
-        // for (block, timeout) in
-        // self.state.outgoing_requests_timeout.iter_mut() {
-        //     let elapsed_since_last_request =
-        //         Instant::now().saturating_duration_since(*timeout);
-        //
-        //     // if the timeout time has already passed,
-        //     if elapsed_since_last_request
-        //         >= self.state.session.request_timeout()
-        //     {
-        //         self.state.session.register_request_timeout();
-        //
-        //         debug!(
-        //             "{local} this block {block:#?} timed out ({} ms ago)",
-        //             elapsed_since_last_request.as_millis(),
-        //         );
-        //
-        //         let _ =
-        //             self.state.sink.send(Core::Request(block.clone())).await;
-        //         *timeout = Instant::now();
-        //
-        //         debug!(
-        //             "{local} timeout, total: {}",
-        //             self.state.session.timed_out_request_count + 1
-        //         );
-        //     }
-        // }
-        // if !self.state.session.seed_only {
-        //     self.request_block_infos().await?;
-        // }
-
         Ok(())
     }
 
@@ -518,7 +480,7 @@ impl Peer<Connected> {
         let request_len =
             target_request_queue_len.saturating_sub(current_requests);
 
-        info!("{remote} requesting {request_len} blocks");
+        info!("{remote} requesting block infos {request_len}");
         debug!("inflight: {}", self.state.outgoing_requests.len());
         debug!("max to request: {}", target_request_queue_len);
         debug!("request_len: {request_len}");

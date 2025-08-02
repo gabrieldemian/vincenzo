@@ -135,7 +135,9 @@ impl ExtMsgHandler<Holepunch, HolepunchData> for MsgHandler {
                     )
                     .await?;
             }
-            HolepunchMsgType::Connect => {}
+            HolepunchMsgType::Connect => {
+                // try to do handshake
+            }
             HolepunchMsgType::Error => {
                 //
             }
@@ -144,4 +146,3 @@ impl ExtMsgHandler<Holepunch, HolepunchData> for MsgHandler {
         Ok(())
     }
 }
-

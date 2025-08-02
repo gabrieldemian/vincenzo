@@ -168,7 +168,7 @@ impl ExtMsgHandler<Core, CoreState> for MsgHandler {
             // handled by the extended messages
             Core::Extended(_) => {}
             Core::KeepAlive => {
-                debug!("{remote} keepalive");
+                info!("{remote} keepalive");
             }
             Core::Bitfield(bitfield) => {
                 // take entire pieces from bitfield

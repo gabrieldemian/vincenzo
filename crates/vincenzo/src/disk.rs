@@ -209,6 +209,8 @@ impl Disk {
                     info_hash,
                     peer_id,
                 } => {
+                    info!("disk received request_blocks");
+
                     let infos = self
                         .request_blocks(&info_hash, &peer_id, qnt)
                         .await
@@ -344,7 +346,7 @@ impl Disk {
             all_pieces.shuffle(&mut rand::rng());
         }
 
-        info!("shuffled pieces {all_pieces:?}");
+        info!("shuffled pieces");
 
         self.pieces.insert(info_hash.clone(), all_pieces);
         self.cache.insert(info_hash.clone(), BTreeMap::new());
@@ -446,7 +448,6 @@ impl Disk {
     }
 
     /// Request available block infos following the order of PieceStrategy.
-    #[tracing::instrument(skip_all)]
     pub async fn request_blocks(
         &mut self,
         info_hash: &InfoHash,
@@ -482,8 +483,6 @@ impl Disk {
 
         // pieces that the client has
         let local_pieces = orx.await?;
-        println!("local pieces {}", local_pieces);
-        println!("peer pieces  {}", peer_pieces);
 
         for piece in 0..pieces.len() {
             // get a piece that the remote peer has...
@@ -551,11 +550,11 @@ impl Disk {
     // pub async fn maintain_cache(&mut self) {
     //     let now = Instant::now();
     //     self.file_handle_cache.iter_mut().for_each(|(_, file)| {
-    //         if now.duration_since(file.last_accessed) > Duration::from_secs(300) {
-    //             file.cleanup().await;  // Custom flush/close logic
-    //         }
+    //         if now.duration_since(file.last_accessed) >
+    // Duration::from_secs(300) {             file.cleanup().await;  //
+    // Custom flush/close logic         }
     //     });
-    //     
+    //
     //     let new_size = /* calculation */;
     //     self.file_handle_cache.resize(new_size);
     // }

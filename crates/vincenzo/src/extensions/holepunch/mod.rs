@@ -1,8 +1,6 @@
 mod codec;
 
-use std::net::{
-    IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6,
-};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 use crate::{error::Error, extensions::ExtMsg};
 
@@ -23,9 +21,10 @@ pub enum HolepunchMsgType {
 }
 
 #[repr(u8)]
-#[derive(PartialEq, Debug, Readable, Writable, Clone, Copy)]
+#[derive(PartialEq, Debug, Readable, Writable, Clone, Copy, Default)]
 pub enum HolepunchErrorCodes {
     /// No error
+    #[default]
     NoError = 0,
 
     /// The target endpoint is invalid.

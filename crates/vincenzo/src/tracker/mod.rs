@@ -4,7 +4,6 @@ pub mod announce;
 pub mod connect;
 pub mod event;
 
-use super::tracker::action::Action;
 use std::{
     fmt::Debug,
     future::Future,
@@ -14,17 +13,15 @@ use std::{
 };
 
 use crate::{
-    config::CONFIG, daemon::DaemonCtx, error::Error, metainfo::Info,
-    torrent::InfoHash,
+    daemon::DaemonCtx, error::Error, metainfo::Info, torrent::InfoHash,
 };
-use rand::Rng;
 use tokio::{
     net::{ToSocketAddrs, UdpSocket},
     select,
     sync::{mpsc, oneshot},
     time::timeout,
 };
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 
 use self::event::Event;
 
@@ -124,7 +121,6 @@ pub enum TrackerMsg {
 }
 
 impl TrackerTrait for Tracker<Udp> {
-    #[tracing::instrument(skip(self, buf))]
     fn parse_compact_peer_list(
         &self,
         buf: &[u8],
@@ -279,7 +275,8 @@ impl TrackerTrait for Tracker<Udp> {
 
         debug!("received res from tracker {res:#?}");
 
-        if res.transaction_id != req.transaction_id || res.action != req.action
+        if res.transaction_id != req.transaction_id
+            || res.action != req.action as u32
         {
             error!("response is not valid {res:?}");
             return Err(Error::TrackerResponse);
@@ -290,7 +287,6 @@ impl TrackerTrait for Tracker<Udp> {
         Ok(res)
     }
 
-    #[tracing::instrument(skip(self))]
     async fn announce(
         &self,
         event: Event,
@@ -299,23 +295,18 @@ impl TrackerTrait for Tracker<Udp> {
 
         let req = announce::Request {
             connection_id: self.connection_id,
-            action: Action::Announce.into(),
-            transaction_id: rand::rng().random(),
             info_hash: self.info_hash.clone(),
             peer_id: self.daemon_ctx.local_peer_id.clone(),
             downloaded: self.ctx.downloaded,
             left: self.ctx.left,
             uploaded: self.ctx.uploaded,
-            event: event.into(),
-            ip_address: 0,
-            num_want: u32::MAX,
-            port: CONFIG.local_peer_port,
-            compact: 1,
+            event,
+            ..Default::default()
         };
+        info!("{req:?}");
 
         let mut len = 0_usize;
         let mut res = [0u8; ANNOUNCE_RES_BUF_LEN];
-
         let mut retransmit = 30;
 
         self.state.socket.send(&req.serialize()).await?;
@@ -349,7 +340,8 @@ impl TrackerTrait for Tracker<Udp> {
         let res = &res[..len];
         let (res, payload) = announce::Response::deserialize(res)?;
 
-        if res.transaction_id != req.transaction_id || res.action != req.action
+        if res.transaction_id != req.transaction_id
+            || res.action != req.action as u32
         {
             return Err(Error::TrackerResponse);
         }
@@ -404,7 +396,7 @@ impl Tracker<Udp> {
                             event,
                         } => {
                             let res = self
-                                .announce(event.clone())
+                                .announce(event)
                                 .await?;
 
                             if let Some(recipient) = recipient {

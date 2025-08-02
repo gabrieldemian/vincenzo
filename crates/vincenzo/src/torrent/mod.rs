@@ -196,9 +196,11 @@ impl Torrent<Idle> {
         );
 
         let (res, payload) = tracker.announce(Event::Started).await?;
+        info!("{res:?}");
         let peers = tracker.parse_compact_peer_list(payload.as_ref())?;
 
         info!("announced and got {} peers", peers.len());
+        info!("{peers:?}");
 
         let stats = Stats {
             interval: res.interval,
