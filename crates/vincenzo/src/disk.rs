@@ -72,7 +72,7 @@ pub enum DiskMsg {
     RequestBlocks {
         info_hash: InfoHash,
         peer_id: PeerId,
-        pieces: Bitfield,
+        peer_pieces: Bitfield,
         recipient: Sender<Vec<BlockInfo>>,
         qnt: usize,
     },
@@ -210,18 +210,16 @@ impl Disk {
                     recipient,
                     info_hash,
                     peer_id,
-                    pieces,
+                    peer_pieces,
                 } => {
                     info!("disk received request_blocks");
-                    println!("disk received request_blocks");
 
                     let infos = self
-                        .request_blocks(&info_hash, &peer_id, pieces, qnt)
+                        .request_blocks(&info_hash, &peer_id, peer_pieces, qnt)
                         .await
                         .unwrap_or_default();
 
                     info!("disk sending {}", infos.len());
-                    println!("disk sending {}", infos.len());
 
                     let _ = recipient.send(infos);
                 }
@@ -465,36 +463,36 @@ impl Disk {
         &mut self,
         info_hash: &InfoHash,
         peer_id: &PeerId,
-        local_pieces: Bitfield,
+        peer_pieces: Bitfield,
         qnt: usize,
     ) -> Result<Vec<BlockInfo>, Error> {
         let mut result: Vec<BlockInfo> = Vec::with_capacity(qnt);
 
-        info!("{:?}", self.peer_ctxs);
-        let Some(peer_ctx) = self.peer_ctxs.iter().find(|v| v.id == *peer_id)
-        else {
-            warn!("peer not found: {peer_id:?}");
-            return Ok(vec![]);
-        };
+        info!("request_blocks fn");
+        // let Some(peer_ctx) = self.peer_ctxs.iter().find(|v| v.id == *peer_id)
+        // else {
+        //     warn!("peer not found: {peer_id:?}");
+        //     return Ok(vec![]);
+        // };
 
-        // let torrent_ctx = self
-        //     .torrent_ctxs
-        //     .get(info_hash)
-        //     .ok_or(Error::TorrentDoesNotExist)?
-        //     .clone();
-
-        // --------
-        // let (otx, orx) = oneshot::channel();
-        // torrent_ctx.tx.send(TorrentMsg::ReadBitfield(otx)).await?;
-        // let local_pieces = orx.await?;
-        // info!("request_blocks local_pieces {}", local_pieces.len());
-        // --------
+        let torrent_ctx = self
+            .torrent_ctxs
+            .get(info_hash)
+            .ok_or(Error::TorrentDoesNotExist)?
+            .clone();
 
         // --------
         let (otx, orx) = oneshot::channel();
-        peer_ctx.tx.send(PeerMsg::GetPieces(otx)).await?;
-        let peer_pieces = orx.await?;
-        info!("request_blocks peer_pieces len {}", peer_pieces.len());
+        torrent_ctx.tx.send(TorrentMsg::ReadBitfield(otx)).await?;
+        let local_pieces = orx.await?;
+        info!("request_blocks local_pieces {}", local_pieces.len());
+        // --------
+
+        // --------
+        // let (otx, orx) = oneshot::channel();
+        // peer_ctx.tx.send(PeerMsg::GetPieces(otx)).await?;
+        // let peer_pieces = orx.await?;
+        // info!("request_blocks peer_pieces len {}", peer_pieces.len());
         // --------
 
         // order of pieces to download
@@ -509,7 +507,7 @@ impl Disk {
             };
 
             // but the local peer does not.
-            let Some(_p @ false) = local_pieces.get(piece).as_deref() else {
+            let Some(_p @ false) = peer_pieces.get(piece).as_deref() else {
                 continue;
             };
 

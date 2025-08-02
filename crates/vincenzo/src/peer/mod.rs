@@ -501,7 +501,7 @@ impl Peer<Connected> {
                 qnt: request_len,
                 info_hash: self.state.torrent_ctx.info_hash.clone(),
                 peer_id: self.state.ctx.id.clone(),
-                pieces: self.state.pieces.clone(),
+                peer_pieces: self.state.pieces.clone(),
             })
             .await?;
 
