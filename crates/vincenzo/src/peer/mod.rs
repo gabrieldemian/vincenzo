@@ -7,10 +7,7 @@ use bendy::encoding::ToBencode;
 pub use types::*;
 
 use futures::{SinkExt, StreamExt};
-use std::{
-    sync::{atomic::Ordering, Arc},
-    time::Duration,
-};
+use std::{sync::atomic::Ordering, time::Duration};
 use tokio::{
     select,
     sync::oneshot,
@@ -162,7 +159,7 @@ impl Peer<Connected> {
                     self.check_request_timeout().await?;
                 }
                 _ = tick_interval.tick(), if self.state.have_info => {
-                    self.state.session.counters.reset();
+                    // self.state.session.counters.reset();
                 }
                 _ = interested_interval.tick() => {
                     let should_be_interested = self.has_piece_not_in_local().await?;
@@ -219,7 +216,7 @@ impl Peer<Connected> {
                 Some(msg) = self.state.rx.recv() => {
                     match msg {
                         PeerMsg::GetPieces(tx) => {
-                            info!("peer get_pieces {:?}", self.state.pieces);
+                            info!("peer get_pieces {:?}", self.state.pieces.len());
                             let _ = tx.send(self.state.pieces.clone());
                         }
                         PeerMsg::SendToSink(msg) => {
@@ -357,12 +354,7 @@ impl Peer<Connected> {
         &mut self,
         block: Block,
     ) -> Result<(), Error> {
-        let index = block.index;
-        let begin = block.begin;
-        let len = block.block.len();
-
-        let block_info =
-            BlockInfo { index: index as u32, begin, len: len as u32 };
+        let block_info = BlockInfo::from(&block);
 
         // remove pending block request
         self.state.outgoing_requests.retain(|v| *v != block_info);
@@ -382,22 +374,19 @@ impl Peer<Connected> {
                 .await;
         }
 
-        // let (tx, rx) = oneshot::channel();
+        self.state
+            .ctx
+            .uploaded
+            .fetch_add(block.block.len() as u64, Ordering::Relaxed);
 
         self.state
             .torrent_ctx
             .disk_tx
             .send(DiskMsg::WriteBlock {
                 block,
-                // recipient: tx,
                 info_hash: self.state.torrent_ctx.info_hash.clone(),
             })
             .await?;
-
-        // rx.await??;
-
-        // update stats
-        self.state.session.update_download_stats(len as u32);
 
         Ok(())
     }

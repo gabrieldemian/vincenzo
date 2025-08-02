@@ -83,13 +83,11 @@ pub struct Connected {
 
     pub error_peers: Vec<Peer<peer::PeerError>>,
 
-    // The downloaded bytes of the previous second,
-    // used to get the download rate in seconds.
-    // this will be mutated on the frontend event loop.
-    pub last_second_downloaded: u64,
+    /// Used to calculate upload rate.
+    pub last_second_uploaded: u64,
 
-    /// How fast the client is downloading this torrent.
-    pub download_rate: u64,
+    /// Used to calculate upload rate.
+    pub last_second_downloaded: u64,
 
     /// Size of the `info` bencoded string.
     pub metadata_size: u64,
@@ -224,6 +222,7 @@ impl Torrent<Idle> {
             state: Connected {
                 unchoked_peers: Vec::with_capacity(3),
                 opt_unchoked_peer: None,
+                last_second_downloaded: 0,
                 connecting_peers: Vec::with_capacity(
                     CONFIG.max_torrent_peers as usize,
                 ),
@@ -241,8 +240,7 @@ impl Torrent<Idle> {
                 ),
                 have_info: false,
                 info_pieces: BTreeMap::new(),
-                download_rate: 0,
-                last_second_downloaded: 0,
+                last_second_uploaded: 0,
             },
             ctx: self.ctx,
             daemon_ctx: self.daemon_ctx,
@@ -819,8 +817,6 @@ impl Torrent<Connected> {
 
                             // check if the torrent download is complete
                             let is_download_complete = self.state.tracker_ctx.downloaded >= self.state.metadata_size;
-                            debug!("IncrementDownloaded {:?}", self.state.tracker_ctx.downloaded);
-                            debug!("size is {}", self.state.metadata_size);
 
                             if is_download_complete {
                                 self.ctx.tx.send(TorrentMsg::DownloadComplete).await?;
@@ -897,9 +893,13 @@ impl Torrent<Connected> {
                     self.spawn_outbound_peers().await?;
                 }
                 _ = heartbeat_interval.tick() => {
+                    let download_rate = self.state.tracker_ctx.downloaded.saturating_sub(
+                        self.state.last_second_downloaded
+                    );
 
-                    self.state.download_rate =
-                            self.state.tracker_ctx.downloaded - self.state.last_second_downloaded;
+                    let upload_rate = self.state.tracker_ctx.downloaded.saturating_sub(
+                        self.state.last_second_uploaded
+                    );
 
                     let torrent_state = TorrentState {
                         name: self.name.clone(),
@@ -908,7 +908,7 @@ impl Torrent<Connected> {
                         uploaded: self.state.tracker_ctx.uploaded,
                         stats: self.state.stats.clone(),
                         status: self.status.clone(),
-                        download_rate: self.state.download_rate,
+                        download_rate,
                         info_hash: self.ctx.info_hash.clone(),
                         have_info: self.state.have_info,
                         bitfield: self.state.bitfield.clone().into_vec(),
@@ -918,8 +918,12 @@ impl Torrent<Connected> {
                     };
 
                     self.state.last_second_downloaded = self.state.tracker_ctx.downloaded;
+                    self.state.last_second_uploaded = self.state.tracker_ctx.uploaded;
 
-                    let _ = self.daemon_ctx.tx.send(DaemonMsg::TorrentState(torrent_state)).await;
+                    let _ = self.daemon_ctx.tx.send(
+                        DaemonMsg::TorrentState(torrent_state)
+                    )
+                    .await;
                 }
                 _ = optimistic_unchoke_interval.tick() => {
                     if let Some(old_opt) = self.state.opt_unchoked_peer.take() {

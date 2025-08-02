@@ -194,13 +194,6 @@ impl Disk {
                         self.read_block(&info_hash, &block_info).await?;
 
                     let _ = recipient.send(block);
-
-                    // increment uploaded count
-                    let tx = &self.torrent_ctxs.get(&info_hash).unwrap().tx;
-                    tx.send(TorrentMsg::IncrementUploaded(
-                        block_info.len as u64,
-                    ))
-                    .await?;
                 }
                 DiskMsg::WriteBlock { block, info_hash } => {
                     self.write_block(&info_hash, block).await?;
@@ -217,7 +210,7 @@ impl Disk {
                         .await
                         .unwrap_or_default();
 
-                    info!("disk sending {}", infos.len());
+                    info!("disk sending {} block infos", infos.len());
 
                     let _ = recipient.send(infos);
                 }
@@ -470,14 +463,14 @@ impl Disk {
             .ok_or(Error::TorrentDoesNotExist)?
             .clone();
 
-        info!("peer_pieces len {}", peer_pieces.len());
-        info!("peer_pieces ones {}", peer_pieces.count_ones());
+        // info!("peer_pieces len {}", peer_pieces.len());
+        // info!("peer_pieces ones {}", peer_pieces.count_ones());
 
         // --------
         let (otx, orx) = oneshot::channel();
         torrent_ctx.tx.send(TorrentMsg::ReadBitfield(otx)).await?;
         let local_pieces = orx.await?;
-        info!("request_blocks local_pieces {}", local_pieces.len());
+        // info!("request_blocks local_pieces {}", local_pieces.len());
         // --------
 
         // --------
@@ -490,7 +483,7 @@ impl Disk {
         // order of pieces to download
         let pieces =
             self.pieces.get(info_hash).ok_or(Error::TorrentDoesNotExist)?;
-        info!("request_blocks pieces order len {}", pieces.len());
+        // info!("request_blocks pieces order len {}", pieces.len());
 
         if peer_pieces.is_empty() {
             warn!("peer_pieces is empty");
@@ -567,7 +560,7 @@ impl Disk {
     // Custom flush/close logic         }
     //     });
     //
-    //     let new_size = /* calculation */;
+    //     let new_size = todo!();
     //     self.file_handle_cache.resize(new_size);
     // }
 
@@ -613,6 +606,19 @@ impl Disk {
 
         file.read_exact(&mut buf).await?;
 
+        let torrent_ctx = self
+            .torrent_ctxs
+            .get(info_hash)
+            .ok_or(Error::TorrentDoesNotExist)?
+            .clone();
+
+        // we change perspectives here because those values are
+        // going to be sent to the tracker in our perspective.
+        let _ = torrent_ctx
+            .tx
+            .send(TorrentMsg::IncrementUploaded(block_info.len as u64))
+            .await;
+
         Ok(Block {
             index: block_info.index as usize,
             begin: block_info.begin,
@@ -656,6 +662,13 @@ impl Disk {
 
         cache.push(block);
 
+        // we change perspectives here because those values are
+        // going to be sent to the tracker in our perspective.
+        let _ = torrent_ctx
+            .tx
+            .send(TorrentMsg::IncrementDownloaded(len as u64))
+            .await;
+
         // continue function if the piece was fully downloaded
         if self
             .cache
@@ -676,13 +689,6 @@ impl Disk {
             .ok_or(Error::TorrentDoesNotExist)?;
 
         *downloaded_pieces_len += 1;
-
-        // self.rarest_first(info_hash).await?;
-
-        let _ = torrent_ctx
-            .tx
-            .send(TorrentMsg::IncrementDownloaded(len as u64))
-            .await;
 
         // validate that the downloaded pieces hash
         // matches the hash of the info.
@@ -1104,7 +1110,7 @@ mod tests {
                 connected_peers: vec![peer_ctx.clone()],
                 have_info: true,
                 info_pieces: BTreeMap::new(),
-                download_rate: 0,
+                last_second_uploaded: 0,
                 last_second_downloaded: 0,
             },
             ctx: torrent_ctx.clone(),
@@ -1167,7 +1173,7 @@ mod tests {
                 peer_id: peer_ctx.id.clone(),
                 recipient: otx,
                 qnt: 3,
-                pieces: todo!(),
+                peer_pieces: bitvec::bitvec![u8, bitvec::prelude::Msb0; 0; 8 * 6],
             })
             .await?;
 

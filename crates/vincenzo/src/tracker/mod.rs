@@ -378,8 +378,8 @@ impl Tracker<Udp> {
                     match msg {
                         TrackerMsg::Info(info) => self.info = Some(info),
                         TrackerMsg::Increment { downloaded, uploaded } => {
-                            self.ctx.downloaded += downloaded;
-                            self.ctx.uploaded += uploaded;
+                            let _ = self.ctx.downloaded.saturating_add(downloaded);
+                            let _ = self.ctx.uploaded.saturating_add(uploaded);
 
                             if let Some(info) = &self.info {
                                 let left =

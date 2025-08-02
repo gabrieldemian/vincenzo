@@ -22,30 +22,38 @@ pub enum Message {
     ///
     /// Quit does not have a message_id, only the u32 len.
     Quit,
+
     /// Daemon will send other Quit messages to all Torrents.
     /// and Disk. It will close all event loops spawned through `run`.
     ///
     /// Quit does not have a message_id, only the u32 len.
     FrontendQuit,
+
     /// Add a new torrent given a magnet link.
     ///
     /// <len=1+magnet_link_len><id=1><magnet_link>
     NewTorrent(String),
+
     /// Every second, the Daemon will send information about all torrents
     /// to all listeners
     ///
     /// <len=1+torrent_state_len><id=2><torrent_state>
     TorrentState(TorrentState),
+
+    TorrentStates(Vec<TorrentState>),
+
     /// Pause/Resume the torrent with the given info_hash.
     TogglePause(InfoHash),
+
     /// Ask the Daemon to send a [`TorrentState`] of the torrent with the given
     RequestTorrentState(InfoHash),
+
     /// Print the status of all Torrents to stdout
     PrintTorrentStatus,
 }
 
 #[repr(u8)]
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq, Readable, Writable)]
 pub enum MessageId {
     NewTorrent = 1,
     TorrentState = 2,
@@ -54,6 +62,7 @@ pub enum MessageId {
     PrintTorrentStatus = 5,
     Quit = 6,
     FrontendQuit = 7,
+    TorrentStates = 8,
 }
 
 impl TryFrom<u8> for MessageId {
@@ -64,6 +73,7 @@ impl TryFrom<u8> for MessageId {
         match k {
             k if k == NewTorrent as u8 => Ok(NewTorrent),
             k if k == TorrentState as u8 => Ok(TorrentState),
+            k if k == TorrentStates as u8 => Ok(TorrentStates),
             k if k == GetTorrentState as u8 => Ok(GetTorrentState),
             k if k == Quit as u8 => Ok(Quit),
             k if k == FrontendQuit as u8 => Ok(FrontendQuit),
@@ -135,14 +145,24 @@ impl Encoder<Message> for DaemonCodec {
                 buf.extend_from_slice(magnet.as_bytes());
             }
             Message::TorrentState(torrent_state) => {
-                let info_bytes =
+                let bytes =
                     torrent_state.write_to_vec_with_ctx(BigEndian {})?;
 
-                let msg_len = 1 + info_bytes.len() as u32;
+                let msg_len = 1 + bytes.len() as u32;
 
                 buf.put_u32(msg_len);
                 buf.put_u8(MessageId::TorrentState as u8);
-                buf.extend_from_slice(&info_bytes);
+                buf.extend_from_slice(&bytes);
+            }
+            Message::TorrentStates(torrent_states) => {
+                let bytes =
+                    torrent_states.write_to_vec_with_ctx(BigEndian {})?;
+
+                let msg_len = 1 + bytes.len() as u32;
+
+                buf.put_u32(msg_len);
+                buf.put_u8(MessageId::TorrentStates as u8);
+                buf.extend_from_slice(&bytes);
             }
             Message::RequestTorrentState(info_hash) => {
                 let msg_len = 1 + info_hash.len() as u32;
@@ -232,7 +252,6 @@ impl Decoder for DaemonCodec {
             }
             MessageId::TorrentState => {
                 let mut payload = vec![0u8; buf.remaining()];
-
                 buf.copy_to_slice(&mut payload);
 
                 let info = TorrentState::read_from_buffer_with_ctx(
@@ -241,6 +260,17 @@ impl Decoder for DaemonCodec {
                 )?;
 
                 Message::TorrentState(info)
+            }
+            MessageId::TorrentStates => {
+                let mut payload = vec![0u8; buf.remaining()];
+                buf.copy_to_slice(&mut payload);
+
+                let states = Vec::<TorrentState>::read_from_buffer_with_ctx(
+                    BigEndian {},
+                    &payload,
+                )?;
+
+                Message::TorrentStates(states)
             }
             MessageId::TogglePause => {
                 let mut payload = [0u8; 20_usize];
@@ -284,6 +314,43 @@ mod tests {
         match msg {
             Message::NewTorrent(magnet) => {
                 assert_eq!(magnet, "magnet:blabla".to_owned());
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn torrent_states() {
+        let infos = vec![
+            TorrentState {
+                name: "Eesti".to_owned(),
+                stats: crate::torrent::Stats {
+                    interval: 5,
+                    leechers: 9,
+                    seeders: 1,
+                },
+                ..Default::default()
+            },
+            TorrentState {
+                name: "France".to_owned(),
+                stats: crate::torrent::Stats {
+                    interval: 2,
+                    leechers: 8,
+                    seeders: 10,
+                },
+                ..Default::default()
+            },
+        ];
+
+        let mut buf = BytesMut::new();
+        let msg = Message::TorrentStates(infos.clone());
+        DaemonCodec.encode(msg, &mut buf).unwrap();
+
+        let msg = DaemonCodec.decode(&mut buf).unwrap().unwrap();
+
+        match msg {
+            Message::TorrentStates(deserialized) => {
+                assert_eq!(deserialized, infos);
             }
             _ => panic!(),
         }

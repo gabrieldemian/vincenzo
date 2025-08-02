@@ -160,10 +160,7 @@ impl Daemon {
         Ok(())
     }
 
-    async fn handle_signals(
-        mut signals: Signals,
-        tx: mpsc::Sender<DaemonMsg>,
-    ) {
+    async fn handle_signals(mut signals: Signals, tx: mpsc::Sender<DaemonMsg>) {
         while let Some(signal) = signals.next().await {
             match signal {
                 SIGHUP => {
@@ -229,15 +226,11 @@ impl Daemon {
                                 _ = draw_interval.tick() => {
                                     let (otx, orx) = oneshot::channel();
                                     ctx.tx.send(DaemonMsg::GetAllTorrentStates(otx)).await?;
-                                    let v = orx.await?;
 
-                                    for state in v {
-                                        if sink.send(Message::TorrentState(state))
-                                            .await
+                                    if sink.send(Message::TorrentStates(orx.await?)).await
                                             .map_err(|_| Error::SendErrorTcp).is_err()
-                                        {
-                                                break 'inner;
-                                        };
+                                    {
+                                        break 'inner;
                                     }
                                 }
                                 Some(Ok(msg)) = stream.next() => {
@@ -274,10 +267,14 @@ impl Daemon {
                         DaemonMsg::GetAllTorrentStates(tx) => {
                             let _ = tx.send(self.torrent_states.clone());
                         }
-                        DaemonMsg::TorrentState(mut torrent_state) => {
-                            let found = self.torrent_states.iter_mut().find(|v| v.info_hash == torrent_state.info_hash);
+                        DaemonMsg::TorrentState(torrent_state) => {
+                            let found =
+                                self.torrent_states
+                                    .iter_mut()
+                                    .find(|v| v.info_hash == torrent_state.info_hash);
+
                             if let Some(found) = found {
-                                std::mem::swap(found, &mut torrent_state)
+                                *found = torrent_state;
                             } else {
                                 self.torrent_states.push(torrent_state);
                             }

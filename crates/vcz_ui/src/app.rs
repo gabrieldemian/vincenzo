@@ -46,10 +46,9 @@ impl App {
 
         let tx = self.tx.clone();
 
-        let daemon_addr = CONFIG.daemon_addr;
-        let socket = TcpStream::connect(daemon_addr)
+        let socket = TcpStream::connect(CONFIG.daemon_addr)
             .await
-            .map_err(|_| Error::DaemonNotRunning(daemon_addr))?;
+            .map_err(|_| Error::DaemonNotRunning(CONFIG.daemon_addr))?;
 
         // spawn event loop to listen to messages sent by the daemon
         let socket = Framed::new(socket, DaemonCodec);
@@ -67,8 +66,6 @@ impl App {
             let _ = tx.send(a);
 
             while let Ok(action) = rx.try_recv() {
-                self.page.handle_action(&action);
-
                 if let Action::Render = action {
                     let _ = tui.draw(|f| {
                         self.page.draw(f);
@@ -88,9 +85,11 @@ impl App {
                     self.handle_change_component(component)?
                 }
 
-                if let Action::NewTorrent(magnet) = action {
+                if let Action::NewTorrent(magnet) = &action {
                     sink.send(Message::NewTorrent(magnet.to_owned())).await?;
                 }
+
+                self.page.handle_action(action);
             }
 
             if self.should_quit {
@@ -112,14 +111,15 @@ impl App {
         tx: UnboundedSender<Action>,
         mut stream: T,
     ) {
-        debug!("ui listen_daemon");
-
         loop {
             select! {
                 Some(Ok(msg)) = stream.next() => {
                     match msg {
                         Message::TorrentState(torrent_state) => {
                             let _ = tx.send(Action::TorrentState(torrent_state));
+                        }
+                        Message::TorrentStates(torrent_states) => {
+                            let _ = tx.send(Action::TorrentStates(torrent_states));
                         }
                         Message::Quit => {
                             debug!("ui Quit");

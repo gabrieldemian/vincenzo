@@ -24,7 +24,8 @@ pub struct TorrentList<'a> {
     pub focused: bool,
     pub state: ListState,
     pub style: AppStyle,
-    pub torrent_infos: HashMap<InfoHash, TorrentState>,
+    // pub torrent_infos: HashMap<InfoHash, TorrentState>,
+    pub torrent_infos: Vec<TorrentState>,
     pub tx: mpsc::UnboundedSender<Action>,
 }
 
@@ -60,7 +61,7 @@ impl<'a> TorrentList<'a> {
             style,
             state,
             active_torrent: None,
-            torrent_infos: HashMap::new(),
+            torrent_infos: Vec::new(),
             cursor_position: 0,
             footer,
         }
@@ -195,33 +196,34 @@ impl<'a> Page for TorrentList<'a> {
         let selected = self.state.selected();
         let mut rows: Vec<ListItem> = Vec::new();
 
-        for (i, ctx) in self.torrent_infos.values().enumerate() {
-            let mut download_rate = to_human_readable(ctx.download_rate as f64);
+        for (i, state) in self.torrent_infos.iter().enumerate() {
+            let mut download_rate =
+                to_human_readable(state.download_rate as f64);
             download_rate.push_str("/s");
 
-            let name = Span::from(ctx.name.clone()).bold();
+            let name = Span::from(state.name.clone()).bold();
 
-            let status_style = match ctx.status {
+            let status_style = match state.status {
                 TorrentStatus::Seeding => self.style.success,
                 TorrentStatus::Error => self.style.error,
                 TorrentStatus::Paused => self.style.warning,
                 _ => self.style.highlight_fg,
             };
 
-            let status_txt: &str = ctx.status.clone().into();
+            let status_txt: &str = state.status.clone().into();
             let mut status_txt = vec![Span::styled(status_txt, status_style)];
 
-            if ctx.status == TorrentStatus::Downloading {
+            if state.status == TorrentStatus::Downloading {
                 let download_and_rate = format!(
                     " {} - {download_rate}",
-                    to_human_readable(ctx.downloaded as f64)
+                    to_human_readable(state.downloaded as f64)
                 )
                 .into();
                 status_txt.push(download_and_rate);
             }
 
-            let s = ctx.stats.seeders.to_string();
-            let l = ctx.stats.leechers.to_string();
+            let s = state.stats.seeders.to_string();
+            let l = state.stats.leechers.to_string();
             let sl = format!("Seeders {s} Leechers {l}").into();
 
             let mut line_top = Line::from("-".repeat(f.area().width as usize));
@@ -236,15 +238,15 @@ impl<'a> Page for TorrentList<'a> {
             let mut items = vec![
                 line_top,
                 name.into(),
-                to_human_readable(ctx.size as f64).into(),
+                to_human_readable(state.size as f64).into(),
                 sl,
                 status_txt.into(),
-                format!("connected to {} peers", ctx.connected_peers).into(),
+                format!("Connected to {} peers", state.connected_peers).into(),
                 line_bottom,
             ];
 
             if Some(i) == selected {
-                self.active_torrent = Some(ctx.info_hash.clone());
+                self.active_torrent = Some(state.info_hash.clone());
             }
 
             if Some(i) != selected && selected > Some(0) {
@@ -293,13 +295,10 @@ impl<'a> Page for TorrentList<'a> {
             _ => Action::None,
         }
     }
-    fn handle_action(&mut self, action: &Action) {
+    fn handle_action(&mut self, action: Action) {
         match action {
-            Action::TorrentState(torrent_state) => {
-                self.torrent_infos.insert(
-                    torrent_state.info_hash.clone(),
-                    torrent_state.clone(),
-                );
+            Action::TorrentStates(torrent_states) => {
+                self.torrent_infos = torrent_states;
             }
             Action::Key(k)
                 if self.show_popup && k.kind == KeyEventKind::Press =>

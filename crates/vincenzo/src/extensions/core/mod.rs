@@ -98,6 +98,16 @@ impl From<Block> for BlockInfo {
     }
 }
 
+impl From<&Block> for BlockInfo {
+    fn from(val: &Block) -> Self {
+        BlockInfo {
+            index: val.index as u32,
+            begin: val.begin,
+            len: val.block.len() as u32,
+        }
+    }
+}
+
 impl BlockInfo {
     pub fn new() -> Self {
         Self::default()

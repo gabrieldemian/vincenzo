@@ -220,18 +220,13 @@ impl ExtMsgHandler<Core, CoreState> for MsgHandler {
                 peer_pieces.set(piece, true);
             }
             Core::Piece(block) => {
-                info!("{remote} sent piece i: {}", block.index);
+                info!("{remote} sent block i: {}", block.index);
                 debug!(
                     "index: {:?}, begin: {:?}, len: {:?}",
                     block.index,
                     block.begin,
                     block.block.len()
                 );
-
-                peer.state
-                    .ctx
-                    .uploaded
-                    .fetch_add(block.block.len() as u64, Ordering::Relaxed);
 
                 peer.handle_piece_msg(block).await?;
             }
