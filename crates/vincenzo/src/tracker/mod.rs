@@ -121,117 +121,6 @@ pub enum TrackerMsg {
 }
 
 impl TrackerTrait for Tracker<Udp> {
-    fn parse_compact_peer_list(
-        &self,
-        buf: &[u8],
-    ) -> Result<Vec<SocketAddr>, Error> {
-        let mut peer_list = Vec::<SocketAddr>::new();
-
-        let is_ipv6 = self.ctx.tracker_addr.is_ipv6();
-
-        // in ipv4 the addresses come in packets of 6 bytes,
-        // first 4 for ip and 2 for port
-        // in ipv6 its 16 bytes for port and 2 for port
-        let stride = if is_ipv6 { 18 } else { 6 };
-
-        let chunks = buf.chunks_exact(stride);
-        if !chunks.remainder().is_empty() {
-            return Err(Error::TrackerCompactPeerList);
-        }
-
-        for hostpost in chunks {
-            let (ip, port) = hostpost.split_at(stride - 2);
-            let ip = if is_ipv6 {
-                let octets: [u8; 16] = ip[0..16]
-                    .try_into()
-                    .expect("iterator guarantees bounds are OK");
-                IpAddr::from(std::net::Ipv6Addr::from(octets))
-            } else {
-                IpAddr::from(std::net::Ipv4Addr::new(
-                    ip[0], ip[1], ip[2], ip[3],
-                ))
-            };
-
-            let port = u16::from_be_bytes(
-                port.try_into().expect("iterator guarantees bounds are OK"),
-            );
-
-            peer_list.push((ip, port).into());
-        }
-
-        debug!("ips of peers addrs {peer_list:#?}");
-        let peers: Vec<SocketAddr> = peer_list.into_iter().collect();
-
-        Ok(peers)
-    }
-
-    /// Bind UDP socket and send a connect handshake,
-    /// to one of the trackers.
-    // todo: get a new tracker if download is stale
-    async fn connect_to_tracker<A>(
-        trackers: &[A],
-        info_hash: InfoHash,
-        daemon_ctx: Arc<DaemonCtx>,
-    ) -> Result<Self, Error>
-    where
-        A: ToSocketAddrs
-            + Debug
-            + Send
-            + Sync
-            + 'static
-            + std::fmt::Display
-            + Clone,
-        A::Iter: Send,
-    {
-        info!("trying to connect to one of {:?} trackers", trackers.len());
-
-        // Connect to all trackers, return on the first
-        // successful handshake.
-        for tracker_addr in trackers {
-            debug!("trying to connect {tracker_addr:?}");
-
-            let socket = match Self::new_udp_socket(tracker_addr.clone()).await
-            {
-                Ok(socket) => socket,
-                Err(_) => {
-                    debug!("could not connect to tracker");
-                    continue;
-                }
-            };
-
-            let (tracker_tx, tracker_rx) = mpsc::channel::<TrackerMsg>(100);
-
-            let mut tracker = Tracker {
-                ctx: TrackerCtx {
-                    tracker_addr: socket.peer_addr().unwrap(),
-                    tx: tracker_tx,
-                    downloaded: 0,
-                    uploaded: 0,
-                    left: 0,
-                },
-                daemon_ctx: daemon_ctx.clone(),
-                info_hash: info_hash.clone(),
-                info: None,
-                connection_id: 0,
-                state: Udp { socket },
-                rx: tracker_rx,
-            };
-
-            if Tracker::connect(&mut tracker).await.is_ok() {
-                debug!("announced to tracker {tracker_addr}");
-                return Ok(tracker);
-            }
-        }
-
-        error!(
-            "Could not connect to any tracker, all trackers rejected the \
-             connection."
-        );
-
-        Err(Error::TrackerNoHosts)
-    }
-
-    #[tracing::instrument(skip(self))]
     async fn connect(&mut self) -> Result<connect::Response, Error> {
         let req = connect::Request::new();
         let mut buf = [0u8; connect::Response::LENGTH];
@@ -347,6 +236,116 @@ impl TrackerTrait for Tracker<Udp> {
         }
 
         Ok((res, payload.to_owned()))
+    }
+
+    fn parse_compact_peer_list(
+        &self,
+        buf: &[u8],
+    ) -> Result<Vec<SocketAddr>, Error> {
+        let mut peer_list = Vec::<SocketAddr>::new();
+
+        let is_ipv6 = self.ctx.tracker_addr.is_ipv6();
+
+        // in ipv4 the addresses come in packets of 6 bytes,
+        // first 4 for ip and 2 for port
+        // in ipv6 its 16 bytes for port and 2 for port
+        let stride = if is_ipv6 { 18 } else { 6 };
+
+        let chunks = buf.chunks_exact(stride);
+        if !chunks.remainder().is_empty() {
+            return Err(Error::TrackerCompactPeerList);
+        }
+
+        for hostpost in chunks {
+            let (ip, port) = hostpost.split_at(stride - 2);
+            let ip = if is_ipv6 {
+                let octets: [u8; 16] = ip[0..16]
+                    .try_into()
+                    .expect("iterator guarantees bounds are OK");
+                IpAddr::from(std::net::Ipv6Addr::from(octets))
+            } else {
+                IpAddr::from(std::net::Ipv4Addr::new(
+                    ip[0], ip[1], ip[2], ip[3],
+                ))
+            };
+
+            let port = u16::from_be_bytes(
+                port.try_into().expect("iterator guarantees bounds are OK"),
+            );
+
+            peer_list.push((ip, port).into());
+        }
+
+        debug!("ips of peers addrs {peer_list:#?}");
+        let peers: Vec<SocketAddr> = peer_list.into_iter().collect();
+
+        Ok(peers)
+    }
+
+    /// Bind UDP socket and send a connect handshake,
+    /// to one of the trackers.
+    // todo: get a new tracker if download is stale
+    async fn connect_to_tracker<A>(
+        trackers: &[A],
+        info_hash: InfoHash,
+        daemon_ctx: Arc<DaemonCtx>,
+    ) -> Result<Self, Error>
+    where
+        A: ToSocketAddrs
+            + Debug
+            + Send
+            + Sync
+            + 'static
+            + std::fmt::Display
+            + Clone,
+        A::Iter: Send,
+    {
+        info!("trying to connect to one of {:?} trackers", trackers.len());
+
+        // Connect to all trackers, return on the first
+        // successful handshake.
+        for tracker_addr in trackers {
+            debug!("trying to connect {tracker_addr:?}");
+
+            let socket = match Self::new_udp_socket(tracker_addr.clone()).await
+            {
+                Ok(socket) => socket,
+                Err(_) => {
+                    debug!("could not connect to tracker");
+                    continue;
+                }
+            };
+
+            let (tracker_tx, tracker_rx) = mpsc::channel::<TrackerMsg>(100);
+
+            let mut tracker = Tracker {
+                ctx: TrackerCtx {
+                    tracker_addr: socket.peer_addr().unwrap(),
+                    tx: tracker_tx,
+                    downloaded: 0,
+                    uploaded: 0,
+                    left: 0,
+                },
+                daemon_ctx: daemon_ctx.clone(),
+                info_hash: info_hash.clone(),
+                info: None,
+                connection_id: 0,
+                state: Udp { socket },
+                rx: tracker_rx,
+            };
+
+            if Tracker::connect(&mut tracker).await.is_ok() {
+                debug!("announced to tracker {tracker_addr}");
+                return Ok(tracker);
+            }
+        }
+
+        error!(
+            "Could not connect to any tracker, all trackers rejected the \
+             connection."
+        );
+
+        Err(Error::TrackerNoHosts)
     }
 }
 

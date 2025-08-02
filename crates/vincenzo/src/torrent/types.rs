@@ -40,6 +40,9 @@ pub enum TorrentMsg {
     ReadPeerByIp(IpAddr, u16, oneshot::Sender<Option<Arc<PeerCtx>>>),
 
     PeerConnecting(SocketAddr),
+
+    GetConnectedPeers(oneshot::Sender<Vec<Arc<PeerCtx>>>),
+
     PeerConnected(Arc<PeerCtx>),
 
     /// When we can't do a TCP connection with the ip of the Peer.

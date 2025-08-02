@@ -160,7 +160,10 @@ impl Daemon {
         Ok(())
     }
 
-    async fn handle_signals(mut signals: Signals, tx: mpsc::Sender<DaemonMsg>) {
+    async fn handle_signals(
+        mut signals: Signals,
+        tx: mpsc::Sender<DaemonMsg>,
+    ) {
         while let Some(signal) = signals.next().await {
             match signal {
                 SIGHUP => {
@@ -430,6 +433,7 @@ impl Daemon {
             Torrent::new(self.disk_tx.clone(), self.ctx.clone(), magnet);
 
         self.torrent_ctxs.insert(info_hash, torrent.ctx.clone());
+        // self.disk_tx.send(DiskMsg::NewTorrent(torrent.ctx.clone())).await?;
 
         spawn(async move {
             let mut torrent = torrent.start().await?;
@@ -444,9 +448,9 @@ impl Daemon {
         // tell all torrents that we are quitting the client,
         // each torrent will kill their peers tasks, and their tracker task
         for (_, ctx) in std::mem::take(&mut self.torrent_ctxs) {
-            spawn(async move {
-                let _ = ctx.tx.send(TorrentMsg::Quit).await;
-            });
+            //     spawn(async move {
+            let _ = ctx.tx.send(TorrentMsg::Quit).await;
+            //     });
         }
 
         let _ = self.disk_tx.send(DiskMsg::Quit).await;

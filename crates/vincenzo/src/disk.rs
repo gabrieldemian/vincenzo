@@ -23,6 +23,7 @@ use tokio::{
 use tracing::{debug, info, warn};
 
 use crate::{
+    bitfield::Bitfield,
     error::Error,
     extensions::core::{Block, BlockInfo},
     metainfo::Info,
@@ -36,15 +37,19 @@ pub enum DiskMsg {
     /// sent, to create the skeleton of the torrent on disk (empty files
     /// and folders), and to add the torrent ctx.
     NewTorrent(Arc<TorrentCtx>),
+
     /// The Peer does not have an ID until the handshake, when that happens,
     /// this message will be sent immediately to add the peer context.
     NewPeer(Arc<PeerCtx>),
+
     DeletePeer(SocketAddr),
+
     ReadBlock {
         info_hash: InfoHash,
         block_info: BlockInfo,
         recipient: Sender<Block>,
     },
+
     /// Handle a new downloaded Piece, validate that the hash all the blocks of
     /// this piece matches the hash on Info.pieces. If the hash is valid,
     /// the fn will send a Have msg to all peers that don't have this piece.
@@ -54,21 +59,24 @@ pub enum DiskMsg {
         recipient: Sender<Result<(), Error>>,
         piece: usize,
     },
-    OpenFile(String, Sender<File>),
+
     /// Write the given block to disk, the Disk struct will get the seeked file
     /// automatically.
     WriteBlock {
         info_hash: InfoHash,
         block: Block,
     },
+
     /// Request block infos that the peer has, that we do not have ir nor
     /// requested it.
     RequestBlocks {
         info_hash: InfoHash,
         peer_id: PeerId,
+        pieces: Bitfield,
         recipient: Sender<Vec<BlockInfo>>,
         qnt: usize,
     },
+
     /// When a peer is Choked, or receives an error and must close the
     /// connection, the outgoing/pending blocks of this peer must be
     /// appended back to the list of available block_infos.
@@ -166,7 +174,6 @@ impl Disk {
         }
     }
 
-    #[tracing::instrument(skip(self), name = "disk::run")]
     pub async fn run(&mut self) -> Result<(), Error> {
         debug!("disk started event loop");
 
@@ -177,7 +184,7 @@ impl Disk {
                     self.delete_peer(addr);
                 }
                 DiskMsg::NewTorrent(torrent) => {
-                    println!("new_torrent");
+                    info!("new_torrent");
                     let _ = self.new_torrent(torrent).await;
                 }
                 DiskMsg::ReadBlock { block_info, recipient, info_hash } => {
@@ -198,22 +205,18 @@ impl Disk {
                 DiskMsg::WriteBlock { block, info_hash } => {
                     self.write_block(&info_hash, block).await?;
                 }
-                DiskMsg::OpenFile(path, tx) => {
-                    debug!("OpenFile");
-                    let file = Self::open_file(path).await?;
-                    let _ = tx.send(file);
-                }
                 DiskMsg::RequestBlocks {
                     qnt,
                     recipient,
                     info_hash,
                     peer_id,
+                    pieces,
                 } => {
                     info!("disk received request_blocks");
                     println!("disk received request_blocks");
 
                     let infos = self
-                        .request_blocks(&info_hash, &peer_id, qnt)
+                        .request_blocks(&info_hash, &peer_id, pieces, qnt)
                         .await
                         .unwrap_or_default();
 
@@ -228,6 +231,7 @@ impl Disk {
                     let _ = recipient.send(r);
                 }
                 DiskMsg::NewPeer(peer) => {
+                    info!("new_peer: {:?}", peer.id);
                     self.new_peer(peer);
                 }
                 DiskMsg::ReturnBlockInfos(info_hash, block_infos) => {
@@ -251,6 +255,7 @@ impl Disk {
                 }
             }
         }
+        info!("disk leaving fn run");
 
         Ok(())
     }
@@ -291,11 +296,16 @@ impl Disk {
         Ok(())
     }
 
+    // pub async fn new_torrent_two(
+    //     &mut self,
+    //     torrent_ctx: Arc<TorrentCtx>,
+    //     info_hash: InfoHash,
+    // ) -> Result<(), Error> {
+    //     self.torrent_ctxs.insert(info_hash, torrent_ctx.clone());
+    //     Ok(())
+    // }
+
     /// Initialize necessary data.
-    ///
-    /// # Important
-    /// Must only be called after torrent has Info downloaded
-    #[tracing::instrument(skip(self, torrent_ctx), name = "new_torrent")]
     pub async fn new_torrent(
         &mut self,
         torrent_ctx: Arc<TorrentCtx>,
@@ -366,6 +376,7 @@ impl Disk {
 
     /// Add a new peer to `peer_ctxs`.
     pub fn new_peer(&mut self, peer_ctx: Arc<PeerCtx>) {
+        info!("new_peer for {:?}", peer_ctx.id);
         self.peer_ctxs.push(peer_ctx);
     }
 
@@ -454,37 +465,42 @@ impl Disk {
         &mut self,
         info_hash: &InfoHash,
         peer_id: &PeerId,
+        local_pieces: Bitfield,
         qnt: usize,
     ) -> Result<Vec<BlockInfo>, Error> {
         let mut result: Vec<BlockInfo> = Vec::with_capacity(qnt);
 
-        let peer_ctx = self
-            .peer_ctxs
-            .iter()
-            .find(|v| v.id == *peer_id)
-            .ok_or(Error::PeerNotFound(peer_id.clone()))?;
+        info!("{:?}", self.peer_ctxs);
+        let Some(peer_ctx) = self.peer_ctxs.iter().find(|v| v.id == *peer_id)
+        else {
+            warn!("peer not found: {peer_id:?}");
+            return Ok(vec![]);
+        };
 
+        // let torrent_ctx = self
+        //     .torrent_ctxs
+        //     .get(info_hash)
+        //     .ok_or(Error::TorrentDoesNotExist)?
+        //     .clone();
+
+        // --------
+        // let (otx, orx) = oneshot::channel();
+        // torrent_ctx.tx.send(TorrentMsg::ReadBitfield(otx)).await?;
+        // let local_pieces = orx.await?;
+        // info!("request_blocks local_pieces {}", local_pieces.len());
+        // --------
+
+        // --------
         let (otx, orx) = oneshot::channel();
-        let _ = peer_ctx.tx.send(PeerMsg::GetPieces(otx)).await;
-
-        // pieces that the remote peer has
+        peer_ctx.tx.send(PeerMsg::GetPieces(otx)).await?;
         let peer_pieces = orx.await?;
+        info!("request_blocks peer_pieces len {}", peer_pieces.len());
+        // --------
 
         // order of pieces to download
         let pieces =
             self.pieces.get(info_hash).ok_or(Error::TorrentDoesNotExist)?;
-
-        let torrent_ctx = self
-            .torrent_ctxs
-            .get(info_hash)
-            .ok_or(Error::TorrentDoesNotExist)?
-            .clone();
-
-        let (otx, orx) = oneshot::channel();
-        torrent_ctx.tx.send(TorrentMsg::ReadBitfield(otx)).await?;
-
-        // pieces that the client has
-        let local_pieces = orx.await?;
+        info!("request_blocks pieces order len {}", pieces.len());
 
         for piece in 0..pieces.len() {
             // get a piece that the remote peer has...
@@ -667,7 +683,7 @@ impl Disk {
 
         *downloaded_pieces_len += 1;
 
-        self.rarest_first(info_hash).await?;
+        // self.rarest_first(info_hash).await?;
 
         let _ = torrent_ctx
             .tx
@@ -1157,6 +1173,7 @@ mod tests {
                 peer_id: peer_ctx.id.clone(),
                 recipient: otx,
                 qnt: 3,
+                pieces: todo!(),
             })
             .await?;
 

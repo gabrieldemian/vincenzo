@@ -52,12 +52,6 @@ async fn main() -> Result<(), Error> {
 
         let mut daemon = Daemon::new(disk_tx);
         daemon.run().await?;
-
-        // spawn(async move {
-        //     let mut daemon = Daemon::new(disk_tx);
-        //     daemon.run().await?;
-        //     Ok::<(), Error>(())
-        // });
     }
 
     // Now that the daemon is running on a process,

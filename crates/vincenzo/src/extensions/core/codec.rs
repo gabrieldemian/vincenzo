@@ -175,11 +175,10 @@ impl ExtMsgHandler<Core, CoreState> for MsgHandler {
                 // and put in pending_requests
                 info!("{remote} bitfield len {:?}", bitfield.len());
                 debug!("{remote} bitfield {bitfield:?}");
+                debug!("{remote} bitfield is len {:?}", bitfield.len());
 
                 let b = &mut peer.state.pieces;
-                *b = bitfield.clone();
-
-                debug!("{remote} bitfield is len {:?}", bitfield.len());
+                *b = bitfield;
             }
             Core::Unchoke => {
                 peer.state.ctx.peer_choking.store(false, Ordering::Relaxed);

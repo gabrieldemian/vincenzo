@@ -7,11 +7,14 @@ use bendy::encoding::ToBencode;
 pub use types::*;
 
 use futures::{SinkExt, StreamExt};
-use std::{sync::atomic::Ordering, time::Duration};
+use std::{
+    sync::{atomic::Ordering, Arc},
+    time::Duration,
+};
 use tokio::{
     select,
     sync::oneshot,
-    time::{interval, interval_at, Instant},
+    time::{interval, Instant},
 };
 
 use tracing::{debug, info};
@@ -216,6 +219,7 @@ impl Peer<Connected> {
                 Some(msg) = self.state.rx.recv() => {
                     match msg {
                         PeerMsg::GetPieces(tx) => {
+                            info!("peer get_pieces {:?}", self.state.pieces);
                             let _ = tx.send(self.state.pieces.clone());
                         }
                         PeerMsg::SendToSink(msg) => {
@@ -270,7 +274,7 @@ impl Peer<Connected> {
                             self.state.sink.send(Core::Unchoke).await?;
                         }
                         PeerMsg::Pause => {
-                            debug!("{remote} pause");
+                            info!("{remote} pause");
                             self.state.session.prev_peer_choking = self.state.ctx.peer_choking.load(Ordering::Relaxed);
 
                             if self.state.ctx.am_interested.load(Ordering::Relaxed) {
@@ -318,6 +322,7 @@ impl Peer<Connected> {
                             return Ok(());
                         }
                         PeerMsg::HaveInfo => {
+                            info!("{:?} have_info", self.state.ctx.id);
                             self.state.have_info = true;
                             self.state.outgoing_requests_info_pieces.clear();
                         }
@@ -467,7 +472,6 @@ impl Peer<Connected> {
     /// Request new block infos to this Peer's remote address.
     /// Must be used after checking that the Peer is able to send blocks with
     /// [`Self::can_request`].
-    #[tracing::instrument(skip_all)]
     pub async fn request_block_infos(&mut self) -> Result<(), Error> {
         let remote = self.state.ctx.remote_addr;
 
@@ -481,10 +485,6 @@ impl Peer<Connected> {
             target_request_queue_len.saturating_sub(current_requests);
 
         info!("{remote} requesting block infos {request_len}");
-        debug!("inflight: {}", self.state.outgoing_requests.len());
-        debug!("max to request: {}", target_request_queue_len);
-        debug!("request_len: {request_len}");
-        debug!("target_request_queue_len: {target_request_queue_len}");
 
         if request_len == 0 {
             return Ok(());
@@ -493,8 +493,7 @@ impl Peer<Connected> {
         // get a list of unique block_infos from the Disk,
         // those are already marked as requested on Torrent
         let (otx, orx) = oneshot::channel();
-        let _ = self
-            .state
+        self.state
             .torrent_ctx
             .disk_tx
             .send(DiskMsg::RequestBlocks {
@@ -502,14 +501,15 @@ impl Peer<Connected> {
                 qnt: request_len,
                 info_hash: self.state.torrent_ctx.info_hash.clone(),
                 peer_id: self.state.ctx.id.clone(),
+                pieces: self.state.pieces.clone(),
             })
-            .await;
+            .await?;
 
-        let r = orx.await?;
+        let block_infos = orx.await?;
 
-        info!("disk sent {:?} blocks", r.len());
+        info!("disk sent {:?} blocks", block_infos.len());
 
-        for block_info in r {
+        for block_info in block_infos {
             self.state.outgoing_requests.push(block_info.clone());
             self.state
                 .outgoing_requests_timeout
@@ -602,7 +602,6 @@ impl Peer<Connected> {
 
             let msg = Metadata::request(piece);
             let buf = msg.to_bencode()?;
-            info!("{:?}", String::from_utf8(buf.clone()).unwrap());
 
             self.state
                 .sink

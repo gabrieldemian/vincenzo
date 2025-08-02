@@ -1,6 +1,6 @@
 use std::{
     fmt::Display,
-    net::{IpAddr, SocketAddr},
+    net::SocketAddr,
     sync::{
         atomic::{AtomicBool, AtomicU64},
         Arc,
@@ -153,31 +153,6 @@ pub struct PeerCtx {
     pub peer_interested: AtomicBool,
 
     pub outgoing_requests_timeout: HashMap<BlockInfo, Instant>,
-}
-
-impl PeerCtx {
-    pub fn is_remote_behind_nat(&self) -> bool {
-        // Private IP ranges: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
-        match self.remote_addr.ip() {
-            IpAddr::V4(ipv4) => {
-                ipv4.is_private() || ipv4.is_loopback() || ipv4.is_link_local()
-            }
-            IpAddr::V6(ipv6) => {
-                ipv6.is_loopback() || ipv6.is_unicast_link_local()
-            }
-        }
-    }
-    pub fn is_local_behind_nat(&self) -> bool {
-        // Private IP ranges: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
-        match self.local_addr.ip() {
-            IpAddr::V4(ipv4) => {
-                ipv4.is_private() || ipv4.is_loopback() || ipv4.is_link_local()
-            }
-            IpAddr::V6(ipv6) => {
-                ipv6.is_loopback() || ipv6.is_unicast_link_local()
-            }
-        }
-    }
 }
 
 /// Messages used to control the peer state or to make the peer forward a

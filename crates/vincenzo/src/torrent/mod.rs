@@ -122,7 +122,6 @@ pub struct TorrentCtx {
 }
 
 impl Torrent<Idle> {
-    #[tracing::instrument(skip(disk_tx, daemon_ctx), name = "torrent::new")]
     pub fn new(
         disk_tx: mpsc::Sender<DiskMsg>,
         daemon_ctx: Arc<DaemonCtx>,
@@ -172,7 +171,6 @@ impl Torrent<Idle> {
     /// Start the Torrent, by sending `connect` and `announce_exchange`
     /// messages to one of the trackers, and returning a list of peers.
     /// But it doesn't run the torrent event loop.
-    #[tracing::instrument(skip_all)]
     pub async fn start(self) -> Result<Torrent<Connected>, Error> {
         let c = self.ctx.clone();
         let org_trackers = c.magnet.organize_trackers();
@@ -329,13 +327,14 @@ impl Torrent<Connected> {
             idle_peer.handshake(socket, daemon_ctx, direction).await?;
 
         if let Err(r) = connected_peer.run().await {
-            debug!(
-                "{} Peer session stopped due to an error: {}",
+            warn!(
+                "{} peer loop stopped due to an error: {}",
                 connected_peer.state.ctx.remote_addr, r
             );
             connected_peer.free_pending_blocks().await;
             return Err(r);
         }
+        info!("leaving start_and_run_peer");
         Ok(connected_peer)
     }
 
@@ -569,7 +568,6 @@ impl Torrent<Connected> {
     }
 
     /// Run the Torrent main event loop to listen to internal [`TorrentMsg`].
-    #[tracing::instrument(skip_all)]
     pub async fn run(&mut self) -> Result<(), Error> {
         debug!("running torrent: {:?}", self.name);
 
@@ -600,15 +598,18 @@ impl Torrent<Connected> {
             select! {
                 Some(msg) = self.rx.recv() => {
                     match msg {
+                        TorrentMsg::GetConnectedPeers(otx) => {
+                            let _ = otx.send(self.state.connected_peers.clone());
+                        }
                         TorrentMsg::ReadPeerByIp(ip, port, otx) => {
                             if let Some(peer_ctx) =
                                 self.state.connected_peers
                                 .iter()
                                 .find(|&p| p.remote_addr.ip() == ip && port == p.remote_addr.port()) {
                                 let _ = otx.send(Some(peer_ctx.clone()));
-                                continue;
+                            } else {
+                                let _ = otx.send(None);
                             }
-                            let _ = otx.send(None);
                         }
                         TorrentMsg::MetadataSize(meta_size) => {
                             if self.state.have_info {continue};
@@ -672,14 +673,6 @@ impl Torrent<Connected> {
 
                             self.state.connected_peers.push(ctx.clone());
                             self.state.connecting_peers.retain(|v| *v != ctx.remote_addr);
-                            // in the case that the PeerConnected arrives after the PeerConnecting
-                            self.state.idle_peers.retain(|v| *v != ctx.remote_addr);
-
-                            let _ = self
-                                .ctx
-                                .disk_tx
-                                .send(DiskMsg::NewPeer(ctx))
-                                .await;
 
                             let _ = self
                                 .daemon_ctx
@@ -756,7 +749,7 @@ impl Torrent<Connected> {
                                     acc
                                 });
 
-                            let downloaded_info = Info::from_bencode(&info_bytes)?;
+                            let mut downloaded_info = Info::from_bencode(&info_bytes)?;
                             let magnet_hash = self.ctx.magnet.hash().unwrap();
 
                             let mut hasher = sha1_smol::Sha1::new();
@@ -783,29 +776,35 @@ impl Torrent<Connected> {
                             info!("piece_length: {:?}", downloaded_info.piece_length);
                             info!("pieces: {:?}", downloaded_info.pieces());
 
-                            let mut info = self.ctx.info.write().await;
+                            self.state.have_info = true;
 
-                            *info = downloaded_info;
+                            let meta_size = downloaded_info.metadata_size()?;
+                            self.state.metadata_size = meta_size;
 
-                            let meta_size = info.metadata_size()?;
-                            info.metadata_size = Some(meta_size);
-                            self.state.metadata_size = info.metadata_size()?;
-
-                            let pieces = info.pieces();
-
+                            let pieces = downloaded_info.pieces();
                             self.state.bitfield = bitvec![u8, Msb0; 0; pieces as usize];
 
-                            info!("local_bitfield len {:?}", self.state.bitfield.len());
-                            debug!("local_bitfield {:?}", self.state.bitfield);
+                            downloaded_info.metadata_size = Some(meta_size);
 
-                            self.state.have_info = true;
+                            let mut info = self.ctx.info.write().await;
+                            *info = downloaded_info;
                             self.state.tracker_ctx.tx.send(TrackerMsg::Info(info.clone())).await?;
+                            drop(info);
+
+                            self.ctx.disk_tx.send(DiskMsg::NewTorrent(self.ctx.clone())).await?;
+
+                            info!("local_bitfield len {:?}", self.state.bitfield.len());
 
                             self.status = TorrentStatus::Downloading;
-                            self.ctx.disk_tx.send(DiskMsg::NewTorrent(self.ctx.clone())).await?;
 
                             for peer in &self.state.connected_peers {
                                 let _ = peer.tx.send(PeerMsg::HaveInfo).await;
+                                let _ = self
+                                    .ctx
+                                    .disk_tx
+                                    .send(DiskMsg::NewPeer(peer.clone()))
+                                    .await;
+
                             }
                         }
                         TorrentMsg::RequestInfoPiece(index, recipient) => {
