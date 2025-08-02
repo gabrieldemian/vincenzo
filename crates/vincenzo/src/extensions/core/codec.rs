@@ -14,7 +14,6 @@ use crate::{
     error::Error,
     extensions::{ExtData, ExtMsg, ExtMsgHandler},
     peer::{self, MsgHandler},
-    torrent::TorrentMsg,
 };
 
 /// State that comes with the Core protocol.
@@ -171,14 +170,13 @@ impl ExtMsgHandler<Core, CoreState> for MsgHandler {
                 info!("{remote} keepalive");
             }
             Core::Bitfield(bitfield) => {
-                // take entire pieces from bitfield
-                // and put in pending_requests
-                info!("{remote} bitfield len {:?}", bitfield.len());
-                debug!("{remote} bitfield {bitfield:?}");
-                debug!("{remote} bitfield is len {:?}", bitfield.len());
+                info!(
+                    "{remote} bitfield len: {:?} ones: {}",
+                    bitfield.len(),
+                    bitfield.count_ones()
+                );
 
-                let b = &mut peer.state.pieces;
-                *b = bitfield;
+                peer.state.pieces = bitfield;
             }
             Core::Unchoke => {
                 peer.state.ctx.peer_choking.store(false, Ordering::Relaxed);
@@ -205,40 +203,18 @@ impl ExtMsgHandler<Core, CoreState> for MsgHandler {
                 // Overwrite pieces on bitfield, if the peer has one
                 let peer_pieces = &mut peer.state.pieces;
 
-                let (otx, orx) = oneshot::channel();
-
-                peer.state
-                    .torrent_ctx
-                    .tx
-                    .send(TorrentMsg::ReadBitfield(otx))
-                    .await?;
-
-                // local bitfield of the local peer
-                let local_pieces = orx.await?;
-
                 // peer sent a piece which is out of bounds with it's pieces
                 if peer_pieces.get(piece).is_none() {
                     warn!(
-                        "{remote} sent have but it's bitfield is out of
-bounds"
+                        "{remote} sent have but it's bitfield is out of bounds"
                     );
                     warn!(
-                        "initializing an empty bitfield with the len of the
-piece {piece}"
+                        "initializing an empty bitfield with the len of the \
+                         piece {piece}"
                     );
 
-                    // if local peer has full info, calc the difference of the
-                    // bitfields and just append the difference to the peer's
-                    if peer.state.have_info {
-                        let missing_bits =
-                            local_pieces.len() - peer_pieces.len();
-                        peer_pieces
-                            .extend_from_bitslice(&bitvec![0; missing_bits]);
-                    } else {
-                        let missing_bits = piece - peer_pieces.len();
-                        peer_pieces
-                            .extend_from_bitslice(&bitvec![0; missing_bits]);
-                    }
+                    let missing_bits = piece - peer_pieces.len();
+                    peer_pieces.extend_from_bitslice(&bitvec![0; missing_bits]);
                 }
 
                 peer_pieces.set(piece, true);

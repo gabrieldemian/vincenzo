@@ -212,8 +212,6 @@ impl Disk {
                     peer_id,
                     peer_pieces,
                 } => {
-                    info!("disk received request_blocks");
-
                     let infos = self
                         .request_blocks(&info_hash, &peer_id, peer_pieces, qnt)
                         .await
@@ -229,7 +227,6 @@ impl Disk {
                     let _ = recipient.send(r);
                 }
                 DiskMsg::NewPeer(peer) => {
-                    info!("new_peer: {:?}", peer.id);
                     self.new_peer(peer);
                 }
                 DiskMsg::ReturnBlockInfos(info_hash, block_infos) => {
@@ -360,13 +357,7 @@ impl Disk {
 
         self.pieces.insert(info_hash.clone(), all_pieces);
         self.cache.insert(info_hash.clone(), BTreeMap::new());
-
-        let pieces_blocks =
-            self.pieces_blocks.entry(info_hash.clone()).or_default();
-
-        // generate all block_infos of this torrent
-        *pieces_blocks = info.get_block_infos()?;
-
+        self.pieces_blocks.insert(info_hash.clone(), info.get_block_infos()?);
         self.downloaded_pieces_len.insert(info_hash.clone(), 0);
 
         Ok(())
@@ -374,7 +365,6 @@ impl Disk {
 
     /// Add a new peer to `peer_ctxs`.
     pub fn new_peer(&mut self, peer_ctx: Arc<PeerCtx>) {
-        info!("new_peer for {:?}", peer_ctx.id);
         self.peer_ctxs.push(peer_ctx);
     }
 
@@ -468,7 +458,6 @@ impl Disk {
     ) -> Result<Vec<BlockInfo>, Error> {
         let mut result: Vec<BlockInfo> = Vec::with_capacity(qnt);
 
-        info!("request_blocks fn");
         // let Some(peer_ctx) = self.peer_ctxs.iter().find(|v| v.id == *peer_id)
         // else {
         //     warn!("peer not found: {peer_id:?}");
@@ -480,6 +469,9 @@ impl Disk {
             .get(info_hash)
             .ok_or(Error::TorrentDoesNotExist)?
             .clone();
+
+        info!("peer_pieces len {}", peer_pieces.len());
+        info!("peer_pieces ones {}", peer_pieces.count_ones());
 
         // --------
         let (otx, orx) = oneshot::channel();
@@ -500,6 +492,11 @@ impl Disk {
             self.pieces.get(info_hash).ok_or(Error::TorrentDoesNotExist)?;
         info!("request_blocks pieces order len {}", pieces.len());
 
+        if peer_pieces.is_empty() {
+            warn!("peer_pieces is empty");
+            return Ok(vec![]);
+        }
+
         for piece in 0..pieces.len() {
             // get a piece that the remote peer has...
             let Some(_p @ true) = peer_pieces.get(piece).as_deref() else {
@@ -507,7 +504,7 @@ impl Disk {
             };
 
             // but the local peer does not.
-            let Some(_p @ false) = peer_pieces.get(piece).as_deref() else {
+            let Some(_p @ false) = local_pieces.get(piece).as_deref() else {
                 continue;
             };
 
@@ -529,7 +526,6 @@ impl Disk {
 
             // if not all blocks were pushed to result, put them back
             if !block_infos.is_empty() {
-                println!("appending");
                 self.pieces_blocks
                     .get_mut(info_hash)
                     .ok_or(Error::TorrentDoesNotExist)?

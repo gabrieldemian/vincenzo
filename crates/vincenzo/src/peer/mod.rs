@@ -322,7 +322,6 @@ impl Peer<Connected> {
                             return Ok(());
                         }
                         PeerMsg::HaveInfo => {
-                            info!("{:?} have_info", self.state.ctx.id);
                             self.state.have_info = true;
                             self.state.outgoing_requests_info_pieces.clear();
                         }
@@ -506,8 +505,6 @@ impl Peer<Connected> {
             .await?;
 
         let block_infos = orx.await?;
-
-        info!("disk sent {:?} blocks", block_infos.len());
 
         for block_info in block_infos {
             self.state.outgoing_requests.push(block_info.clone());
