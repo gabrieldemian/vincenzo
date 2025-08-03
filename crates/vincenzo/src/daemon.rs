@@ -102,7 +102,7 @@ pub enum DaemonMsg {
 
 impl Daemon {
     pub const DEFAULT_LISTENER: SocketAddr =
-        SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 51411);
+        SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 51411);
 
     /// Initialize the Daemon struct with the default [`DaemonConfig`].
     pub fn new(disk_tx: mpsc::Sender<DiskMsg>) -> Self {
@@ -317,8 +317,8 @@ impl Daemon {
                                     TorrentStatus::Downloading => {
                                         format!(
                                             "{} - {}",
-                                            to_human_readable(state.downloaded as f64),
-                                            to_human_readable(state.download_rate as f64),
+                                            to_human_readable(state.downloaded),
+                                            to_human_readable(state.download_rate),
                                         )
                                     }
                                     _ => state.status.clone().into()
@@ -327,7 +327,7 @@ impl Daemon {
                                 println!(
                                     "\n{}\n{}\nSeeders {} Leechers {}\n{status_line}",
                                     state.name,
-                                    to_human_readable(state.size as f64),
+                                    to_human_readable(state.size),
                                     state.stats.seeders,
                                     state.stats.leechers,
                                 );
@@ -424,8 +424,6 @@ impl Daemon {
     /// and run the torrent's event loop.
     pub async fn new_torrent(&mut self, magnet: Magnet) -> Result<(), Error> {
         let info_hash = magnet.parse_xt_infohash();
-
-        info!("received magnet info_hash: {info_hash:#?}");
 
         if self.torrent_states.iter().any(|v| v.info_hash == info_hash) {
             warn!("this torrent is already present");

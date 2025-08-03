@@ -36,7 +36,7 @@ use tokio::{
     sync::{mpsc, oneshot, RwLock},
     time::{interval, interval_at, Instant},
 };
-use tracing::{debug, info, warn};
+use tracing::{debug, info, trace, warn};
 
 pub trait TorrentTrait {}
 
@@ -190,17 +190,17 @@ impl Torrent<Idle> {
         )
         .await?;
 
-        info!(
+        debug!(
             "connected to tracker: {:?}, sending announce",
             tracker.ctx.tracker_addr
         );
 
         let (res, payload) = tracker.announce(Event::Started).await?;
-        info!("{res:?}");
+        debug!("{res:?}");
         let peers = tracker.parse_compact_peer_list(payload.as_ref())?;
 
-        info!("announced and got {} peers", peers.len());
-        info!("{peers:?}");
+        debug!("announced to tracker and got {} peers", peers.len());
+        debug!("{peers:?}");
 
         let stats = Stats {
             interval: res.interval,
@@ -208,12 +208,7 @@ impl Torrent<Idle> {
             leechers: res.leechers,
         };
 
-        info!("{stats:?}");
-
-        debug!(
-            "starting torrent {:?} with stats {:#?}",
-            self.ctx.info_hash, stats
-        );
+        debug!("{stats:?}");
 
         let tracker_ctx = Arc::new(tracker.ctx.clone());
 
@@ -284,7 +279,7 @@ impl Torrent<Connected> {
         let daemon_ctx = self.daemon_ctx.clone();
 
         if to_request > 0 {
-            info!(
+            trace!(
                 "{:?} sending handshakes to {to_request} peers",
                 self.ctx.info_hash
             );
@@ -772,7 +767,6 @@ impl Torrent<Connected> {
                                 return Err(Error::PieceInvalid);
                             }
 
-                            info!("hash of info is valid");
                             info!("--info--");
                             info!("name: {:?}", downloaded_info.name);
                             info!("files: {:?}", downloaded_info.files);
@@ -796,7 +790,7 @@ impl Torrent<Connected> {
 
                             self.ctx.disk_tx.send(DiskMsg::NewTorrent(self.ctx.clone())).await?;
 
-                            info!("local_bitfield len {:?}", self.state.bitfield.len());
+                            info!("local bitfield: {:?}", self.state.bitfield.len());
 
                             self.status = TorrentStatus::Downloading;
 
@@ -878,11 +872,9 @@ impl Torrent<Connected> {
                     }
                 }
                 _ = reconnect_interval.tick() => {
-                    debug!("
-                        reconnect_interval
+                    debug!("reconnect_interval
                         connected_peers: {}
-                        error_peers: {}
-                    ",
+                        error_peers: {}",
                         self.state.connected_peers.len(),
                         self.state.error_peers.len(),
                     );
@@ -914,12 +906,15 @@ impl Torrent<Connected> {
                         self.state.last_second_downloaded
                     );
 
-                    info!("downloaded {}", to_human_readable(downloaded as f64));
-                    info!("uploaded {}", to_human_readable(uploaded as f64));
-                    info!("download_rate {}", to_human_readable(download_rate as f64));
-
                     let upload_rate = self.state.tracker_ctx.downloaded.saturating_sub(
                         self.state.last_second_uploaded
+                    );
+
+                    info!("downloaded {} uploaded {} download_rate {} upload_rate {}",
+                        to_human_readable(downloaded),
+                        to_human_readable(uploaded),
+                        to_human_readable(download_rate),
+                        to_human_readable(upload_rate),
                     );
 
                     let torrent_state = TorrentState {
@@ -956,7 +951,7 @@ impl Torrent<Connected> {
 
                     // select new optimistic unchoke
                     if let Some(new_opt) = self.get_random_choked_interested_peer() {
-                        info!("opt unchoking {:?}", new_opt.id);
+                        debug!("optimistically unchoking {:?}", new_opt.id);
                         let _ = new_opt.tx.send(PeerMsg::Unchoke).await;
                         self.state.opt_unchoked_peer = Some(new_opt);
                     }
@@ -964,19 +959,20 @@ impl Torrent<Connected> {
                 // for the unchoke interval, the local client is interested in the best
                 // uploaders (from our perspctive) (tit-for-tat) which gives us the most bytes out of the other
                 _ = unchoke_interval.tick() => {
+                    trace!("unchoke_interval");
                     let best_uploaders = self.get_best_interested_uploaders(3);
 
                     // choke peers no longer in top 3
                     for peer in &self.state.unchoked_peers {
                         if !best_uploaders.iter().any(|p| p.id == peer.id) {
-                            info!("choking peer {:?}", peer.id);
+                            trace!("choking peer {:?}", peer.id);
                             let _ = peer.tx.send(PeerMsg::Choke).await;
                         }
                     }
 
                     for uploader in &best_uploaders {
                         if !self.state.unchoked_peers.iter().any(|p| p.id == uploader.id) {
-                            info!("unchoking peer {:?}", uploader.id);
+                            trace!("unchoking peer {:?}", uploader.id);
 
                             let _ = uploader.tx.send(PeerMsg::Unchoke).await;
                             self.state.unchoked_peers.push(uploader.clone());
@@ -989,7 +985,7 @@ impl Torrent<Connected> {
                     }
                 }
                 _ = announce_interval.tick(), if self.state.have_info => {
-                    debug!("sending periodic announce, interval {announce_interval:?}");
+                    trace!("sending periodic announce, interval {announce_interval:?}");
 
                     let (otx, orx) = oneshot::channel();
                     let tracker_tx = &self.state.tracker_ctx.tx;
@@ -1002,7 +998,7 @@ impl Torrent<Connected> {
                     .await;
 
                     let (resp, _payload) = orx.await?;
-                    debug!("new stats {resp:#?}");
+                    trace!("new stats {resp:#?}");
 
                     // update our stats, received from the tracker
                     self.state.stats = resp.into();

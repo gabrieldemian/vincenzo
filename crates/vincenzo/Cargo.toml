@@ -1,6 +1,6 @@
 [package]
 name = "vincenzo"
-version = "0.0.3"
+version = "0.0.1"
 description = "A BitTorrent protocol library that powers the Vincenzo client."
 keywords = ["distributed", "bittorrent", "torrent", "p2p", "networking"]
 categories = ["network-programming"]

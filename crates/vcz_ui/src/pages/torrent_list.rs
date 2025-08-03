@@ -203,8 +203,7 @@ impl<'a> Page for TorrentList<'a> {
         let mut rows: Vec<ListItem> = Vec::new();
 
         for (i, state) in self.torrent_infos.iter().enumerate() {
-            let mut download_rate =
-                to_human_readable(state.download_rate as f64);
+            let mut download_rate = to_human_readable(state.download_rate);
             download_rate.push_str("/s");
 
             let name = Span::from(state.name.clone()).bold();
@@ -222,7 +221,7 @@ impl<'a> Page for TorrentList<'a> {
             if state.status == TorrentStatus::Downloading {
                 let download_and_rate = format!(
                     " {} - {download_rate}",
-                    to_human_readable(state.downloaded as f64)
+                    to_human_readable(state.downloaded)
                 )
                 .into();
                 status_txt.push(download_and_rate);
@@ -244,7 +243,7 @@ impl<'a> Page for TorrentList<'a> {
             let mut items = vec![
                 line_top,
                 name.into(),
-                to_human_readable(state.size as f64).into(),
+                to_human_readable(state.size).into(),
                 sl,
                 status_txt.into(),
                 format!("Connected to {} peers", state.connected_peers).into(),

@@ -170,8 +170,8 @@ impl ExtMsgHandler<Core, CoreState> for MsgHandler {
                 info!("{remote} keepalive");
             }
             Core::Bitfield(bitfield) => {
-                info!(
-                    "{remote} bitfield len: {:?} ones: {}",
+                debug!(
+                    "{remote} bitfield len: {:?} has pieces: {}",
                     bitfield.len(),
                     bitfield.count_ones()
                 );

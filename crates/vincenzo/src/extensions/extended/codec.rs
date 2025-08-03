@@ -15,7 +15,7 @@ use std::{fmt::Debug, ops::Deref};
 use bendy::{decoding::FromBencode, encoding::ToBencode};
 use bytes::BytesMut;
 use futures::SinkExt;
-use tracing::info;
+use tracing::{debug, info, trace};
 use vincenzo_macros::Message;
 
 use super::Extension;
@@ -92,11 +92,7 @@ impl ExtMsgHandler<Extended, Extension> for MsgHandler {
         peer: &mut peer::Peer<peer::Connected>,
         msg: Extended,
     ) -> Result<(), Error> {
-        tracing::info!(
-            "{} extended handshake from {}",
-            peer.state.ctx.local_addr,
-            peer.state.ctx.remote_addr
-        );
+        info!("{} extended handshake", peer.state.ctx.remote_addr);
 
         let ext: Extension = msg.into();
 
@@ -108,7 +104,7 @@ impl ExtMsgHandler<Extended, Extension> for MsgHandler {
                 .await?;
         }
 
-        tracing::info!("ext of peer {:?}", ext);
+        debug!("{ext:?}");
 
         // send ours extended msg if outbound
         if peer.state.ctx.direction == Direction::Outbound {
@@ -122,7 +118,7 @@ impl ExtMsgHandler<Extended, Extension> for MsgHandler {
 
             let ext = Extension::supported(Some(metadata_size)).to_bencode()?;
 
-            info!(
+            trace!(
                 "sending my extended handshake {:?}",
                 String::from_utf8(ext.clone())
             );

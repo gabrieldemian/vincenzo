@@ -13,7 +13,6 @@ use futures::{
     stream::{SplitSink, SplitStream, StreamExt},
     SinkExt,
 };
-use hashbrown::HashMap;
 use rand::{distr::Alphanumeric, Rng};
 use speedy::{Readable, Writable};
 use tokio::{
@@ -25,7 +24,7 @@ use tokio::{
     time::Instant,
 };
 use tokio_util::codec::{Framed, FramedParts};
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 use crate::{
     bitfield::{Bitfield, Reserved},
@@ -172,8 +171,6 @@ pub struct PeerCtx {
 
     /// The peer is interested in downloading from client.
     pub peer_interested: AtomicBool,
-
-    pub outgoing_requests_timeout: HashMap<BlockInfo, Instant>,
 }
 
 /// Messages used to control the peer state or to make the peer forward a
@@ -296,7 +293,7 @@ impl peer::Peer<Idle> {
         let mut socket = Framed::new(socket, HandshakeCodec);
 
         if let DirectionWithInfoHash::Outbound(info_hash) = &direction {
-            debug!("sending the first handshake to {remote}");
+            debug!("{remote} sending outbound handshake");
 
             let our_handshake = Handshake::new(
                 info_hash.clone(),
@@ -311,6 +308,7 @@ impl peer::Peer<Idle> {
             // warn!("did not send a handshake {remote}");
             return Err(Error::HandshakeInvalid);
         };
+        debug!("{remote} received peer handshake {peer_handshake:?}",);
 
         let our_handshake = Handshake::new(
             peer_handshake.info_hash.clone(),
@@ -363,7 +361,7 @@ impl peer::Peer<Idle> {
         // receive theirs on the main event loop of Peer<Connected> and
         // not here.
         if reserved[43] && DirectionWithInfoHash::Inbound == direction {
-            info!("{remote} sending extended handshake");
+            debug!("{remote} sending extended handshake");
 
             let magnet = &torrent_ctx.magnet;
             let info = torrent_ctx.info.read().await;
@@ -388,7 +386,6 @@ impl peer::Peer<Idle> {
         let (tx, rx) = mpsc::channel::<PeerMsg>(100);
 
         let ctx = PeerCtx {
-            outgoing_requests_timeout: HashMap::new(),
             am_interested: false.into(),
             am_choking: true.into(),
             peer_choking: true.into(),
@@ -407,12 +404,12 @@ impl peer::Peer<Idle> {
 
         let peer = peer::Peer {
             state: Connected {
-                outgoing_requests_info_pieces_times: HashMap::new(),
+                // outgoing_requests_info_pieces_times: HashMap::new(),
                 prev_peer_choking: false,
                 seed_only: false,
                 connection: ConnectionState::default(),
                 target_request_queue_len: DEFAULT_REQUEST_QUEUE_LEN,
-                outgoing_requests_timeout: HashMap::new(),
+                // outgoing_requests_timeout: HashMap::new(),
                 pieces: Bitfield::new(),
                 ctx: Arc::new(ctx),
                 ext_states: ExtStates::default(),
@@ -472,17 +469,15 @@ pub struct Connected {
     ///
     /// If we receive a block whose request entry is here, that entry is
     /// removed. A request is also removed here when it is timed out.
-    pub outgoing_requests: Vec<BlockInfo>,
-
-    /// Outgoing requests of info pieces.
-    pub outgoing_requests_info_pieces: Vec<u64>,
-
-    pub outgoing_requests_info_pieces_times: HashMap<u64, Instant>,
+    pub outgoing_requests: Vec<(BlockInfo, Instant)>,
 
     // The Instant of each timeout value of [`Self::outgoing_requests`]
     // blocks.
-    pub outgoing_requests_timeout: HashMap<BlockInfo, Instant>,
+    // pub outgoing_requests_timeout: HashMap<BlockInfo, Instant>,
+    /// Outgoing requests of info pieces.
+    pub outgoing_requests_info_pieces: Vec<(u64, Instant)>,
 
+    // pub outgoing_requests_info_pieces_times: HashMap<u64, Instant>,
     /// The requests we got from peer.
     ///
     /// The request's entry is removed from here when the block is transmitted

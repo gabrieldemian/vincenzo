@@ -947,7 +947,7 @@ mod tests {
         extensions::{core::BLOCK_LEN, CoreCodec},
         magnet::Magnet,
         metainfo::{self, Info},
-        peer::{self, Peer},
+        peer::{self, Peer, DEFAULT_REQUEST_QUEUE_LEN},
         torrent::{Connected, Stats, Torrent},
         tracker::{TrackerCtx, TrackerMsg},
     };
@@ -1159,21 +1159,25 @@ mod tests {
 
             let mut peer = Peer::<peer::Connected> {
                 state: peer::Connected {
-                    pieces,
+                    connection: peer::ConnectionState::default(),
                     ctx: peer_ctx_,
                     ext_states: peer::ExtStates::default(),
-                    sink,
-                    stream,
+                    have_info: true,
+                    in_endgame: false,
                     incoming_requests: Vec::new(),
                     outgoing_requests: Vec::new(),
                     outgoing_requests_info_pieces: Vec::new(),
-                    outgoing_requests_timeout: HashMap::new(),
                     outgoing_requests_info_pieces_times: HashMap::new(),
-                    session: peer::session::Session::default(),
-                    have_info: true,
+                    outgoing_requests_timeout: HashMap::new(),
+                    pieces,
+                    prev_peer_choking: false,
                     reserved: bitvec::bitarr![u8, bitvec::prelude::Msb0; 0; 8 * 8],
-                    torrent_ctx: torrent_ctx_,
                     rx: peer_rx,
+                    seed_only: false,
+                    sink,
+                    stream,
+                    target_request_queue_len: DEFAULT_REQUEST_QUEUE_LEN,
+                    torrent_ctx: torrent_ctx_,
                 },
             };
 

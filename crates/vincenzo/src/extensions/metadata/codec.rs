@@ -62,11 +62,7 @@ impl ExtMsgHandler<MetadataDict, MetadataData> for MsgHandler {
 
                 peer.state
                     .outgoing_requests_info_pieces
-                    .retain(|&p| p != msg.piece);
-
-                peer.state
-                    .outgoing_requests_info_pieces_times
-                    .remove(&msg.piece);
+                    .retain(|&p| p.0 != msg.piece);
 
                 peer.state
                     .torrent_ctx

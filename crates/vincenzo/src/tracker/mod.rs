@@ -192,7 +192,7 @@ impl TrackerTrait for Tracker<Udp> {
             event,
             ..Default::default()
         };
-        info!("{req:?}");
+        debug!("{req:?}");
 
         let mut len = 0_usize;
         let mut res = [0u8; ANNOUNCE_RES_BUF_LEN];
