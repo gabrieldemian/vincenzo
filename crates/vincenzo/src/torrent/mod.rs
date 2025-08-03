@@ -22,6 +22,7 @@ use crate::{
     metainfo::Info,
     peer::{self, DirectionWithInfoHash, Peer, PeerCtx, PeerId, PeerMsg},
     tracker::{event::Event, Tracker, TrackerCtx, TrackerMsg, TrackerTrait},
+    utils::to_human_readable,
 };
 use std::{
     collections::BTreeMap,
@@ -62,6 +63,9 @@ pub struct Connected {
 
     /// How much of the info was downloaded.
     pub downloaded_info_bytes: u64,
+
+    /// The size of the entire torrent in disk, in bytes.
+    pub size: u64,
 
     /// Idle peers returned from an announce request to the tracker.
     /// Will be removed from this vec as we connect with them, and added as we
@@ -220,6 +224,7 @@ impl Torrent<Idle> {
 
         Ok(Torrent {
             state: Connected {
+                size: self.ctx.magnet.length().unwrap_or(0),
                 unchoked_peers: Vec::with_capacity(3),
                 opt_unchoked_peer: None,
                 last_second_downloaded: 0,
@@ -778,7 +783,7 @@ impl Torrent<Connected> {
 
                             let meta_size = downloaded_info.metadata_size()?;
                             self.state.metadata_size = meta_size;
-
+                            self.state.size = downloaded_info.get_size();
                             let pieces = downloaded_info.pieces();
                             self.state.bitfield = bitvec![u8, Msb0; 0; pieces as usize];
 
@@ -893,9 +898,25 @@ impl Torrent<Connected> {
                     self.spawn_outbound_peers().await?;
                 }
                 _ = heartbeat_interval.tick() => {
-                    let download_rate = self.state.tracker_ctx.downloaded.saturating_sub(
+                    let downloaded = self.state.connected_peers
+                        .iter()
+                        .fold(
+                            0u64, |acc, v| acc + v.uploaded.load(Ordering::Relaxed)
+                        );
+
+                    let uploaded = self.state.connected_peers
+                        .iter()
+                        .fold(
+                            0u64, |acc, v| acc + v.downloaded.load(Ordering::Relaxed)
+                        );
+
+                    let download_rate = downloaded.saturating_sub(
                         self.state.last_second_downloaded
                     );
+
+                    info!("downloaded {}", to_human_readable(downloaded as f64));
+                    info!("uploaded {}", to_human_readable(uploaded as f64));
+                    info!("download_rate {}", to_human_readable(download_rate as f64));
 
                     let upload_rate = self.state.tracker_ctx.downloaded.saturating_sub(
                         self.state.last_second_uploaded
@@ -903,9 +924,9 @@ impl Torrent<Connected> {
 
                     let torrent_state = TorrentState {
                         name: self.name.clone(),
-                        size: self.state.metadata_size,
-                        downloaded: self.state.tracker_ctx.downloaded,
-                        uploaded: self.state.tracker_ctx.uploaded,
+                        size: self.state.size,
+                        downloaded,
+                        uploaded,
                         stats: self.state.stats.clone(),
                         status: self.status.clone(),
                         download_rate,
@@ -917,8 +938,8 @@ impl Torrent<Connected> {
                         idle_peers: self.state.idle_peers.len() as u8,
                     };
 
-                    self.state.last_second_downloaded = self.state.tracker_ctx.downloaded;
-                    self.state.last_second_uploaded = self.state.tracker_ctx.uploaded;
+                    self.state.last_second_downloaded = downloaded;
+                    self.state.last_second_uploaded = uploaded;
 
                     let _ = self.daemon_ctx.tx.send(
                         DaemonMsg::TorrentState(torrent_state)

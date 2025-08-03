@@ -7,7 +7,7 @@ use crate::{
         Core, ExtMsg, ExtMsgHandler, ExtendedMessage, HolepunchData,
         MetadataData,
     },
-    peer::{self, session::Session, Direction, MsgHandler},
+    peer::{self, Direction, MsgHandler, DEFAULT_REQUEST_QUEUE_LEN},
     torrent::TorrentMsg,
 };
 use std::{fmt::Debug, ops::Deref};
@@ -23,9 +23,7 @@ use super::Extension;
 /// Extended handshake from the Extended protocol, other extended messages have
 /// their own enum type.
 #[derive(Debug, Clone, PartialEq, Message)]
-pub enum Extended {
-    Extension(Extension),
-}
+pub struct Extended(Extension);
 
 impl ExtMsg for Extended {
     /// handshake ID
@@ -34,7 +32,7 @@ impl ExtMsg for Extended {
 
 impl From<Extension> for Extended {
     fn from(value: Extension) -> Self {
-        Self::Extension(value)
+        Extended(value)
     }
 }
 
@@ -48,16 +46,14 @@ impl TryFrom<ExtendedMessage> for Extended {
 
         let extension = Extension::from_bencode(&value.1)?;
 
-        Ok(Extended::Extension(extension))
+        Ok(Extended(extension))
     }
 }
 
 impl Deref for Extended {
     type Target = Extension;
     fn deref(&self) -> &Self::Target {
-        match self {
-            Self::Extension(v) => v,
-        }
+        &self.0
     }
 }
 
@@ -65,7 +61,7 @@ impl From<Extended> for BytesMut {
     fn from(val: Extended) -> Self {
         let mut dst = BytesMut::new();
 
-        let Extended::Extension(extension) = val;
+        let Extended(extension) = val;
         let payload = extension.to_bencode().unwrap();
         dst.extend(payload);
 
@@ -76,7 +72,7 @@ impl From<Extended> for BytesMut {
 impl From<Extended> for Extension {
     fn from(value: Extended) -> Self {
         match value {
-            Extended::Extension(ext) => ext,
+            Extended(ext) => ext,
         }
     }
 }
@@ -136,9 +132,9 @@ impl ExtMsgHandler<Extended, Extension> for MsgHandler {
         }
 
         // the max number of block_infos to request
-        let n = ext.reqq.unwrap_or(Session::DEFAULT_REQUEST_QUEUE_LEN);
+        let n = ext.reqq.unwrap_or(DEFAULT_REQUEST_QUEUE_LEN);
 
-        peer.state.session.target_request_queue_len = n;
+        peer.state.target_request_queue_len = n;
 
         // set the peer's extensions
         if ext.m.ut_metadata.is_some() {

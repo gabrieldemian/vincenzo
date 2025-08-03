@@ -1,5 +1,4 @@
 //! A remote peer in the network that downloads and uploads data
-pub mod session;
 mod types;
 
 use bendy::encoding::ToBencode;
@@ -24,7 +23,6 @@ use crate::{
     disk::DiskMsg,
     error::Error,
     extensions::core::{Block, BlockInfo, Core, BLOCK_LEN},
-    peer::session::ConnectionState,
     torrent::TorrentMsg,
 };
 
@@ -40,11 +38,13 @@ pub struct Peer<S: PeerState> {
 /// its extension.
 pub struct MsgHandler;
 
+pub(crate) static BLOCK_TIMEOUT: Duration = Duration::from_secs(3);
+
 impl Peer<Connected> {
     /// Start the event loop of the Peer, listen to messages sent by others
     /// on the peer wire protocol.
     pub async fn run(&mut self) -> Result<(), Error> {
-        self.state.session.connection = ConnectionState::Connecting;
+        self.state.connection = ConnectionState::Connecting;
 
         let _ = self
             .state
@@ -56,9 +56,6 @@ impl Peer<Connected> {
         let local = self.state.ctx.local_addr;
         let remote = self.state.ctx.remote_addr;
 
-        // update internal data, check for timed-out requests, etc.
-        let mut tick_interval = interval(Duration::from_secs(1));
-
         // request info
         let mut info_interval = interval(Duration::from_secs(1));
 
@@ -66,7 +63,7 @@ impl Peer<Connected> {
         let mut request_interval = interval(Duration::from_millis(500));
 
         // rerequest timedout blocks
-        let mut rerequest_timeout_interval = interval(Duration::from_secs(5));
+        let mut rerequest_timeout_interval = interval(Duration::from_secs(3));
 
         // send interested or uninterested.
         // algorithm:
@@ -100,7 +97,7 @@ impl Peer<Connected> {
             self.state.have_info = info.piece_length > 0;
         }
 
-        self.state.session.connection = ConnectionState::Connected;
+        self.state.connection = ConnectionState::Connected;
 
         loop {
             select! {
@@ -157,9 +154,6 @@ impl Peer<Connected> {
                 }
                 _ = rerequest_timeout_interval.tick(), if self.state.have_info => {
                     self.check_request_timeout().await?;
-                }
-                _ = tick_interval.tick(), if self.state.have_info => {
-                    // self.state.session.counters.reset();
                 }
                 _ = interested_interval.tick() => {
                     let should_be_interested = self.has_piece_not_in_local().await?;
@@ -236,11 +230,9 @@ impl Peer<Connected> {
                         PeerMsg::RequestBlockInfos(block_infos) => {
                             debug!("{remote} request_block_infos len {}", block_infos.len());
 
-                            let max = self.state.session.target_request_queue_len as usize - self.state.outgoing_requests.len();
+                            let max = self.state.target_request_queue_len as usize - self.state.outgoing_requests.len();
 
                             if self.can_request() {
-                                self.state.session.last_outgoing_request_time = Some(Instant::now());
-
                                 for block_info in block_infos.into_iter().take(max) {
                                     self.state.outgoing_requests.push(
                                         block_info.clone()
@@ -272,7 +264,7 @@ impl Peer<Connected> {
                         }
                         PeerMsg::Pause => {
                             info!("{remote} pause");
-                            self.state.session.prev_peer_choking = self.state.ctx.peer_choking.load(Ordering::Relaxed);
+                            self.state.prev_peer_choking = self.state.ctx.peer_choking.load(Ordering::Relaxed);
 
                             if self.state.ctx.am_interested.load(Ordering::Relaxed) {
                                 self.state.ctx.am_interested.store(false, Ordering::Relaxed);
@@ -292,7 +284,7 @@ impl Peer<Connected> {
                         }
                         PeerMsg::Resume => {
                             debug!("{local} resume");
-                            self.state.ctx.peer_choking .store(self.state.session.prev_peer_choking, Ordering::Relaxed);
+                            self.state.ctx.peer_choking .store(self.state.prev_peer_choking, Ordering::Relaxed);
 
                             if !self.state.ctx.peer_choking.load(Ordering::Relaxed) {
                                 self.state.sink.send(Core::Unchoke).await?;
@@ -305,17 +297,17 @@ impl Peer<Connected> {
                         }
                         PeerMsg::SeedOnly => {
                             debug!("{remote} seed_only");
-                            self.state.session.seed_only = true;
+                            self.state.seed_only = true;
                         }
                         PeerMsg::GracefullyShutdown => {
                             debug!("{remote} gracefully_shutdown");
-                            self.state.session.connection = ConnectionState::Quitting;
+                            self.state.connection = ConnectionState::Quitting;
                             self.free_pending_blocks().await;
                             return Ok(());
                         }
                         PeerMsg::Quit => {
                             debug!("{remote} quit");
-                            self.state.session.connection = ConnectionState::Quitting;
+                            self.state.connection = ConnectionState::Quitting;
                             return Ok(());
                         }
                         PeerMsg::HaveInfo => {
@@ -339,13 +331,13 @@ impl Peer<Connected> {
             self.state.ctx.am_interested.load(Ordering::Relaxed);
         let peer_choking = self.state.ctx.peer_choking.load(Ordering::Relaxed);
         let have_capacity = self.state.outgoing_requests.len()
-            < self.state.session.target_request_queue_len as usize;
+            < self.state.target_request_queue_len as usize;
 
         am_interested
             && !peer_choking
             && self.state.have_info
             && have_capacity
-            && !self.state.session.seed_only
+            && !self.state.seed_only
     }
 
     /// Handle a new Piece msg from the peer, a Piece msg actually sends
@@ -361,7 +353,7 @@ impl Peer<Connected> {
         self.state.outgoing_requests_timeout.remove(&block_info);
 
         // if in endgame, send cancels to all other peers
-        if self.state.session.in_endgame {
+        if self.state.in_endgame {
             let from = self.state.ctx.id.clone();
             let _ = self
                 .state
@@ -394,18 +386,19 @@ impl Peer<Connected> {
     /// Re-request blocks that timed-out
     async fn check_request_timeout(&mut self) -> Result<(), Error> {
         let now = Instant::now();
-        let timeout = Duration::from_secs(15); // 15-second timeout
         let remote = self.state.ctx.remote_addr;
         let mut to_rerequest = Vec::new();
 
         // Identify timed-out requests
         for (block_info, request_time) in &self.state.outgoing_requests_timeout
         {
-            if now.duration_since(*request_time) >= timeout {
+            if now.duration_since(*request_time) >= BLOCK_TIMEOUT {
                 debug!("{remote} block {:?} timed out", block_info);
                 to_rerequest.push(block_info.clone());
             }
         }
+
+        info!("{remote} rerequesting {to_rerequest:?} blocks");
 
         // Re-request timed-out blocks
         for block_info in to_rerequest {
@@ -417,8 +410,8 @@ impl Peer<Connected> {
             }
 
             // Send request
-            self.state.sink.send(Core::Request(block_info.clone())).await?;
             debug!("{remote} re-requesting timed out block {:?}", block_info);
+            self.state.sink.send(Core::Request(block_info)).await?;
         }
 
         Ok(())
@@ -432,10 +425,9 @@ impl Peer<Connected> {
         let local = self.state.ctx.local_addr;
         let remote = self.state.ctx.remote_addr;
 
+        self.state.outgoing_requests_timeout.clear();
         let blocks: Vec<BlockInfo> =
             self.state.outgoing_requests.drain(..).collect();
-
-        self.state.session.timed_out_request_count = 0;
 
         debug!(
             "{local} freeing {:?} blocks for download of {remote}",
@@ -464,7 +456,7 @@ impl Peer<Connected> {
         let remote = self.state.ctx.remote_addr;
 
         let target_request_queue_len =
-            self.state.session.target_request_queue_len as usize;
+            self.state.target_request_queue_len as usize;
 
         let current_requests = self.state.outgoing_requests.len();
 
@@ -472,7 +464,10 @@ impl Peer<Connected> {
         let request_len =
             target_request_queue_len.saturating_sub(current_requests);
 
-        info!("{remote} requesting block infos {request_len}");
+        info!(
+            "{remote} requesting block infos: {request_len} pending: \
+             {current_requests}"
+        );
 
         if request_len == 0 {
             return Ok(());
@@ -512,7 +507,7 @@ impl Peer<Connected> {
     /// receives it, it send Cancel messages to all other peers.
     #[tracing::instrument(skip(self))]
     pub async fn start_endgame(&mut self) {
-        self.state.session.in_endgame = true;
+        self.state.in_endgame = true;
 
         let outgoing: Vec<BlockInfo> =
             self.state.outgoing_requests.drain(..).collect();
@@ -571,7 +566,7 @@ impl Peer<Connected> {
         }
 
         // Determine how many new pieces we can request
-        let max_requests = self.state.session.target_request_queue_len as usize;
+        let max_requests = self.state.target_request_queue_len as usize;
         let available_slots = max_requests
             .saturating_sub(self.state.outgoing_requests_info_pieces.len());
 

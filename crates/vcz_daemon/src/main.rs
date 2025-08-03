@@ -15,7 +15,7 @@ use vincenzo::{
     error::Error,
 };
 
-#[tokio::main(flavor = "current_thread")]
+#[tokio::main]
 async fn main() -> Result<(), Error> {
     let subscriber = FmtSubscriber::builder().without_time().finish();
 

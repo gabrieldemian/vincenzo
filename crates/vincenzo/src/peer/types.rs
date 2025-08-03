@@ -35,12 +35,33 @@ use crate::{
         core::BlockInfo, Core, CoreCodec, ExtendedMessage, Extension,
         Handshake, HandshakeCodec, HolepunchData, MetadataData,
     },
-    peer::{self, session::Session},
+    peer::{self},
     torrent::{InfoHash, TorrentCtx, TorrentMsg},
 };
 
+/// At any given time, a connection with a handshaked(connected) peer has 3
+/// possible states. ConnectionState means TCP connection, Even if the peer is
+/// choked they are still marked here as connected.
+#[derive(Clone, Default, Copy, Debug, PartialEq)]
+pub enum ConnectionState {
+    /// The handshake just happened, probably computing choke algorithm and
+    /// sending bitfield messages.
+    #[default]
+    Connecting,
+
+    // Connected and downloading and uploading.
+    Connected,
+
+    /// This state is set when the program is gracefully shutting down,
+    /// In this state, we don't send the outgoing blocks to the tracker on
+    /// shutdown.
+    Quitting,
+}
+
 #[derive(Clone, PartialEq, Eq, Hash, Default, Readable, Writable)]
 pub struct PeerId(pub(crate) [u8; 20]);
+
+pub const DEFAULT_REQUEST_QUEUE_LEN: u16 = 200;
 
 impl PeerId {
     pub fn gen() -> Self {
@@ -387,6 +408,10 @@ impl peer::Peer<Idle> {
         let peer = peer::Peer {
             state: Connected {
                 outgoing_requests_info_pieces_times: HashMap::new(),
+                prev_peer_choking: false,
+                seed_only: false,
+                connection: ConnectionState::default(),
+                target_request_queue_len: DEFAULT_REQUEST_QUEUE_LEN,
                 outgoing_requests_timeout: HashMap::new(),
                 pieces: Bitfield::new(),
                 ctx: Arc::new(ctx),
@@ -396,8 +421,9 @@ impl peer::Peer<Idle> {
                 incoming_requests: Vec::with_capacity(50),
                 outgoing_requests: Vec::with_capacity(100),
                 outgoing_requests_info_pieces: Vec::new(),
-                session: Session::default(),
                 have_info: false,
+                in_endgame: false,
+
                 reserved,
                 torrent_ctx,
                 rx,
@@ -441,11 +467,6 @@ pub struct Connected {
     /// Context of the Peer which is shared for anyone who needs it.
     pub ctx: Arc<PeerCtx>,
 
-    /// Most of the session's information and state is stored here, i.e. it's
-    /// the "context" of the session, with information like: endgame mode, slow
-    /// start, download_rate, etc.
-    pub session: Session,
-
     /// Our pending requests that we sent to peer. It represents the blocks
     /// that we are expecting.
     ///
@@ -472,6 +493,25 @@ pub struct Connected {
     /// This is a cache of have_info on Torrent
     /// to avoid using locks or atomics.
     pub have_info: bool,
+
+    /// The current state of the connection.
+    pub connection: ConnectionState,
+
+    // when the torrent is paused, those values will be set, so we can
+    // assign them again when the torrent is resumed.
+    // peer interested will be calculated by parsing the peers pieces
+    pub prev_peer_choking: bool,
+
+    /// Whether we're in endgame mode.
+    pub in_endgame: bool,
+
+    /// The target request queue size is the number of block requests we keep
+    /// outstanding
+    pub target_request_queue_len: u16,
+
+    /// If the torrent was fully downloaded, all peers will become seed only.
+    /// They will only seed but not download anything anymore.
+    pub seed_only: bool,
 }
 
 /// Tried to do an oubound connection but peer couldn't be reached.

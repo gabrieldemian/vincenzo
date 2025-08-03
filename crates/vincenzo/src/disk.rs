@@ -458,7 +458,7 @@ impl Disk {
     pub async fn request_blocks(
         &mut self,
         info_hash: &InfoHash,
-        peer_id: &PeerId,
+        _peer_id: &PeerId,
         peer_pieces: Bitfield,
         qnt: usize,
     ) -> Result<Vec<BlockInfo>, Error> {
@@ -1101,6 +1101,7 @@ mod tests {
 
         let mut torrent = Torrent {
             state: Connected {
+                size: 0,
                 unchoked_peers: Vec::new(),
                 opt_unchoked_peer: None,
                 connecting_peers: Vec::new(),

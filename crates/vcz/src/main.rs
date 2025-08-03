@@ -9,7 +9,7 @@ use vincenzo::{
 
 use vcz_ui::{action::Action, app::App};
 
-#[tokio::main(flavor = "current_thread")]
+#[tokio::main]
 async fn main() -> Result<(), Error> {
     let tmp = std::env::temp_dir();
 
