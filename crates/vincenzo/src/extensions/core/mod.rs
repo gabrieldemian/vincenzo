@@ -24,6 +24,8 @@ pub const PSTR: [u8; 19] = [
     111, 99, 111, 108,
 ];
 
+pub const PSTR_LEN: usize = 19;
+
 /// A Block is a subset of a Piece,
 /// pieces are subsets of the entire Torrent data.
 ///

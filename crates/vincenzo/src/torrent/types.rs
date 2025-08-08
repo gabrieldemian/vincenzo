@@ -76,7 +76,7 @@ pub enum TorrentMsg {
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, Default, Readable, Writable)]
-pub struct InfoHash(pub(crate) [u8; 20]);
+pub struct InfoHash(pub [u8; 20]);
 
 impl Display for InfoHash {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -164,7 +164,7 @@ pub struct TorrentState {
     pub have_info: bool,
     pub bitfield: Vec<u8>,
     pub connected_peers: u8,
-    pub connecting_peers: u8,
+    pub downloading_from: u8,
     pub idle_peers: u8,
 }
 

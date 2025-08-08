@@ -1,6 +1,7 @@
 use std::{
     fmt::Display,
     net::SocketAddr,
+    ops::{Deref, DerefMut},
     sync::{
         atomic::{AtomicBool, AtomicU64},
         Arc,
@@ -19,7 +20,7 @@ use tokio::{
     net::TcpStream,
     sync::{
         mpsc::{self, Receiver},
-        oneshot,
+        oneshot, Mutex,
     },
     time::Instant,
 };
@@ -28,6 +29,7 @@ use tracing::{debug, warn};
 
 use crate::{
     bitfield::{Bitfield, Reserved},
+    counter::Counter,
     daemon::{DaemonCtx, DaemonMsg},
     error::Error,
     extensions::{
@@ -58,7 +60,7 @@ pub enum ConnectionState {
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, Default, Readable, Writable)]
-pub struct PeerId(pub(crate) [u8; 20]);
+pub struct PeerId(pub [u8; 20]);
 
 pub const DEFAULT_REQUEST_QUEUE_LEN: u16 = 200;
 
@@ -76,6 +78,35 @@ impl PeerId {
         }
 
         PeerId(peer_id)
+    }
+}
+
+/// Only used for logging the state of the per in a compact way.
+/// am_choking, am_interested, peer_choking, peer_interested
+pub(crate) struct StateLog(pub [char; 4]);
+
+impl Default for StateLog {
+    fn default() -> Self {
+        StateLog(['-', '-', '-', '-'])
+    }
+}
+
+impl DerefMut for StateLog {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl Deref for StateLog {
+    type Target = [char; 4];
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl Display for StateLog {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}{}{}{}", self.0[0], self.0[1], self.0[2], self.0[3],)
     }
 }
 
@@ -155,6 +186,11 @@ pub struct PeerCtx {
     /// Download bytes of remote peer in the previous 10 seconds, tracked by
     /// the torrent.
     pub downloaded: AtomicU64,
+
+    /// Counter for upload and download rates, in the local peer perspective.
+    pub counter: Counter,
+
+    pub last_download_rate_update: Mutex<Instant>,
 
     /// Upload bytes of remote peer in the previous 10 seconds, tracked by the
     /// torrent.
@@ -276,7 +312,7 @@ impl Default for peer::Peer<Idle> {
 
 impl peer::Peer<Idle> {
     pub fn new() -> Self {
-        Self { state: Idle {} }
+        Self { state: Idle {}, state_log: StateLog::default() }
     }
 
     /// Do a handshake (and maybe extended handshake) with the peer and convert
@@ -293,22 +329,55 @@ impl peer::Peer<Idle> {
         let mut socket = Framed::new(socket, HandshakeCodec);
 
         if let DirectionWithInfoHash::Outbound(info_hash) = &direction {
-            debug!("{remote} sending outbound handshake");
+            tracing::info!("sending outbound handshake");
 
-            let our_handshake = Handshake::new(
+            let (otx, orx) = oneshot::channel();
+
+            daemon_ctx
+                .tx
+                .send(DaemonMsg::GetTorrentCtx(otx, info_hash.clone()))
+                .await?;
+
+            let Some(torrent_ctx) = orx.await? else {
+                return Err(Error::TorrentDoesNotExist);
+            };
+
+            let info = torrent_ctx.info.read().await;
+
+            // if we have the metadata yet
+            let metadata_size = match info.metadata_size {
+                Some(size) => size,
+                None => torrent_ctx.magnet.length().unwrap_or(0),
+            };
+
+            let mut our_handshake = Handshake::new(
                 info_hash.clone(),
                 daemon_ctx.local_peer_id.clone(),
             );
+
+            if let Some(ext) = &mut our_handshake.ext {
+                ext.metadata_size = Some(metadata_size);
+            }
 
             socket.send(our_handshake).await?;
         }
 
         // wait and validate their handshake
-        let Some(Ok(peer_handshake)) = socket.next().await else {
-            // warn!("did not send a handshake {remote}");
-            return Err(Error::HandshakeInvalid);
+        let peer_handshake = match socket.next().await {
+            Some(Ok(peer_handshake)) => peer_handshake,
+            Some(Err(e)) => {
+                // peer didn't sent a handshake.
+                tracing::error!("some e {e:?}");
+                return Err(Error::HandshakeInvalid);
+            }
+            None => {
+                // the peer sent a FIN, maybe try to connect later.
+                warn!("peer sent FIN.");
+                return Err(Error::HandshakeInvalid);
+            }
         };
-        debug!("{remote} received peer handshake {peer_handshake:?}",);
+
+        debug!("received peer handshake {peer_handshake:?}",);
 
         let our_handshake = Handshake::new(
             peer_handshake.info_hash.clone(),
@@ -339,7 +408,7 @@ impl peer::Peer<Idle> {
         // if inbound, he have already received their first handshake,
         // send our second handshake here.
         if direction == DirectionWithInfoHash::Inbound {
-            debug!("{remote} sending inbound handshake");
+            debug!("sending inbound handshake");
             if socket.send(our_handshake).await.is_err() {
                 torrent_ctx
                     .tx
@@ -356,36 +425,11 @@ impl peer::Peer<Idle> {
         new_parts.write_buf = old_parts.write_buf;
         let mut socket = Framed::from_parts(new_parts);
 
-        // on inbound connection and if the peer supports the extended protocol
-        // (BEP010), we send an extended handshake as well, but we
-        // receive theirs on the main event loop of Peer<Connected> and
-        // not here.
-        if reserved[43] && DirectionWithInfoHash::Inbound == direction {
-            debug!("{remote} sending extended handshake");
-
-            let magnet = &torrent_ctx.magnet;
-            let info = torrent_ctx.info.read().await;
-
-            // if we have the metadata yet
-            let metadata_size = match info.metadata_size {
-                Some(size) => size,
-                None => magnet.length().unwrap_or(0),
-            };
-
-            let msg = Extension::supported(Some(metadata_size));
-            let msg = ExtendedMessage(0, msg.to_bencode()?);
-
-            if socket.send(msg.into()).await.is_err() {
-                torrent_ctx
-                    .tx
-                    .send(TorrentMsg::PeerConnectingError(remote))
-                    .await?;
-            }
-        }
-
         let (tx, rx) = mpsc::channel::<PeerMsg>(100);
 
         let ctx = PeerCtx {
+            last_download_rate_update: Mutex::new(Instant::now()),
+            counter: Counter::default(),
             am_interested: false.into(),
             am_choking: true.into(),
             peer_choking: true.into(),
@@ -403,13 +447,12 @@ impl peer::Peer<Idle> {
         let (sink, stream) = socket.split();
 
         let peer = peer::Peer {
+            state_log: StateLog::default(),
             state: Connected {
-                // outgoing_requests_info_pieces_times: HashMap::new(),
                 prev_peer_choking: false,
                 seed_only: false,
                 connection: ConnectionState::default(),
                 target_request_queue_len: DEFAULT_REQUEST_QUEUE_LEN,
-                // outgoing_requests_timeout: HashMap::new(),
                 pieces: Bitfield::new(),
                 ctx: Arc::new(ctx),
                 ext_states: ExtStates::default(),
@@ -420,7 +463,6 @@ impl peer::Peer<Idle> {
                 outgoing_requests_info_pieces: Vec::new(),
                 have_info: false,
                 in_endgame: false,
-
                 reserved,
                 torrent_ctx,
                 rx,
@@ -528,7 +570,7 @@ pub struct Connecting {
 
 impl peer::Peer<PeerError> {
     pub fn new(addr: SocketAddr) -> Self {
-        peer::Peer { state: PeerError { addr } }
+        peer::Peer { state: PeerError { addr }, state_log: StateLog::default() }
     }
 }
 

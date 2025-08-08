@@ -87,12 +87,10 @@ pub trait TrackerTrait: Sized {
 pub struct Tracker<P: Protocol> {
     pub ctx: TrackerCtx,
     pub daemon_ctx: Arc<DaemonCtx>,
-
     pub info: Option<Info>,
     pub info_hash: InfoHash,
     pub rx: mpsc::Receiver<TrackerMsg>,
     pub connection_id: u64,
-
     state: P,
 }
 
@@ -102,7 +100,6 @@ pub struct TrackerCtx {
     pub downloaded: u64,
     pub uploaded: u64,
     pub left: u64,
-
     /// Remote addr of the tracker.
     pub tracker_addr: SocketAddr,
 }
@@ -368,7 +365,11 @@ impl Tracker<Udp> {
         Err(Error::TrackerSocketAddr)
     }
 
-    #[tracing::instrument(skip_all)]
+    #[tracing::instrument(name = "tracker", skip_all,
+        fields(
+            addr = %self.ctx.tracker_addr,
+        )
+    )]
     pub async fn run(&mut self) -> Result<(), Error> {
         debug!("running tracker");
 

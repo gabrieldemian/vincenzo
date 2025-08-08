@@ -92,9 +92,8 @@ impl ExtMsgHandler<Extended, Extension> for MsgHandler {
         peer: &mut peer::Peer<peer::Connected>,
         msg: Extended,
     ) -> Result<(), Error> {
-        info!("{} extended handshake", peer.state.ctx.remote_addr);
-
         let ext: Extension = msg.into();
+        debug!("{ext:?}");
 
         if let Some(meta_size) = ext.metadata_size {
             peer.state
@@ -103,8 +102,6 @@ impl ExtMsgHandler<Extended, Extension> for MsgHandler {
                 .send(TorrentMsg::MetadataSize(meta_size))
                 .await?;
         }
-
-        debug!("{ext:?}");
 
         // send ours extended msg if outbound
         if peer.state.ctx.direction == Direction::Outbound {
@@ -118,10 +115,7 @@ impl ExtMsgHandler<Extended, Extension> for MsgHandler {
 
             let ext = Extension::supported(Some(metadata_size)).to_bencode()?;
 
-            trace!(
-                "sending my extended handshake {:?}",
-                String::from_utf8(ext.clone())
-            );
+            trace!("sending my extended handshake {:?}", ext);
             let core: Core = ExtendedMessage(Extended::ID, ext).into();
 
             peer.state.sink.send(core).await?;
@@ -137,9 +131,9 @@ impl ExtMsgHandler<Extended, Extension> for MsgHandler {
             peer.state.ext_states.metadata = Some(MetadataData());
         }
 
-        if ext.m.ut_holepunch.is_some() {
-            peer.state.ext_states.holepunch = Some(HolepunchData());
-        }
+        // if ext.m.ut_holepunch.is_some() {
+        //     peer.state.ext_states.holepunch = Some(HolepunchData());
+        // }
 
         peer.state.ext_states.extension = Some(ext);
 

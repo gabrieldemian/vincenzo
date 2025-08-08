@@ -161,17 +161,15 @@ impl ExtMsgHandler<Core, CoreState> for MsgHandler {
         peer: &mut peer::Peer<peer::Connected>,
         msg: Core,
     ) -> Result<(), Error> {
-        let remote = peer.state.ctx.remote_addr;
-
         match msg {
             // handled by the extended messages
             Core::Extended(_) => {}
             Core::KeepAlive => {
-                info!("{remote} keepalive");
+                info!("keepalive");
             }
             Core::Bitfield(bitfield) => {
                 debug!(
-                    "{remote} bitfield len: {:?} has pieces: {}",
+                    "bitfield len: {:?} has pieces: {}",
                     bitfield.len(),
                     bitfield.count_ones()
                 );
@@ -180,34 +178,36 @@ impl ExtMsgHandler<Core, CoreState> for MsgHandler {
             }
             Core::Unchoke => {
                 peer.state.ctx.peer_choking.store(false, Ordering::Relaxed);
-                info!("{remote} unchoke");
+                peer.state_log[3] = 'u';
+                info!("unchoke");
             }
             Core::Choke => {
                 // remote peer is choking the local peer
-                info!("{remote} choke");
+                info!("choke");
                 peer.state.ctx.peer_choking.store(true, Ordering::Relaxed);
                 peer.free_pending_blocks().await;
+                peer.state_log[3] = '-';
             }
             Core::Interested => {
                 // remote peer is interested the local peer
-                debug!("{remote} interested");
+                debug!("interested");
                 peer.state.ctx.peer_interested.store(true, Ordering::Relaxed);
+                peer.state_log[4] = 'i';
             }
             Core::NotInterested => {
-                debug!("{remote} not_interested");
+                debug!("not_interested");
                 peer.state.ctx.peer_interested.store(false, Ordering::Relaxed);
+                peer.state_log[4] = '-';
             }
             Core::Have(piece) => {
-                debug!("{remote} have {piece}");
+                debug!("have {piece}");
 
                 // Overwrite pieces on bitfield, if the peer has one
                 let peer_pieces = &mut peer.state.pieces;
 
                 // peer sent a piece which is out of bounds with it's pieces
                 if peer_pieces.get(piece).is_none() {
-                    warn!(
-                        "{remote} sent have but it's bitfield is out of bounds"
-                    );
+                    warn!("sent have but it's bitfield is out of bounds");
                     warn!(
                         "initializing an empty bitfield with the len of the \
                          piece {piece}"
@@ -220,7 +220,7 @@ impl ExtMsgHandler<Core, CoreState> for MsgHandler {
                 peer_pieces.set(piece, true);
             }
             Core::Piece(block) => {
-                info!("{remote} sent block i: {}", block.index);
+                info!("sent block i: {}", block.index);
                 debug!(
                     "index: {:?}, begin: {:?}, len: {:?}",
                     block.index,
@@ -231,12 +231,12 @@ impl ExtMsgHandler<Core, CoreState> for MsgHandler {
                 peer.handle_piece_msg(block).await?;
             }
             Core::Cancel(block_info) => {
-                debug!("{remote} cancel from");
+                debug!("cancel from");
                 debug!("{block_info:?}");
                 peer.state.incoming_requests.retain(|v| *v != block_info);
             }
             Core::Request(block_info) => {
-                debug!("{remote} request from");
+                debug!("request from");
                 debug!("{block_info:?}");
 
                 if peer.state.ctx.peer_choking.load(Ordering::Relaxed) {
@@ -258,6 +258,8 @@ impl ExtMsgHandler<Core, CoreState> for MsgHandler {
                     .await?;
 
                 let block = rx.await?;
+
+                peer.state.ctx.counter.record_upload(block.block.len() as u64);
 
                 peer.state
                     .ctx

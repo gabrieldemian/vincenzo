@@ -41,15 +41,16 @@ impl ExtMsgHandler<Holepunch, HolepunchData> for MsgHandler {
         peer: &mut crate::peer::Peer<crate::peer::Connected>,
         msg: Holepunch,
     ) -> Result<(), Error> {
-        let Some(remote_ext_id) = peer
-            .state
-            .ext_states
-            .extension
-            .as_ref()
-            .and_then(|v| v.m.ut_holepunch)
-        else {
-            return Ok(());
-        };
+        let remote_ext_id = 2;
+        // let Some(remote_ext_id) = peer
+        //     .state
+        //     .ext_states
+        //     .extension
+        //     .as_ref()
+        //     .and_then(|v| v.m.ut_holepunch)
+        // else {
+        //     return Ok(());
+        // };
 
         match msg.msg_type {
             HolepunchMsgType::Rendezvous => {

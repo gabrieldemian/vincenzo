@@ -1,197 +1,152 @@
-// there are some APIs that are not being used at the moment but are going to be
-// used when new features are added
-use std::ops::AddAssign;
+use std::sync::atomic::{AtomicU64, Ordering};
 
-/// Counts statistics about the communication channels used in torrents.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct ThruputCounters {
-    /// Counts protocol chatter, which are the exchanged non-payload related
-    /// messages (such as 'unchoke', 'have', 'request', etc).
-    pub protocol: ChannelCounter,
-    /// Counts the exchanged block bytes. This only include the block's data,
-    /// minus the header, which counts towards the protocol chatter.
-    pub payload: ChannelCounter,
-    /// Counts the (downloaded) payload bytes that were wasted (i.e. duplicate
-    /// blocks that had to be discarded).
-    pub waste: Counter,
-}
+use tokio::{sync::Mutex, time::Instant};
 
-impl ThruputCounters {
-    /// Resets the per-round accummulators of the counters.
-    ///
-    /// This should be called once a second to provide accurate per second
-    /// thruput rates.
-    pub fn reset(&mut self) {
-        self.protocol.reset();
-        self.payload.reset();
-        self.waste.reset();
-    }
-}
+/// Exponential Moving Average (EMA) smoothing factor
+/// Higher values = more responsive to changes, lower values = smoother
+const EMA_ALPHA: f64 = 0.3;
 
-impl AddAssign<&ThruputCounters> for ThruputCounters {
-    fn add_assign(&mut self, rhs: &ThruputCounters) {
-        self.protocol += &rhs.protocol;
-        self.payload += &rhs.payload;
-        self.waste += rhs.waste.round();
-    }
-}
-
-/// Counts statistics about a communication channel (such as protocol chatter or
-/// payload transfer), both the ingress and engress sides.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct ChannelCounter {
-    pub down: Counter,
-    pub up: Counter,
-}
-
-impl ChannelCounter {
-    /// Resets the per-round accummulators of the counters.
-    ///
-    /// This should be called once a second to provide accurate per second
-    /// thruput rates.
-    pub fn reset(&mut self) {
-        self.down.reset();
-        self.up.reset();
-    }
-}
-
-impl AddAssign<&ChannelCounter> for ChannelCounter {
-    fn add_assign(&mut self, rhs: &ChannelCounter) {
-        self.down += rhs.down.round();
-        self.up += rhs.up.round();
-    }
-}
-
-/// Used for counting the running average of throughput rates.
-///
-/// This counts the total bytes transferred, as well as the current round's
-/// tally. Then, at the end of each round, the caller is responsible for calling
-/// [`Counter::reset`] which updates the running average and clears the
-/// per round counter.
-///
-/// The tallied throughput rate is the 5 second weighed running average. It is
-/// produced as follows:
-///
-/// avg = (avg * 4/5) + (this_round / 5)
-///
-/// This way a temporary deviation in one round does not punish the overall
-/// download rate disproportionately.
-#[derive(Clone, Copy, Debug, Default)]
+/// Counter of rates, used in downloaded and uploaded.
+#[derive(Debug)]
 pub struct Counter {
-    total: u64,
-    round: u64,
-    avg: f64,
-    peak: f64,
+    // -- cumulative counters --
+    pub total_downloaded: AtomicU64,
+    pub total_uploaded: AtomicU64,
+
+    // -- rate calculation --
+    pub download_rate: AtomicU64,
+    pub upload_rate: AtomicU64,
+
+    // -- internal state --
+    window_downloaded: AtomicU64,
+    window_uploaded: AtomicU64,
+    last_update: Mutex<Instant>,
+    ema_download: Mutex<f64>,
+    ema_upload: Mutex<f64>,
+}
+
+impl Default for Counter {
+    fn default() -> Self {
+        Self {
+            total_downloaded: AtomicU64::new(0),
+            total_uploaded: AtomicU64::new(0),
+            download_rate: AtomicU64::new(0),
+            upload_rate: AtomicU64::new(0),
+            window_downloaded: AtomicU64::new(0),
+            window_uploaded: AtomicU64::new(0),
+            last_update: Mutex::new(Instant::now()),
+            ema_download: Mutex::new(0.0),
+            ema_upload: Mutex::new(0.0),
+        }
+    }
 }
 
 impl Counter {
-    // TODO: turn this into a const generic parameter once that's supported
-    const WEIGHT: u64 = 5;
-
-    /// Records some bytes that were transferred.
-    pub fn add(&mut self, bytes: u64) {
-        self.total += bytes;
-        self.round += bytes;
+    pub fn new() -> Self {
+        Self::default()
     }
 
-    /// Finishes counting this round and updates the 5 second moving average.
-    ///
-    /// # Important
-    ///
-    /// This assumes that this function is called once a second.
-    pub fn reset(&mut self) {
-        // https://github.com/arvidn/libtorrent/blob/master/src/stat.cpp
-        self.avg = (self.avg * (Self::WEIGHT - 1) as f64 / Self::WEIGHT as f64)
-            + (self.round as f64 / Self::WEIGHT as f64);
-        self.round = 0;
+    /// Record downloaded bytes
+    pub fn record_download(&self, bytes: u64) {
+        self.total_downloaded.fetch_add(bytes, Ordering::Relaxed);
+        self.window_downloaded.fetch_add(bytes, Ordering::Relaxed);
+    }
 
-        if self.avg > self.peak {
-            self.peak = self.avg;
+    /// Record uploaded bytes
+    pub fn record_upload(&self, bytes: u64) {
+        self.total_uploaded.fetch_add(bytes, Ordering::Relaxed);
+        self.window_uploaded.fetch_add(bytes, Ordering::Relaxed);
+    }
+
+    /// Update rates with EMA smoothing
+    pub async fn update_rates(&self) {
+        let now = Instant::now();
+        let mut last_update = self.last_update.lock().await;
+        let elapsed = now.duration_since(*last_update).as_secs_f64();
+
+        if elapsed < 0.001 {
+            // Minimum 1ms elapsed
+            return;
         }
-    }
 
-    /// Returns the 5 second moving average, rounded to the nearest integer.
-    pub fn avg(&self) -> u64 {
-        self.avg.round() as u64
-    }
+        // Get and reset window counters
+        let downloaded = self.window_downloaded.swap(0, Ordering::Relaxed);
+        let uploaded = self.window_uploaded.swap(0, Ordering::Relaxed);
 
-    /// Returns the average recorded so far, rounded to the nearest integer.
-    pub fn peak(&self) -> u64 {
-        self.peak.round() as u64
-    }
+        // Calculate instantaneous rates
+        let dl_rate = downloaded as f64 / elapsed;
+        let ul_rate = uploaded as f64 / elapsed;
 
-    /// Returns the total number recorded.
-    pub fn total(&self) -> u64 {
-        self.total
-    }
+        // Apply EMA smoothing
+        let mut ema_dl = self.ema_download.lock().await;
+        let mut ema_ul = self.ema_upload.lock().await;
 
-    /// Returns the number recorded in the current round.
-    pub fn round(&self) -> u64 {
-        self.round
-    }
-}
+        *ema_dl = if *ema_dl == 0.0 {
+            dl_rate
+        } else {
+            EMA_ALPHA * dl_rate + (1.0 - EMA_ALPHA) * *ema_dl
+        };
 
-impl AddAssign<u64> for Counter {
-    fn add_assign(&mut self, rhs: u64) {
-        self.add(rhs);
+        *ema_ul = if *ema_ul == 0.0 {
+            ul_rate
+        } else {
+            EMA_ALPHA * ul_rate + (1.0 - EMA_ALPHA) * *ema_ul
+        };
+
+        // Store rates as integers (bytes/sec)
+        self.download_rate.store(*ema_dl as u64, Ordering::Relaxed);
+        self.upload_rate.store(*ema_ul as u64, Ordering::Relaxed);
+
+        *last_update = now;
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
+    use tokio::time;
 
-    #[test]
-    fn test_counter() {
-        let mut c = Counter::default();
+    #[tokio::test]
+    async fn test_counter_rates() {
+        let counter = Counter::new();
 
-        assert_eq!(c.avg(), 0);
-        assert_eq!(c.peak(), 0);
-        assert_eq!(c.round(), 0);
-        assert_eq!(c.total(), 0);
+        // Record initial downloads/uploads
+        counter.record_download(1000);
+        counter.record_upload(500);
 
-        c += 5;
-        assert_eq!(c.round(), 5);
-        assert_eq!(c.total(), 5);
+        // First update: should set EMA to first instantaneous rate
+        time::sleep(Duration::from_millis(100)).await;
+        counter.update_rates().await;
 
-        c.reset();
-        // 4 * 0 / 5 + 5 / 5 = 1
-        assert_eq!(c.avg(), 1);
-        assert_eq!(c.peak(), 1);
-        assert_eq!(c.round(), 0);
-        assert_eq!(c.total(), 5);
+        // Verify first EMA rates (≈10,000 DL, ≈5,000 UL)
+        let dl1 = counter.download_rate.load(Ordering::Relaxed);
+        let ul1 = counter.upload_rate.load(Ordering::Relaxed);
+        assert!((9000..=11000).contains(&dl1)); // ≈10,000 ±10%
+        assert!((4500..=5500).contains(&ul1)); // ≈5,000 ±10%
 
-        c += 10;
-        assert_eq!(c.round(), 10);
-        assert_eq!(c.total(), 15);
+        // Second window: same data as first
+        counter.record_download(1000);
+        counter.record_upload(500);
+        time::sleep(Duration::from_millis(100)).await;
+        counter.update_rates().await;
 
-        c.reset();
-        // 4 * 1 / 5 + 10 / 5 = 0.8 + 2 = 2.8 ~ 3
-        assert_eq!(c.avg(), 3);
-        assert_eq!(c.peak(), 3);
-        assert_eq!(c.round(), 0);
-        assert_eq!(c.total(), 15);
+        // EMA should stabilize near initial rate
+        let dl2 = counter.download_rate.load(Ordering::Relaxed);
+        let ul2 = counter.upload_rate.load(Ordering::Relaxed);
+        assert!((dl2 as i64 - dl1 as i64).abs() < 1000); // <10% change
+        assert!((ul2 as i64 - ul1 as i64).abs() < 500); // <10% change
 
-        c += 30;
-        assert_eq!(c.round(), 30);
-        assert_eq!(c.total(), 45);
+        // Third window: double the data
+        counter.record_download(2000);
+        counter.record_upload(1000);
+        time::sleep(Duration::from_millis(100)).await;
+        counter.update_rates().await;
 
-        c.reset();
-        // 4 * 2.8 / 5 + 30 / 5 = 2.24 + 6 = 8.24 ~ 8
-        assert_eq!(c.avg(), 8);
-        assert_eq!(c.peak(), 8);
-        assert_eq!(c.round(), 0);
-        assert_eq!(c.total(), 45);
-
-        c += 1;
-        assert_eq!(c.round(), 1);
-        assert_eq!(c.total(), 46);
-
-        c.reset();
-        // 4 * 8.24 / 5 + 1 / 5 = 6.592 + 0.2 = 6.792 ~ 7
-        assert_eq!(c.avg(), 7);
-        assert_eq!(c.peak(), 8);
-        assert_eq!(c.round(), 0);
-        assert_eq!(c.total(), 46);
+        // Verify EMA reacts to change (DL≈13,000, UL≈6,500)
+        let dl3 = counter.download_rate.load(Ordering::Relaxed);
+        let ul3 = counter.upload_rate.load(Ordering::Relaxed);
+        assert!((11700..=14300).contains(&dl3)); // ≈13,000 ±10%
+        assert!((5850..=7150).contains(&ul3)); // ≈6,500 ±10%
     }
 }

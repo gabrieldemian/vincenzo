@@ -131,7 +131,7 @@ pub struct Disk {
 
     /// The sequence in which pieces will be downloaded,
     /// based on `PieceOrder`.
-    pub pieces: HashMap<InfoHash, Vec<u32>>,
+    pub piece_order: HashMap<InfoHash, Vec<u32>>,
 
     /// How many pieces were downloaded.
     pub downloaded_pieces_len: HashMap<InfoHash, u32>,
@@ -163,7 +163,7 @@ impl Disk {
             rx,
             tx,
             download_dir,
-            file_handle_cache: LruCache::new(NonZeroUsize::new(100).unwrap()),
+            file_handle_cache: LruCache::new(NonZeroUsize::new(10).unwrap()),
             torrent_cache: HashMap::new(),
             cache: HashMap::new(),
             peer_ctxs: Vec::new(),
@@ -172,10 +172,11 @@ impl Disk {
             piece_strategy: HashMap::default(),
             pieces_blocks: HashMap::default(),
             torrent_info: HashMap::default(),
-            pieces: HashMap::default(),
+            piece_order: HashMap::default(),
         }
     }
 
+    #[tracing::instrument(name = "disk", skip_all)]
     pub async fn run(&mut self) -> Result<(), Error> {
         debug!("disk started event loop");
 
@@ -189,7 +190,7 @@ impl Disk {
                     self.piece_strategy.remove_entry(&info_hash);
                     self.pieces_blocks.remove_entry(&info_hash);
                     self.torrent_info.remove_entry(&info_hash);
-                    self.pieces.remove_entry(&info_hash);
+                    self.piece_order.remove_entry(&info_hash);
                     self.peer_ctxs.retain(|v| v.info_hash != info_hash);
                 }
                 DiskMsg::DeletePeer(addr) => {
@@ -236,18 +237,17 @@ impl Disk {
                     self.new_peer(peer);
                 }
                 DiskMsg::ReturnBlockInfos(info_hash, block_infos) => {
-                    debug!("ReturnBlockInfos");
+                    info!("return_block_infos");
+
                     for block in block_infos {
                         // get vector of piece_blocks for each
                         // piece of the blocks.
-                        if let Some(piece) = self
-                            .pieces_blocks
+                        self.pieces_blocks
                             .get_mut(&info_hash)
                             .ok_or(Error::TorrentDoesNotExist)?
-                            .get_mut(&(block.index as usize))
-                        {
-                            piece.push(block);
-                        }
+                            .entry(block.index as usize)
+                            .or_default()
+                            .push(block);
                     }
                 }
                 DiskMsg::Quit => {
@@ -270,11 +270,12 @@ impl Disk {
         }
 
         let file = Self::open_file(path).await?;
-        let cloned = file.try_clone().await?;
 
-        self.file_handle_cache.put(path.to_path_buf(), file);
+        if let Ok(cloned) = file.try_clone().await {
+            self.file_handle_cache.put(path.to_path_buf(), cloned);
+        }
 
-        Ok(cloned)
+        Ok(file)
     }
 
     async fn preallocate_files(
@@ -351,17 +352,16 @@ impl Disk {
         self.preallocate_files(info_hash).await?;
 
         self.piece_strategy.insert(info_hash.clone(), PieceStrategy::default());
-        let piece_order = self.piece_strategy.get(info_hash).cloned().unwrap();
 
         let mut all_pieces: Vec<u32> = (0..info.pieces()).collect();
 
-        if piece_order != PieceStrategy::Sequential {
-            all_pieces.shuffle(&mut rand::rng());
-        }
+        // let piece_order =
+        // self.piece_strategy.get(info_hash).cloned().unwrap();
+        // if piece_order != PieceStrategy::Sequential {
+        all_pieces.shuffle(&mut rand::rng());
+        // }
 
-        info!("shuffled pieces");
-
-        self.pieces.insert(info_hash.clone(), all_pieces);
+        self.piece_order.insert(info_hash.clone(), all_pieces);
         self.cache.insert(info_hash.clone(), BTreeMap::new());
         self.pieces_blocks.insert(info_hash.clone(), info.get_block_infos()?);
         self.downloaded_pieces_len.insert(info_hash.clone(), 0);
@@ -407,8 +407,10 @@ impl Disk {
         }
 
         // pieces of the local peer
-        let pieces =
-            self.pieces.get_mut(info_hash).ok_or(Error::TorrentDoesNotExist)?;
+        let pieces = self
+            .piece_order
+            .get_mut(info_hash)
+            .ok_or(Error::TorrentDoesNotExist)?;
 
         // vec of pieces scores/occurences, where index = piece.
         let mut score: Vec<u32> = vec![0u32; pieces.len()];
@@ -462,7 +464,10 @@ impl Disk {
         peer_pieces: Bitfield,
         qnt: usize,
     ) -> Result<Vec<BlockInfo>, Error> {
-        let mut result: Vec<BlockInfo> = Vec::with_capacity(qnt);
+        if peer_pieces.is_empty() {
+            warn!("peer_pieces is empty");
+            return Ok(vec![]);
+        }
 
         // let Some(peer_ctx) = self.peer_ctxs.iter().find(|v| v.id == *peer_id)
         // else {
@@ -494,16 +499,14 @@ impl Disk {
         // --------
 
         // order of pieces to download
-        let pieces =
-            self.pieces.get(info_hash).ok_or(Error::TorrentDoesNotExist)?;
-        // info!("request_blocks pieces order len {}", pieces.len());
+        let piece_order = self
+            .piece_order
+            .get(info_hash)
+            .ok_or(Error::TorrentDoesNotExist)?;
 
-        if peer_pieces.is_empty() {
-            warn!("peer_pieces is empty");
-            return Ok(vec![]);
-        }
+        let mut result: Vec<BlockInfo> = Vec::with_capacity(qnt);
 
-        for piece in 0..pieces.len() {
+        for piece in 0..piece_order.len() {
             // get a piece that the remote peer has...
             let Some(_p @ true) = peer_pieces.get(piece).as_deref() else {
                 continue;
@@ -939,15 +942,19 @@ mod tests {
     use futures::StreamExt;
     use rand::{distr::Alphanumeric, Rng};
     use std::net::{Ipv4Addr, SocketAddrV4};
-    use tokio::sync::RwLock;
+    use tokio::{
+        sync::{Mutex, RwLock},
+        time::Instant,
+    };
     use tokio_util::codec::Framed;
 
     use crate::{
+        counter::Counter,
         daemon::Daemon,
         extensions::{core::BLOCK_LEN, CoreCodec},
         magnet::Magnet,
         metainfo::{self, Info},
-        peer::{self, Peer, DEFAULT_REQUEST_QUEUE_LEN},
+        peer::{self, Peer, StateLog, DEFAULT_REQUEST_QUEUE_LEN},
         torrent::{Connected, Stats, Torrent},
         tracker::{TrackerCtx, TrackerMsg},
     };
@@ -1031,7 +1038,6 @@ mod tests {
         let mut hasher = sha1_smol::Sha1::new();
         hasher.update(&[7u8; (BLOCK_LEN) as usize]);
         let hash = hasher.digest().bytes();
-        println!("hash root is {hash:?}");
 
         let mut pieces = vec![];
         for _ in 0..6 {
@@ -1075,8 +1081,9 @@ mod tests {
                 Ipv4Addr::new(127, 0, 0, 1),
                 8080,
             )),
+            counter: Counter::default(),
+            last_download_rate_update: Mutex::new(Instant::now()),
             info_hash: magnet.parse_xt_infohash(),
-            outgoing_requests_timeout: HashMap::new(),
             tx: peer_tx.clone(),
             peer_interested: true.into(),
             uploaded: 0.into(),
@@ -1102,13 +1109,15 @@ mod tests {
         let mut torrent = Torrent {
             state: Connected {
                 size: 0,
+                last_rate_update: Instant::now(),
+                counter: Counter::new(),
                 unchoked_peers: Vec::new(),
                 opt_unchoked_peer: None,
                 connecting_peers: Vec::new(),
                 error_peers: Vec::new(),
                 downloaded_info_bytes: metadata_size,
                 bitfield: bitvec::bitvec![u8, bitvec::prelude::Msb0; 0; pieces_len as usize],
-                stats: Stats { seeders: 0, leechers: 0, interval: 1000 },
+                stats: Stats { seeders: 1, leechers: 1, interval: 1000 },
                 idle_peers: vec![],
                 tracker_ctx: Arc::new(TrackerCtx {
                     downloaded: 0,
@@ -1124,8 +1133,6 @@ mod tests {
                 connected_peers: vec![peer_ctx.clone()],
                 have_info: true,
                 info_pieces: BTreeMap::new(),
-                last_second_uploaded: 0,
-                last_second_downloaded: 0,
             },
             ctx: torrent_ctx.clone(),
             daemon_ctx,
@@ -1138,19 +1145,21 @@ mod tests {
         disk.new_torrent(torrent_ctx).await?;
 
         spawn(async move {
-            disk.run().await?;
+            let _ = disk.run().await;
             Ok::<(), Error>(())
         });
 
         spawn(async move {
-            daemon.run().await?;
+            let _ = daemon.run().await;
             Ok::<(), Error>(())
         });
 
         spawn(async move {
-            torrent.run().await?;
+            let _ = torrent.run().await;
             Ok::<(), Error>(())
         });
+
+        let peer_pieces = pieces.clone();
 
         spawn(async move {
             let (_socket, _) = listener.accept().await.unwrap();
@@ -1158,6 +1167,7 @@ mod tests {
             let (sink, stream) = socket.split();
 
             let mut peer = Peer::<peer::Connected> {
+                state_log: StateLog::default(),
                 state: peer::Connected {
                     connection: peer::ConnectionState::default(),
                     ctx: peer_ctx_,
@@ -1167,9 +1177,7 @@ mod tests {
                     incoming_requests: Vec::new(),
                     outgoing_requests: Vec::new(),
                     outgoing_requests_info_pieces: Vec::new(),
-                    outgoing_requests_info_pieces_times: HashMap::new(),
-                    outgoing_requests_timeout: HashMap::new(),
-                    pieces,
+                    pieces: peer_pieces,
                     prev_peer_choking: false,
                     reserved: bitvec::bitarr![u8, bitvec::prelude::Msb0; 0; 8 * 8],
                     rx: peer_rx,
@@ -1181,7 +1189,7 @@ mod tests {
                 },
             };
 
-            peer.run().await.unwrap();
+            let _ = peer.run().await;
         });
 
         let (otx, orx) = oneshot::channel();
@@ -1191,7 +1199,7 @@ mod tests {
                 peer_id: peer_ctx.id.clone(),
                 recipient: otx,
                 qnt: 3,
-                peer_pieces: bitvec::bitvec![u8, bitvec::prelude::Msb0; 0; 8 * 6],
+                peer_pieces: pieces,
             })
             .await?;
 
@@ -1228,14 +1236,12 @@ mod tests {
             .await?;
 
         let block = orx.await?;
-        println!("block {:?}", &block.block[0..10]);
 
         assert_eq!(block.index, 1);
         assert_eq!(block.begin, 0);
         assert_eq!(block.block.len(), blocks[0].len as usize);
 
-        // let _ = tokio::fs::remove_dir_all(format!("/tmp/{download_dir}")).
-        // await;
+        let _ = tokio::fs::remove_dir_all(format!("/tmp/{download_dir}")).await;
 
         Ok(())
     }

@@ -19,7 +19,7 @@ impl Default for Request {
 }
 
 impl Request {
-    pub(crate) const LENGTH: usize = 16;
+    pub const LENGTH: usize = 16;
     const MAGIC: u64 = 0x41727101980;
 
     pub fn new() -> Self {

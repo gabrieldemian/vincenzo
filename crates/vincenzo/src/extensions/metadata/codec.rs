@@ -58,7 +58,7 @@ impl ExtMsgHandler<MetadataDict, MetadataData> for MsgHandler {
 
         match msg.msg_type {
             MetadataMsgType::Response => {
-                info!("{} metadata res", peer.state.ctx.remote_addr);
+                info!("metadata res");
 
                 peer.state
                     .outgoing_requests_info_pieces

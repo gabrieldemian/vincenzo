@@ -246,7 +246,11 @@ impl<'a> Page for TorrentList<'a> {
                 to_human_readable(state.size).into(),
                 sl,
                 status_txt.into(),
-                format!("Connected to {} peers", state.connected_peers).into(),
+                format!(
+                    "Downloading from {} of {} peers",
+                    state.downloading_from, state.connected_peers,
+                )
+                .into(),
                 line_bottom,
             ];
 

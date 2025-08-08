@@ -15,6 +15,7 @@ pub use types::*;
 use crate::{
     bitfield::Bitfield,
     config::CONFIG,
+    counter::Counter,
     daemon::{DaemonCtx, DaemonMsg},
     disk::DiskMsg,
     error::Error,
@@ -22,7 +23,6 @@ use crate::{
     metainfo::Info,
     peer::{self, DirectionWithInfoHash, Peer, PeerCtx, PeerId, PeerMsg},
     tracker::{event::Event, Tracker, TrackerCtx, TrackerMsg, TrackerTrait},
-    utils::to_human_readable,
 };
 use std::{
     collections::BTreeMap,
@@ -36,7 +36,7 @@ use tokio::{
     sync::{mpsc, oneshot, RwLock},
     time::{interval, interval_at, Instant},
 };
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 
 pub trait TorrentTrait {}
 
@@ -48,6 +48,10 @@ pub struct Connected {
     /// Stats of the current Torrent, returned from tracker on announce
     /// requests.
     pub stats: Stats,
+
+    pub last_rate_update: Instant,
+
+    pub counter: Counter,
 
     /// Bitfield representing the presence or absence of pieces for our local
     /// peer, where each bit is a piece.
@@ -86,12 +90,6 @@ pub struct Connected {
     pub opt_unchoked_peer: Option<Arc<PeerCtx>>,
 
     pub error_peers: Vec<Peer<peer::PeerError>>,
-
-    /// Used to calculate upload rate.
-    pub last_second_uploaded: u64,
-
-    /// Used to calculate upload rate.
-    pub last_second_downloaded: u64,
 
     /// Size of the `info` bencoded string.
     pub metadata_size: u64,
@@ -219,10 +217,11 @@ impl Torrent<Idle> {
 
         Ok(Torrent {
             state: Connected {
+                counter: Counter::default(),
+                last_rate_update: Instant::now(),
                 size: self.ctx.magnet.length().unwrap_or(0),
                 unchoked_peers: Vec::with_capacity(3),
                 opt_unchoked_peer: None,
-                last_second_downloaded: 0,
                 connecting_peers: Vec::with_capacity(
                     CONFIG.max_torrent_peers as usize,
                 ),
@@ -240,7 +239,6 @@ impl Torrent<Idle> {
                 ),
                 have_info: false,
                 info_pieces: BTreeMap::new(),
-                last_second_uploaded: 0,
             },
             ctx: self.ctx,
             daemon_ctx: self.daemon_ctx,
@@ -293,17 +291,21 @@ impl Torrent<Connected> {
             spawn(async move {
                 match TcpStream::connect(peer).await {
                     Ok(socket) => {
-                        Self::start_and_run_peer(
+                        if let Err(e) = Self::start_and_run_peer(
                             daemon_ctx.clone(),
                             socket,
                             DirectionWithInfoHash::Outbound(
                                 ctx.info_hash.clone(),
                             ),
                         )
-                        .await?;
+                        .await
+                        {
+                            error!("error with peer: {:?} {e:#?}", peer);
+                            ctx.tx.send(TorrentMsg::PeerError(peer)).await?;
+                        };
                     }
                     Err(e) => {
-                        debug!("error with peer: {:?} {e:#?}", peer);
+                        error!("error with peer: {:?} {e:#?}", peer);
                         ctx.tx.send(TorrentMsg::PeerError(peer)).await?;
                     }
                 }
@@ -326,13 +328,12 @@ impl Torrent<Connected> {
 
         if let Err(r) = connected_peer.run().await {
             warn!(
-                "{} peer loop stopped due to an error: {}",
-                connected_peer.state.ctx.remote_addr, r
+                "{} peer loop stopped due to an error: {r:?}",
+                connected_peer.state.ctx.remote_addr
             );
             connected_peer.free_pending_blocks().await;
             return Err(r);
         }
-        info!("leaving start_and_run_peer");
         Ok(connected_peer)
     }
 
@@ -566,10 +567,15 @@ impl Torrent<Connected> {
     }
 
     /// Run the Torrent main event loop to listen to internal [`TorrentMsg`].
+    #[tracing::instrument(name = "torrent", skip_all,
+        fields(
+            info = ?self.ctx.magnet.parse_xt_infohash()
+        )
+    )]
     pub async fn run(&mut self) -> Result<(), Error> {
         debug!("running torrent: {:?}", self.name);
 
-        let tracker_tx = &self.state.tracker_ctx.tx;
+        let tracker_tx = self.state.tracker_ctx.tx.clone();
         let now = Instant::now();
 
         // send feedback to the tracker
@@ -801,7 +807,6 @@ impl Torrent<Connected> {
                                     .disk_tx
                                     .send(DiskMsg::NewPeer(peer.clone()))
                                     .await;
-
                             }
                         }
                         TorrentMsg::RequestInfoPiece(index, recipient) => {
@@ -811,6 +816,8 @@ impl Torrent<Connected> {
                         }
                         TorrentMsg::IncrementDownloaded(downloaded) => {
                             let tx = &self.state.tracker_ctx.tx;
+
+                            self.state.counter.record_download(downloaded);
 
                             tx.send(TrackerMsg::Increment { downloaded, uploaded: 0 }).await?;
 
@@ -823,6 +830,9 @@ impl Torrent<Connected> {
                         }
                         TorrentMsg::IncrementUploaded(uploaded) => {
                             let tracker_tx = &self.state.tracker_ctx.tx;
+
+                            self.state.counter.record_upload(uploaded);
+
                             tracker_tx.send(TrackerMsg::Increment { downloaded: 0, uploaded }).await?;
                             debug!("IncrementUploaded {}", self.state.tracker_ctx.uploaded);
                         }
@@ -890,32 +900,31 @@ impl Torrent<Connected> {
                     self.spawn_outbound_peers().await?;
                 }
                 _ = heartbeat_interval.tick() => {
-                    let downloaded = self.state.connected_peers
+                    for peer in &self.state.connected_peers {
+                        peer.counter.update_rates().await;
+                    }
+
+                    self.state.counter.update_rates().await;
+                    self.state.last_rate_update = Instant::now();
+
+                    let downloaded = self.state.counter.total_downloaded.load(Ordering::Relaxed);
+                    let uploaded = self.state.counter.total_downloaded.load(Ordering::Relaxed);
+
+                    let download_rate = self.state.counter.download_rate.load(Ordering::Relaxed);
+                    let _upload_rate = self.state.counter.upload_rate.load(Ordering::Relaxed);
+
+                    let downloading_from = self.state.connected_peers
                         .iter()
-                        .fold(
-                            0u64, |acc, v| acc + v.uploaded.load(Ordering::Relaxed)
-                        );
+                        .fold(0, |acc, v| {
+                            acc + if !v.peer_choking.load(Ordering::Relaxed) && v.am_interested.load(Ordering::Relaxed) { 1 } else {0}
+                        });
 
-                    let uploaded = self.state.connected_peers
-                        .iter()
-                        .fold(
-                            0u64, |acc, v| acc + v.downloaded.load(Ordering::Relaxed)
-                        );
-
-                    let download_rate = downloaded.saturating_sub(
-                        self.state.last_second_downloaded
-                    );
-
-                    let upload_rate = self.state.tracker_ctx.downloaded.saturating_sub(
-                        self.state.last_second_uploaded
-                    );
-
-                    info!("downloaded {} uploaded {} download_rate {} upload_rate {}",
-                        to_human_readable(downloaded),
-                        to_human_readable(uploaded),
-                        to_human_readable(download_rate),
-                        to_human_readable(upload_rate),
-                    );
+                    // info!("d: {} u: {} dr: {} ur: {} df: {downloading_from}",
+                    //     to_human_readable(downloaded),
+                    //     to_human_readable(uploaded),
+                    //     to_human_readable(download_rate),
+                    //     to_human_readable(upload_rate),
+                    // );
 
                     let torrent_state = TorrentState {
                         name: self.name.clone(),
@@ -929,12 +938,9 @@ impl Torrent<Connected> {
                         have_info: self.state.have_info,
                         bitfield: self.state.bitfield.clone().into_vec(),
                         connected_peers: self.state.connected_peers.len() as u8,
-                        connecting_peers: self.state.connecting_peers.len() as u8,
+                        downloading_from,
                         idle_peers: self.state.idle_peers.len() as u8,
                     };
-
-                    self.state.last_second_downloaded = downloaded;
-                    self.state.last_second_uploaded = uploaded;
 
                     let _ = self.daemon_ctx.tx.send(
                         DaemonMsg::TorrentState(torrent_state)

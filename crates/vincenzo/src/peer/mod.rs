@@ -10,7 +10,7 @@ use std::{sync::atomic::Ordering, time::Duration};
 use tokio::{
     select,
     sync::oneshot,
-    time::{interval, Instant},
+    time::{interval, interval_at, Instant},
 };
 
 use tracing::{debug, info};
@@ -31,6 +31,7 @@ use crate::{
 #[derive(Default)]
 pub struct Peer<S: PeerState> {
     pub state: S,
+    pub(crate) state_log: StateLog,
 }
 
 /// Handle peer messages.
@@ -38,11 +39,17 @@ pub struct Peer<S: PeerState> {
 /// its extension.
 pub struct MsgHandler;
 
-pub(crate) static BLOCK_TIMEOUT: Duration = Duration::from_secs(3);
+pub static BLOCK_TIMEOUT: Duration = Duration::from_secs(3);
 
 impl Peer<Connected> {
     /// Start the event loop of the Peer, listen to messages sent by others
     /// on the peer wire protocol.
+    #[tracing::instrument(name = "peer", skip_all,
+        fields(
+            state = %self.state_log,
+            addr = %self.state.ctx.remote_addr,
+        )
+    )]
     pub async fn run(&mut self) -> Result<(), Error> {
         self.state.connection = ConnectionState::Connecting;
 
@@ -52,9 +59,6 @@ impl Peer<Connected> {
             .tx
             .send(TorrentMsg::PeerConnected(self.state.ctx.clone()))
             .await;
-
-        let local = self.state.ctx.local_addr;
-        let remote = self.state.ctx.remote_addr;
 
         // request info
         let mut info_interval = interval(Duration::from_secs(1));
@@ -74,7 +78,10 @@ impl Peer<Connected> {
         let mut interested_interval = interval(Duration::from_secs(3));
 
         // send message to keep the connection alive
-        let mut keep_alive_interval = interval(Duration::from_secs(60));
+        let mut keep_alive_interval = interval_at(
+            Instant::now() + Duration::from_secs(60),
+            Duration::from_secs(60),
+        );
 
         // send bitfield
         {
@@ -86,7 +93,7 @@ impl Peer<Connected> {
                 .send(TorrentMsg::ReadBitfield(otx))
                 .await;
             let bitfield = orx.await?;
-            debug!("{remote} sending bitfield");
+            debug!("sending bitfield");
             self.state.sink.send(Core::Bitfield(bitfield)).await?;
         }
 
@@ -145,20 +152,22 @@ impl Peer<Connected> {
                 }
                 _ = interested_interval.tick() => {
                     let should_be_interested = self.has_piece_not_in_local().await?;
-                    debug!("{remote} should_be_interested {should_be_interested}");
+                    debug!("should_be_interested {should_be_interested}");
 
                     if should_be_interested &&
                         !self.state.ctx.am_interested.load(Ordering::Relaxed)
                     {
-                        debug!("{remote} sending interested");
+                        debug!("sending interested");
                         self.state.ctx.am_interested.store(true, Ordering::Relaxed);
+                        self.state_log[1] = 'i';
                         self.state.sink.send(Core::Interested).await?;
                     }
 
                     // sorry, you're not the problem, it's me.
                     if !should_be_interested && self.state.ctx.am_interested.load(Ordering::Relaxed) {
-                        debug!("{remote} sending not interested");
+                        debug!("sending not interested");
                         self.state.ctx.am_interested.store(false, Ordering::Relaxed);
+                        self.state_log[1] = '-';
                         self.state.sink.send(Core::NotInterested).await?;
                     }
                 }
@@ -178,11 +187,17 @@ impl Peer<Connected> {
                                     ).await?;
                                 }
                                 <Metadata as ExtMsg>::ID => {
-                                    let msg: Metadata = msg.try_into()?;
-                                    MsgHandler.handle_msg(
-                                        self,
-                                        msg,
-                                    ).await?;
+                                    let msg: Result<Metadata, Error> = msg.try_into();
+                                    if let Ok(meta) = msg {
+                                        MsgHandler.handle_msg(
+                                            self,
+                                            meta,
+                                        ).await?;
+                                    } else {
+                                        tracing::warn!("error decoding metadata msg");
+                                    }
+
+                                    // let msg: Metadata = msg.try_into()?;
                                 }
                                 _ => info!("other ext_id {ext_id}")
                             }
@@ -205,18 +220,18 @@ impl Peer<Connected> {
                             self.state.sink.send(msg).await?;
                         }
                         PeerMsg::HavePiece(piece) => {
-                            debug!("{remote} has piece {piece}");
+                            debug!("has piece {piece}");
 
                             if let Some(b) = self.state.pieces.get(piece) {
                                 // send Have to this peer if he doesnt have this piece
                                 if !b {
-                                    debug!("{remote} sending have {piece}");
+                                    debug!("sending have {piece}");
                                     let _ = self.state.sink.send(Core::Have(piece)).await;
                                 }
                             }
                         }
                         PeerMsg::RequestBlockInfos(block_infos) => {
-                            debug!("{remote} request_block_infos len {}", block_infos.len());
+                            debug!("request_block_infos len {}", block_infos.len());
 
                             let max = self.state.target_request_queue_len as usize - self.state.outgoing_requests.len();
 
@@ -231,70 +246,50 @@ impl Peer<Connected> {
                             }
                         }
                         PeerMsg::NotInterested => {
-                            debug!("{remote} sending not_interested");
+                            debug!("sending not_interested");
                             self.state.ctx.am_interested.store(false, Ordering::Relaxed);
+                            self.state_log[1] = '-';
                             self.state.sink.send(Core::NotInterested).await?;
                         }
                         PeerMsg::Interested => {
-                            debug!("{remote} sending interested");
+                            debug!("sending interested");
                             self.state.ctx.am_interested.store(true, Ordering::Relaxed);
+                            self.state_log[1] = 'i';
                             self.state.sink.send(Core::Interested).await?;
                         }
                         PeerMsg::Choke => {
-                            debug!("{remote} sending choke");
-                            self.state.ctx.peer_choking.store(true, Ordering::Relaxed);
+                            debug!("sending choke");
+                            self.state.ctx.am_choking.store(true, Ordering::Relaxed);
+                            self.state_log[0] = '-';
                             self.state.sink.send(Core::Choke).await?;
                         }
                         PeerMsg::Unchoke => {
-                            debug!("{remote} sending unchoke");
-                            self.state.ctx.peer_choking.store(false, Ordering::Relaxed);
+                            debug!("sending unchoke");
+                            self.state.ctx.am_choking.store(false, Ordering::Relaxed);
+                            self.state_log[0] = 'u';
                             self.state.sink.send(Core::Unchoke).await?;
                         }
                         PeerMsg::Pause => {
-                            info!("{remote} pause");
-                            self.state.prev_peer_choking = self.state.ctx.peer_choking.load(Ordering::Relaxed);
-
-                            if self.state.ctx.am_interested.load(Ordering::Relaxed) {
-                                self.state.ctx.am_interested.store(false, Ordering::Relaxed);
-                                let _ = self.state.sink.send(Core::NotInterested).await;
-                            }
-
-                            if !self.state.ctx.peer_choking.load(Ordering::Relaxed) {
-                                self.state.ctx.peer_choking.store(true, Ordering::Relaxed);
-                                let _ = self.state.sink.send(Core::Choke).await;
-                            }
-
-                            for block_info in &self.state.outgoing_requests {
-                                self.state.sink.send(Core::Cancel(block_info.0.clone())).await?;
-                            }
-
-                            self.free_pending_blocks().await;
                         }
                         PeerMsg::Resume => {
-                            debug!("{local} resume");
-                            self.state.ctx.peer_choking .store(self.state.prev_peer_choking, Ordering::Relaxed);
-
-                            if !self.state.ctx.peer_choking.load(Ordering::Relaxed) {
-                                self.state.sink.send(Core::Unchoke).await?;
-                            }
                         }
                         PeerMsg::CancelBlock(block_info) => {
-                            debug!("{remote} cancel_block");
+                            debug!("cancel_block");
                             self.state.outgoing_requests.retain(|v| v.0 != block_info);
                             self.state.sink.send(Core::Cancel(block_info)).await?;
                         }
                         PeerMsg::SeedOnly => {
-                            debug!("{remote} seed_only");
+                            debug!("seed_only");
                             self.state.seed_only = true;
                         }
                         PeerMsg::GracefullyShutdown => {
-                            debug!("{remote} gracefully_shutdown");
+                            debug!("gracefully_shutdown");
                             self.state.connection = ConnectionState::Quitting;
                             self.free_pending_blocks().await;
                             return Ok(());
                         }
                         PeerMsg::Quit => {
-                            debug!("{remote} quit");
+                            debug!("quit");
                             self.state.connection = ConnectionState::Quitting;
                             return Ok(());
                         }
@@ -353,6 +348,21 @@ impl Peer<Connected> {
                 .await;
         }
 
+        // Update peer-specific counters
+        self.state.ctx.counter.record_download(block_info.len as u64);
+
+        self.state
+            .ctx
+            .downloaded
+            .fetch_add(block_info.len as u64, Ordering::Relaxed);
+
+        // Update torrent-level counters
+        self.state
+            .torrent_ctx
+            .tx
+            .send(TorrentMsg::IncrementDownloaded(block_info.len as u64))
+            .await?;
+
         self.state
             .ctx
             .uploaded
@@ -373,12 +383,11 @@ impl Peer<Connected> {
     /// Re-request blocks that timed-out
     async fn check_request_timeout(&mut self) -> Result<(), Error> {
         let now = Instant::now();
-        let remote = self.state.ctx.remote_addr;
 
         // Identify timed-out requests
         for (block_info, mut request_time) in &self.state.outgoing_requests {
             if now.duration_since(request_time) >= BLOCK_TIMEOUT {
-                debug!("{remote} rerequesting block {:?}", block_info);
+                debug!("rerequesting block {:?}", block_info);
                 self.state.sink.send(Core::Request(block_info.clone())).await?;
                 request_time = Instant::now();
             }
@@ -422,8 +431,6 @@ impl Peer<Connected> {
     /// Must be used after checking that the Peer is able to send blocks with
     /// [`Self::can_request`].
     pub async fn request_block_infos(&mut self) -> Result<(), Error> {
-        let remote = self.state.ctx.remote_addr;
-
         let target_request_queue_len =
             self.state.target_request_queue_len as usize;
 
@@ -434,8 +441,7 @@ impl Peer<Connected> {
             target_request_queue_len.saturating_sub(current_requests);
 
         info!(
-            "{remote} requesting block infos: {request_len} pending: \
-             {current_requests}"
+            "requesting block infos: {request_len} pending: {current_requests}"
         );
 
         if request_len == 0 {
@@ -519,41 +525,37 @@ impl Peer<Connected> {
 
         // Calculate total pieces needed
         let total_pieces = meta_size.div_ceil(BLOCK_LEN as u64);
+        debug!("total_pieces {total_pieces}");
+
+        let requested_len = self.state.outgoing_requests_info_pieces.len();
+
+        let max_to_request =
+            (total_pieces as usize).saturating_sub(requested_len);
+
+        let mut to_request_len = 0;
 
         // Determine which pieces we still need to request
         let mut needed_pieces = Vec::with_capacity(total_pieces as usize);
 
         for piece in 0..total_pieces {
+            if to_request_len >= max_to_request {
+                break;
+            }
             if !self
                 .state
                 .outgoing_requests_info_pieces
                 .iter()
                 .any(|p| p.0 == piece)
             {
+                to_request_len += 1;
                 needed_pieces.push(piece);
             }
         }
 
-        if needed_pieces.is_empty() {
-            return Ok(());
-        }
-
-        // Determine how many new pieces we can request
-        let max_requests = self.state.target_request_queue_len as usize;
-        let available_slots = max_requests
-            .saturating_sub(self.state.outgoing_requests_info_pieces.len());
-
-        if available_slots == 0 {
-            return Ok(());
-        }
+        // info!("requesting meta pieces {}", needed_pieces.len());
 
         // Request up to available slots
-        for piece in needed_pieces.into_iter().take(available_slots) {
-            debug!(
-                "requesting metadata piece {piece} to {:?}",
-                self.state.ctx.remote_addr
-            );
-
+        for piece in needed_pieces {
             let msg = Metadata::request(piece);
             let buf = msg.to_bencode()?;
 

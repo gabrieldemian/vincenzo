@@ -120,7 +120,7 @@ impl Daemon {
         }
     }
 
-    async fn run_local_peer(&self) -> Result<(), Error> {
+    pub async fn run_local_peer(&self) -> Result<(), Error> {
         let local_addr = SocketAddr::new(
             if CONFIG.is_ipv6 {
                 IpAddr::V6(Ipv6Addr::UNSPECIFIED)
@@ -191,6 +191,7 @@ impl Daemon {
     /// This is useful to keep consistency, because the same command
     /// that can be fired remotely (via TCP),
     /// can also be fired internaly (via CLI flags).
+    #[tracing::instrument(name = "daemon", skip_all)]
     pub async fn run(&mut self) -> Result<(), Error> {
         let socket = TcpListener::bind(CONFIG.daemon_addr).await.unwrap();
 

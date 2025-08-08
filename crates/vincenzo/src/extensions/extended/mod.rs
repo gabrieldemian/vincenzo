@@ -8,6 +8,7 @@ mod r#trait;
 // re-exports
 pub use codec::*;
 pub use r#trait::*;
+use speedy::{Readable, Writable};
 
 use bendy::{
     decoding::{FromBencode, Object, ResultExt},
@@ -21,7 +22,7 @@ use crate::extensions::Metadata;
 /// <http://www.bittorrent.org/beps/bep_0010.html>
 ///
 /// Other protocols may add new fields to this struct.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Default, Readable, Writable)]
 pub struct Extension {
     /// messages (dictionary of supported extensions)
     pub m: M,
@@ -40,6 +41,10 @@ pub struct Extension {
     /// the size of the metadata file, which is the
     /// info-dictionary part of the metainfo(.torrent) file
     pub metadata_size: Option<u64>,
+    // todo: implement these
+    // pub upload_only: Option<u8>,
+    // pub yourip: Option<u8>,
+    // pub complete_ago: Option<u8>,
 }
 
 impl ExtData for Extension {}
@@ -56,8 +61,8 @@ impl Extension {
     pub fn supported(metadata_size: Option<u64>) -> Self {
         let m = M {
             ut_metadata: Some(Metadata::ID),
-            ut_pex: None,
-            ut_holepunch: None,
+            // ut_pex: None,
+            // ut_holepunch: None,
         };
 
         Self {
@@ -74,16 +79,15 @@ impl Extension {
 /// lists all extensions that a peer supports
 /// in our case, we only support ut_metadata at the moment
 /// and naturally, we are only interested in reading this part of the metadata
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Readable, Writable)]
 pub struct M {
     /// BEP 0009.
     pub ut_metadata: Option<u8>,
+    // BEP 0011.
+    // pub ut_pex: Option<u8>,
 
-    /// BEP 0011.
-    pub ut_pex: Option<u8>,
-
-    /// BEP 0055.
-    pub ut_holepunch: Option<u8>,
+    // BEP 0055.
+    // pub ut_holepunch: Option<u8>,
 }
 
 impl ToBencode for M {
@@ -97,9 +101,12 @@ impl ToBencode for M {
             if let Some(ut_metadata) = self.ut_metadata {
                 e.emit_pair(b"ut_metadata", ut_metadata)?;
             }
-            if let Some(ut_pex) = self.ut_pex {
-                e.emit_pair(b"ut_pex", ut_pex)?;
-            }
+            // if let Some(ut_pex) = self.ut_pex {
+            //     e.emit_pair(b"ut_pex", ut_pex)?;
+            // }
+            // if let Some(ut_holepunch) = self.ut_holepunch {
+            //     e.emit_pair(b"ut_holepunch", ut_holepunch)?;
+            // }
             Ok(())
         })
     }
@@ -119,8 +126,8 @@ impl FromBencode for M {
         let mut dict = object.try_into_dictionary()?;
         // inside this dict we have other data structures
         let mut ut_metadata = None;
-        let mut ut_pex = None;
-        let mut ut_holepunch = None;
+        // let mut ut_pex = None;
+        // let mut ut_holepunch = None;
 
         while let Some(pair) = dict.next_pair()? {
             match pair {
@@ -129,20 +136,24 @@ impl FromBencode for M {
                         .context("ut_metadata")
                         .map(Some)?;
                 }
-                (b"ut_pex", value) => {
-                    ut_pex = u8::decode_bencode_object(value)
-                        .context("ut_pex")
-                        .map(Some)?;
-                }
-                (b"ut_holepunch", value) => {
-                    ut_holepunch = u8::decode_bencode_object(value)
-                        .context("ut_holepunch")
-                        .map(Some)?;
-                }
+                // (b"ut_pex", value) => {
+                //     ut_pex = u8::decode_bencode_object(value)
+                //         .context("ut_pex")
+                //         .map(Some)?;
+                // }
+                // (b"ut_holepunch", value) => {
+                //     ut_holepunch = u8::decode_bencode_object(value)
+                //         .context("ut_holepunch")
+                //         .map(Some)?;
+                // }
                 _ => {}
             }
         }
-        Ok(Self { ut_metadata, ut_pex, ut_holepunch })
+        Ok(Self {
+            ut_metadata,
+            // ut_pex,
+            // ut_holepunch
+        })
     }
 }
 
@@ -292,8 +303,8 @@ mod tests {
             Extension {
                 m: M {
                     ut_metadata: Some(3),
-                    ut_pex: Some(1),
-                    ut_holepunch: None
+                    // ut_pex: Some(1),
+                    // ut_holepunch: None
                 },
                 p: Some(51413),
                 v: Some("Transmission 2.94".to_owned()),
@@ -329,8 +340,8 @@ mod tests {
             Extension {
                 m: M {
                     ut_metadata: Some(3),
-                    ut_pex: Some(1),
-                    ut_holepunch: None
+                    // ut_pex: Some(1),
+                    // ut_holepunch: None
                 },
                 p: Some(51413),
                 v: Some("Transmission 2.94".to_owned()),
