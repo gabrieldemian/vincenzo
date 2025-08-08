@@ -41,10 +41,13 @@ pub struct Extension {
     /// the size of the metadata file, which is the
     /// info-dictionary part of the metainfo(.torrent) file
     pub metadata_size: Option<u64>,
+
     // todo: implement these
     // pub upload_only: Option<u8>,
     // pub yourip: Option<u8>,
     // pub complete_ago: Option<u8>,
+    // pub ipv4: Option<u8>,
+    // pub ipv5: Option<u8>,
 }
 
 impl ExtData for Extension {}

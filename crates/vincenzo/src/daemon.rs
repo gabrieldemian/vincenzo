@@ -28,7 +28,7 @@ use crate::{
     disk::DiskMsg,
     error::Error,
     magnet::Magnet,
-    peer::{DirectionWithInfoHash, PeerId},
+    peer::PeerId,
     torrent::{
         InfoHash, Torrent, TorrentCtx, TorrentMsg, TorrentState, TorrentStatus,
     },
@@ -146,12 +146,8 @@ impl Daemon {
                     let daemon_ctx = daemon_ctx.clone();
 
                     spawn(async move {
-                        Torrent::start_and_run_peer(
-                            daemon_ctx,
-                            socket,
-                            DirectionWithInfoHash::Inbound,
-                        )
-                        .await?;
+                        Torrent::start_and_run_inbound_peer(daemon_ctx, socket)
+                            .await?;
 
                         Ok::<(), Error>(())
                     });

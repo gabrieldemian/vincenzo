@@ -21,7 +21,7 @@ use crate::{
     error::Error,
     magnet::Magnet,
     metainfo::Info,
-    peer::{self, DirectionWithInfoHash, Peer, PeerCtx, PeerId, PeerMsg},
+    peer::{self, Peer, PeerCtx, PeerId, PeerMsg},
     tracker::{event::Event, Tracker, TrackerCtx, TrackerMsg, TrackerTrait},
 };
 use std::{
@@ -283,20 +283,23 @@ impl Torrent<Connected> {
             );
         }
 
+        let metadata_size =
+            self.ctx.info.read().await.metadata_size.unwrap_or_default();
+
         for peer in self.state.idle_peers.iter().take(to_request).cloned() {
             let ctx = ctx.clone();
             let daemon_ctx = daemon_ctx.clone();
+            let torrent_ctx = self.ctx.clone();
 
             // send connections too other peers
             spawn(async move {
                 match TcpStream::connect(peer).await {
                     Ok(socket) => {
-                        if let Err(e) = Self::start_and_run_peer(
+                        if let Err(e) = Self::start_and_run_outbound_peer(
                             daemon_ctx.clone(),
                             socket,
-                            DirectionWithInfoHash::Outbound(
-                                ctx.info_hash.clone(),
-                            ),
+                            torrent_ctx.clone(),
+                            metadata_size,
                         )
                         .await
                         {
@@ -316,15 +319,37 @@ impl Torrent<Connected> {
         Ok(())
     }
 
-    pub async fn start_and_run_peer(
+    async fn start_and_run_outbound_peer(
         daemon_ctx: Arc<DaemonCtx>,
         socket: TcpStream,
-        direction: DirectionWithInfoHash,
+        torrent_ctx: Arc<TorrentCtx>,
+        metadata_size: u64,
+    ) -> Result<Peer<peer::Connected>, Error> {
+        let idle_peer = Peer::<peer::Idle>::new();
+
+        let mut connected_peer = idle_peer
+            .outbound_handshake(socket, daemon_ctx, torrent_ctx, metadata_size)
+            .await?;
+
+        if let Err(r) = connected_peer.run().await {
+            warn!(
+                "{} peer loop stopped due to an error: {r:?}",
+                connected_peer.state.ctx.remote_addr
+            );
+            connected_peer.free_pending_blocks().await;
+            return Err(r);
+        }
+        Ok(connected_peer)
+    }
+
+    pub async fn start_and_run_inbound_peer(
+        daemon_ctx: Arc<DaemonCtx>,
+        socket: TcpStream,
     ) -> Result<Peer<peer::Connected>, Error> {
         let idle_peer = Peer::<peer::Idle>::new();
 
         let mut connected_peer =
-            idle_peer.handshake(socket, daemon_ctx, direction).await?;
+            idle_peer.inbound_handshake(socket, daemon_ctx).await?;
 
         if let Err(r) = connected_peer.run().await {
             warn!(

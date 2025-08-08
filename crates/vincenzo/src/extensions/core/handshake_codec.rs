@@ -67,6 +67,13 @@ impl Decoder for HandshakeCodec {
     type Item = Handshake;
     type Error = io::Error;
 
+    // # IMPORTANT
+    //
+    // it is very common that some clients send 3 messages in the handshake
+    // message : <handshake><extended_handshake><bitfield>
+    //
+    // we try to decode the first 2 messages here, the third one being handled
+    // by the core codec.
     fn decode(&mut self, buf: &mut BytesMut) -> io::Result<Option<Handshake>> {
         // minimum handshake size check (68 bytes)
         if buf.len() < 68 {
@@ -142,6 +149,8 @@ impl Decoder for HandshakeCodec {
 
         handshake.ext = Some(ext_handshake);
 
+        // println!("remaining bytes? {}", buf.remaining());
+
         Ok(Some(handshake))
     }
 }
@@ -183,6 +192,9 @@ pub struct Handshake {
     /// 6e55 6568                      
     pub peer_id: PeerId,
 
+    /// If the handshake has an extended handshake. Local handshakes always
+    /// have this to S0me. And in practice, all normal clients support this
+    /// extension too.
     pub ext: Option<Extension>,
 }
 
