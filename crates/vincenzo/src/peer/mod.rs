@@ -129,25 +129,25 @@ impl Peer<Connected> {
                     self.try_request_info().await?;
 
                     // only re-request timed-out pieces if we have some
-                    if self.state.outgoing_requests_info_pieces.is_empty() { continue };
+                    // if self.state.outgoing_requests_info_pieces.is_empty() { continue };
 
-                    let now = Instant::now();
+                    // let now = Instant::now();
 
                     // Check for timed-out requests (10 seconds)
-                    for (piece, mut request_time) in &mut self.state.outgoing_requests_info_pieces {
-                        if now.duration_since(request_time) > Duration::from_secs(10) {
-                            let msg = Metadata::request(*piece);
-                            let buf = msg.to_bencode()?;
-                            self
-                                .state
-                                .sink
-                                .send(Core::Extended(ExtendedMessage(ut_metadata, buf)))
-                                .await?;
-
-                            // update request time
-                            request_time = Instant::now();
-                        }
-                    }
+                    // for (piece, mut request_time) in &mut self.state.outgoing_requests_info_pieces {
+                    //     if now.duration_since(request_time) > Duration::from_secs(10) {
+                    //         let msg = Metadata::request(*piece);
+                    //         let buf = msg.to_bencode()?;
+                    //         self
+                    //             .state
+                    //             .sink
+                    //             .send(Core::Extended(ExtendedMessage(ut_metadata, buf)))
+                    //             .await?;
+                    //
+                    //         // update request time
+                    //         request_time = Instant::now();
+                    //     }
+                    // }
                 }
                 _ = request_interval.tick(), if self.can_request() && self.state.have_info => {
                     self.request_block_infos().await?;

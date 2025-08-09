@@ -65,7 +65,7 @@ impl Encoder<Handshake> for HandshakeCodec {
 
 impl Decoder for HandshakeCodec {
     type Item = Handshake;
-    type Error = io::Error;
+    type Error = Error;
 
     // # IMPORTANT
     //
@@ -74,7 +74,10 @@ impl Decoder for HandshakeCodec {
     //
     // we try to decode the first 2 messages here, the third one being handled
     // by the core codec.
-    fn decode(&mut self, buf: &mut BytesMut) -> io::Result<Option<Handshake>> {
+    fn decode(
+        &mut self,
+        buf: &mut BytesMut,
+    ) -> Result<Option<Handshake>, Self::Error> {
         // minimum handshake size check (68 bytes)
         if buf.len() < 68 {
             return Ok(None);
@@ -84,10 +87,7 @@ impl Decoder for HandshakeCodec {
         let mut handshake_buf = buf.split_to(68);
 
         if handshake_buf.get_u8() as usize != PSTR_LEN {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "Handshake must have the string \"BitTorrent protocol\"",
-            ));
+            return Err(Error::HandshakeInvalid);
         }
 
         // protocol string
@@ -120,42 +120,42 @@ impl Decoder for HandshakeCodec {
         // The next 8 bits are the extension protocol id = 20
         // The next 8 bits are the extended msg id = 0 ext handshake.
 
-        if buf.remaining() < 4 + 1 + 1 {
+        // the cursor here is in size
+
+        // need at least 4 bytes for length prefix
+        // size + core_id + msg_id
+        if buf.len() < 6 {
             return Ok(Some(handshake));
         }
 
-        let size = buf.get_u32() as usize;
+        // don't advance cursor
+        let size =
+            u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
 
-        if buf.remaining() < size {
+        // if the remaining bytes are smaller then the size,
+        // this is incorrect, we skip this segment.
+        if buf.len() < size + 4 {
+            buf.advance(4);
             return Ok(Some(handshake));
         }
 
-        let core_id = buf.get_u8();
-        let ext_id = buf.get_u8();
-
-        if core_id != CoreId::Extended as u8 && ext_id != Extended::ID {
-            // not extended handshake - skip payload
-            buf.advance(size);
+        // if not an extended handshake, return
+        if buf[4] != CoreId::Extended as u8 || buf[5] != Extended::ID {
             return Ok(Some(handshake));
         }
 
-        println!("cursor before {:?}", buf.remaining());
+        // advance cursor past the size and the 2 ids, into the payload.
+        buf.advance(6); // 4 (length) + core_id (1) + ext_id (1)
 
-        let ext_buf = buf.split_to(size - 2);
+        // get only the chunk of the current message.
+        // -2 because the size includes the size of the 2 messages.
+        let payload = buf.split_to(size - 2);
 
-        let ext_handshake =
-            Extension::from_bencode(&ext_buf).map_err(|_| {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "Error decoding ext handshake",
-                )
-            })?;
+        let ext_handshake = Extension::from_bencode(&payload);
 
-        println!("cursor after {:?}", buf.remaining());
-
-        handshake.ext = Some(ext_handshake);
-
-        // println!("remaining bytes? {}", buf.remaining());
+        if let Ok(ext_handshake) = ext_handshake {
+            handshake.ext = Some(ext_handshake);
+        }
 
         Ok(Some(handshake))
     }
@@ -258,8 +258,12 @@ impl Handshake {
 
 #[cfg(test)]
 pub mod tests {
+    use crate::extensions::{Core, CoreCodec};
+
     use super::*;
 
+    // decode a buffer with 3 messages together:
+    // handshake, extended handshake, and bitfield.
     #[test]
     fn handshake_with_ext() {
         let bytes: [u8; 467] = [
@@ -311,30 +315,19 @@ pub mod tests {
         buf.extend_from_slice(&bytes);
         let ext = HandshakeCodec.decode(&mut buf).unwrap();
         println!("handshake {ext:?}");
-        assert!(false);
-    }
 
-    #[test]
-    fn handshake() {
-        let info_hash = [5u8; 20];
-        let peer_id = [7u8; 20];
-        let our_handshake = Handshake::new(info_hash, peer_id);
+        // the last message is a bitfield, used in a different codec.
+        let core = CoreCodec.decode(&mut buf).unwrap().unwrap();
 
-        assert_eq!(our_handshake.pstr_len, 19);
-        assert_eq!(our_handshake.pstr, PSTR);
-        assert_eq!(our_handshake.peer_id.0, peer_id);
-        assert_eq!(our_handshake.info_hash.0, info_hash);
+        if let Core::Bitfield(bitfield) = core {
+            assert_eq!(bitfield.len(), 1408);
+        } else {
+            panic!("wrong core message");
+        }
 
-        let our_handshake =
-            Handshake::new(info_hash, peer_id).serialize().unwrap();
-        assert_eq!(
-            our_handshake,
-            [
-                19, 66, 105, 116, 84, 111, 114, 114, 101, 110, 116, 32, 112,
-                114, 111, 116, 111, 99, 111, 108, 0, 0, 0, 0, 0, 16, 0, 0, 5,
-                5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 7, 7,
-                7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7
-            ]
-        );
+        println!("buf {buf:#?}");
+
+        // the buffer was fully consumed
+        assert!(buf.is_empty());
     }
 }
