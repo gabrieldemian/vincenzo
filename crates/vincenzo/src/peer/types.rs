@@ -326,7 +326,7 @@ impl peer::Peer<Idle> {
             Some(Err(e)) => {
                 // peer didn't send a handshake.
                 tracing::error!("some e {e:?}");
-                return Err(Error::HandshakeInvalid);
+                return Err(Error::NoHandshake);
             }
             None => {
                 // the peer sent a FIN, maybe try to connect later.
@@ -335,7 +335,7 @@ impl peer::Peer<Idle> {
             }
         };
 
-        tracing::info!("{remote} ext {:?}", peer_handshake.ext);
+        tracing::debug!("{remote} ext {:?}", peer_handshake.ext);
 
         if !peer_handshake.validate(&local_handshake) {
             warn!("handshake is invalid");

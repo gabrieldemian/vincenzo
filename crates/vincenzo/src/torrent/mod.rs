@@ -919,9 +919,7 @@ impl Torrent<Connected> {
                         error_peers
                         .drain(..)
                         .map(|v| v.state.addr).collect();
-
                     self.state.idle_peers.extend(errored);
-
                     self.spawn_outbound_peers().await?;
                 }
                 _ = heartbeat_interval.tick() => {

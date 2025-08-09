@@ -31,7 +31,7 @@
           '';
           buildInputs = [
 
-            (writeShellScriptBin "getdump" ''sudo tcpdump -XX "tcp and (tcp[tcpflags] & (tcp-syn) != 0 and tcp[tcpflags] & (tcp-ack) == 0) and (ip src 192.168.1.14)"'')
+            (writeShellScriptBin "writedump" ''sudo tcpdump -i CloudflareWARP -XX 'tcp and port not https' -w dump.pcap'')
 
             rustup
             taplo

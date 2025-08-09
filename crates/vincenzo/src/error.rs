@@ -109,6 +109,9 @@ pub enum Error {
     #[error("The handshake received is not valid")]
     HandshakeInvalid,
 
+    #[error("The peer didn't send a handshake")]
+    NoHandshake,
+
     #[error(
         "Could not open the file `{0}`. Please make sure the program has \
          permission to access it"

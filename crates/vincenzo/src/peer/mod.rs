@@ -222,15 +222,12 @@ impl Peer<Connected> {
                 Some(msg) = self.state.rx.recv() => {
                     match msg {
                         PeerMsg::GetPieces(tx) => {
-                            info!("peer get_pieces {:?}", self.state.pieces.len());
                             let _ = tx.send(self.state.pieces.clone());
                         }
                         PeerMsg::SendToSink(msg) => {
                             self.state.sink.send(msg).await?;
                         }
                         PeerMsg::HavePiece(piece) => {
-                            debug!("has piece {piece}");
-
                             if let Some(b) = self.state.pieces.get(piece) {
                                 // send Have to this peer if he doesnt have this piece
                                 if !b {
@@ -454,7 +451,7 @@ impl Peer<Connected> {
         let request_len =
             target_request_queue_len.saturating_sub(current_requests);
 
-        info!(
+        debug!(
             "requesting block infos: {request_len} pending: {current_requests}"
         );
 
@@ -571,7 +568,7 @@ impl Peer<Connected> {
             let msg = Metadata::request(piece);
             let buf = msg.to_bencode()?;
 
-            info!("requesting meta piece id: {piece}");
+            debug!("requesting meta piece id: {piece}");
 
             // Track requested piece and request time
             self.state

@@ -149,7 +149,8 @@ impl Decoder for HandshakeCodec {
 
         // get only the chunk of the current message.
         // -2 because the size includes the size of the 2 messages.
-        let payload = buf.split_to(size - 2);
+        let mut payload = vec![0u8; size - 2];
+        buf.copy_to_slice(&mut payload);
 
         let ext_handshake = Extension::from_bencode(&payload);
 

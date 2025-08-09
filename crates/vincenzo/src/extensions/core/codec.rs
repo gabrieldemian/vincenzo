@@ -220,7 +220,6 @@ impl ExtMsgHandler<Core, CoreState> for MsgHandler {
                 peer_pieces.set(piece, true);
             }
             Core::Piece(block) => {
-                info!("sent block i: {}", block.index);
                 debug!(
                     "index: {:?}, begin: {:?}, len: {:?}",
                     block.index,
@@ -374,6 +373,8 @@ impl Decoder for CoreCodec {
             return Ok(None);
         }
 
+        // cursor is at <size_u32>
+
         // peek at length prefix without consuming
         let size =
             u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
@@ -383,11 +384,16 @@ impl Decoder for CoreCodec {
             return Ok(Some(Core::KeepAlive));
         }
 
-        // if the remaining bytes are smaller then the size,
-        // this is incorrect, we skip this segment.
+        if buf.capacity() < size {
+            buf.reserve((size + 4) - buf.capacity());
+        }
+
+        // incomplete message, if the packet is to large to fit the MTU (~1,500
+        // bytes) the packet will be split into many packets. The decoder will
+        // be called each time a packet arrive, but if the buffer is not
+        // full yet, we don't avance the cursor and just wait.
         if buf.len() < 4 + size {
-            // skip the entire segment.
-            buf.advance(size + 4);
+            // incomplete message, wait for more.
             return Ok(None);
         }
 
@@ -397,14 +403,16 @@ impl Decoder for CoreCodec {
         // with keepalive out of the way,
         // all the messages have at least 1 byte of size
         if buf.remaining() < 1 {
-            // skip the entire segment.
-            buf.advance(size);
             return Ok(None);
         }
 
-        let Ok(msg_id) = CoreId::try_from(buf.get_u8()) else {
+        let msg_id = buf.get_u8();
+
+        let Ok(msg_id) = CoreId::try_from(msg_id) else {
             // unknown message id, just skip the segment
-            buf.advance(size);
+            // cursor here is after msg_id
+            warn!("unknown message_id {msg_id:?}");
+            buf.advance(size - 1);
             return Ok(None);
         };
 
@@ -430,8 +438,9 @@ impl Decoder for CoreCodec {
             }
             // <len=0001+X><id=5><bitfield>
             CoreId::Bitfield => {
-                let bitfield = buf.split_to(size - 1).freeze();
-                Core::Bitfield(Bitfield::from_vec(bitfield.to_vec()))
+                let mut bitfield = vec![0u8; size - 1];
+                buf.copy_to_slice(&mut bitfield);
+                Core::Bitfield(Bitfield::from_vec(bitfield))
             }
             // <len=0013><id=6><index><begin><length>
             CoreId::Request => {
@@ -453,9 +462,10 @@ impl Decoder for CoreCodec {
                 let begin = buf.get_u32();
 
                 // size - 4 bytes (index) - 4 bytes (begin) - 1 byte (msg_id)
-                let block = buf.split_to(size - 9).freeze();
+                let mut block = vec![0u8; size - 9];
+                buf.copy_to_slice(&mut block);
 
-                Core::Piece(Block { index, begin, block: block.into() })
+                Core::Piece(Block { index, begin, block })
             }
             // <len=0013><id=8><index><begin><length>
             CoreId::Cancel => {
@@ -474,11 +484,13 @@ impl Decoder for CoreCodec {
                     return Ok(None);
                 }
                 let ext_id = buf.get_u8();
+                info!("ext_id {ext_id:?}");
 
                 // size - 1 byte (msg_id) - 1 byte (ext_id)
-                let payload = buf.split_to(size - 2).freeze();
+                let mut payload = vec![0u8; size - 2];
+                buf.copy_to_slice(&mut payload);
 
-                Core::Extended(ExtendedMessage(ext_id, payload.to_vec()))
+                Core::Extended(ExtendedMessage(ext_id, payload))
             }
         };
 
@@ -491,7 +503,7 @@ mod tests {
     use crate::extensions::{core::BLOCK_LEN, Metadata, MetadataMsgType};
 
     use super::*;
-    use bitvec::{bitvec, prelude::Msb0, vec::BitVec};
+    use bitvec::{bitvec, prelude::Msb0};
     use bytes::{Buf, BytesMut};
     use tokio_util::codec::{Decoder, Encoder};
 
