@@ -4,7 +4,7 @@ use futures::SinkExt;
 use std::sync::atomic::Ordering;
 use tokio::{io, sync::oneshot};
 use tokio_util::codec::{Decoder, Encoder};
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 use vincenzo_macros::Message;
 
 use super::{Block, BlockInfo};
@@ -165,11 +165,11 @@ impl ExtMsgHandler<Core, CoreState> for MsgHandler {
             // handled by the extended messages
             Core::Extended(_) => {}
             Core::KeepAlive => {
-                info!("keepalive");
+                debug!("< keepalive");
             }
             Core::Bitfield(bitfield) => {
-                info!(
-                    "bitfield len: {:?} has pieces: {}",
+                debug!(
+                    "< bitfield len: {:?} has pieces: {}",
                     bitfield.len(),
                     bitfield.count_ones()
                 );
@@ -179,28 +179,28 @@ impl ExtMsgHandler<Core, CoreState> for MsgHandler {
             Core::Unchoke => {
                 peer.state.ctx.peer_choking.store(false, Ordering::Relaxed);
                 peer.state_log[3] = 'u';
-                info!("unchoke");
+                debug!("< unchoke");
             }
             Core::Choke => {
                 // remote peer is choking the local peer
-                info!("choke");
+                debug!("< choke");
                 peer.state.ctx.peer_choking.store(true, Ordering::Relaxed);
                 peer.free_pending_blocks().await;
                 peer.state_log[3] = '-';
             }
             Core::Interested => {
                 // remote peer is interested the local peer
-                debug!("interested");
+                debug!("< interested");
                 peer.state.ctx.peer_interested.store(true, Ordering::Relaxed);
                 peer.state_log[4] = 'i';
             }
             Core::NotInterested => {
-                debug!("not_interested");
+                debug!("< not_interested");
                 peer.state.ctx.peer_interested.store(false, Ordering::Relaxed);
                 peer.state_log[4] = '-';
             }
             Core::Have(piece) => {
-                debug!("have {piece}");
+                debug!("< have {piece}");
 
                 // Overwrite pieces on bitfield, if the peer has one
                 let peer_pieces = &mut peer.state.pieces;
@@ -221,7 +221,7 @@ impl ExtMsgHandler<Core, CoreState> for MsgHandler {
             }
             Core::Piece(block) => {
                 debug!(
-                    "index: {:?}, begin: {:?}, len: {:?}",
+                    "< index: {:?}, begin: {:?}, len: {:?}",
                     block.index,
                     block.begin,
                     block.block.len()
@@ -230,13 +230,11 @@ impl ExtMsgHandler<Core, CoreState> for MsgHandler {
                 peer.handle_piece_msg(block).await?;
             }
             Core::Cancel(block_info) => {
-                debug!("cancel from");
-                debug!("{block_info:?}");
+                debug!("< cancel {block_info:?}");
                 peer.state.incoming_requests.retain(|v| *v != block_info);
             }
             Core::Request(block_info) => {
-                debug!("request from");
-                debug!("{block_info:?}");
+                debug!("< request {block_info:?}");
 
                 if peer.state.ctx.peer_choking.load(Ordering::Relaxed) {
                     return Ok(());
@@ -484,11 +482,12 @@ impl Decoder for CoreCodec {
                     return Ok(None);
                 }
                 let ext_id = buf.get_u8();
-                info!("ext_id {ext_id:?}");
 
                 // size - 1 byte (msg_id) - 1 byte (ext_id)
-                let mut payload = vec![0u8; size - 2];
-                buf.copy_to_slice(&mut payload);
+                // let mut payload = vec![0u8; size - 2];
+                // buf.copy_to_slice(&mut payload);
+
+                let payload = buf.split_to(size - 2).to_vec();
 
                 Core::Extended(ExtendedMessage(ext_id, payload))
             }

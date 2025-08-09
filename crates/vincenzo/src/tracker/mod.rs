@@ -57,6 +57,9 @@ pub trait TrackerTrait: Sized {
     fn announce(
         &self,
         event: Event,
+        downloaded: u64,
+        uploaded: u64,
+        left: u64,
     ) -> impl Future<Output = Result<(announce::Response, Vec<u8>), Error>>;
 
     /// Support for BEP23
@@ -97,9 +100,6 @@ pub struct Tracker<P: Protocol> {
 #[derive(Debug, Clone)]
 pub struct TrackerCtx {
     pub tx: mpsc::Sender<TrackerMsg>,
-    pub downloaded: u64,
-    pub uploaded: u64,
-    pub left: u64,
     /// Remote addr of the tracker.
     pub tracker_addr: SocketAddr,
 }
@@ -109,10 +109,9 @@ pub enum TrackerMsg {
     Announce {
         event: Event,
         recipient: Option<oneshot::Sender<(announce::Response, Vec<u8>)>>,
-    },
-    Increment {
         downloaded: u64,
         uploaded: u64,
+        left: u64,
     },
     Info(Info),
 }
@@ -176,6 +175,9 @@ impl TrackerTrait for Tracker<Udp> {
     async fn announce(
         &self,
         event: Event,
+        downloaded: u64,
+        uploaded: u64,
+        left: u64,
     ) -> Result<(announce::Response, Vec<u8>), Error> {
         debug!("announcing {event:#?} to tracker");
 
@@ -183,9 +185,9 @@ impl TrackerTrait for Tracker<Udp> {
             connection_id: self.connection_id,
             info_hash: self.info_hash.clone(),
             peer_id: self.daemon_ctx.local_peer_id.clone(),
-            downloaded: self.ctx.downloaded,
-            left: self.ctx.left,
-            uploaded: self.ctx.uploaded,
+            downloaded,
+            left,
+            uploaded,
             event,
             ..Default::default()
         };
@@ -273,7 +275,7 @@ impl TrackerTrait for Tracker<Udp> {
             peer_list.push((ip, port).into());
         }
 
-        debug!("ips of peers addrs {peer_list:#?}");
+        debug!("{} ips of peers {peer_list:#?}", peer_list.len());
         let peers: Vec<SocketAddr> = peer_list.into_iter().collect();
 
         Ok(peers)
@@ -319,9 +321,6 @@ impl TrackerTrait for Tracker<Udp> {
                 ctx: TrackerCtx {
                     tracker_addr: socket.peer_addr().unwrap(),
                     tx: tracker_tx,
-                    downloaded: 0,
-                    uploaded: 0,
-                    left: 0,
                 },
                 daemon_ctx: daemon_ctx.clone(),
                 info_hash: info_hash.clone(),
@@ -378,25 +377,15 @@ impl Tracker<Udp> {
                 Some(msg) = self.rx.recv() => {
                     match msg {
                         TrackerMsg::Info(info) => self.info = Some(info),
-                        TrackerMsg::Increment { downloaded, uploaded } => {
-                            let _ = self.ctx.downloaded.saturating_add(downloaded);
-                            let _ = self.ctx.uploaded.saturating_add(uploaded);
-
-                            if let Some(info) = &self.info {
-                                let left =
-                                    if self.ctx.downloaded < info.get_size()
-                                        { info.get_size() - self.ctx.downloaded }
-                                    else { 0 };
-
-                                self.ctx.left = left;
-                            }
-                        }
                         TrackerMsg::Announce {
                             recipient,
                             event,
+                            downloaded,
+                            uploaded,
+                            left,
                         } => {
                             let res = self
-                                .announce(event)
+                                .announce(event, downloaded, uploaded, left)
                                 .await?;
 
                             if let Some(recipient) = recipient {

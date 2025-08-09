@@ -25,8 +25,6 @@ pub enum TorrentMsg {
     /// Received when a peer sent a metadata size on extended handshake.
     MetadataSize(u64),
 
-    DownloadComplete,
-
     /// When a peer downloads an info piece,
     /// we need to mutate `info_dict` and maybe
     /// generate the entire info.

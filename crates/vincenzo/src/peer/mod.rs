@@ -13,7 +13,7 @@ use tokio::{
     time::{interval, interval_at, Instant},
 };
 
-use tracing::{debug, info};
+use tracing::{debug, trace};
 
 use crate::extensions::{
     ExtMsg, ExtMsgHandler, Extended, ExtendedMessage, Metadata,
@@ -95,7 +95,7 @@ impl Peer<Connected> {
 
             let bitfield = orx.await?;
 
-            debug!("sending bitfield");
+            debug!("> bitfield");
 
             if !bitfield.is_empty() {
                 self.state.sink.send(Core::Bitfield(bitfield)).await?;
@@ -129,40 +129,40 @@ impl Peer<Connected> {
                     self.try_request_info().await?;
 
                     // only re-request timed-out pieces if we have some
-                    // if self.state.outgoing_requests_info_pieces.is_empty() { continue };
+                    if self.state.outgoing_requests_info_pieces.is_empty() { continue };
 
-                    // let now = Instant::now();
+                    let now = Instant::now();
 
-                    // Check for timed-out requests (10 seconds)
-                    // for (piece, mut request_time) in &mut self.state.outgoing_requests_info_pieces {
-                    //     if now.duration_since(request_time) > Duration::from_secs(10) {
-                    //         let msg = Metadata::request(*piece);
-                    //         let buf = msg.to_bencode()?;
-                    //         self
-                    //             .state
-                    //             .sink
-                    //             .send(Core::Extended(ExtendedMessage(ut_metadata, buf)))
-                    //             .await?;
-                    //
-                    //         // update request time
-                    //         request_time = Instant::now();
-                    //     }
-                    // }
+                    // Check for timed-out requests (5 seconds)
+                    for (piece, mut request_time) in &mut self.state.outgoing_requests_info_pieces {
+                        if now.duration_since(request_time) > Duration::from_secs(5) {
+                            let msg = Metadata::request(*piece);
+                            let buf = msg.to_bencode()?;
+                            self
+                                .state
+                                .sink
+                                .send(Core::Extended(ExtendedMessage(ut_metadata, buf)))
+                                .await?;
+
+                            // update request time
+                            request_time = Instant::now();
+                        }
+                    }
                 }
-                _ = request_interval.tick(), if self.can_request() && self.state.have_info => {
+                _ = request_interval.tick(), if self.can_request() => {
                     self.request_block_infos().await?;
                 }
-                _ = rerequest_timeout_interval.tick(), if self.state.have_info => {
+                _ = rerequest_timeout_interval.tick(), if self.can_request() => {
                     self.check_request_timeout().await?;
                 }
-                _ = interested_interval.tick() => {
+                _ = interested_interval.tick(), if !self.state.seed_only && !self.state.is_paused => {
                     let should_be_interested = self.has_piece_not_in_local().await?;
                     debug!("should_be_interested {should_be_interested}");
 
                     if should_be_interested &&
                         !self.state.ctx.am_interested.load(Ordering::Relaxed)
                     {
-                        info!("sending interested");
+                        debug!("> interested");
                         self.state.ctx.am_interested.store(true, Ordering::Relaxed);
                         self.state_log[1] = 'i';
                         self.state.sink.send(Core::Interested).await?;
@@ -171,7 +171,7 @@ impl Peer<Connected> {
 
                     // sorry, you're not the problem, it's me.
                     if !should_be_interested && self.state.ctx.am_interested.load(Ordering::Relaxed) {
-                        debug!("sending not interested");
+                        debug!("> not_interested");
                         self.state.ctx.am_interested.store(false, Ordering::Relaxed);
                         self.state_log[1] = '-';
                         self.state.sink.send(Core::NotInterested).await?;
@@ -184,7 +184,6 @@ impl Peer<Connected> {
                 Some(Ok(msg)) = self.state.stream.next() => {
                     match msg {
                         Core::Extended(msg @ ExtendedMessage(ext_id, _)) => {
-                            info!("received ext {ext_id}");
                             match ext_id {
                                 <Extended as ExtMsg>::ID => {
                                     let msg: Extended = msg.try_into()?;
@@ -195,20 +194,14 @@ impl Peer<Connected> {
                                     ).await?;
                                 }
                                 <Metadata as ExtMsg>::ID => {
-                                    let msg: Result<Metadata, Error> = msg.try_into();
+                                    let msg: Metadata = msg.try_into()?;
 
-                                    if let Ok(meta) = msg {
-                                        MsgHandler.handle_msg(
-                                            self,
-                                            meta,
-                                        ).await?;
-                                    } else {
-                                        tracing::warn!("error decoding metadata msg");
-                                    }
-
-                                    // let msg: Metadata = msg.try_into()?;
+                                    MsgHandler.handle_msg(
+                                        self,
+                                        msg,
+                                    ).await?;
                                 }
-                                _ => info!("other ext_id {ext_id}")
+                                _ => {}
                             }
                         }
                         _ => {
@@ -231,15 +224,14 @@ impl Peer<Connected> {
                             if let Some(b) = self.state.pieces.get(piece) {
                                 // send Have to this peer if he doesnt have this piece
                                 if !b {
-                                    debug!("sending have {piece}");
+                                    debug!("> have {piece}");
                                     let _ = self.state.sink.send(Core::Have(piece)).await;
                                 }
                             }
                         }
                         PeerMsg::RequestBlockInfos(block_infos) => {
-                            debug!("request_block_infos len {}", block_infos.len());
-
-                            let max = self.state.target_request_queue_len as usize - self.state.outgoing_requests.len();
+                            let max = self.state.target_request_queue_len as usize
+                                - self.state.outgoing_requests.len();
 
                             if self.can_request() {
                                 for block_info in block_infos.into_iter().take(max) {
@@ -252,39 +244,45 @@ impl Peer<Connected> {
                             }
                         }
                         PeerMsg::NotInterested => {
-                            debug!("sending not_interested");
+                            debug!("> not_interested");
                             self.state.ctx.am_interested.store(false, Ordering::Relaxed);
                             self.state_log[1] = '-';
                             self.state.sink.send(Core::NotInterested).await?;
                             self.state.sink.flush().await?;
                         }
                         PeerMsg::Interested => {
-                            debug!("sending interested");
+                            debug!("> interested");
                             self.state.ctx.am_interested.store(true, Ordering::Relaxed);
                             self.state_log[1] = 'i';
                             self.state.sink.send(Core::Interested).await?;
                             self.state.sink.flush().await?;
                         }
                         PeerMsg::Choke => {
-                            debug!("sending choke");
+                            debug!("> choke");
                             self.state.ctx.am_choking.store(true, Ordering::Relaxed);
                             self.state_log[0] = '-';
                             self.state.sink.send(Core::Choke).await?;
                             self.state.sink.flush().await?;
                         }
                         PeerMsg::Unchoke => {
-                            debug!("sending unchoke");
+                            debug!("> unchoke");
                             self.state.ctx.am_choking.store(false, Ordering::Relaxed);
                             self.state_log[0] = 'u';
                             self.state.sink.send(Core::Unchoke).await?;
                             self.state.sink.flush().await?;
                         }
                         PeerMsg::Pause => {
+                            debug!("pause");
+                            self.state.is_paused = true;
+                            self.state.ctx.tx.send(PeerMsg::Choke).await?;
+                            self.state.ctx.tx.send(PeerMsg::NotInterested).await?;
                         }
                         PeerMsg::Resume => {
+                            debug!("resume");
+                            self.state.is_paused = false;
                         }
                         PeerMsg::CancelBlock(block_info) => {
-                            debug!("cancel_block");
+                            debug!("> cancel_block");
                             self.state.outgoing_requests.retain(|v| v.0 != block_info);
                             self.state.sink.send(Core::Cancel(block_info)).await?;
                             self.state.sink.flush().await?;
@@ -292,6 +290,8 @@ impl Peer<Connected> {
                         PeerMsg::SeedOnly => {
                             debug!("seed_only");
                             self.state.seed_only = true;
+                            self.state.ctx.tx.send(PeerMsg::Unchoke).await?;
+                            self.state.ctx.tx.send(PeerMsg::NotInterested).await?;
                         }
                         PeerMsg::GracefullyShutdown => {
                             debug!("gracefully_shutdown");
@@ -305,6 +305,7 @@ impl Peer<Connected> {
                             return Ok(());
                         }
                         PeerMsg::HaveInfo => {
+                            debug!("have_info");
                             self.state.have_info = true;
                             self.state.outgoing_requests_info_pieces.clear();
                         }
@@ -332,6 +333,7 @@ impl Peer<Connected> {
             && self.state.have_info
             && have_capacity
             && !self.state.seed_only
+            && !self.state.is_paused
     }
 
     /// Handle a new Piece msg from the peer, a Piece msg actually sends
@@ -490,7 +492,7 @@ impl Peer<Connected> {
     /// Start endgame mode. This will take the few remaining block infos
     /// and request them to all the peers of the torrent. After the first peer
     /// receives it, it send Cancel messages to all other peers.
-    #[tracing::instrument(skip(self))]
+    #[tracing::instrument(skip_all)]
     pub async fn start_endgame(&mut self) {
         self.state.in_endgame = true;
 
@@ -597,7 +599,7 @@ impl Peer<Connected> {
         // when we don't have the info fully downloaded yet,
         // and the peer has already sent a bitfield or a have.
         if local_bitfield.is_empty() {
-            debug!("local bitfield is empty, returning true");
+            trace!("local bitfield is empty, becoming interested");
             return Ok(true);
         }
 

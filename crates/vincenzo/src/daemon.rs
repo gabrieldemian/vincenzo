@@ -439,7 +439,6 @@ impl Daemon {
             Torrent::new(self.disk_tx.clone(), self.ctx.clone(), magnet);
 
         self.torrent_ctxs.insert(info_hash, torrent.ctx.clone());
-        // self.disk_tx.send(DiskMsg::NewTorrent(torrent.ctx.clone())).await?;
 
         spawn(async move {
             let mut torrent = torrent.start().await?;

@@ -5,6 +5,7 @@ use tokio::{
     spawn,
 };
 use tokio_util::codec::Framed;
+use tracing::Level;
 use tracing_subscriber::FmtSubscriber;
 use vincenzo::{
     args::Args,
@@ -21,6 +22,7 @@ async fn main() -> Result<(), Error> {
         .without_time()
         .with_target(false)
         .with_file(false)
+        .with_max_level(Level::DEBUG)
         .finish();
 
     tracing::subscriber::set_global_default(subscriber)
@@ -29,7 +31,6 @@ async fn main() -> Result<(), Error> {
     let args = Args::parse();
 
     tracing::info!("config: {:?}", *CONFIG);
-    tracing::debug!("asdasd");
 
     if CONFIG.max_global_peers == 0 || CONFIG.max_torrent_peers == 0 {
         return Err(Error::ConfigError(

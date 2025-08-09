@@ -23,6 +23,7 @@ use crate::{
     metainfo::Info,
     peer::{self, Peer, PeerCtx, PeerId, PeerMsg},
     tracker::{event::Event, Tracker, TrackerCtx, TrackerMsg, TrackerTrait},
+    utils::to_human_readable,
 };
 use std::{
     collections::BTreeMap,
@@ -193,12 +194,13 @@ impl Torrent<Idle> {
             tracker.ctx.tracker_addr
         );
 
-        let (res, payload) = tracker.announce(Event::Started).await?;
-        debug!("{res:?}");
-        let peers = tracker.parse_compact_peer_list(payload.as_ref())?;
+        let (res, payload) = tracker
+            .announce(Event::Started, 0, 0, c.magnet.length().unwrap_or(0))
+            .await?;
 
-        debug!("announced to tracker and got {} peers", peers.len());
-        debug!("{peers:?}");
+        debug!("{res:?}");
+
+        let peers = tracker.parse_compact_peer_list(payload.as_ref())?;
 
         let stats = Stats {
             interval: res.interval,
@@ -308,7 +310,7 @@ impl Torrent<Connected> {
                         };
                     }
                     Err(e) => {
-                        error!("error with peer: {:?} {e:#?}", peer);
+                        warn!("connection fin with peer: {:?} {e:#?}", peer);
                         ctx.tx.send(TorrentMsg::PeerError(peer)).await?;
                     }
                 }
@@ -698,7 +700,7 @@ impl Torrent<Connected> {
                                 .await;
                         },
                         TorrentMsg::PeerConnected(ctx) => {
-                            debug!("{} connected with {}", ctx.local_addr, ctx.remote_addr);
+                            trace!("peer_connected");
 
                             self.state.connected_peers.push(ctx.clone());
                             self.state.connecting_peers.retain(|v| *v != ctx.remote_addr);
@@ -708,31 +710,6 @@ impl Torrent<Connected> {
                                 .tx
                                 .send(DaemonMsg::IncrementConnectedPeers)
                                 .await;
-                        }
-                        TorrentMsg::DownloadComplete => {
-                            info!("downloaded torrent {:?}", self.name);
-                            let (otx, orx) = oneshot::channel();
-
-                            self.status = TorrentStatus::Seeding;
-
-                            let _ = tracker_tx.send(
-                                TrackerMsg::Announce {
-                                    event: Event::Completed,
-                                    recipient: Some(otx),
-                                })
-                            .await;
-
-                            if let Ok(r) = orx.await {
-                                debug!("announced completion with success {r:#?}");
-                                self.state.stats = r.0.into();
-                            }
-
-                            // tell all peers that we are not interested,
-                            // we wont request blocks from them anymore
-                            for peer in &self.state.connected_peers {
-                                let _ = peer.tx.send(PeerMsg::NotInterested).await;
-                                let _ = peer.tx.send(PeerMsg::SeedOnly).await;
-                            }
                         }
                         // The peer "from" was the first one to receive the "info".
                         // Send Cancel messages to everyone else.
@@ -755,7 +732,11 @@ impl Torrent<Connected> {
                             }
                         }
                         TorrentMsg::DownloadedInfoPiece(total, index, bytes) => {
-                            debug!("received downloaded_info_piece");
+                            debug!("downloaded_info_piece");
+                            debug!("have_info? {}", self.state.have_info);
+                            debug!("total {total} index {index} downloaded {} bytes {:?}", self.state.downloaded_info_bytes, bytes.len());
+
+                            if self.state.have_info { continue };
 
                             if self.status == TorrentStatus::ConnectingTrackers {
                                 self.status = TorrentStatus::DownloadingMetainfo;
@@ -764,12 +745,18 @@ impl Torrent<Connected> {
                             self.state.downloaded_info_bytes += bytes.len() as u64;
                             self.state.info_pieces.insert(index, bytes);
 
-                            let have_all_pieces = self.state.downloaded_info_bytes >= total;
+                            let has_info_downloaded =
+                                self.state.downloaded_info_bytes >= total;
 
-                            if !have_all_pieces { continue };
+                            debug!("has_info_downloaded? {has_info_downloaded}");
 
-                            info!("{:?} have all info_hash pieces", self.ctx.info_hash);
+                            if !has_info_downloaded {
+                                continue
+                            }
 
+                            self.state.have_info = true;
+
+                            // get all the info bytes, in order.
                             let info_bytes =
                                 self.state.info_pieces
                                 .values()
@@ -777,6 +764,8 @@ impl Torrent<Connected> {
                                     acc.extend_from_slice(b);
                                     acc
                                 });
+
+                            debug!("have all info_hash pieces");
 
                             let mut downloaded_info = Info::from_bencode(&info_bytes)?;
                             let magnet_hash = self.ctx.magnet.hash().unwrap();
@@ -788,8 +777,7 @@ impl Torrent<Connected> {
 
                             // validate the hash of the downloaded info
                             // against the hash of the magnet link
-                            if
-                                hex::decode(magnet_hash)
+                            if hex::decode(magnet_hash)
                                 .map_err(|_| Error::BencodeError)?
                                 != hash.to_vec()
                             {
@@ -798,13 +786,11 @@ impl Torrent<Connected> {
                                 return Err(Error::PieceInvalid);
                             }
 
-                            info!("--info--");
-                            info!("name: {:?}", downloaded_info.name);
-                            info!("files: {:?}", downloaded_info.files);
-                            info!("piece_length: {:?}", downloaded_info.piece_length);
-                            info!("pieces: {:?}", downloaded_info.pieces());
-
-                            self.state.have_info = true;
+                            debug!("--info--");
+                            debug!("name: {:?}", downloaded_info.name);
+                            debug!("files: {:?}", downloaded_info.files);
+                            debug!("piece_length: {:?}", downloaded_info.piece_length);
+                            debug!("pieces: {:?}", downloaded_info.pieces());
 
                             let meta_size = downloaded_info.metadata_size()?;
                             self.state.metadata_size = meta_size;
@@ -821,7 +807,7 @@ impl Torrent<Connected> {
 
                             self.ctx.disk_tx.send(DiskMsg::NewTorrent(self.ctx.clone())).await?;
 
-                            info!("local bitfield: {:?}", self.state.bitfield.len());
+                            trace!("local bitfield: {:?}", self.state.bitfield.len());
 
                             self.status = TorrentStatus::Downloading;
 
@@ -835,54 +821,87 @@ impl Torrent<Connected> {
                             }
                         }
                         TorrentMsg::RequestInfoPiece(index, recipient) => {
-                            debug!("received RequestInfoPiece {index}");
                             let bytes = self.state.info_pieces.get(&index).cloned();
                             let _ = recipient.send(bytes);
                         }
                         TorrentMsg::IncrementDownloaded(downloaded) => {
-                            let tx = &self.state.tracker_ctx.tx;
+                            if self.status == TorrentStatus::Seeding {
+                                continue;
+                            };
 
                             self.state.counter.record_download(downloaded);
 
-                            tx.send(TrackerMsg::Increment { downloaded, uploaded: 0 }).await?;
+                            // if this is the last part just downloaded
 
-                            // check if the torrent download is complete
-                            let is_download_complete = self.state.tracker_ctx.downloaded >= self.state.metadata_size;
+                            let is_download_complete =
+                                self.state.counter.total_downloaded
+                                .load(Ordering::Relaxed)
+                                >= self.state.size;
 
-                            if is_download_complete {
-                                self.ctx.tx.send(TorrentMsg::DownloadComplete).await?;
+                            if !is_download_complete {
+                                continue;
+                            }
+
+                            self.status = TorrentStatus::Seeding;
+
+                            let (otx, orx) = oneshot::channel();
+
+                            let _ = tracker_tx.send(
+                                TrackerMsg::Announce {
+                                    event: Event::Completed,
+                                    recipient: Some(otx),
+                                    downloaded:
+                                        self.state.counter.total_downloaded.load(Ordering::Relaxed),
+                                    uploaded:
+                                        self.state.counter.total_uploaded.load(Ordering::Relaxed),
+                                    left: 0,
+                                })
+                            .await;
+
+                            if let Ok(r) = orx.await {
+                                debug!("announced completion with success {r:?}");
+                                self.state.stats = r.0.into();
+                            }
+
+                            // enter seed only mode
+                            for peer in &self.state.connected_peers {
+                                let _ = peer.tx.send(PeerMsg::SeedOnly).await;
                             }
                         }
                         TorrentMsg::IncrementUploaded(uploaded) => {
-                            let tracker_tx = &self.state.tracker_ctx.tx;
-
                             self.state.counter.record_upload(uploaded);
-
-                            tracker_tx.send(TrackerMsg::Increment { downloaded: 0, uploaded }).await?;
-                            debug!("IncrementUploaded {}", self.state.tracker_ctx.uploaded);
                         }
                         TorrentMsg::TogglePause => {
-                            debug!("torrent TogglePause");
-                            // can only pause if the torrent is not connecting, or not erroring
-                            if self.status == TorrentStatus::Downloading || self.status == TorrentStatus::Seeding || self.status == TorrentStatus::Paused {
-                                info!("Paused torrent {:?}", self.name);
-                                if self.status == TorrentStatus::Paused {
-                                    if self.state.tracker_ctx.downloaded >= self.state.metadata_size {
-                                        self.status = TorrentStatus::Seeding;
-                                    } else {
-                                        self.status = TorrentStatus::Downloading;
-                                    }
-                                } else {
-                                    self.status = TorrentStatus::Paused;
-                                }
+                            if self.status != TorrentStatus::Downloading
+                               ||
+                               self.status != TorrentStatus::Seeding
+                               ||
+                               self.status != TorrentStatus::Paused
+                            {
+                                continue;
+                            }
+
+                            info!("toggle pause");
+
+                            if self.status == TorrentStatus::Paused {
                                 for peer in &self.state.connected_peers {
-                                    if self.status == TorrentStatus::Paused {
-                                        let _ = peer.tx.send(PeerMsg::Pause).await;
-                                    } else {
-                                        let _ = peer.tx.send(PeerMsg::Resume).await;
-                                    }
+                                    let _ = peer.tx.send(PeerMsg::Resume).await;
+                                }
+                            } else {
+                                for peer in &self.state.connected_peers {
+                                    let _ = peer.tx.send(PeerMsg::Pause).await;
                                 }
                             }
+
+                            if self.status == TorrentStatus::Paused {
+                                self.status =
+                                    if self.state.counter.total_downloaded.load(Ordering::Relaxed)
+                                        >= self.state.size
+                                        { TorrentStatus::Seeding }
+                                    else { TorrentStatus::Downloading };
+                            } else {
+                                self.status = TorrentStatus::Paused;
+                            };
                         }
                         TorrentMsg::Quit => {
                             info!("quitting torrent {:?}", self.name);
@@ -895,10 +914,16 @@ impl Torrent<Connected> {
                                 });
                             }
 
+                            let downloaded =
+                                self.state.counter.total_downloaded.load(Ordering::Relaxed);
+
                             let _ = tracker_tx.send(
                                 TrackerMsg::Announce {
                                     event: Event::Stopped,
                                     recipient: None,
+                                    downloaded,
+                                    uploaded: self.state.counter.total_uploaded.load(Ordering::Relaxed),
+                                    left: self.state.size.saturating_sub(downloaded),
                                 })
                             .await;
 
@@ -907,9 +932,7 @@ impl Torrent<Connected> {
                     }
                 }
                 _ = reconnect_interval.tick() => {
-                    debug!("reconnect_interval
-                        connected_peers: {}
-                        error_peers: {}",
+                    trace!("reconnect_interval connected_peers: {} error_peers: {}",
                         self.state.connected_peers.len(),
                         self.state.error_peers.len(),
                     );
@@ -919,6 +942,7 @@ impl Torrent<Connected> {
                         error_peers
                         .drain(..)
                         .map(|v| v.state.addr).collect();
+
                     self.state.idle_peers.extend(errored);
                     self.spawn_outbound_peers().await?;
                 }
@@ -930,11 +954,14 @@ impl Torrent<Connected> {
                     self.state.counter.update_rates().await;
                     self.state.last_rate_update = Instant::now();
 
-                    let downloaded = self.state.counter.total_downloaded.load(Ordering::Relaxed);
+                    let downloaded =
+                        self.state.counter.total_downloaded.load(Ordering::Relaxed)
+                        .min(self.state.size);
+
                     let uploaded = self.state.counter.total_downloaded.load(Ordering::Relaxed);
 
                     let download_rate = self.state.counter.download_rate.load(Ordering::Relaxed);
-                    let _upload_rate = self.state.counter.upload_rate.load(Ordering::Relaxed);
+                    let upload_rate = self.state.counter.upload_rate.load(Ordering::Relaxed);
 
                     let downloading_from = self.state.connected_peers
                         .iter()
@@ -942,12 +969,12 @@ impl Torrent<Connected> {
                             acc + if !v.peer_choking.load(Ordering::Relaxed) && v.am_interested.load(Ordering::Relaxed) { 1 } else {0}
                         });
 
-                    // info!("d: {} u: {} dr: {} ur: {} df: {downloading_from}",
-                    //     to_human_readable(downloaded),
-                    //     to_human_readable(uploaded),
-                    //     to_human_readable(download_rate),
-                    //     to_human_readable(upload_rate),
-                    // );
+                    debug!("d: {} u: {} dr: {} ur: {} df: {downloading_from}",
+                        to_human_readable(downloaded),
+                        to_human_readable(uploaded),
+                        to_human_readable(download_rate),
+                        to_human_readable(upload_rate),
+                    );
 
                     let torrent_state = TorrentState {
                         name: self.name.clone(),
@@ -1014,15 +1041,20 @@ impl Torrent<Connected> {
                     }
                 }
                 _ = announce_interval.tick(), if self.state.have_info => {
-                    trace!("sending periodic announce, interval {announce_interval:?}");
-
                     let (otx, orx) = oneshot::channel();
                     let tracker_tx = &self.state.tracker_ctx.tx;
+
+                    let downloaded =
+                        self.state.counter.total_downloaded.load(Ordering::Relaxed);
 
                     let _ = tracker_tx.send(
                         TrackerMsg::Announce {
                             event: Event::None,
                             recipient: Some(otx),
+                            downloaded,
+                            uploaded:
+                                self.state.counter.total_uploaded.load(Ordering::Relaxed),
+                            left: self.state.size.saturating_sub(downloaded),
                         })
                     .await;
 

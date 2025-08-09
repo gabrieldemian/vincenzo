@@ -309,7 +309,7 @@ impl peer::Peer<Idle> {
 
         let info_hash = &torrent_ctx.info_hash;
 
-        tracing::info!("{remote} sending outbound handshake");
+        tracing::debug!("{remote} sending outbound handshake");
 
         let mut local_handshake =
             Handshake::new(info_hash.clone(), daemon_ctx.local_peer_id.clone());
@@ -374,6 +374,7 @@ impl peer::Peer<Idle> {
         let mut peer = peer::Peer {
             state_log: StateLog::default(),
             state: Connected {
+                is_paused: false,
                 seed_only: false,
                 connection: ConnectionState::default(),
                 target_request_queue_len: DEFAULT_REQUEST_QUEUE_LEN,
@@ -425,7 +426,6 @@ impl peer::Peer<Idle> {
         let local = socket.local_addr()?;
 
         let mut socket = Framed::new(socket, HandshakeCodec);
-        tracing::info!("sending outbound handshake");
         let (otx, orx) = oneshot::channel();
 
         // wait and validate their handshake
@@ -543,6 +543,7 @@ impl peer::Peer<Idle> {
         let peer = peer::Peer {
             state_log: StateLog::default(),
             state: Connected {
+                is_paused: false,
                 seed_only: false,
                 connection: ConnectionState::default(),
                 target_request_queue_len: DEFAULT_REQUEST_QUEUE_LEN,
@@ -637,6 +638,10 @@ pub struct Connected {
     /// If the torrent was fully downloaded, all peers will become seed only.
     /// They will only seed but not download anything anymore.
     pub seed_only: bool,
+
+    /// If the client manually paused the local peer, preventing it from
+    /// downloading and uploading but keeping connections.
+    pub is_paused: bool,
 }
 
 /// Tried to do an oubound connection but peer couldn't be reached.

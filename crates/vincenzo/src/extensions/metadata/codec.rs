@@ -58,7 +58,7 @@ impl ExtMsgHandler<Metadata, MetadataData> for MsgHandler {
 
         match msg.msg_type {
             MetadataMsgType::Response => {
-                info!("metadata res");
+                debug!("< metadata res piece {}", msg.piece);
 
                 peer.state
                     .outgoing_requests_info_pieces
@@ -75,10 +75,7 @@ impl ExtMsgHandler<Metadata, MetadataData> for MsgHandler {
                     .await?;
             }
             MetadataMsgType::Request => {
-                debug!(
-                    "{} metadata req from {}",
-                    peer.state.ctx.local_addr, peer.state.ctx.remote_addr
-                );
+                debug!("< metadata req");
 
                 let (tx, rx) = oneshot::channel();
 
@@ -128,10 +125,7 @@ impl ExtMsgHandler<Metadata, MetadataData> for MsgHandler {
                 }
             }
             MetadataMsgType::Reject => {
-                info!(
-                    "{} metadata rej piece {}",
-                    peer.state.ctx.remote_addr, msg.piece
-                );
+                debug!("metadata rej piece {}", msg.piece);
             }
         }
 

@@ -20,7 +20,7 @@ use tokio::{
         oneshot::{self, Sender},
     },
 };
-use tracing::{debug, info, warn};
+use tracing::{debug, info, trace, warn};
 
 use crate::{
     bitfield::Bitfield,
@@ -194,7 +194,7 @@ impl Disk {
                     self.peer_ctxs.retain(|v| v.info_hash != info_hash);
                 }
                 DiskMsg::DeletePeer(addr) => {
-                    debug!("DeletePeer {addr:?}");
+                    trace!("delete_peer {addr:?}");
                     self.delete_peer(addr);
                 }
                 DiskMsg::NewTorrent(torrent) => {
@@ -202,7 +202,7 @@ impl Disk {
                     let _ = self.new_torrent(torrent).await;
                 }
                 DiskMsg::ReadBlock { block_info, recipient, info_hash } => {
-                    debug!("ReadBlock");
+                    trace!("read_block");
 
                     let block =
                         self.read_block(&info_hash, &block_info).await?;
@@ -229,11 +229,12 @@ impl Disk {
                     let _ = recipient.send(infos);
                 }
                 DiskMsg::ValidatePiece { info_hash, recipient, piece } => {
-                    debug!("ValidatePiece");
+                    trace!("validate_piece");
                     let r = self.validate_piece(&info_hash, piece).await;
                     let _ = recipient.send(r);
                 }
                 DiskMsg::NewPeer(peer) => {
+                    trace!("new_peer");
                     self.new_peer(peer);
                 }
                 DiskMsg::ReturnBlockInfos(info_hash, block_infos) => {
@@ -1120,9 +1121,6 @@ mod tests {
                 stats: Stats { seeders: 1, leechers: 1, interval: 1000 },
                 idle_peers: vec![],
                 tracker_ctx: Arc::new(TrackerCtx {
-                    downloaded: 0,
-                    uploaded: 0,
-                    left: 0,
                     tracker_addr: SocketAddr::V4(SocketAddrV4::new(
                         Ipv4Addr::new(0, 0, 0, 0),
                         0,
@@ -1169,6 +1167,7 @@ mod tests {
             let mut peer = Peer::<peer::Connected> {
                 state_log: StateLog::default(),
                 state: peer::Connected {
+                    is_paused: false,
                     connection: peer::ConnectionState::default(),
                     ctx: peer_ctx_,
                     ext_states: peer::ExtStates::default(),
