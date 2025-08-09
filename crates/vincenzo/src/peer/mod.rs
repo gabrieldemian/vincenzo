@@ -92,9 +92,14 @@ impl Peer<Connected> {
                 .tx
                 .send(TorrentMsg::ReadBitfield(otx))
                 .await;
+
             let bitfield = orx.await?;
+
             debug!("sending bitfield");
-            self.state.sink.send(Core::Bitfield(bitfield)).await?;
+
+            if !bitfield.is_empty() {
+                self.state.sink.send(Core::Bitfield(bitfield)).await?;
+            }
         }
 
         // when running a new Peer, we might
@@ -157,10 +162,11 @@ impl Peer<Connected> {
                     if should_be_interested &&
                         !self.state.ctx.am_interested.load(Ordering::Relaxed)
                     {
-                        debug!("sending interested");
+                        info!("sending interested");
                         self.state.ctx.am_interested.store(true, Ordering::Relaxed);
                         self.state_log[1] = 'i';
                         self.state.sink.send(Core::Interested).await?;
+                        self.state.sink.flush().await?;
                     }
 
                     // sorry, you're not the problem, it's me.
@@ -169,6 +175,7 @@ impl Peer<Connected> {
                         self.state.ctx.am_interested.store(false, Ordering::Relaxed);
                         self.state_log[1] = '-';
                         self.state.sink.send(Core::NotInterested).await?;
+                        self.state.sink.flush().await?;
                     }
                 }
                 _ = keep_alive_interval.tick() => {
@@ -177,6 +184,7 @@ impl Peer<Connected> {
                 Some(Ok(msg)) = self.state.stream.next() => {
                     match msg {
                         Core::Extended(msg @ ExtendedMessage(ext_id, _)) => {
+                            info!("received ext {ext_id}");
                             match ext_id {
                                 <Extended as ExtMsg>::ID => {
                                     let msg: Extended = msg.try_into()?;
@@ -188,6 +196,7 @@ impl Peer<Connected> {
                                 }
                                 <Metadata as ExtMsg>::ID => {
                                     let msg: Result<Metadata, Error> = msg.try_into();
+
                                     if let Ok(meta) = msg {
                                         MsgHandler.handle_msg(
                                             self,
@@ -250,24 +259,28 @@ impl Peer<Connected> {
                             self.state.ctx.am_interested.store(false, Ordering::Relaxed);
                             self.state_log[1] = '-';
                             self.state.sink.send(Core::NotInterested).await?;
+                            self.state.sink.flush().await?;
                         }
                         PeerMsg::Interested => {
                             debug!("sending interested");
                             self.state.ctx.am_interested.store(true, Ordering::Relaxed);
                             self.state_log[1] = 'i';
                             self.state.sink.send(Core::Interested).await?;
+                            self.state.sink.flush().await?;
                         }
                         PeerMsg::Choke => {
                             debug!("sending choke");
                             self.state.ctx.am_choking.store(true, Ordering::Relaxed);
                             self.state_log[0] = '-';
                             self.state.sink.send(Core::Choke).await?;
+                            self.state.sink.flush().await?;
                         }
                         PeerMsg::Unchoke => {
                             debug!("sending unchoke");
                             self.state.ctx.am_choking.store(false, Ordering::Relaxed);
                             self.state_log[0] = 'u';
                             self.state.sink.send(Core::Unchoke).await?;
+                            self.state.sink.flush().await?;
                         }
                         PeerMsg::Pause => {
                         }
@@ -277,6 +290,7 @@ impl Peer<Connected> {
                             debug!("cancel_block");
                             self.state.outgoing_requests.retain(|v| v.0 != block_info);
                             self.state.sink.send(Core::Cancel(block_info)).await?;
+                            self.state.sink.flush().await?;
                         }
                         PeerMsg::SeedOnly => {
                             debug!("seed_only");
@@ -552,22 +566,22 @@ impl Peer<Connected> {
             }
         }
 
-        // info!("requesting meta pieces {}", needed_pieces.len());
-
         // Request up to available slots
         for piece in needed_pieces {
             let msg = Metadata::request(piece);
             let buf = msg.to_bencode()?;
 
-            self.state
-                .sink
-                .send(Core::Extended(ExtendedMessage(ut_metadata, buf)))
-                .await?;
+            info!("requesting meta piece id: {piece}");
 
             // Track requested piece and request time
             self.state
                 .outgoing_requests_info_pieces
                 .push((piece, Instant::now()));
+
+            self.state
+                .sink
+                .send(Core::Extended(ExtendedMessage(ut_metadata, buf)))
+                .await?;
         }
 
         Ok(())

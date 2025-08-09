@@ -11,7 +11,7 @@ use futures::SinkExt;
 use tokio::sync::oneshot;
 use tracing::{debug, info, warn};
 
-use super::{Metadata as MetadataDict, MetadataMsgType};
+use super::{Metadata, MetadataMsgType};
 
 #[derive(Debug, Clone)]
 pub struct MetadataCodec;
@@ -21,7 +21,7 @@ pub struct MetadataData();
 
 impl ExtData for MetadataData {}
 
-impl TryFrom<ExtendedMessage> for MetadataDict {
+impl TryFrom<ExtendedMessage> for Metadata {
     type Error = Error;
 
     fn try_from(value: ExtendedMessage) -> Result<Self, Self::Error> {
@@ -29,17 +29,17 @@ impl TryFrom<ExtendedMessage> for MetadataDict {
             return Err(Error::PeerIdInvalid);
         }
 
-        let dict = MetadataDict::from_bencode(&value.1)?;
+        let dict = Metadata::from_bencode(&value.1)?;
 
         Ok(dict)
     }
 }
 
-impl ExtMsgHandler<MetadataDict, MetadataData> for MsgHandler {
+impl ExtMsgHandler<Metadata, MetadataData> for MsgHandler {
     async fn handle_msg(
         &self,
         peer: &mut peer::Peer<peer::Connected>,
-        msg: MetadataDict,
+        msg: Metadata,
     ) -> Result<(), Error> {
         let Some(remote_ext_id) = peer
             .state
@@ -98,7 +98,7 @@ impl ExtMsgHandler<MetadataDict, MetadataData> for MsgHandler {
                             msg.piece
                         );
 
-                        let msg = MetadataDict::data(msg.piece, &info_slice)?;
+                        let msg = Metadata::data(msg.piece, &info_slice)?;
 
                         peer.state
                             .sink
@@ -118,7 +118,7 @@ impl ExtMsgHandler<MetadataDict, MetadataData> for MsgHandler {
                             peer.state.ctx.remote_addr
                         );
 
-                        let r = MetadataDict::reject(msg.piece).to_bencode()?;
+                        let r = Metadata::reject(msg.piece).to_bencode()?;
 
                         peer.state
                             .sink

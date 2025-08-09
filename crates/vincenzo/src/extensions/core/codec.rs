@@ -1,10 +1,10 @@
 use bitvec::bitvec;
 use bytes::{Buf, BufMut, BytesMut};
 use futures::SinkExt;
-use std::{io::Cursor, sync::atomic::Ordering};
+use std::sync::atomic::Ordering;
 use tokio::{io, sync::oneshot};
 use tokio_util::codec::{Decoder, Encoder};
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, info, warn};
 use vincenzo_macros::Message;
 
 use super::{Block, BlockInfo};
@@ -370,34 +370,17 @@ impl Decoder for CoreCodec {
     ) -> Result<Option<Self::Item>, Self::Error> {
         // the message length header must be present at the minimum, otherwise
         // we can't determine the message type
-        if buf.remaining() < 4 {
+        if buf.len() < 4 {
             return Ok(None);
         }
 
-        // `get_*` integer extractors consume the message bytes by advancing
-        // buf's internal cursor. However, we don't want to do this as at this
-        // point we aren't sure we have the full message in the buffer, and thus
-        // we just want to peek at this value.
-        let mut tmp_buf = Cursor::new(&buf);
-        let msg_len = tmp_buf.get_u32() as usize;
+        let size = buf.get_u32() as usize;
 
-        tmp_buf.set_position(0);
+        if size == 0 {
+            return Ok(Some(Core::KeepAlive));
+        }
 
-        if buf.remaining() >= 4 + msg_len {
-            // we have the full message in the buffer so advance the buffer
-            // cursor past the message length header
-            buf.advance(4);
-            // the message length is only 0 if this is a keep alive message (all
-            // other message types have at least one more field, the message id)
-            if msg_len == 0 {
-                return Ok(Some(Core::KeepAlive));
-            }
-        } else {
-            trace!(
-                "Read buffer is {} bytes long but message is {} bytes long",
-                buf.remaining(),
-                msg_len
-            );
+        if buf.remaining() < size {
             return Ok(None);
         }
 
@@ -419,7 +402,7 @@ impl Decoder for CoreCodec {
             }
             // <len=0001+X><id=5><bitfield>
             CoreId::Bitfield => {
-                let mut bitfield = vec![0; msg_len - 1];
+                let mut bitfield = vec![0; size - 1];
                 buf.copy_to_slice(&mut bitfield);
                 Core::Bitfield(Bitfield::from_vec(bitfield))
             }
@@ -436,7 +419,8 @@ impl Decoder for CoreCodec {
                 let index = buf.get_u32() as usize;
                 let begin = buf.get_u32();
 
-                let mut block = vec![0; msg_len - 9];
+                // size - 4 bytes (index) - 4 bytes (begin) - 1 byte (msg_id)
+                let mut block = vec![0; size - 9];
                 buf.copy_to_slice(&mut block);
 
                 Core::Piece(Block { index, begin, block })
@@ -453,7 +437,8 @@ impl Decoder for CoreCodec {
             CoreId::Extended => {
                 let ext_id = buf.get_u8();
 
-                let mut payload = vec![0u8; msg_len - 2];
+                // size - 1 byte (msg_id) - 1 byte (ext_id)
+                let mut payload = vec![0u8; size - 2];
                 buf.copy_to_slice(&mut payload);
 
                 Core::Extended(ExtendedMessage(ext_id, payload))
@@ -466,12 +451,54 @@ impl Decoder for CoreCodec {
 
 #[cfg(test)]
 mod tests {
-    use crate::extensions::core::BLOCK_LEN;
+    use crate::extensions::{core::BLOCK_LEN, Metadata, MetadataMsgType};
 
     use super::*;
     use bitvec::{bitvec, prelude::Msb0};
     use bytes::{Buf, BytesMut};
     use tokio_util::codec::{Decoder, Encoder};
+
+    #[test]
+    fn from_ext_piece() {
+        let bytes: [u8; _] = [
+            0x00, 0x00, 0x00, 0xf8, 0x14, 0x03, 0x64, 0x38, 0x3a, 0x6d, 0x73,
+            0x67, 0x5f, 0x74, 0x79, 0x70, 0x65, 0x69, 0x31, 0x65, 0x35, 0x3a,
+            0x70, 0x69, 0x65, 0x63, 0x65, 0x69, 0x30, 0x65, 0x31, 0x30, 0x3a,
+            0x74, 0x6f, 0x74, 0x61, 0x6c, 0x5f, 0x73, 0x69, 0x7a, 0x65, 0x69,
+            0x32, 0x38, 0x32, 0x35, 0x38, 0x65, 0x65, 0x64, 0x36, 0x3a, 0x6c,
+            0x65, 0x6e, 0x67, 0x74, 0x68, 0x69, 0x31, 0x34, 0x37, 0x34, 0x37,
+            0x35, 0x38, 0x31, 0x33, 0x32, 0x65, 0x34, 0x3a, 0x6e, 0x61, 0x6d,
+            0x65, 0x34, 0x39, 0x3a, 0x5b, 0x53, 0x75, 0x62, 0x73, 0x50, 0x6c,
+            0x65, 0x61, 0x73, 0x65, 0x5d, 0x20, 0x44, 0x61, 0x6e, 0x64, 0x61,
+            0x64, 0x61, 0x6e, 0x20, 0x2d, 0x20, 0x31, 0x37, 0x20, 0x28, 0x31,
+            0x30, 0x38, 0x30, 0x70, 0x29, 0x20, 0x5b, 0x44, 0x43, 0x42, 0x41,
+            0x34, 0x38, 0x42, 0x41, 0x5d, 0x2e, 0x6d, 0x6b, 0x76, 0x31, 0x32,
+            0x3a, 0x70, 0x69, 0x65, 0x63, 0x65, 0x20, 0x6c, 0x65, 0x6e, 0x67,
+            0x74, 0x68, 0x69, 0x31, 0x30, 0x34, 0x38, 0x35, 0x37, 0x36, 0x65,
+            0x36, 0x3a, 0x70, 0x69, 0x65, 0x63, 0x65, 0x73, 0x32, 0x38, 0x31,
+            0x34, 0x30, 0x3a, 0x78, 0xe0, 0x9b, 0x23, 0xcc, 0x37, 0x7c, 0xd0,
+            0x24, 0xbc, 0xea, 0x74, 0xed, 0xa1, 0x24, 0xca, 0x21, 0x72, 0x47,
+            0x69, 0x5e, 0x53, 0x2a, 0x14, 0x25, 0xb4, 0x97, 0xfb, 0x22, 0x08,
+            0x0f, 0xbe, 0xb3, 0x0e, 0xa8, 0xf8, 0xc3, 0xc7, 0x50, 0xa3, 0x30,
+            0xb1, 0xc2, 0x74, 0xc0, 0x89, 0xd6, 0x83, 0x27, 0xf3, 0xf2, 0xd0,
+            0xa2, 0x07, 0x89, 0x95, 0x72, 0x2a, 0x9b, 0x1b, 0xe8, 0x53, 0x2d,
+            0xd4, 0x22, 0xab, 0x4e, 0x7d, 0xfe, 0x0d, 0x61, 0x84, 0x3c, 0x08,
+            0xa0, 0x92, 0x2e, 0x27, 0x98, 0xf8, 0xc2, 0x5f, 0x9f, 0x32,
+        ];
+        let mut buf = BytesMut::with_capacity(bytes.len());
+        buf.extend_from_slice(&bytes);
+
+        let ext = CoreCodec.decode(&mut buf).unwrap().unwrap();
+
+        if let Core::Extended(msg @ ExtendedMessage(..)) = ext {
+            assert_eq!(msg.0, Metadata::ID);
+            let msg: Metadata = msg.try_into().unwrap();
+            assert_eq!(msg.piece, 0);
+            assert_eq!(msg.msg_type, MetadataMsgType::Response);
+            assert_eq!(msg.total_size, Some(28258));
+            assert_eq!(msg.payload.len(), 201);
+        }
+    }
 
     #[test]
     fn extended() {

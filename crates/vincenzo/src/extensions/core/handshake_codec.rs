@@ -135,17 +135,23 @@ impl Decoder for HandshakeCodec {
 
         if core_id != CoreId::Extended as u8 && ext_id != Extended::ID {
             // not extended handshake - skip payload
-            // buf.advance(size);
+            buf.advance(size);
             return Ok(Some(handshake));
         }
 
+        println!("cursor before {:?}", buf.remaining());
+
+        let ext_buf = buf.split_to(size - 2);
+
         let ext_handshake =
-            Extension::from_bencode(&buf[..size - 2]).map_err(|_| {
+            Extension::from_bencode(&ext_buf).map_err(|_| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
                     "Error decoding ext handshake",
                 )
             })?;
+
+        println!("cursor after {:?}", buf.remaining());
 
         handshake.ext = Some(ext_handshake);
 
@@ -164,10 +170,7 @@ impl Decoder for HandshakeCodec {
 /// set which extensions the peer supports. The peer id is usually the client
 /// name and version.
 ///
-/// 0x0000:  4500 0078 89b7 4000 4006 1afa ac10 0002  E..x..@.@.......
-/// 0x0010:  2d9c bc20 cea6 30a7 35fb f1ff d6a1 09a9  -.....0.5.......
-/// 0x0020:  8018 01f8 ca38 0000 0101 080a 90de c5e3  .....8..........
-/// 0x0030:  f7ce 852f 1342 6974 546f 7272 656e 7420  .../.BitTorrent.
+/// 0x0030:  ---- ---- 1342 6974 546f 7272 656e 7420  .../.BitTorrent.
 /// 0x0040:  7072 6f74 6f63 6f6c 0000 0000 0010 0000  protocol........
 /// 0x0050:  d7e0 49fc 9182 5ac8 069e 640a b45a 511f  ..I...Z...d..ZQ.
 /// 0x0060:  87d8 f807 7663 7a2d 3030 3030 312d 6f54  ....vcz-00001-oT
@@ -307,7 +310,7 @@ pub mod tests {
         let mut buf = BytesMut::with_capacity(bytes.len());
         buf.extend_from_slice(&bytes);
         let ext = HandshakeCodec.decode(&mut buf).unwrap();
-        println!("handshake {ext:#?}");
+        println!("handshake {ext:?}");
         assert!(false);
     }
 

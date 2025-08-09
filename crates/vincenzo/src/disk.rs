@@ -1178,7 +1178,6 @@ mod tests {
                     outgoing_requests: Vec::new(),
                     outgoing_requests_info_pieces: Vec::new(),
                     pieces: peer_pieces,
-                    prev_peer_choking: false,
                     reserved: bitvec::bitarr![u8, bitvec::prelude::Msb0; 0; 8 * 8],
                     rx: peer_rx,
                     seed_only: false,

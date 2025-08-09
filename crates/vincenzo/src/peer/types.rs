@@ -319,6 +319,7 @@ impl peer::Peer<Idle> {
         }
 
         socket.send(local_handshake.clone()).await?;
+        socket.flush().await?;
 
         let peer_handshake = match socket.next().await {
             Some(Ok(peer_handshake)) => peer_handshake,
@@ -333,6 +334,8 @@ impl peer::Peer<Idle> {
                 return Err(Error::HandshakeInvalid);
             }
         };
+
+        tracing::info!("{remote} ext {:?}", peer_handshake.ext);
 
         if !peer_handshake.validate(&local_handshake) {
             warn!("handshake is invalid");
@@ -368,7 +371,7 @@ impl peer::Peer<Idle> {
 
         let (sink, stream) = socket.split();
 
-        let peer = peer::Peer {
+        let mut peer = peer::Peer {
             state_log: StateLog::default(),
             state: Connected {
                 seed_only: false,
@@ -393,6 +396,20 @@ impl peer::Peer<Idle> {
                 rx,
             },
         };
+
+        // todo: put this in a function
+        if let Some(ext) = peer_handshake.ext {
+            let n = ext.reqq.unwrap_or(DEFAULT_REQUEST_QUEUE_LEN);
+
+            peer.state.target_request_queue_len = n;
+
+            // set the peer's extensions
+            if ext.m.ut_metadata.is_some() {
+                peer.state.ext_states.metadata = Some(MetadataData());
+            }
+
+            peer.state.ext_states.extension = Some(ext);
+        }
 
         Ok(peer)
     }
@@ -456,6 +473,7 @@ impl peer::Peer<Idle> {
         }
 
         socket.send(our_handshake).await?;
+        socket.flush().await?;
 
         debug!("received peer handshake {peer_handshake:?}",);
 

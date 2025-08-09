@@ -41,7 +41,6 @@ pub struct Extension {
     /// the size of the metadata file, which is the
     /// info-dictionary part of the metainfo(.torrent) file
     pub metadata_size: Option<u64>,
-
     // todo: implement these
     // pub upload_only: Option<u8>,
     // pub yourip: Option<u8>,
@@ -87,6 +86,7 @@ pub struct M {
     /// BEP 0009.
     pub ut_metadata: Option<u8>,
     // BEP 0011.
+    // local id: 1
     // pub ut_pex: Option<u8>,
 
     // BEP 0055.
