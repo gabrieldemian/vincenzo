@@ -18,6 +18,7 @@ use tokio::{
     sync::{
         mpsc::{self, Receiver},
         oneshot::{self, Sender},
+        Mutex,
     },
 };
 use tracing::{debug, info, trace, warn};
@@ -150,10 +151,13 @@ pub struct Disk {
 
     torrent_cache: HashMap<InfoHash, TorrentCache>,
 
-    file_handle_cache: LruCache<PathBuf, tokio::fs::File>,
+    file_handle_cache: LruCache<PathBuf, Arc<Mutex<tokio::fs::File>>>,
 
     rx: Receiver<DiskMsg>,
 }
+
+/// Cache capacity of files.
+static FILE_CACHE_CAPACITY: usize = 512;
 
 impl Disk {
     pub fn new(download_dir: String) -> Self {
@@ -163,7 +167,9 @@ impl Disk {
             rx,
             tx,
             download_dir,
-            file_handle_cache: LruCache::new(NonZeroUsize::new(10).unwrap()),
+            file_handle_cache: LruCache::new(
+                NonZeroUsize::new(FILE_CACHE_CAPACITY).unwrap(),
+            ),
             torrent_cache: HashMap::new(),
             cache: HashMap::new(),
             peer_ctxs: Vec::new(),
@@ -265,16 +271,16 @@ impl Disk {
     async fn get_cached_file(
         &mut self,
         path: &Path,
-    ) -> Result<tokio::fs::File, Error> {
-        if let Some(file) = self.file_handle_cache.get_mut(path) {
-            return Ok(file.try_clone().await?);
+    ) -> Result<Arc<Mutex<tokio::fs::File>>, Error> {
+        // try to get from cache
+        if let Some(file) = self.file_handle_cache.get(path) {
+            return Ok(file.clone());
         }
 
-        let file = Self::open_file(path).await?;
+        let file = Arc::new(Mutex::new(Self::open_file(path).await?));
 
-        if let Ok(cloned) = file.try_clone().await {
-            self.file_handle_cache.put(path.to_path_buf(), cloned);
-        }
+        // cache miss
+        self.file_handle_cache.put(path.to_path_buf(), file.clone());
 
         Ok(file)
     }
@@ -614,13 +620,13 @@ impl Disk {
         path.extend(&file_meta.path);
 
         // Get cached file handle
-        let mut file = self.get_cached_file(&path).await?;
+        let file = self.get_cached_file(&path).await?;
+        let mut file = file.lock().await;
 
         // Read data
         let mut buf = vec![0; block_info.len as usize];
 
         file.seek(SeekFrom::Start(file_offset)).await?;
-
         file.read_exact(&mut buf).await?;
 
         let torrent_ctx = self
@@ -865,7 +871,7 @@ impl Disk {
         // Group writes by file
         let mut file_ops: HashMap<
             PathBuf,
-            Vec<(u64, std::ops::Range<usize>, tokio::fs::File)>,
+            Vec<(u64, std::ops::Range<usize>, Arc<Mutex<tokio::fs::File>>)>,
         > = HashMap::new();
 
         for (path, file_offset, data_range) in write_ops {
@@ -889,7 +895,8 @@ impl Disk {
                 let mut ops = ops;
                 ops.sort_by_key(|(offset, _, _)| *offset);
 
-                for (file_offset, data_range, mut file) in ops {
+                for (file_offset, data_range, file) in ops {
+                    let mut file = file.lock().await;
                     file.seek(SeekFrom::Start(file_offset)).await?;
                     file.write_all(&piece_buffer[data_range]).await?;
                 }

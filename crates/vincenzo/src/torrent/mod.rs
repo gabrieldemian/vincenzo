@@ -305,7 +305,7 @@ impl Torrent<Connected> {
                         )
                         .await
                         {
-                            error!("error with peer: {:?} {e:#?}", peer);
+                            warn!("error with peer: {:?} {e:?}", peer);
                             ctx.tx.send(TorrentMsg::PeerError(peer)).await?;
                         };
                     }
@@ -656,7 +656,7 @@ impl Torrent<Connected> {
                             self.state.bitfield.set(index, true);
                         }
                         TorrentMsg::DownloadedPiece(piece) => {
-                            info!("downloaded_piece {piece}");
+                            debug!("downloaded_piece {piece}");
                             // send Have messages to peers that dont have our pieces
                             for peer in &self.state.connected_peers {
                                 let _ = peer.tx.send(PeerMsg::HavePiece(piece)).await;
@@ -968,7 +968,7 @@ impl Torrent<Connected> {
                             acc + if !v.peer_choking.load(Ordering::Relaxed) && v.am_interested.load(Ordering::Relaxed) { 1 } else {0}
                         });
 
-                    debug!("d: {} u: {} dr: {} ur: {} df: {downloading_from}",
+                    info!("d: {} u: {} dr: {} ur: {} df: {downloading_from}",
                         to_human_readable(downloaded),
                         to_human_readable(uploaded),
                         to_human_readable(download_rate),
