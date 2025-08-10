@@ -69,30 +69,32 @@ impl<'a> TorrentList<'a> {
 
     /// Go to the next torrent in the list
     fn next(&mut self) {
-        if !self.torrent_infos.is_empty() {
-            let i = self.state.selected().map_or(0, |v| {
-                if v != self.torrent_infos.len() - 1 {
-                    v + 1
-                } else {
-                    0
-                }
-            });
-            self.state.select(Some(i));
+        if self.torrent_infos.is_empty() {
+            return;
         }
+        let i = self.state.selected().map_or(0, |v| {
+            if v != self.torrent_infos.len() - 1 {
+                v + 1
+            } else {
+                0
+            }
+        });
+        self.state.select(Some(i));
     }
 
     /// Go to the previous torrent in the list
     fn previous(&mut self) {
-        if !self.torrent_infos.is_empty() {
-            let i = self.state.selected().map_or(0, |v| {
-                if v == 0 {
-                    self.torrent_infos.len() - 1
-                } else {
-                    v - 1
-                }
-            });
-            self.state.select(Some(i));
+        if self.torrent_infos.is_empty() {
+            return;
         }
+        let i = self.state.selected().map_or(0, |v| {
+            if v == 0 {
+                self.torrent_infos.len() - 1
+            } else {
+                v - 1
+            }
+        });
+        self.state.select(Some(i));
     }
 
     fn quit(&mut self) {
@@ -234,7 +236,8 @@ impl<'a> Page for TorrentList<'a> {
             let mut line_top = Line::from("-".repeat(f.area().width as usize));
             let mut line_bottom = line_top.clone();
 
-            if self.state.selected() == Some(i) {
+            if selected == Some(i) {
+                self.active_torrent = Some(state.info_hash.clone());
                 line_top = line_top.patch_style(self.style.highlight_fg);
                 line_bottom = line_bottom.patch_style(self.style.highlight_fg);
             }
@@ -254,12 +257,15 @@ impl<'a> Page for TorrentList<'a> {
                 line_bottom,
             ];
 
-            if Some(i) == selected {
-                self.active_torrent = Some(state.info_hash.clone());
+            if (selected.is_none() || selected == Some(0)) && i > 0 {
+                items.remove(0);
             }
 
-            if Some(i) != selected && selected > Some(0) {
-                items.remove(0);
+            if matches!(
+                selected,
+                Some(s) if s > i
+            ) {
+                items.remove(items.len() - 1);
             }
 
             rows.push(ListItem::new(items));
