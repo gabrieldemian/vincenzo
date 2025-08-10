@@ -5,6 +5,7 @@ use std::{
     sync::Arc,
 };
 
+use rand::Rng;
 use speedy::{Readable, Writable};
 use tokio::sync::oneshot;
 
@@ -75,6 +76,12 @@ pub enum TorrentMsg {
 
 #[derive(Clone, PartialEq, Eq, Hash, Default, Readable, Writable)]
 pub struct InfoHash(pub [u8; 20]);
+
+impl InfoHash {
+    pub(crate) fn random() -> Self {
+        InfoHash(rand::rng().random())
+    }
+}
 
 impl Display for InfoHash {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

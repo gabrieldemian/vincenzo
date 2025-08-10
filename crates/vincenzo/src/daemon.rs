@@ -30,7 +30,8 @@ use crate::{
     magnet::Magnet,
     peer::PeerId,
     torrent::{
-        InfoHash, Torrent, TorrentCtx, TorrentMsg, TorrentState, TorrentStatus,
+        InfoHash, Stats, Torrent, TorrentCtx, TorrentMsg, TorrentState,
+        TorrentStatus,
     },
     utils::to_human_readable,
 };
@@ -202,8 +203,53 @@ impl Daemon {
         let signals_task =
             tokio::spawn(Daemon::handle_signals(signals, ctx.tx.clone()));
 
+        // only used for testing the frontend UI
+        let is_testing_frontend = CONFIG.test_frontend;
+
+        if is_testing_frontend {
+            self.torrent_states.extend([
+                TorrentState {
+                    name: "Test torrent 01".to_string(),
+                    status: TorrentStatus::Downloading,
+                    stats: Stats { leechers: 4, seeders: 35, interval: 1000 },
+                    connected_peers: 25,
+                    downloading_from: 5,
+                    have_info: true,
+                    download_rate: 15_000,
+                    downloaded: 0,
+                    size: 150_000_000_000,
+                    info_hash: InfoHash::random(),
+                    ..Default::default()
+                },
+                TorrentState {
+                    name: "Test torrent 02".to_string(),
+                    status: TorrentStatus::Seeding,
+                    stats: Stats { leechers: 4, seeders: 35, interval: 1000 },
+                    connected_peers: 30,
+                    downloading_from: 3,
+                    have_info: true,
+                    download_rate: 0,
+                    downloaded: 150_000_000,
+                    size: 150_000_000,
+                    info_hash: InfoHash::random(),
+                    ..Default::default()
+                },
+            ]);
+        }
+
+        let mut test_interval = interval(Duration::from_secs(1));
+
         'outer: loop {
             select! {
+                _ = test_interval.tick(), if is_testing_frontend => {
+                    let TorrentState {
+                        download_rate,
+                        downloaded,
+                        ..
+                    } = &mut self.torrent_states[0];
+                    *download_rate = rand::random_range(30_000..100_000);
+                    *downloaded += *download_rate;
+                }
                 // listen for remote TCP connections
                 Ok((socket, addr)) = socket.accept() => {
                     info!("connected to remote: {addr}");
@@ -223,7 +269,9 @@ impl Daemon {
                             select! {
                                 _ = draw_interval.tick() => {
                                     let (otx, orx) = oneshot::channel();
-                                    ctx.tx.send(DaemonMsg::GetAllTorrentStates(otx)).await?;
+                                    ctx.tx.send(
+                                        DaemonMsg::GetAllTorrentStates(otx)
+                                    ).await?;
 
                                     if sink.send(Message::TorrentStates(orx.await?)).await
                                             .map_err(|_| Error::SendErrorTcp).is_err()

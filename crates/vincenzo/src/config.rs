@@ -29,6 +29,8 @@ pub struct Config {
     pub quit_after_complete: bool,
 
     pub key: u32,
+
+    pub test_frontend: bool,
 }
 
 pub static CONFIG: LazyLock<Config> = LazyLock::new(|| Config::get().unwrap());
@@ -77,6 +79,8 @@ impl Config {
             .set_default("is_ipv6", false)
             .unwrap()
             .set_default("key", key)
+            .unwrap()
+            .set_default("test_frontend", false)
             .unwrap()
             .build()?
             .try_deserialize::<Config>()
