@@ -16,6 +16,8 @@ use crate::{
     peer::{self, MsgHandler},
 };
 
+pub static MAX_MESSAGE_SIZE: usize = 2 * 1024 * 1024; // 2MB maximum message size
+
 /// State that comes with the Core protocol.
 #[derive(Clone)]
 pub struct CoreState {
@@ -169,7 +171,7 @@ impl ExtMsgHandler<Core, CoreState> for MsgHandler {
             }
             Core::Bitfield(bitfield) => {
                 debug!(
-                    "< bitfield len: {:?} has pieces: {}",
+                    "< bitfield len: {} ones: {}",
                     bitfield.len(),
                     bitfield.count_ones()
                 );
@@ -220,12 +222,12 @@ impl ExtMsgHandler<Core, CoreState> for MsgHandler {
                 peer_pieces.set(piece, true);
             }
             Core::Piece(block) => {
-                debug!(
-                    "< index: {:?}, begin: {:?}, len: {:?}",
-                    block.index,
-                    block.begin,
-                    block.block.len()
-                );
+                // debug!(
+                //     "< index: {:?}, begin: {:?}, len: {:?}",
+                //     block.index,
+                //     block.begin,
+                //     block.block.len()
+                // );
 
                 peer.handle_piece_msg(block).await?;
             }
@@ -377,13 +379,23 @@ impl Decoder for CoreCodec {
         let size =
             u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
 
+        // if size > MAX_MESSAGE_SIZE || buf.len() > MAX_MESSAGE_SIZE {
+        //     warn!(
+        //         "Oversized message: {} > {} bytes, buffer: {} bytes",
+        //         size,
+        //         MAX_MESSAGE_SIZE,
+        //         buf.len()
+        //     );
+        //     return Err(io::Error::new(
+        //         io::ErrorKind::InvalidData,
+        //         format!("Message size {size} exceeds limit
+        // {MAX_MESSAGE_SIZE}"),     )
+        //     .into());
+        // }
+
         if size == 0 {
             buf.advance(4);
             return Ok(Some(Core::KeepAlive));
-        }
-
-        if buf.capacity() < size {
-            buf.reserve((size + 4) - buf.capacity());
         }
 
         // incomplete message, if the packet is to large to fit the MTU (~1,500
@@ -392,6 +404,9 @@ impl Decoder for CoreCodec {
         // full yet, we don't avance the cursor and just wait.
         if buf.len() < 4 + size {
             // incomplete message, wait for more.
+            if buf.capacity() < size {
+                buf.reserve((size + 4) - buf.capacity());
+            }
             return Ok(None);
         }
 
@@ -400,7 +415,7 @@ impl Decoder for CoreCodec {
 
         // with keepalive out of the way,
         // all the messages have at least 1 byte of size
-        if buf.remaining() < 1 {
+        if buf.is_empty() {
             return Ok(None);
         }
 
@@ -411,6 +426,7 @@ impl Decoder for CoreCodec {
             // cursor here is after msg_id
             warn!("unknown message_id {msg_id:?}");
             buf.advance(size - 1);
+            // buf.clear();
             return Ok(None);
         };
 
@@ -420,26 +436,30 @@ impl Decoder for CoreCodec {
         let msg = match msg_id {
             // <len=0001><id=0>
             CoreId::Choke => Core::Choke,
+
             // <len=0001><id=1>
             CoreId::Unchoke => Core::Unchoke,
+
             // <len=0001><id=2>
             CoreId::Interested => Core::Interested,
+
             // <len=0001><id=3>
             CoreId::NotInterested => Core::NotInterested,
+
             // <len=0005><id=4><piece index>
             CoreId::Have => {
                 if buf.remaining() < 4 {
                     return Ok(None);
                 }
-                let piece_index = buf.get_u32();
-                Core::Have(piece_index as usize)
+                Core::Have(buf.get_u32() as usize)
             }
+
             // <len=0001+X><id=5><bitfield>
             CoreId::Bitfield => {
-                let mut bitfield = vec![0u8; size - 1];
-                buf.copy_to_slice(&mut bitfield);
+                let bitfield = buf.copy_to_bytes(size - 1).to_vec();
                 Core::Bitfield(Bitfield::from_vec(bitfield))
             }
+
             // <len=0013><id=6><index><begin><length>
             CoreId::Request => {
                 if buf.remaining() < 4 + 4 + 4 {
@@ -451,6 +471,7 @@ impl Decoder for CoreCodec {
 
                 Core::Request(BlockInfo { index, begin, len })
             }
+
             // <len=0009+X><id=7><index><begin><block>
             CoreId::Piece => {
                 if buf.remaining() < 4 + 4 {
@@ -460,11 +481,11 @@ impl Decoder for CoreCodec {
                 let begin = buf.get_u32();
 
                 // size - 4 bytes (index) - 4 bytes (begin) - 1 byte (msg_id)
-                let mut block = vec![0u8; size - 9];
-                buf.copy_to_slice(&mut block);
+                let block = buf.copy_to_bytes(size - 9).to_vec();
 
                 Core::Piece(Block { index, begin, block })
             }
+
             // <len=0013><id=8><index><begin><length>
             CoreId::Cancel => {
                 if buf.remaining() < 4 + 4 + 4 {
@@ -476,6 +497,7 @@ impl Decoder for CoreCodec {
 
                 Core::Cancel(BlockInfo { index, begin, len })
             }
+
             // <len=002 + payload><id=20><ext_id><payload>
             CoreId::Extended => {
                 if buf.remaining() < 1 {
@@ -484,10 +506,7 @@ impl Decoder for CoreCodec {
                 let ext_id = buf.get_u8();
 
                 // size - 1 byte (msg_id) - 1 byte (ext_id)
-                // let mut payload = vec![0u8; size - 2];
-                // buf.copy_to_slice(&mut payload);
-
-                let payload = buf.split_to(size - 2).to_vec();
+                let payload = buf.copy_to_bytes(size - 2).to_vec();
 
                 Core::Extended(ExtendedMessage(ext_id, payload))
             }
@@ -505,6 +524,74 @@ mod tests {
     use bitvec::{bitvec, prelude::Msb0};
     use bytes::{Buf, BytesMut};
     use tokio_util::codec::{Decoder, Encoder};
+
+    #[test]
+    fn fragmented_extended_message() {
+        let mut codec = CoreCodec {};
+        let mut buffer = BytesMut::new();
+
+        // Create metadata with 50,000 bytes
+        let metadata = vec![0xAA; 50_000];
+
+        // For extended message:
+        // Total length = 1 (msg_id) + 1 (ext_id) + 50_000 (payload) = 50,002
+        // bytes
+        let total_length = 50_002_u32;
+        let header = total_length.to_be_bytes();
+
+        // Build message content: [msg_id][ext_id][payload]
+        let mut message_content = Vec::with_capacity(total_length as usize);
+        message_content.push(CoreId::Extended as u8); // 1 byte
+        message_content.push(0); // ext_id: 1 byte
+        message_content.extend_from_slice(&metadata); // 50,000 bytes
+
+        // Split into 3 chunks
+        let chunk1 = &message_content[..15_002]; // First 15,002 bytes
+        let chunk2 = &message_content[15_002..35_002]; // Next 20,000 bytes
+        let chunk3 = &message_content[35_002..]; // Last 15,000 bytes
+
+        // Simulate TCP fragmentation
+        buffer.extend_from_slice(&header);
+        buffer.extend_from_slice(chunk1);
+
+        // First chunk should be incomplete
+        assert!(codec.decode(&mut buffer).unwrap().is_none());
+
+        // Add second chunk
+        buffer.extend_from_slice(chunk2);
+        assert!(codec.decode(&mut buffer).unwrap().is_none());
+
+        // Add final chunk
+        buffer.extend_from_slice(chunk3);
+
+        let keepalive = [0x00, 0x00, 0x00, 0x00];
+        let interested = [0x00, 0x00, 0x00, 0x01, 0x02]; // Length=1, ID=2 (Interested)
+
+        buffer.extend_from_slice(&keepalive);
+        buffer.extend_from_slice(&interested);
+
+        let msg = codec.decode(&mut buffer).unwrap().unwrap();
+
+        match msg {
+            Core::Extended(ExtendedMessage(ext_id, payload)) => {
+                assert_eq!(ext_id, 0);
+                assert_eq!(payload.len(), 50_000);
+                assert!(payload.iter().all(|&b| b == 0xAA));
+            }
+            _ => panic!("Wrong message type"),
+        }
+
+        // ----------------
+
+        let msg = codec.decode(&mut buffer).unwrap().unwrap();
+        assert_eq!(msg, Core::KeepAlive);
+
+        let msg = codec.decode(&mut buffer).unwrap().unwrap();
+        assert_eq!(msg, Core::Interested);
+
+        assert!(buffer.is_empty());
+        assert!(codec.decode(&mut buffer).unwrap().is_none());
+    }
 
     #[test]
     fn from_ext_piece() {

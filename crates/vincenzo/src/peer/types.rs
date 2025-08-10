@@ -431,15 +431,14 @@ impl peer::Peer<Idle> {
         // wait and validate their handshake
         let peer_handshake = match socket.next().await {
             Some(Ok(peer_handshake)) => peer_handshake,
-            Some(Err(e)) => {
-                // peer didn't sent a handshake.
-                tracing::error!("some e {e:?}");
+            Some(Err(_)) => {
+                // connected to peer but an error happened during the handshake.
                 return Err(Error::HandshakeInvalid);
             }
             None => {
-                // the peer sent a FIN, maybe try to connect later.
+                // the peer sent a FIN or resetted the connection.
                 warn!("peer sent FIN.");
-                return Err(Error::HandshakeInvalid);
+                return Err(Error::PeerConnectionFailed);
             }
         };
 

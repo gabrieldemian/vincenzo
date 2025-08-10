@@ -224,7 +224,7 @@ impl Disk {
                         .await
                         .unwrap_or_default();
 
-                    info!("disk sending {} block infos", infos.len());
+                    trace!("disk sending {} block infos", infos.len());
 
                     let _ = recipient.send(infos);
                 }
@@ -238,7 +238,7 @@ impl Disk {
                     self.new_peer(peer);
                 }
                 DiskMsg::ReturnBlockInfos(info_hash, block_infos) => {
-                    info!("return_block_infos");
+                    debug!("return_block_infos");
 
                     for block in block_infos {
                         // get vector of piece_blocks for each
@@ -1046,6 +1046,8 @@ mod tests {
         }
 
         let mut info = Info {
+            source: None,
+            cross_seed_entry: None,
             piece_length: BLOCK_LEN,
             pieces,
             name: torrent_dir.clone(),

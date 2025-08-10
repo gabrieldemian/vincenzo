@@ -68,9 +68,10 @@ impl ExtMsgHandler<Metadata, MetadataData> for MsgHandler {
                     .torrent_ctx
                     .tx
                     .send(TorrentMsg::DownloadedInfoPiece(
+                        // todo: maybe total_size doesn't need to be option
                         msg.total_size.unwrap_or(u64::MAX),
                         msg.piece,
-                        msg.payload.clone(),
+                        msg.payload,
                     ))
                     .await?;
             }

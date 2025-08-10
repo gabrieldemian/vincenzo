@@ -142,6 +142,9 @@ pub enum Error {
     #[error("The peer ID does not exist on this torrent")]
     PeerIdInvalid,
 
+    #[error("The peer refused the TCP connection")]
+    PeerConnectionFailed,
+
     #[error("Disk does not have the provided info_hash")]
     InfoHashInvalid,
 

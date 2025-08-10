@@ -83,7 +83,7 @@ impl Peer<Connected> {
             Duration::from_secs(60),
         );
 
-        // send bitfield
+        // maybe send bitfield
         {
             let (otx, orx) = oneshot::channel();
             let _ = self
@@ -95,9 +95,13 @@ impl Peer<Connected> {
 
             let bitfield = orx.await?;
 
-            debug!("> bitfield");
+            if bitfield.len().count_ones() > 0 {
+                debug!(
+                    "> bitfield len: {} ones: {}",
+                    bitfield.len(),
+                    bitfield.count_ones()
+                );
 
-            if !bitfield.is_empty() {
                 self.state.sink.send(Core::Bitfield(bitfield)).await?;
             }
         }

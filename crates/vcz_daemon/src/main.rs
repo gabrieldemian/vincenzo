@@ -22,7 +22,7 @@ async fn main() -> Result<(), Error> {
         .without_time()
         .with_target(false)
         .with_file(false)
-        .with_max_level(Level::DEBUG)
+        .with_max_level(Level::INFO)
         .finish();
 
     tracing::subscriber::set_global_default(subscriber)

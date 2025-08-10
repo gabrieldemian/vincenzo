@@ -31,16 +31,32 @@ pub struct MetaInfo {
 /// in a multi file format, `file_length` is replaced to `files`
 #[derive(Debug, PartialEq, Clone, Default)]
 pub struct Info {
-    /// piece length - number of bytes in a piece
+    /// Some seeders want to cross-seed the same torrent for multiple trackers,
+    /// but if the info hash is the same, most clients will block it.
+    /// With this entry, the info_hash changes and cross-seeding is now
+    /// possible.
+    pub cross_seed_entry: Option<[u8; 32]>,
+
+    /// If the torrent has only 1 file, this value is some, and files is none
+    pub file_length: Option<u64>,
+
+    /// If the torrent has many files, this is some, and file_length is none.
+    pub files: Option<Vec<File>>,
+
+    /// name of the file
+    pub name: String,
+
+    /// length in bytes of each piece, the last piece may have a smaller length
     pub piece_length: u32,
+
     /// A (byte) string consisting of the concatenation of all 20-byte SHA1
     /// hash values, one per piece.
     pub pieces: Vec<u8>,
-    /// name of the file
-    pub name: String,
-    /// length - bytes of the entire file
-    pub file_length: Option<u64>,
-    pub files: Option<Vec<File>>,
+
+    /// The torrent's source, usually the tracker's website.
+    pub source: Option<String>,
+
+    // internal
     pub metadata_size: Option<u64>,
 }
 
@@ -323,15 +339,31 @@ impl FromBencode for Info {
     where
         Self: Sized,
     {
+        let mut cross_seed_entry = None;
         let mut files = None;
         let mut file_length = None;
         let mut name = None;
+        let mut source = None;
         let mut piece_length = None;
         let mut pieces = None;
 
         let mut dict_dec = object.try_into_dictionary()?;
         while let Some(pair) = dict_dec.next_pair()? {
             match pair {
+                (b"cross_seed_entry", value) => {
+                    cross_seed_entry = AsString::decode_bencode_object(value)
+                        .context("cross_seed_entry")
+                        .map(|bytes| {
+                            if bytes.0.len() < 32 {
+                                return None;
+                            }
+                            let mut buff = [0u8; 32];
+                            for (i, v) in bytes.0.into_iter().enumerate() {
+                                buff[i] = v;
+                            }
+                            Some(buff)
+                        })?;
+                }
                 (b"files", value) => {
                     files = Vec::<File>::decode_bencode_object(value)
                         .context("files")
@@ -345,6 +377,11 @@ impl FromBencode for Info {
                 (b"name", value) => {
                     name = String::decode_bencode_object(value)
                         .context("name")
+                        .map(Some)?;
+                }
+                (b"source", value) => {
+                    source = String::decode_bencode_object(value)
+                        .context("source")
                         .map(Some)?;
                 }
                 (b"piece length", value) => {
@@ -370,12 +407,14 @@ impl FromBencode for Info {
 
         // Check that we discovered all necessary fields
         Ok(Info {
+            cross_seed_entry,
             files,
             file_length,
             name,
             piece_length,
             pieces,
             metadata_size: None,
+            source,
         })
     }
 }
@@ -639,6 +678,8 @@ mod tests {
                     vec!["http://tracker.tfile.co:80/announce".to_owned()],
                 ]),
                 info: Info {
+                    source: None,
+                    cross_seed_entry: None,
                     piece_length: 16_384,
                     metadata_size: None,
                     pieces: torrent.info.pieces.clone(),
@@ -673,6 +714,8 @@ mod tests {
                     "https://cdimage.debian.org/cdimage/archive/9.4.0//srv/cdbuilder.debian.org/dst/deb-cd/weekly-builds/amd64/iso-cd/debian-9.4.0-amd64-netinst.iso".to_owned(),
                 ]),
                 info: Info {
+                    source: None,
+                    cross_seed_entry: None,
                     metadata_size: None,
                     piece_length: 262_144,
                     pieces: include_bytes!("../../../test-files/pieces.iso").to_vec(),
@@ -702,6 +745,8 @@ mod tests {
                 "https://cdimage.debian.org/cdimage/archive/9.4.0//srv/cdbuilder.debian.org/dst/deb-cd/weekly-builds/amd64/iso-cd/debian-9.4.0-amd64-netinst.iso".to_owned(),
             ]),
             info: Info {
+                source: None,
+                cross_seed_entry: None,
                 metadata_size: None,
                 piece_length: 262_144,
                 pieces: include_bytes!("../../../test-files/pieces.iso").to_vec(),

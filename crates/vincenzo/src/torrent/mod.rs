@@ -755,6 +755,7 @@ impl Torrent<Connected> {
                             }
 
                             self.state.have_info = true;
+                            info!("downloaded info_hash");
 
                             // get all the info bytes, in order.
                             let info_bytes =
@@ -764,8 +765,6 @@ impl Torrent<Connected> {
                                     acc.extend_from_slice(b);
                                     acc
                                 });
-
-                            debug!("have all info_hash pieces");
 
                             let mut downloaded_info = Info::from_bencode(&info_bytes)?;
                             let magnet_hash = self.ctx.magnet.hash().unwrap();
@@ -832,7 +831,6 @@ impl Torrent<Connected> {
                             self.state.counter.record_download(downloaded);
 
                             // if this is the last part just downloaded
-
                             let is_download_complete =
                                 self.state.counter.total_downloaded
                                 .load(Ordering::Relaxed)
@@ -842,6 +840,7 @@ impl Torrent<Connected> {
                                 continue;
                             }
 
+                            info!("downloaded entire torrent, entering seed only mode.");
                             self.status = TorrentStatus::Seeding;
 
                             let (otx, orx) = oneshot::channel();
