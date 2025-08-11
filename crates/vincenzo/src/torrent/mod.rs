@@ -50,8 +50,6 @@ pub struct Connected {
     /// requests.
     pub stats: Stats,
 
-    pub last_rate_update: Instant,
-
     pub counter: Counter,
 
     /// Bitfield representing the presence or absence of pieces for our local
@@ -217,7 +215,6 @@ impl Torrent<Idle> {
         Ok(Torrent {
             state: Connected {
                 counter: Counter::default(),
-                last_rate_update: Instant::now(),
                 size: self.ctx.magnet.length().unwrap_or(0),
                 unchoked_peers: Vec::with_capacity(3),
                 opt_unchoked_peer: None,
@@ -949,13 +946,12 @@ impl Torrent<Connected> {
                     self.state.idle_peers.extend(errored);
                     self.spawn_outbound_peers().await?;
                 }
-                _ = heartbeat_interval.tick() => {
+                _ = heartbeat_interval.tick(), if self.state.have_info => {
                     for peer in &self.state.connected_peers {
                         peer.counter.update_rates().await;
                     }
 
                     self.state.counter.update_rates().await;
-                    self.state.last_rate_update = Instant::now();
 
                     let downloaded =
                         self.state.counter.total_downloaded.load(Ordering::Relaxed)

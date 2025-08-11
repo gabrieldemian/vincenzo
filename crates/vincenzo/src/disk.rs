@@ -1132,7 +1132,6 @@ mod tests {
         let mut torrent = Torrent {
             state: Connected {
                 size: 0,
-                last_rate_update: Instant::now(),
                 counter: Counter::new(),
                 unchoked_peers: Vec::new(),
                 opt_unchoked_peer: None,

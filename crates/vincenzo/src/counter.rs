@@ -4,7 +4,7 @@ use tokio::{sync::Mutex, time::Instant};
 
 /// Exponential Moving Average (EMA) smoothing factor
 /// Higher values = more responsive to changes, lower values = smoother
-const EMA_ALPHA: f64 = 0.3;
+static EMA_ALPHA: f64 = 0.3;
 
 /// Counter of rates, used in downloaded and uploaded.
 #[derive(Debug)]

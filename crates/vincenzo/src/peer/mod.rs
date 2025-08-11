@@ -373,13 +373,6 @@ impl Peer<Connected> {
             .downloaded
             .fetch_add(block_info.len as u64, Ordering::Relaxed);
 
-        // Update torrent-level counters
-        self.state
-            .torrent_ctx
-            .tx
-            .send(TorrentMsg::IncrementDownloaded(block_info.len as u64))
-            .await?;
-
         self.state
             .ctx
             .uploaded

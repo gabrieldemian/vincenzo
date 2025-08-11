@@ -27,6 +27,15 @@ mod tests {
 
     #[test]
     pub fn readable_size() {
+        let n = 1;
+        assert_eq!(to_human_readable(n), "1 B");
+
+        let n = 740;
+        assert_eq!(to_human_readable(n), "740 B");
+
+        let n = 7_040;
+        assert_eq!(to_human_readable(n), "7.04 KB");
+
         let n = 483_740;
         assert_eq!(to_human_readable(n), "483.74 KB");
 
