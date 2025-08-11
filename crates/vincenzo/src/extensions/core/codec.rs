@@ -222,13 +222,6 @@ impl ExtMsgHandler<Core, CoreState> for MsgHandler {
                 peer_pieces.set(piece, true);
             }
             Core::Piece(block) => {
-                // debug!(
-                //     "< index: {:?}, begin: {:?}, len: {:?}",
-                //     block.index,
-                //     block.begin,
-                //     block.block.len()
-                // );
-
                 peer.handle_piece_msg(block).await?;
             }
             Core::Cancel(block_info) => {

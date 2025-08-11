@@ -669,13 +669,6 @@ impl Torrent<Connected> {
                         TorrentMsg::ReadBitfield(oneshot) => {
                             let _ = oneshot.send(self.state.bitfield.clone());
                         }
-                        TorrentMsg::IncrementDownloaded(downloaded) => {
-                            if self.status == TorrentStatus::Seeding {
-                                continue;
-                            };
-
-                            self.state.counter.record_download(downloaded);
-                        }
                         TorrentMsg::DownloadedPiece(piece) => {
                             debug!("downloaded_piece {piece}");
 
@@ -889,6 +882,12 @@ impl Torrent<Connected> {
                             let bytes = self.state.info_pieces.get(&index).cloned();
                             let _ = recipient.send(bytes);
                         }
+                        TorrentMsg::IncrementDownloaded(downloaded) => {
+                            if self.status == TorrentStatus::Seeding {
+                                continue;
+                            };
+                            self.state.counter.record_download(downloaded);
+                        }
                         TorrentMsg::IncrementUploaded(uploaded) => {
                             self.state.counter.record_upload(uploaded);
                         }
@@ -969,7 +968,7 @@ impl Torrent<Connected> {
                     let downloaded =
                         self.state.counter.total_downloaded.load(Ordering::Relaxed)
                         .min(self.state.size);
-                    let uploaded = self.state.counter.total_downloaded.load(Ordering::Relaxed);
+                    let uploaded = self.state.counter.total_uploaded.load(Ordering::Relaxed);
                     let download_rate = self.state.counter.download_rate.load(Ordering::Relaxed);
                     // let upload_rate = self.state.counter.upload_rate.load(Ordering::Relaxed);
 
