@@ -246,12 +246,10 @@ impl Torrent<Idle> {
 }
 
 impl Torrent<Connected> {
-    /// Spawn an event loop for each peer
-    pub async fn spawn_outbound_peers(&self) -> Result<(), Error> {
+    /// Return a number of available connections that the torrent can do.
+    async fn available_connections(&self) -> Result<usize, Error> {
         let (otx, orx) = oneshot::channel();
-
         self.daemon_ctx.tx.send(DaemonMsg::GetConnectedPeers(otx)).await?;
-
         let daemon_connected_peers = orx.await?;
         let max_global_peers = CONFIG.max_global_peers;
         let max_torrent_peers = CONFIG.max_torrent_peers;
@@ -264,13 +262,26 @@ impl Torrent<Connected> {
         if currently_active >= max_torrent_peers as usize
             || daemon_connected_peers >= max_global_peers
         {
-            return Ok(());
+            return Ok(0);
         }
 
-        let to_request = max_torrent_peers as usize - currently_active;
+        Ok(max_torrent_peers as usize - currently_active)
+    }
 
+    pub async fn reconnect_errored_peers(&mut self) -> Result<(), Error> {
+        // let errored: Vec<_> =
+        //     self.state.error_peers.drain(..).map(|v| v.state.addr).collect();
+        // self.state.idle_peers.extend(errored);
+
+        Ok(())
+    }
+
+    /// Spawn an event loop for each peer
+    pub async fn spawn_outbound_peers(&self) -> Result<(), Error> {
         let ctx = self.ctx.clone();
         let daemon_ctx = self.daemon_ctx.clone();
+
+        let to_request = self.available_connections().await?;
 
         if to_request > 0 {
             trace!(
@@ -300,7 +311,15 @@ impl Torrent<Connected> {
                         .await
                         {
                             warn!("error with peer: {:?} {e:?}", peer);
-                            ctx.tx.send(TorrentMsg::PeerError(peer)).await?;
+                            match e {
+                                Error::PeerClosedSocket
+                                | Error::HandshakeTimeout => {
+                                    ctx.tx
+                                        .send(TorrentMsg::PeerError(peer))
+                                        .await?;
+                                }
+                                _ => {}
+                            }
                         };
                     }
                     Err(e) => {
@@ -621,6 +640,8 @@ impl Torrent<Connected> {
         let mut unchoke_interval =
             interval_at(now + Duration::from_secs(10), Duration::from_secs(10));
 
+        self.spawn_outbound_peers().await?;
+
         loop {
             select! {
                 Some(msg) = self.rx.recv() => {
@@ -936,15 +957,7 @@ impl Torrent<Connected> {
                         self.state.connected_peers.len(),
                         self.state.error_peers.len(),
                     );
-
-                    let errored: Vec<_> = self.
-                        state.
-                        error_peers
-                        .drain(..)
-                        .map(|v| v.state.addr).collect();
-
-                    self.state.idle_peers.extend(errored);
-                    self.spawn_outbound_peers().await?;
+                    let _ = self.reconnect_errored_peers().await;
                 }
                 _ = heartbeat_interval.tick(), if self.state.have_info => {
                     for peer in &self.state.connected_peers {

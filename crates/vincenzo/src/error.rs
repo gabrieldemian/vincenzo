@@ -109,7 +109,10 @@ pub enum Error {
     #[error("The handshake received is not valid")]
     HandshakeInvalid,
 
-    #[error("The peer didn't send a handshake")]
+    #[error("The peer took to long to send the handshake")]
+    HandshakeTimeout,
+
+    #[error("The peer didn't send a handshake as the first message")]
     NoHandshake,
 
     #[error(
@@ -142,8 +145,8 @@ pub enum Error {
     #[error("The peer ID does not exist on this torrent")]
     PeerIdInvalid,
 
-    #[error("The peer refused the TCP connection")]
-    PeerConnectionFailed,
+    #[error("The peer closed the socket")]
+    PeerClosedSocket,
 
     #[error("Disk does not have the provided info_hash")]
     InfoHashInvalid,

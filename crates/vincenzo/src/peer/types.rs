@@ -6,6 +6,7 @@ use std::{
         atomic::{AtomicBool, AtomicU64},
         Arc,
     },
+    time::Duration,
 };
 
 use bitvec::{array::BitArray, order::Msb0};
@@ -21,7 +22,7 @@ use tokio::{
         mpsc::{self, Receiver},
         oneshot, Mutex,
     },
-    time::Instant,
+    time::{sleep, timeout, Instant},
 };
 use tokio_util::codec::{Framed, FramedParts};
 use tracing::{debug, warn};
@@ -291,6 +292,10 @@ impl Default for peer::Peer<Idle> {
     }
 }
 
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+const RETRY_INTERVAL: Duration = Duration::from_millis(500);
+const MAX_ATTEMPTS: usize = 3;
+
 impl peer::Peer<Idle> {
     pub fn new() -> Self {
         Self { state: Idle {}, state_log: StateLog::default() }
@@ -321,17 +326,75 @@ impl peer::Peer<Idle> {
         socket.send(local_handshake.clone()).await?;
         socket.flush().await?;
 
-        let peer_handshake = match socket.next().await {
-            Some(Ok(peer_handshake)) => peer_handshake,
-            Some(Err(e)) => {
-                // peer didn't send a handshake.
-                tracing::error!("some e {e:?}");
-                return Err(Error::NoHandshake);
+        let mut attempts = 0;
+
+        // --- event loop ---
+
+        let peer_handshake = loop {
+            attempts += 1;
+
+            if attempts > 1 {
+                sleep(RETRY_INTERVAL).await;
             }
-            None => {
-                // the peer sent a FIN, maybe try to connect later.
-                warn!("peer sent FIN.");
-                return Err(Error::HandshakeInvalid);
+
+            match timeout(HANDSHAKE_TIMEOUT, socket.next()).await {
+                Ok(Some(Ok(handshake))) => break handshake,
+                Ok(Some(Err(e))) => {
+                    tracing::error!(
+                        "handshake decode error: {e}, retrying count: \
+                         {attempts}"
+                    );
+
+                    let buf = socket.read_buffer();
+                    if !buf.is_empty() {
+                        warn!(
+                            "invalid handshake with buffer len {}",
+                            buf.len()
+                        );
+                    }
+
+                    if attempts < MAX_ATTEMPTS {
+                        socket.send(local_handshake.clone()).await?;
+                        socket.flush().await?;
+                        continue;
+                    }
+
+                    return Err(Error::HandshakeInvalid);
+                }
+                Ok(None) => {
+                    // EOF (peer closed connection)
+                    tracing::warn!(
+                        "peer closed connection during handshake, retrying \
+                         count: {attempts}"
+                    );
+                    let buf = socket.read_buffer();
+                    if !buf.is_empty() {
+                        warn!(
+                            "closed connection with buffer len {}",
+                            buf.len()
+                        );
+                    }
+                    if attempts < MAX_ATTEMPTS {
+                        socket.send(local_handshake.clone()).await?;
+                        socket.flush().await?;
+                        continue;
+                    }
+                    return Err(Error::PeerClosedSocket);
+                }
+                Err(_) => {
+                    // Timeout occurred
+                    tracing::warn!(
+                        "handshake timeout with after {}ms, retrying count: \
+                         {attempts}",
+                        HANDSHAKE_TIMEOUT.as_millis()
+                    );
+                    if attempts < MAX_ATTEMPTS {
+                        socket.send(local_handshake.clone()).await?;
+                        socket.flush().await?;
+                        continue;
+                    }
+                    return Err(Error::HandshakeTimeout);
+                }
             }
         };
 
@@ -437,8 +500,8 @@ impl peer::Peer<Idle> {
             }
             None => {
                 // the peer sent a FIN or resetted the connection.
-                warn!("peer sent FIN.");
-                return Err(Error::PeerConnectionFailed);
+                // warn!("peer sent FIN.");
+                return Err(Error::PeerClosedSocket);
             }
         };
 
@@ -652,6 +715,7 @@ pub struct Connected {
 #[derive(Clone)]
 pub struct PeerError {
     pub addr: SocketAddr,
+    pub reconnect_attempts: u32,
 }
 
 /// A peer that is being handshaked and soon turned into a connected state.
@@ -662,7 +726,10 @@ pub struct Connecting {
 
 impl peer::Peer<PeerError> {
     pub fn new(addr: SocketAddr) -> Self {
-        peer::Peer { state: PeerError { addr }, state_log: StateLog::default() }
+        peer::Peer {
+            state: PeerError { addr, reconnect_attempts: 0 },
+            state_log: StateLog::default(),
+        }
     }
 }
 

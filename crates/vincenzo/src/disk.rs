@@ -280,13 +280,14 @@ impl Disk {
     ) -> Result<Arc<Mutex<tokio::fs::File>>, Error> {
         // try to get from cache
         if let Some(file) = self.file_handle_cache.get(path) {
-            return Ok(file.clone());
+            return Ok(Arc::clone(file));
         }
+
+        // cache miss
 
         let file = Arc::new(Mutex::new(Self::open_file(path).await?));
 
-        // cache miss
-        self.file_handle_cache.put(path.to_path_buf(), file.clone());
+        self.file_handle_cache.put(path.into(), Arc::clone(&file));
 
         Ok(file)
     }

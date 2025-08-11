@@ -271,6 +271,7 @@ impl TrackerTrait for Tracker<Udp> {
             peer_list.push((ip, port).into());
         }
 
+        info!("peers count: {}", peer_list.len());
         debug!("{} ips of peers {peer_list:#?}", peer_list.len());
         let peers: Vec<SocketAddr> = peer_list.into_iter().collect();
 
