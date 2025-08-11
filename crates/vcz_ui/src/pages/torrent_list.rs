@@ -1,9 +1,11 @@
-use crossterm::event::{KeyCode, KeyEventKind};
+use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers, ModifierKeyCode};
+use magnet_url::Magnet;
 use ratatui::{
     prelude::*,
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
 };
 use tokio::sync::mpsc;
+use tui_textarea::{CursorMove, TextArea};
 use vincenzo::{
     torrent::{InfoHash, TorrentState, TorrentStatus},
     utils::to_human_readable,
@@ -16,10 +18,9 @@ use super::Page;
 #[derive(Clone)]
 pub struct TorrentList<'a> {
     active_torrent: Option<InfoHash>,
-    cursor_position: usize,
     footer: List<'a>,
-    input: String,
-    show_popup: bool,
+    textarea: Option<TextArea<'a>>,
+    chars_per_line: u16,
     pub focused: bool,
     pub state: ListState,
     pub style: AppStyle,
@@ -55,15 +56,42 @@ impl<'a> TorrentList<'a> {
 
         Self {
             tx,
+            chars_per_line: 50,
+            textarea: None,
             focused: true,
-            show_popup: false,
-            input: String::new(),
             style,
             state,
             active_torrent: None,
             torrent_infos: Vec::new(),
-            cursor_position: 0,
             footer,
+        }
+    }
+
+    /// Validate that the user's magnet link is valid
+    fn validate(&mut self) -> bool {
+        let Some(textarea) = &mut self.textarea else { return false };
+
+        let magnet_str = textarea.lines().join("");
+        let magnet = Magnet::new(&magnet_str);
+
+        if let Err(err) = magnet {
+            textarea.set_style(Style::default().fg(Color::LightRed));
+            textarea.set_block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Color::LightRed)
+                    .title(format!("Err: {err}")),
+            );
+            false
+        } else {
+            textarea.set_style(Style::default().fg(Color::LightGreen));
+            textarea.set_block(
+                Block::default()
+                    .border_style(Color::LightGreen)
+                    .borders(Borders::ALL)
+                    .title("Ok (Press Enter)"),
+            );
+            true
         }
     }
 
@@ -98,10 +126,8 @@ impl<'a> TorrentList<'a> {
     }
 
     fn quit(&mut self) {
-        self.input.clear();
-        if self.show_popup {
-            self.show_popup = false;
-            self.reset_cursor();
+        if self.textarea.is_some() {
+            self.textarea = None;
         } else {
             let _ = self.tx.send(Action::Quit);
         }
@@ -134,68 +160,18 @@ impl<'a> TorrentList<'a> {
             .split(popup_layout[1])[1]
     }
 
-    fn move_cursor_left(&mut self) {
-        let cursor_moved_left = self.cursor_position.saturating_sub(1);
-        self.cursor_position = self.clamp_cursor(cursor_moved_left);
-    }
-
-    fn move_cursor_right(&mut self) {
-        let cursor_moved_right = self.cursor_position.saturating_add(1);
-        self.cursor_position = self.clamp_cursor(cursor_moved_right);
-    }
-
-    fn enter_char(&mut self, new_char: char) {
-        self.input.insert(self.cursor_position, new_char);
-        self.move_cursor_right();
+    fn submit_magnet_link(&mut self) {
+        if let Some(textarea) = &self.textarea {
+            let magnet_str = textarea.lines().join("").trim().to_string();
+            let _ = self.tx.send(Action::NewTorrent(magnet_str));
+            self.quit();
+        }
     }
 
     fn delete_torrent(&self) {
         if let Some(active_torrent) = &self.active_torrent {
             let _ = self.tx.send(Action::DeleteTorrent(active_torrent.clone()));
         }
-    }
-
-    fn delete_char(&mut self) {
-        let is_not_cursor_leftmost = self.cursor_position != 0;
-        if is_not_cursor_leftmost {
-            // Method "remove" is not used on the saved text for deleting the
-            // selected char. Reason: Using remove on String works
-            // on bytes instead of the chars. Using remove would
-            // require special care because of char boundaries.
-
-            let current_index = self.cursor_position;
-            let from_left_to_current_index = current_index - 1;
-
-            // Getting all characters before the selected character.
-            let before_char_to_delete =
-                self.input.chars().take(from_left_to_current_index);
-
-            // Getting all characters after selected character.
-            let after_char_to_delete = self.input.chars().skip(current_index);
-
-            // Put all characters together except the selected one.
-            // By leaving the selected one out, it is forgotten and therefore
-            // deleted.
-            self.input =
-                before_char_to_delete.chain(after_char_to_delete).collect();
-
-            self.move_cursor_left();
-        }
-    }
-
-    fn clamp_cursor(&self, new_cursor_pos: usize) -> usize {
-        new_cursor_pos.clamp(0, self.input.len())
-    }
-
-    fn reset_cursor(&mut self) {
-        self.cursor_position = 0;
-    }
-
-    fn submit_magnet_link(&mut self) {
-        let _ =
-            self.tx.send(Action::NewTorrent(std::mem::take(&mut self.input)));
-
-        self.quit();
     }
 }
 
@@ -274,28 +250,30 @@ impl<'a> Page for TorrentList<'a> {
         let torrent_list = List::new(rows)
             .block(Block::default().borders(Borders::ALL).title("Torrents"));
 
-        // Create two chunks, the body, and the footer
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Max(98), Constraint::Length(3)].as_ref())
-            .split(f.area());
+        if let Some(textarea) = &self.textarea {
+            let area = self.centered_rect(60, 30, f.area());
+            self.chars_per_line = area.width - 4;
 
-        if self.show_popup {
-            let area = self.centered_rect(60, 20, f.area());
-
-            let input = Paragraph::new(self.input.as_str())
-                .style(self.style.highlight_fg)
-                .block(
-                    Block::default().borders(Borders::ALL).title("Add Torrent"),
-                );
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints(
+                    [Constraint::Min(0), Constraint::Length(1)].as_ref(),
+                )
+                .split(area);
 
             f.render_widget(Clear, area);
-            f.render_widget(input, area);
-            f.set_cursor_position(Position {
-                x: area.x + self.cursor_position as u16 + 1,
-                y: area.y + 1,
-            });
+            f.render_widget(textarea, chunks[0]);
+
+            f.render_widget(Paragraph::new("Shift + [C]lear"), chunks[1]);
         } else {
+            // Create two chunks, the body, and the footer
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints(
+                    [Constraint::Max(98), Constraint::Length(3)].as_ref(),
+                )
+                .split(f.area());
+
             f.render_stateful_widget(torrent_list, chunks[0], &mut self.state);
             f.render_widget(self.footer.clone(), chunks[1]);
         }
@@ -316,26 +294,51 @@ impl<'a> Page for TorrentList<'a> {
                 self.torrent_infos = torrent_states;
             }
             Action::Key(k)
-                if self.show_popup && k.kind == KeyEventKind::Press =>
+                if let Some(textarea) = &mut self.textarea
+                    && k.kind == KeyEventKind::Press =>
             {
                 match k.code {
                     KeyCode::Enter => self.submit_magnet_link(),
                     KeyCode::Esc => {
-                        self.input = "".to_string();
-                        self.reset_cursor();
-                        self.show_popup = false;
+                        self.textarea = None;
                     }
-                    KeyCode::Char(to_insert) => {
-                        self.enter_char(to_insert);
+                    KeyCode::Modifier(ModifierKeyCode::LeftShift) => {}
+                    KeyCode::Char(char) => {
+                        if k.modifiers.intersects(KeyModifiers::SHIFT)
+                            && char == 'C'
+                        {
+                            for _ in 0..textarea
+                                .lines()
+                                .iter()
+                                .fold(0, |acc, v| acc + v.chars().count())
+                            {
+                                textarea.delete_word();
+                            }
+                        } else {
+                            if textarea.cursor().1
+                                >= self.chars_per_line as usize
+                            {
+                                textarea.insert_newline();
+                            }
+                            textarea.insert_char(char);
+                        }
+                        self.validate();
                     }
                     KeyCode::Backspace => {
-                        self.delete_char();
+                        textarea.delete_char();
+                        self.validate();
+                    }
+                    KeyCode::Up => {
+                        textarea.move_cursor(CursorMove::Up);
+                    }
+                    KeyCode::Down => {
+                        textarea.move_cursor(CursorMove::Down);
                     }
                     KeyCode::Left => {
-                        self.move_cursor_left();
+                        textarea.move_cursor(CursorMove::Back);
                     }
                     KeyCode::Right => {
-                        self.move_cursor_right();
+                        textarea.move_cursor(CursorMove::Forward);
                     }
                     _ => {}
                 }
@@ -354,7 +357,15 @@ impl<'a> Page for TorrentList<'a> {
                     self.previous();
                 }
                 KeyCode::Char('t') => {
-                    self.show_popup = true;
+                    let mut textarea = TextArea::default();
+
+                    textarea.set_placeholder_text("Paste magnet link here...");
+                    textarea.set_block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .title("Add Torrent (Press Enter or Esc)"),
+                    );
+                    self.textarea = Some(textarea);
                 }
                 KeyCode::Char('p') => {
                     if let Some(active_torrent) = &self.active_torrent {

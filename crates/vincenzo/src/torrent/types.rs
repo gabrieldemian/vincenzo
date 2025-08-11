@@ -32,7 +32,6 @@ pub enum TorrentMsg {
     /// total, metadata.index, bytes
     DownloadedInfoPiece(u64, u64, Vec<u8>),
 
-    SetBitfield(usize),
     ReadBitfield(oneshot::Sender<Bitfield>),
 
     /// Sent when the peer is acting as a relay for the holepunch protocol.

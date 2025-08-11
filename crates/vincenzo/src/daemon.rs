@@ -409,7 +409,7 @@ impl Daemon {
                 tx.send(DaemonMsg::DeleteTorrent(info_hash)).await?;
             }
             Message::NewTorrent(magnet_link) => {
-                info!("received new_torrent: {magnet_link}");
+                info!("new_torrent: {magnet_link}");
 
                 let magnet = Magnet::new(&magnet_link);
 

@@ -12,9 +12,7 @@ use std::{
     time::Duration,
 };
 
-use crate::{
-    daemon::DaemonCtx, error::Error, metainfo::Info, torrent::InfoHash,
-};
+use crate::{daemon::DaemonCtx, error::Error, torrent::InfoHash};
 use tokio::{
     net::{ToSocketAddrs, UdpSocket},
     select,
@@ -90,7 +88,6 @@ pub trait TrackerTrait: Sized {
 pub struct Tracker<P: Protocol> {
     pub ctx: TrackerCtx,
     pub daemon_ctx: Arc<DaemonCtx>,
-    pub info: Option<Info>,
     pub info_hash: InfoHash,
     pub rx: mpsc::Receiver<TrackerMsg>,
     pub connection_id: u64,
@@ -113,7 +110,6 @@ pub enum TrackerMsg {
         uploaded: u64,
         left: u64,
     },
-    Info(Info),
 }
 
 impl TrackerTrait for Tracker<Udp> {
@@ -324,7 +320,6 @@ impl TrackerTrait for Tracker<Udp> {
                 },
                 daemon_ctx: daemon_ctx.clone(),
                 info_hash: info_hash.clone(),
-                info: None,
                 connection_id: 0,
                 state: Udp { socket },
                 rx: tracker_rx,
@@ -376,7 +371,6 @@ impl Tracker<Udp> {
             select! {
                 Some(msg) = self.rx.recv() => {
                     match msg {
-                        TrackerMsg::Info(info) => self.info = Some(info),
                         TrackerMsg::Announce {
                             recipient,
                             event,

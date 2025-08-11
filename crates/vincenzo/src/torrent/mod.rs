@@ -37,7 +37,7 @@ use tokio::{
     sync::{mpsc, oneshot, RwLock},
     time::{interval, interval_at, Instant},
 };
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, info, trace, warn};
 
 pub trait TorrentTrait {}
 
@@ -65,9 +65,6 @@ pub struct Connected {
     /// and those pieces may come in different order,
     /// After it is complete, it will be encoded into [`Info`]
     pub info_pieces: BTreeMap<u64, Vec<u8>>,
-
-    /// How much of the info was downloaded.
-    pub downloaded_info_bytes: u64,
 
     /// The size of the entire torrent in disk, in bytes.
     pub size: u64,
@@ -230,7 +227,7 @@ impl Torrent<Idle> {
                 error_peers: Vec::with_capacity(
                     CONFIG.max_torrent_peers as usize,
                 ),
-                downloaded_info_bytes: 0,
+                // downloaded_info_bytes: 0,
                 bitfield: Bitfield::default(),
                 stats,
                 idle_peers: peers,
@@ -310,7 +307,7 @@ impl Torrent<Connected> {
                         };
                     }
                     Err(e) => {
-                        warn!("connection fin with peer: {:?} {e:#?}", peer);
+                        warn!("connection fin with peer: {} {e}", peer);
                         ctx.tx.send(TorrentMsg::PeerError(peer)).await?;
                     }
                 }
@@ -617,6 +614,8 @@ impl Torrent<Connected> {
         // send state to the frontend, if connected.
         let mut heartbeat_interval = interval(Duration::from_secs(1));
 
+        let mut log_rates_interval = interval(Duration::from_secs(5));
+
         // unchoke the slowest interested peer.
         let mut optimistic_unchoke_interval = interval(Duration::from_secs(30));
 
@@ -652,14 +651,66 @@ impl Torrent<Connected> {
                         TorrentMsg::ReadBitfield(oneshot) => {
                             let _ = oneshot.send(self.state.bitfield.clone());
                         }
-                        TorrentMsg::SetBitfield(index) => {
-                            self.state.bitfield.set(index, true);
+                        TorrentMsg::IncrementDownloaded(downloaded) => {
+                            if self.status == TorrentStatus::Seeding {
+                                continue;
+                            };
+
+                            self.state.counter.record_download(downloaded);
                         }
                         TorrentMsg::DownloadedPiece(piece) => {
                             debug!("downloaded_piece {piece}");
-                            // send Have messages to peers that dont have our pieces
+
+                            // if fore some reason the local bitfield is smaller than the piece
+                            if self.state.bitfield.get(piece).is_none() {
+                                let missing_bits = piece - self.state.bitfield.len();
+                                self.state.bitfield.extend_from_bitslice(&bitvec![0; missing_bits]);
+                            }
+
+                            // only send Have's if the piece was not downloaded
+                            // as this message could be called many times by accident.
+                            if !self.state.bitfield.get(piece).unwrap() {
+                                // send Have messages to peers that dont have our pieces
+                                for peer in &self.state.connected_peers {
+                                    let _ = peer.tx.send(PeerMsg::HavePiece(piece)).await;
+                                }
+                            }
+
+                            self.state.bitfield.set(piece, true);
+
+                            let total_pieces = self.state.bitfield.len();
+                            let downloaded_pieces = self.state.bitfield.count_ones();
+                            let is_download_complete = downloaded_pieces >= total_pieces;
+
+                            if !is_download_complete && self.status == TorrentStatus::Downloading {
+                                continue;
+                            }
+
+                            info!("downloaded entire torrent, entering seed only mode.");
+                            self.status = TorrentStatus::Seeding;
+
+                            let (otx, orx) = oneshot::channel();
+
+                            let _ = tracker_tx.send(
+                                TrackerMsg::Announce {
+                                    event: Event::Completed,
+                                    recipient: Some(otx),
+                                    downloaded:
+                                        self.state.counter.total_downloaded.load(Ordering::Relaxed),
+                                    uploaded:
+                                        self.state.counter.total_uploaded.load(Ordering::Relaxed),
+                                    left: 0,
+                                })
+                            .await;
+
+                            if let Ok(r) = orx.await {
+                                debug!("announced completion with success {r:?}");
+                                self.state.stats = r.0.into();
+                            }
+
+                            // enter seed only mode
                             for peer in &self.state.connected_peers {
-                                let _ = peer.tx.send(PeerMsg::HavePiece(piece)).await;
+                                let _ = peer.tx.send(PeerMsg::SeedOnly).await;
                             }
                         }
                         TorrentMsg::PeerConnecting(addr) => {
@@ -734,7 +785,6 @@ impl Torrent<Connected> {
                         TorrentMsg::DownloadedInfoPiece(total, index, bytes) => {
                             debug!("downloaded_info_piece");
                             debug!("have_info? {}", self.state.have_info);
-                            debug!("total {total} index {index} downloaded {} bytes {:?}", self.state.downloaded_info_bytes, bytes.len());
 
                             if self.state.have_info { continue };
 
@@ -742,11 +792,12 @@ impl Torrent<Connected> {
                                 self.status = TorrentStatus::DownloadingMetainfo;
                             }
 
-                            self.state.downloaded_info_bytes += bytes.len() as u64;
-                            self.state.info_pieces.insert(index, bytes);
+                            self.state.info_pieces.entry(index).or_default().extend(bytes);
 
                             let has_info_downloaded =
-                                self.state.downloaded_info_bytes >= total;
+                                self.state.info_pieces
+                                .values()
+                                .fold(0, |acc, v| acc + v.len()) >= total as usize;
 
                             debug!("has_info_downloaded? {has_info_downloaded}");
 
@@ -796,18 +847,15 @@ impl Torrent<Connected> {
                             self.state.size = downloaded_info.get_size();
                             let pieces = downloaded_info.pieces();
                             self.state.bitfield = bitvec![u8, Msb0; 0; pieces as usize];
+                            self.state.bitfield.force_align();
 
                             downloaded_info.metadata_size = Some(meta_size);
 
                             let mut info = self.ctx.info.write().await;
                             *info = downloaded_info;
-                            self.state.tracker_ctx.tx.send(TrackerMsg::Info(info.clone())).await?;
                             drop(info);
 
                             self.ctx.disk_tx.send(DiskMsg::NewTorrent(self.ctx.clone())).await?;
-
-                            trace!("local bitfield: {:?}", self.state.bitfield.len());
-
                             self.status = TorrentStatus::Downloading;
 
                             for peer in &self.state.connected_peers {
@@ -822,50 +870,6 @@ impl Torrent<Connected> {
                         TorrentMsg::RequestInfoPiece(index, recipient) => {
                             let bytes = self.state.info_pieces.get(&index).cloned();
                             let _ = recipient.send(bytes);
-                        }
-                        TorrentMsg::IncrementDownloaded(downloaded) => {
-                            if self.status == TorrentStatus::Seeding {
-                                continue;
-                            };
-
-                            self.state.counter.record_download(downloaded);
-
-                            // if this is the last part just downloaded
-                            let is_download_complete =
-                                self.state.counter.total_downloaded
-                                .load(Ordering::Relaxed)
-                                >= self.state.size;
-
-                            if !is_download_complete {
-                                continue;
-                            }
-
-                            info!("downloaded entire torrent, entering seed only mode.");
-                            self.status = TorrentStatus::Seeding;
-
-                            let (otx, orx) = oneshot::channel();
-
-                            let _ = tracker_tx.send(
-                                TrackerMsg::Announce {
-                                    event: Event::Completed,
-                                    recipient: Some(otx),
-                                    downloaded:
-                                        self.state.counter.total_downloaded.load(Ordering::Relaxed),
-                                    uploaded:
-                                        self.state.counter.total_uploaded.load(Ordering::Relaxed),
-                                    left: 0,
-                                })
-                            .await;
-
-                            if let Ok(r) = orx.await {
-                                debug!("announced completion with success {r:?}");
-                                self.state.stats = r.0.into();
-                            }
-
-                            // enter seed only mode
-                            for peer in &self.state.connected_peers {
-                                let _ = peer.tx.send(PeerMsg::SeedOnly).await;
-                            }
                         }
                         TorrentMsg::IncrementUploaded(uploaded) => {
                             self.state.counter.record_upload(uploaded);
@@ -956,24 +960,15 @@ impl Torrent<Connected> {
                     let downloaded =
                         self.state.counter.total_downloaded.load(Ordering::Relaxed)
                         .min(self.state.size);
-
                     let uploaded = self.state.counter.total_downloaded.load(Ordering::Relaxed);
-
                     let download_rate = self.state.counter.download_rate.load(Ordering::Relaxed);
-                    let upload_rate = self.state.counter.upload_rate.load(Ordering::Relaxed);
+                    // let upload_rate = self.state.counter.upload_rate.load(Ordering::Relaxed);
 
                     let downloading_from = self.state.connected_peers
                         .iter()
                         .fold(0, |acc, v| {
                             acc + if !v.peer_choking.load(Ordering::Relaxed) && v.am_interested.load(Ordering::Relaxed) { 1 } else {0}
                         });
-
-                    info!("d: {} u: {} dr: {} ur: {} df: {downloading_from}",
-                        to_human_readable(downloaded),
-                        to_human_readable(uploaded),
-                        to_human_readable(download_rate),
-                        to_human_readable(upload_rate),
-                    );
 
                     let torrent_state = TorrentState {
                         name: self.name.clone(),
@@ -995,6 +990,21 @@ impl Torrent<Connected> {
                         DaemonMsg::TorrentState(torrent_state)
                     )
                     .await;
+                }
+                _ = log_rates_interval.tick() => {
+                    let downloaded =
+                        self.state.counter.total_downloaded.load(Ordering::Relaxed)
+                        .min(self.state.size);
+                    let uploaded = self.state.counter.total_downloaded.load(Ordering::Relaxed);
+                    let download_rate = self.state.counter.download_rate.load(Ordering::Relaxed);
+                    let upload_rate = self.state.counter.upload_rate.load(Ordering::Relaxed);
+
+                    info!("d: {} u: {} dr: {} ur: {}",
+                        to_human_readable(downloaded),
+                        to_human_readable(uploaded),
+                        to_human_readable(download_rate),
+                        to_human_readable(upload_rate),
+                    );
                 }
                 _ = optimistic_unchoke_interval.tick() => {
                     if let Some(old_opt) = self.state.opt_unchoked_peer.take() {

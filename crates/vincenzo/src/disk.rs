@@ -1,4 +1,5 @@
-//! Disk is responsible for file I/O of all Torrents.
+//! Disk is responsible for file I/O of all torrents.
+
 use std::{
     collections::BTreeMap,
     io::SeekFrom,
@@ -135,22 +136,28 @@ pub struct Disk {
     pub piece_order: HashMap<InfoHash, Vec<u32>>,
 
     /// How many pieces were downloaded.
-    pub downloaded_pieces_len: HashMap<InfoHash, u32>,
+    pub downloaded_pieces: HashMap<InfoHash, u64>,
 
+    /// How pieces will be downloaded.
     pub piece_strategy: HashMap<InfoHash, PieceStrategy>,
 
+    /// Where to put downloaded torrents.
     pub download_dir: String,
 
     /// A cache of blocks, where the key is a piece.
-    cache: HashMap<InfoHash, BTreeMap<usize, Vec<Block>>>,
+    block_cache: HashMap<InfoHash, BTreeMap<usize, Vec<Block>>>,
 
+    /// A complete clone of Info to avoid locking.
     torrent_info: HashMap<InfoHash, Info>,
 
     /// The block infos of each piece of a torrent, ordered from 0 to last.
     pieces_blocks: HashMap<InfoHash, BTreeMap<usize, Vec<BlockInfo>>>,
 
+    /// A cache of torrent files with pre-computed lengths.
     torrent_cache: HashMap<InfoHash, TorrentCache>,
 
+    /// A LRU cache of file handles to avoid doing a sys call each time the
+    /// disk needs to read or write to a file.
     file_handle_cache: LruCache<PathBuf, Arc<Mutex<tokio::fs::File>>>,
 
     rx: Receiver<DiskMsg>,
@@ -171,10 +178,10 @@ impl Disk {
                 NonZeroUsize::new(FILE_CACHE_CAPACITY).unwrap(),
             ),
             torrent_cache: HashMap::new(),
-            cache: HashMap::new(),
+            block_cache: HashMap::new(),
             peer_ctxs: Vec::new(),
             torrent_ctxs: HashMap::new(),
-            downloaded_pieces_len: HashMap::new(),
+            downloaded_pieces: HashMap::new(),
             piece_strategy: HashMap::default(),
             pieces_blocks: HashMap::default(),
             torrent_info: HashMap::default(),
@@ -190,9 +197,9 @@ impl Disk {
             match msg {
                 DiskMsg::DeleteTorrent(info_hash) => {
                     self.torrent_cache.remove_entry(&info_hash);
-                    self.cache.remove_entry(&info_hash);
+                    self.block_cache.remove_entry(&info_hash);
                     self.torrent_ctxs.remove_entry(&info_hash);
-                    self.downloaded_pieces_len.remove_entry(&info_hash);
+                    self.downloaded_pieces.remove_entry(&info_hash);
                     self.piece_strategy.remove_entry(&info_hash);
                     self.pieces_blocks.remove_entry(&info_hash);
                     self.torrent_info.remove_entry(&info_hash);
@@ -204,7 +211,6 @@ impl Disk {
                     self.delete_peer(addr);
                 }
                 DiskMsg::NewTorrent(torrent) => {
-                    info!("new_torrent");
                     let _ = self.new_torrent(torrent).await;
                 }
                 DiskMsg::ReadBlock { block_info, recipient, info_hash } => {
@@ -305,15 +311,6 @@ impl Disk {
         Ok(())
     }
 
-    // pub async fn new_torrent_two(
-    //     &mut self,
-    //     torrent_ctx: Arc<TorrentCtx>,
-    //     info_hash: InfoHash,
-    // ) -> Result<(), Error> {
-    //     self.torrent_ctxs.insert(info_hash, torrent_ctx.clone());
-    //     Ok(())
-    // }
-
     /// Initialize necessary data.
     pub async fn new_torrent(
         &mut self,
@@ -362,16 +359,12 @@ impl Disk {
 
         let mut all_pieces: Vec<u32> = (0..info.pieces()).collect();
 
-        // let piece_order =
-        // self.piece_strategy.get(info_hash).cloned().unwrap();
-        // if piece_order != PieceStrategy::Sequential {
         all_pieces.shuffle(&mut rand::rng());
-        // }
 
         self.piece_order.insert(info_hash.clone(), all_pieces);
-        self.cache.insert(info_hash.clone(), BTreeMap::new());
+        self.block_cache.insert(info_hash.clone(), BTreeMap::new());
         self.pieces_blocks.insert(info_hash.clone(), info.get_block_infos()?);
-        self.downloaded_pieces_len.insert(info_hash.clone(), 0);
+        self.downloaded_pieces.insert(info_hash.clone(), 0);
 
         Ok(())
     }
@@ -670,7 +663,7 @@ impl Disk {
             .clone();
 
         let cache = self
-            .cache
+            .block_cache
             .get_mut(info_hash)
             .ok_or(Error::TorrentDoesNotExist)?
             .entry(index)
@@ -694,7 +687,7 @@ impl Disk {
 
         // continue function if the piece was fully downloaded
         if self
-            .cache
+            .block_cache
             .get(info_hash)
             .ok_or(Error::TorrentDoesNotExist)?
             .get(&index)
@@ -706,23 +699,43 @@ impl Disk {
             return Ok(());
         }
 
+        // validate that the downloaded pieces hash
+        // matches the hash of the info.
+        if (self.validate_piece(info_hash, index).await).is_err() {
+            warn!("piece {index} is corrupted");
+
+            let info = self
+                .torrent_cache
+                .get(info_hash)
+                .ok_or(Error::TorrentDoesNotExist)?;
+
+            let info_blocks = Info::get_block_infos_of_piece(
+                info.total_size as usize,
+                info.piece_length as usize,
+                index,
+            );
+
+            // as the piece is corrupted, try to download it again and return
+            // the block infos so that another peer can get them.
+            self.pieces_blocks
+                .get_mut(info_hash)
+                .ok_or(Error::TorrentDoesNotExist)?
+                .entry(index)
+                .or_default()
+                .extend(info_blocks);
+
+            return Ok(());
+        }
+
         let downloaded_pieces_len = self
-            .downloaded_pieces_len
+            .downloaded_pieces
             .get_mut(info_hash)
             .ok_or(Error::TorrentDoesNotExist)?;
 
         *downloaded_pieces_len += 1;
 
-        // validate that the downloaded pieces hash
-        // matches the hash of the info.
-        if let Err(e) = self.validate_piece(info_hash, index).await {
-            warn!("piece {index} is corrupted.");
-            return Err(e);
-        }
-
         debug!("piece {index} is valid.");
 
-        let _ = torrent_ctx.tx.send(TorrentMsg::SetBitfield(index)).await;
         let _ = torrent_ctx.tx.send(TorrentMsg::DownloadedPiece(index)).await;
 
         // at this point the piece is valid,
@@ -772,7 +785,7 @@ impl Disk {
         let hash_from_info = pieces[b..e].to_owned();
 
         let blocks = self
-            .cache
+            .block_cache
             .get_mut(info_hash)
             .ok_or(Error::TorrentDoesNotExist)?
             .get_mut(&index)
@@ -850,7 +863,7 @@ impl Disk {
     ) -> Result<(), Error> {
         // Get blocks from cache
         let blocks = self
-            .cache
+            .block_cache
             .get_mut(info_hash)
             .and_then(|c| c.remove(&piece_index))
             .ok_or(Error::PieceInvalid)?;
@@ -1125,7 +1138,6 @@ mod tests {
                 opt_unchoked_peer: None,
                 connecting_peers: Vec::new(),
                 error_peers: Vec::new(),
-                downloaded_info_bytes: metadata_size,
                 bitfield: bitvec::bitvec![u8, bitvec::prelude::Msb0; 0; pieces_len as usize],
                 stats: Stats { seeders: 1, leechers: 1, interval: 1000 },
                 idle_peers: vec![],

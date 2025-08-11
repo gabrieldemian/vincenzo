@@ -86,43 +86,55 @@ impl Info {
         self.piece_length / BLOCK_LEN
     }
 
+    /// Only get block infos of a piece.
+    pub fn get_block_infos_of_piece(
+        total_size: usize,
+        piece_length: usize,
+        piece_index: usize,
+    ) -> Vec<BlockInfo> {
+        // let total_size = self.get_size() as usize;
+        // let piece_length = self.piece_length as usize;
+        let piece_start = piece_index * piece_length;
+        let piece_end = std::cmp::min(piece_start + piece_length, total_size);
+        let piece_size = (piece_end - piece_start) as u32;
+
+        // Calculate all blocks for this piece in one go
+        let num_blocks = piece_size.div_ceil(BLOCK_LEN);
+        let mut blocks = Vec::with_capacity(num_blocks as usize);
+
+        for block_index in 0..num_blocks {
+            let begin = block_index * BLOCK_LEN;
+            let len = if block_index == num_blocks - 1 {
+                piece_size - begin
+            } else {
+                BLOCK_LEN
+            };
+
+            blocks.push(BlockInfo { index: piece_index as u32, begin, len });
+        }
+
+        blocks
+    }
+
     /// Get all block_infos of a torrent
     /// Returns an Err if the Info is malformed, if it does not have `files` or
     /// `file_length`.
     pub fn get_block_infos(
         &self,
     ) -> Result<BTreeMap<usize, Vec<BlockInfo>>, error::Error> {
-        let total_size = self.get_size();
-        let piece_length = self.piece_length as u64;
-        let num_pieces = self.pieces() as u64;
+        let total_size = self.get_size() as usize;
+        let piece_length = self.piece_length as usize;
+        let num_pieces = self.pieces() as usize;
         let mut block_infos: BTreeMap<usize, Vec<BlockInfo>> = BTreeMap::new();
 
         for piece_index in 0..num_pieces {
-            let piece_start = piece_index * piece_length;
-            let piece_end =
-                std::cmp::min(piece_start + piece_length, total_size);
-            let piece_size = (piece_end - piece_start) as u32;
+            let blocks = Self::get_block_infos_of_piece(
+                total_size,
+                piece_length,
+                piece_index,
+            );
 
-            // Calculate all blocks for this piece in one go
-            let num_blocks = piece_size.div_ceil(BLOCK_LEN);
-            let mut blocks = Vec::with_capacity(num_blocks as usize);
-
-            for block_index in 0..num_blocks {
-                let begin = block_index * BLOCK_LEN;
-                let len = if block_index == num_blocks - 1 {
-                    piece_size - begin
-                } else {
-                    BLOCK_LEN
-                };
-
-                blocks.push(BlockInfo {
-                    index: piece_index as u32,
-                    begin,
-                    len,
-                });
-            }
-
-            block_infos.insert(piece_index as usize, blocks);
+            block_infos.insert(piece_index, blocks);
         }
 
         Ok(block_infos)
