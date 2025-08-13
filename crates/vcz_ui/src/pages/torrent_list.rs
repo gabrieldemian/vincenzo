@@ -11,7 +11,9 @@ use vincenzo::{
     utils::to_human_readable,
 };
 
-use crate::{action::Action, tui::Event, AppStyle};
+use crate::{
+    action::Action, tui::Event, widgets::chart::NetworkChart, PALETTE,
+};
 
 use super::Page;
 
@@ -23,27 +25,26 @@ pub struct TorrentList<'a> {
     chars_per_line: u16,
     pub focused: bool,
     pub state: ListState,
-    pub style: AppStyle,
     pub torrent_infos: Vec<TorrentState>,
+    pub network_charts: Vec<NetworkChart>,
     pub tx: mpsc::UnboundedSender<Action>,
 }
 
 impl<'a> TorrentList<'a> {
     pub fn new(tx: mpsc::UnboundedSender<Action>) -> Self {
-        let style = AppStyle::new();
         let state = ListState::default();
         let k: Line = vec![
-            Span::styled("k".to_string(), style.highlight_fg),
+            Span::styled("k".to_string(), PALETTE.highlight_fg),
             " move up ".into(),
-            Span::styled("j".to_string(), style.highlight_fg),
+            Span::styled("j".to_string(), PALETTE.highlight_fg),
             " move down ".into(),
-            Span::styled("t".to_string(), style.highlight_fg),
+            Span::styled("t".to_string(), PALETTE.highlight_fg),
             " add torrent ".into(),
-            Span::styled("p".to_string(), style.highlight_fg),
+            Span::styled("p".to_string(), PALETTE.highlight_fg),
             " pause/resume ".into(),
-            Span::styled("d".to_string(), style.highlight_fg),
+            Span::styled("d".to_string(), PALETTE.highlight_fg),
             " delete ".into(),
-            Span::styled("q".to_string(), style.highlight_fg),
+            Span::styled("q".to_string(), PALETTE.highlight_fg),
             " quit".into(),
         ]
         .into();
@@ -51,20 +52,30 @@ impl<'a> TorrentList<'a> {
         let line = ListItem::new(k);
         let footer_list: Vec<ListItem> = vec![line];
 
-        let footer = List::new(footer_list)
-            .block(Block::default().borders(Borders::ALL).title("Keybindings"));
+        let footer = List::new(footer_list).block(
+            Block::default().borders(Borders::ALL).title(" Keybindings "),
+        );
 
         Self {
             tx,
+            network_charts: vec![
+                NetworkChart::new(),
+                NetworkChart::new(),
+                NetworkChart::new(),
+            ],
             chars_per_line: 50,
             textarea: None,
             focused: true,
-            style,
             state,
             active_torrent: None,
             torrent_infos: Vec::new(),
             footer,
         }
+    }
+
+    fn new_network_chart(&mut self) {
+        let chart = NetworkChart::new();
+        self.network_charts.push(chart);
     }
 
     /// Validate that the user's magnet link is valid
@@ -75,19 +86,19 @@ impl<'a> TorrentList<'a> {
         let magnet = Magnet::new(&magnet_str);
 
         if let Err(err) = magnet {
-            textarea.set_style(Style::default().fg(Color::LightRed));
+            textarea.set_style(PALETTE.error.into());
             textarea.set_block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .border_style(Color::LightRed)
+                    .border_style(PALETTE.error)
                     .title(format!("Err: {err}")),
             );
             false
         } else {
-            textarea.set_style(Style::default().fg(Color::LightGreen));
+            textarea.set_style(Style::default().fg(PALETTE.success));
             textarea.set_block(
                 Block::default()
-                    .border_style(Color::LightGreen)
+                    .border_style(PALETTE.success)
                     .borders(Borders::ALL)
                     .title("Ok (Press Enter)"),
             );
@@ -95,34 +106,24 @@ impl<'a> TorrentList<'a> {
         }
     }
 
-    /// Go to the next torrent in the list
-    fn next(&mut self) {
+    fn select_relative(&mut self, offset: isize) {
         if self.torrent_infos.is_empty() {
             return;
         }
-        let i = self.state.selected().map_or(0, |v| {
-            if v != self.torrent_infos.len() - 1 {
-                v + 1
-            } else {
-                0
-            }
-        });
-        self.state.select(Some(i));
+        self.state.select(Some(self.state.selected().map_or(0, |s| {
+            (s as isize + offset).rem_euclid(self.torrent_infos.len() as isize)
+                as usize
+        })));
+    }
+
+    /// Go to the next torrent in the list
+    fn next(&mut self) {
+        self.select_relative(1);
     }
 
     /// Go to the previous torrent in the list
     fn previous(&mut self) {
-        if self.torrent_infos.is_empty() {
-            return;
-        }
-        let i = self.state.selected().map_or(0, |v| {
-            if v == 0 {
-                self.torrent_infos.len() - 1
-            } else {
-                v - 1
-            }
-        });
-        self.state.select(Some(i));
+        self.select_relative(-1);
     }
 
     fn quit(&mut self) {
@@ -178,30 +179,27 @@ impl<'a> TorrentList<'a> {
 impl<'a> Page for TorrentList<'a> {
     fn draw(&mut self, f: &mut ratatui::Frame) {
         let selected = self.state.selected();
-        let mut rows: Vec<ListItem> = Vec::new();
+        let mut torrent_rows: Vec<ListItem> = Vec::new();
 
         for (i, state) in self.torrent_infos.iter().enumerate() {
-            let mut download_rate = to_human_readable(state.download_rate);
+            let mut download_rate =
+                to_human_readable(state.download_rate as f64);
             download_rate.push_str("/s");
 
             let name = Span::from(state.name.clone()).bold();
 
             let status_style = match state.status {
-                TorrentStatus::Seeding => self.style.success,
-                TorrentStatus::Error => self.style.error,
-                TorrentStatus::Paused => self.style.warning,
-                _ => self.style.highlight_fg,
+                TorrentStatus::Seeding => PALETTE.success,
+                TorrentStatus::Error => PALETTE.error,
+                TorrentStatus::Paused => PALETTE.warning,
+                _ => PALETTE.primary,
             };
 
             let status_txt: &str = state.status.clone().into();
             let mut status_txt = vec![Span::styled(status_txt, status_style)];
 
             if state.status == TorrentStatus::Downloading {
-                let download_and_rate = format!(
-                    " {} - {download_rate}",
-                    to_human_readable(state.downloaded)
-                )
-                .into();
+                let download_and_rate = format!("   {download_rate}",).into();
                 status_txt.push(download_and_rate);
             }
 
@@ -214,15 +212,20 @@ impl<'a> Page for TorrentList<'a> {
 
             if selected == Some(i) {
                 self.active_torrent = Some(state.info_hash.clone());
-                line_top = line_top.patch_style(self.style.highlight_fg);
-                line_bottom = line_bottom.patch_style(self.style.highlight_fg);
+                line_top = line_top.patch_style(PALETTE.highlight_fg);
+                line_bottom = line_bottom.patch_style(PALETTE.highlight_fg);
             }
 
             // let total = ctx.connected_peers + ctx.idle_peers;
             let mut items = vec![
                 line_top,
                 name.into(),
-                to_human_readable(state.size).into(),
+                format!(
+                    "{} of {}",
+                    to_human_readable(state.downloaded as f64),
+                    to_human_readable(state.size as f64)
+                )
+                .into(),
                 sl,
                 status_txt.into(),
                 format!(
@@ -233,22 +236,33 @@ impl<'a> Page for TorrentList<'a> {
                 line_bottom,
             ];
 
+            // remove top line of torrents if the select is the first item or
+            // none
             if (selected.is_none() || selected == Some(0)) && i > 0 {
                 items.remove(0);
             }
 
+            // remove top line for items below the selected one
             if matches!(
                 selected,
-                Some(s) if s > i
+                Some(s) if s > 0 && i != s && i > s
+            ) {
+                items.remove(0);
+            }
+
+            // remove bottom line for items above the selected one
+            if matches!(
+                selected,
+                Some(s) if s > 0 && i != s && i < s
             ) {
                 items.remove(items.len() - 1);
             }
 
-            rows.push(ListItem::new(items));
+            torrent_rows.push(ListItem::new(items));
         }
 
-        let torrent_list = List::new(rows)
-            .block(Block::default().borders(Borders::ALL).title("Torrents"));
+        let block = Block::bordered().title(" Torrents ");
+        let torrent_list = List::new(torrent_rows).block(block);
 
         if let Some(textarea) = &self.textarea {
             let area = self.centered_rect(60, 30, f.area());
@@ -263,19 +277,43 @@ impl<'a> Page for TorrentList<'a> {
 
             f.render_widget(Clear, area);
             f.render_widget(textarea, chunks[0]);
-
             f.render_widget(Paragraph::new("Shift + [C]lear"), chunks[1]);
         } else {
+            let has_active_torrent = self.active_torrent.is_some();
+
             // Create two chunks, the body, and the footer
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints(
-                    [Constraint::Max(98), Constraint::Length(3)].as_ref(),
-                )
+                .constraints(if has_active_torrent {
+                    [
+                        Constraint::Length(82),
+                        Constraint::Length(15),
+                        Constraint::Length(3),
+                    ]
+                    .as_ref()
+                } else {
+                    [Constraint::Max(97), Constraint::Length(3)].as_ref()
+                })
                 .split(f.area());
 
-            f.render_stateful_widget(torrent_list, chunks[0], &mut self.state);
-            f.render_widget(self.footer.clone(), chunks[1]);
+            if has_active_torrent {
+                f.render_stateful_widget(
+                    torrent_list,
+                    chunks[0],
+                    &mut self.state,
+                );
+
+                self.network_charts[selected.unwrap()].draw(f, chunks[1]);
+
+                f.render_widget(self.footer.clone(), chunks[2]);
+            } else {
+                f.render_stateful_widget(
+                    torrent_list,
+                    chunks[0],
+                    &mut self.state,
+                );
+                f.render_widget(self.footer.clone(), chunks[1]);
+            }
         }
     }
     fn get_action(&self, event: crate::tui::Event) -> crate::action::Action {
@@ -291,6 +329,12 @@ impl<'a> Page for TorrentList<'a> {
     fn handle_action(&mut self, action: Action) {
         match action {
             Action::TorrentStates(torrent_states) => {
+                for (i, s) in torrent_states.iter().enumerate() {
+                    if let Some(chart) = self.network_charts.get_mut(i) {
+                        chart.on_tick(s.download_rate as f64);
+                    }
+                }
+
                 self.torrent_infos = torrent_states;
             }
             Action::Key(k)

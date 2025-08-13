@@ -234,6 +234,19 @@ impl Daemon {
                     info_hash: InfoHash::random(),
                     ..Default::default()
                 },
+                TorrentState {
+                    name: "Test torrent 03".to_string(),
+                    status: TorrentStatus::Downloading,
+                    stats: Stats { leechers: 1, seeders: 9, interval: 1000 },
+                    connected_peers: 25,
+                    downloading_from: 3,
+                    have_info: true,
+                    download_rate: 12_000,
+                    downloaded: 100,
+                    size: 180_327_100_000,
+                    info_hash: InfoHash::random(),
+                    ..Default::default()
+                },
             ]);
         }
 
@@ -247,6 +260,14 @@ impl Daemon {
                         downloaded,
                         ..
                     } = &mut self.torrent_states[0];
+                    *download_rate = rand::random_range(30_000..100_000);
+                    *downloaded += *download_rate;
+
+                    let TorrentState {
+                        download_rate,
+                        downloaded,
+                        ..
+                    } = &mut self.torrent_states[2];
                     *download_rate = rand::random_range(30_000..100_000);
                     *downloaded += *download_rate;
                 }
@@ -362,8 +383,8 @@ impl Daemon {
                                     TorrentStatus::Downloading => {
                                         format!(
                                             "{} - {}",
-                                            to_human_readable(state.downloaded),
-                                            to_human_readable(state.download_rate),
+                                            to_human_readable(state.downloaded as f64),
+                                            to_human_readable(state.download_rate as f64),
                                         )
                                     }
                                     _ => state.status.clone().into()
@@ -372,7 +393,7 @@ impl Daemon {
                                 println!(
                                     "\n{}\n{}\nSeeders {} Leechers {}\n{status_line}",
                                     state.name,
-                                    to_human_readable(state.size),
+                                    to_human_readable(state.size as f64),
                                     state.stats.seeders,
                                     state.stats.leechers,
                                 );

@@ -1008,10 +1008,10 @@ impl Torrent<Connected> {
                     let upload_rate = self.state.counter.upload_rate.load(Ordering::Relaxed);
 
                     info!("d: {} u: {} dr: {} ur: {}",
-                        to_human_readable(downloaded),
-                        to_human_readable(uploaded),
-                        to_human_readable(download_rate),
-                        to_human_readable(upload_rate),
+                        to_human_readable(downloaded as f64),
+                        to_human_readable(uploaded as f64),
+                        to_human_readable(download_rate as f64),
+                        to_human_readable(upload_rate as f64),
                     );
                 }
                 _ = optimistic_unchoke_interval.tick() => {
