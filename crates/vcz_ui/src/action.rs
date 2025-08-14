@@ -21,7 +21,7 @@ pub enum Action {
     /// Render another page on the UI
     ChangePage(Page),
 
-    NewTorrent(String),
+    NewTorrent(magnet_url::Magnet),
     TogglePause(InfoHash),
     DeleteTorrent(InfoHash),
     TorrentState(TorrentState),

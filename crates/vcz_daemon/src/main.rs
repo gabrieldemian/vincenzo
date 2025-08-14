@@ -1,5 +1,6 @@
 use clap::Parser;
 use futures::SinkExt;
+use magnet_url::Magnet;
 use tokio::{
     net::{TcpListener, TcpStream},
     spawn,
@@ -74,6 +75,7 @@ async fn main() -> Result<(), Error> {
     //
     // add a a new torrent to Daemon
     if let Some(magnet) = args.magnet {
+        let magnet = Magnet::new(&magnet)?;
         socket.send(Message::NewTorrent(magnet)).await?;
     }
 

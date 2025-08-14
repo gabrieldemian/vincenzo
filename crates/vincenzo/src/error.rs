@@ -41,6 +41,15 @@ pub enum Error {
     #[error("Failed to send a connect request to the tracker")]
     ConnectSendFailed,
 
+    #[error("")]
+    FrontendError,
+
+    #[error("Failed to send a connect request to the tracker")]
+    MagnetError(#[from] magnet_url::MagnetError),
+
+    #[error("String is not UTF-8")]
+    Utf8Error(#[from] std::string::FromUtf8Error),
+
     #[error("The given peer id was not found: {0}")]
     PeerNotFound(PeerId),
 
@@ -54,7 +63,7 @@ pub enum Error {
     BencodeError,
 
     #[error("IO error")]
-    PeerSocketAddrs(#[from] io::Error),
+    IO(#[from] io::Error),
 
     #[error("Peer resolved to no unusable addresses")]
     PeerSocketAddr,

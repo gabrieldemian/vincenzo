@@ -58,3 +58,6 @@ vcz_daemon = { path = "crates/vcz_daemon" }
 vcz_ui = { path = "crates/vcz_ui" }
 vincenzo = { path = "crates/vincenzo" }
 vincenzo_macros = { path = "crates/vincenzo_macros" }
+
+[workspace.features]
+test = []

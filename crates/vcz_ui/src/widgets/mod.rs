@@ -1,1 +1,1 @@
-pub mod chart;
+pub mod network_chart;

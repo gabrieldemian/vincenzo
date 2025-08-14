@@ -1,13 +1,12 @@
 use ratatui::{
     prelude::*,
-    style::Styled,
     widgets::{
         Axis, Block, Borders, Chart, Dataset, GraphType, LegendPosition,
     },
     Frame,
 };
 use tokio::time::Instant;
-use vincenzo::utils::to_human_readable;
+use vincenzo::{torrent::InfoHash, utils::to_human_readable};
 
 use crate::PALETTE;
 
@@ -17,6 +16,7 @@ const TARGET_WINDOW: f64 = 60.0;
 
 #[derive(Clone)]
 pub struct NetworkChart {
+    pub info_hash: InfoHash,
     download_data: Vec<(f64, f64)>,
     upload_data: Vec<(f64, f64)>,
     max_rate: f64,
@@ -27,6 +27,7 @@ pub struct NetworkChart {
 impl Default for NetworkChart {
     fn default() -> Self {
         Self {
+            info_hash: InfoHash::default(),
             download_data: Vec::with_capacity(MAX_DATA_POINTS),
             upload_data: Vec::with_capacity(MAX_DATA_POINTS),
             max_rate: 1.0,
@@ -37,8 +38,8 @@ impl Default for NetworkChart {
 }
 
 impl NetworkChart {
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(info_hash: InfoHash) -> Self {
+        Self { info_hash, ..Default::default() }
     }
 
     pub fn on_tick(&mut self, download_rate: f64, upload_rate: f64) {
@@ -85,14 +86,14 @@ impl NetworkChart {
             .name("")
             .marker(symbols::Marker::Braille)
             .graph_type(GraphType::Line)
-            .style(PALETTE.primary)
+            .style(PALETTE.blue)
             .data(&self.download_data);
 
         let upload_dataset = Dataset::default()
             .name("")
             .marker(symbols::Marker::Braille)
             .graph_type(GraphType::Line)
-            .style(PALETTE.success)
+            .style(PALETTE.green)
             .data(&self.upload_data);
 
         let x_labels = vec![
@@ -109,17 +110,18 @@ impl NetworkChart {
         ];
 
         let legend = vec![
-            Span::styled(" ↓ ", PALETTE.primary),
+            Span::styled(" ↓ ", PALETTE.blue),
             Span::styled(
                 to_human_readable(self.download_data.last().unwrap().1),
-                Into::<Style>::into(PALETTE.primary).bold(),
+                Into::<Style>::into(PALETTE.blue).bold(),
             ),
             Span::raw(" "),
-            Span::styled(" ↑ ", PALETTE.success),
+            Span::styled(" ↑ ", PALETTE.green),
             Span::styled(
-                to_human_readable(self.download_data.last().unwrap().1),
-                Into::<Style>::into(PALETTE.success).bold(),
+                to_human_readable(self.upload_data.last().unwrap().1),
+                Into::<Style>::into(PALETTE.green).bold(),
             ),
+            Span::raw(" "),
         ];
 
         let chart = Chart::new(vec![download_dataset, upload_dataset])

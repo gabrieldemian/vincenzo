@@ -10,6 +10,12 @@ pub enum Error {
     #[error("Could not send message to UI")]
     SendErrorFr,
 
+    #[error("IO error")]
+    IO(#[from] std::io::Error),
+
+    #[error("Daemon Error")]
+    DaemonError(#[from] vincenzo::error::Error),
+
     #[error("Could not send message to TCP socket: `{0}`")]
     SendErrorTcp(String),
 
@@ -21,9 +27,6 @@ pub enum Error {
 
     #[error("Could not receive message")]
     RecvError,
-
-    #[error("Daemon socket was closed")]
-    IoError(#[from] std::io::Error),
 
     #[error("The daemon is not running on the given addr: {0}")]
     DaemonNotRunning(SocketAddr),

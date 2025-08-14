@@ -397,7 +397,7 @@ impl Peer<Connected> {
         // Identify timed-out requests
         for (block_info, mut request_time) in &self.state.outgoing_requests {
             if now.duration_since(request_time) >= BLOCK_TIMEOUT {
-                debug!("rerequesting block {:?}", block_info);
+                trace!("rerequesting block {:?}", block_info);
                 self.state.sink.send(Core::Request(block_info.clone())).await?;
                 request_time = Instant::now();
             }
@@ -417,7 +417,7 @@ impl Peer<Connected> {
         let blocks: Vec<BlockInfo> =
             self.state.outgoing_requests.drain(..).map(|v| v.0).collect();
 
-        debug!(
+        trace!(
             "{local} freeing {:?} blocks for download of {remote}",
             blocks.len()
         );
@@ -450,7 +450,7 @@ impl Peer<Connected> {
         let request_len =
             target_request_queue_len.saturating_sub(current_requests);
 
-        debug!(
+        trace!(
             "requesting block infos: {request_len} pending: {current_requests}"
         );
 

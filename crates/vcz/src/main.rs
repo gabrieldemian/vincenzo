@@ -1,8 +1,9 @@
 use clap::Parser;
+use magnet_url::Magnet;
 use tokio::{join, spawn, sync::mpsc};
 use tracing::Level;
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
-use tracing_subscriber::{fmt::time::OffsetTime, FmtSubscriber};
+use tracing_subscriber::FmtSubscriber;
 use vincenzo::{
     args::Args, config::CONFIG, daemon::Daemon, disk::Disk, error::Error,
 };
@@ -25,17 +26,10 @@ async fn main() -> Result<(), Error> {
     let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
 
     let subscriber = FmtSubscriber::builder()
-        .with_max_level(Level::DEBUG)
+        .without_time()
+        .with_target(false)
+        .with_max_level(Level::INFO)
         .with_writer(non_blocking)
-        .with_timer(OffsetTime::new(
-            time::UtcOffset::current_local_offset()
-                .unwrap_or(time::UtcOffset::UTC),
-            time::format_description::parse(
-                "[year]-[month]-[day] [hour]:[minute]:[second]",
-            )
-            .unwrap(),
-        ))
-        .with_ansi(false)
         .finish();
 
     tracing::subscriber::set_global_default(subscriber)
@@ -74,6 +68,7 @@ async fn main() -> Result<(), Error> {
     // If the user passed a magnet through the CLI,
     // start this torrent immediately
     if let Some(magnet) = args.magnet {
+        let magnet = Magnet::new(&magnet)?;
         let _ = fr_tx.send(Action::NewTorrent(magnet));
     }
 

@@ -13,7 +13,7 @@ use std::{
     time::Duration,
 };
 use tokio_util::codec::Framed;
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, info, trace, warn};
 
 use tokio::{
     net::{TcpListener, TcpStream},
@@ -74,7 +74,7 @@ pub struct DaemonCtx {
 pub enum DaemonMsg {
     /// Tell Daemon to add a new torrent and it will immediately
     /// announce to a tracker, connect to the peers, and start the download.
-    NewTorrent(Magnet),
+    NewTorrent(magnet_url::Magnet),
 
     GetConnectedPeers(oneshot::Sender<u32>),
     GetTorrentCtx(oneshot::Sender<Option<Arc<TorrentCtx>>>, InfoHash),
@@ -174,6 +174,162 @@ impl Daemon {
         }
     }
 
+    #[cfg(feature = "test")]
+    async fn add_test_torrents(&mut self) {
+        self.torrent_states.extend([
+            TorrentState {
+                name: "Test torrent 01".to_string(),
+                status: TorrentStatus::Downloading,
+                stats: Stats { leechers: 4, seeders: 35, interval: 1000 },
+                connected_peers: 25,
+                downloading_from: 5,
+                have_info: true,
+                download_rate: 15_000,
+                downloaded: 0,
+                size: 150_000_000_000,
+                info_hash: InfoHash::random(),
+                ..Default::default()
+            },
+            TorrentState {
+                name: "Test torrent 02".to_string(),
+                status: TorrentStatus::Seeding,
+                stats: Stats { leechers: 4, seeders: 35, interval: 1000 },
+                connected_peers: 30,
+                downloading_from: 3,
+                have_info: true,
+                download_rate: 0,
+                downloaded: 150_000_000,
+                size: 150_000_000,
+                info_hash: InfoHash::random(),
+                ..Default::default()
+            },
+            TorrentState {
+                name: "Test torrent 03".to_string(),
+                status: TorrentStatus::Downloading,
+                stats: Stats { leechers: 1, seeders: 9, interval: 1000 },
+                connected_peers: 25,
+                downloading_from: 3,
+                have_info: true,
+                download_rate: 12_000,
+                downloaded: 100,
+                size: 180_327_100_000,
+                info_hash: InfoHash::random(),
+                ..Default::default()
+            },
+            TorrentState {
+                name: "Test torrent 04".to_string(),
+                status: TorrentStatus::Downloading,
+                stats: Stats { leechers: 1, seeders: 9, interval: 1000 },
+                connected_peers: 25,
+                downloading_from: 3,
+                have_info: true,
+                download_rate: 12_000,
+                downloaded: 100,
+                size: 180_327_100_000,
+                info_hash: InfoHash::random(),
+                ..Default::default()
+            },
+            TorrentState {
+                name: "Test torrent 05".to_string(),
+                status: TorrentStatus::Downloading,
+                stats: Stats { leechers: 1, seeders: 9, interval: 1000 },
+                connected_peers: 25,
+                downloading_from: 3,
+                have_info: true,
+                download_rate: 12_000,
+                downloaded: 100,
+                size: 180_327_100_000,
+                info_hash: InfoHash::random(),
+                ..Default::default()
+            },
+            TorrentState {
+                name: "Test torrent 06".to_string(),
+                status: TorrentStatus::Downloading,
+                stats: Stats { leechers: 1, seeders: 9, interval: 1000 },
+                connected_peers: 25,
+                downloading_from: 3,
+                have_info: true,
+                download_rate: 12_000,
+                downloaded: 100,
+                size: 180_327_100_000,
+                info_hash: InfoHash::random(),
+                ..Default::default()
+            },
+        ]);
+    }
+
+    #[cfg(feature = "test")]
+    async fn tick_test(&mut self) {
+        let TorrentState {
+            download_rate,
+            upload_rate,
+            uploaded,
+            downloaded,
+            ..
+        } = &mut self.torrent_states[0];
+        *download_rate = rand::random_range(30_000..100_000);
+        *upload_rate = rand::random_range(20_000..45_000);
+        *uploaded += *upload_rate;
+        *downloaded += *download_rate;
+
+        let TorrentState {
+            download_rate,
+            upload_rate,
+            uploaded,
+            downloaded,
+            ..
+        } = &mut self.torrent_states[1];
+        *upload_rate = rand::random_range(70_000..100_000);
+        *download_rate = rand::random_range(0..1_000);
+        *uploaded += *upload_rate;
+        *downloaded += *download_rate;
+
+        let TorrentState {
+            download_rate,
+            downloaded,
+            upload_rate,
+            uploaded,
+            ..
+        } = &mut self.torrent_states[2];
+        *download_rate = rand::random_range(30_000..100_000);
+        *downloaded += *download_rate;
+        *uploaded += *upload_rate;
+
+        let TorrentState {
+            download_rate,
+            downloaded,
+            upload_rate,
+            uploaded,
+            ..
+        } = &mut self.torrent_states[3];
+
+        *download_rate = rand::random_range(30_000..100_000);
+        *downloaded += *download_rate;
+        *uploaded += *upload_rate;
+        let TorrentState {
+            download_rate,
+            downloaded,
+            upload_rate,
+            uploaded,
+            ..
+        } = &mut self.torrent_states[4];
+
+        *download_rate = rand::random_range(30_000..100_000);
+        *downloaded += *download_rate;
+        *uploaded += *upload_rate;
+
+        let TorrentState {
+            download_rate,
+            downloaded,
+            upload_rate,
+            uploaded,
+            ..
+        } = &mut self.torrent_states[5];
+        *download_rate = rand::random_range(30_000..100_000);
+        *downloaded += *download_rate;
+        *uploaded += *upload_rate;
+    }
+
     /// This function will listen to 3 different event loops:
     /// - The daemon internal messages via MPSC [`DaemonMsg`]
     /// - The daemon TCP framed messages [`DaemonCodec`]
@@ -198,97 +354,21 @@ impl Daemon {
 
         self.run_local_peer().await?;
 
+        #[cfg(feature = "test")]
+        self.add_test_torrents().await;
+
         let signals = Signals::new([SIGHUP, SIGTERM, SIGINT, SIGQUIT])?;
         let handle = signals.handle();
         let signals_task =
             tokio::spawn(Daemon::handle_signals(signals, ctx.tx.clone()));
 
-        // only used for testing the frontend UI
-        let is_testing_frontend = CONFIG.test_frontend;
-
-        if is_testing_frontend {
-            self.torrent_states.extend([
-                TorrentState {
-                    name: "Test torrent 01".to_string(),
-                    status: TorrentStatus::Downloading,
-                    stats: Stats { leechers: 4, seeders: 35, interval: 1000 },
-                    connected_peers: 25,
-                    downloading_from: 5,
-                    have_info: true,
-                    download_rate: 15_000,
-                    downloaded: 0,
-                    size: 150_000_000_000,
-                    info_hash: InfoHash::random(),
-                    ..Default::default()
-                },
-                TorrentState {
-                    name: "Test torrent 02".to_string(),
-                    status: TorrentStatus::Seeding,
-                    stats: Stats { leechers: 4, seeders: 35, interval: 1000 },
-                    connected_peers: 30,
-                    downloading_from: 3,
-                    have_info: true,
-                    download_rate: 0,
-                    downloaded: 150_000_000,
-                    size: 150_000_000,
-                    info_hash: InfoHash::random(),
-                    ..Default::default()
-                },
-                TorrentState {
-                    name: "Test torrent 03".to_string(),
-                    status: TorrentStatus::Downloading,
-                    stats: Stats { leechers: 1, seeders: 9, interval: 1000 },
-                    connected_peers: 25,
-                    downloading_from: 3,
-                    have_info: true,
-                    download_rate: 12_000,
-                    downloaded: 100,
-                    size: 180_327_100_000,
-                    info_hash: InfoHash::random(),
-                    ..Default::default()
-                },
-            ]);
-        }
-
         let mut test_interval = interval(Duration::from_secs(1));
 
         'outer: loop {
             select! {
-                _ = test_interval.tick(), if is_testing_frontend => {
-                    let TorrentState {
-                        download_rate,
-                        upload_rate,
-                        uploaded,
-                        downloaded,
-                        ..
-                    } = &mut self.torrent_states[0];
-                    *download_rate = rand::random_range(30_000..100_000);
-                    *upload_rate = rand::random_range(20_000..45_000);
-                    *uploaded += *upload_rate;
-                    *downloaded += *download_rate;
-
-                    let TorrentState {
-                        download_rate,
-                        upload_rate,
-                        uploaded,
-                        downloaded,
-                        ..
-                    } = &mut self.torrent_states[1];
-                    *upload_rate = rand::random_range(70_000..100_000);
-                    *download_rate = rand::random_range(0..1_000);
-                    *uploaded += *upload_rate;
-                    *downloaded += *download_rate;
-
-                    let TorrentState {
-                        download_rate,
-                        downloaded,
-                        upload_rate,
-                        uploaded,
-                        ..
-                    } = &mut self.torrent_states[2];
-                    *download_rate = rand::random_range(30_000..100_000);
-                    *downloaded += *download_rate;
-                    *uploaded += *upload_rate;
+                _ = test_interval.tick() => {
+                    #[cfg(feature = "test")]
+                    self.tick_test().await;
                 }
                 // listen for remote TCP connections
                 Ok((socket, addr)) = socket.accept() => {
@@ -448,16 +528,10 @@ impl Daemon {
             Message::DeleteTorrent(info_hash) => {
                 tx.send(DaemonMsg::DeleteTorrent(info_hash)).await?;
             }
-            Message::NewTorrent(magnet_link) => {
-                info!("new_torrent: {magnet_link}");
+            Message::NewTorrent(magnet) => {
+                info!("new_torrent: {:?}", magnet.hash());
 
-                let magnet = Magnet::new(&magnet_link);
-
-                if let Ok(magnet) = magnet {
-                    let _ = tx.send(DaemonMsg::NewTorrent(magnet)).await;
-                } else {
-                    error!("invalid magnet link");
-                }
+                let _ = tx.send(DaemonMsg::NewTorrent(magnet)).await;
             }
             Message::GetTorrentState(info_hash) => {
                 trace!("daemon RequestTorrentState {info_hash:?}");
@@ -507,7 +581,11 @@ impl Daemon {
 
     /// Create a new [`Torrent`] given a magnet link URL
     /// and run the torrent's event loop.
-    pub async fn new_torrent(&mut self, magnet: Magnet) -> Result<(), Error> {
+    pub async fn new_torrent(
+        &mut self,
+        magnet: magnet_url::Magnet,
+    ) -> Result<(), Error> {
+        let magnet: Magnet = magnet.into();
         let info_hash = magnet.parse_xt_infohash();
 
         if self.torrent_states.iter().any(|v| v.info_hash == info_hash) {

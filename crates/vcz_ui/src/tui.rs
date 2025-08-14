@@ -87,14 +87,14 @@ impl Tui {
         self.cancellation_token = CancellationToken::new();
 
         let cancellation_token = self.cancellation_token.clone();
-        let _event_tx = self.event_tx.clone();
+        let event_tx = self.event_tx.clone();
 
         tokio::spawn(async move {
             let mut reader = crossterm::event::EventStream::new();
             let mut tick_interval = tokio::time::interval(tick_delay);
             let mut render_interval = tokio::time::interval(render_delay);
 
-            _event_tx.send(Event::Init).await.unwrap();
+            event_tx.send(Event::Init).await.unwrap();
 
             loop {
                 let tick_delay = tick_interval.tick();
@@ -111,37 +111,37 @@ impl Tui {
                                 match evt {
                                     CrosstermEvent::Key(key) => {
                                         if key.kind == KeyEventKind::Press {
-                                            _event_tx.send(Event::Key(key)).await?;
+                                            event_tx.send(Event::Key(key)).await?;
                                         }
                                     },
                                     CrosstermEvent::Mouse(mouse) => {
-                                        _event_tx.send(Event::Mouse(mouse)).await?;
+                                        event_tx.send(Event::Mouse(mouse)).await?;
                                     },
                                     CrosstermEvent::Resize(x, y) => {
-                                        _event_tx.send(Event::Resize(x, y)).await?;
+                                        event_tx.send(Event::Resize(x, y)).await?;
                                     },
                                     CrosstermEvent::FocusLost => {
-                                        _event_tx.send(Event::FocusLost).await?;
+                                        event_tx.send(Event::FocusLost).await?;
                                     },
                                     CrosstermEvent::FocusGained => {
-                                        _event_tx.send(Event::FocusGained).await?;
+                                        event_tx.send(Event::FocusGained).await?;
                                     },
                                     CrosstermEvent::Paste(s) => {
-                                        _event_tx.send(Event::Paste(s)).await?;
+                                        event_tx.send(Event::Paste(s)).await?;
                                     },
                                 }
                             }
                             Some(Err(_)) => {
-                                 _event_tx.send(Event::Error).await?;
+                                 event_tx.send(Event::Error).await?;
                             }
                             None => {},
                         }
                     },
                     _ = tick_delay => {
-                        _event_tx.send(Event::Tick).await?;
+                        event_tx.send(Event::Tick).await?;
                     },
                     _ = render_delay => {
-                        _event_tx.send(Event::Render).await?;
+                        event_tx.send(Event::Render).await?;
                     },
                 }
             }
@@ -171,11 +171,6 @@ impl Tui {
     pub fn cancel(&self) {
         self.cancellation_token.cancel();
         ratatui::restore();
-    }
-
-    pub fn resume(&mut self) -> Result<(), Error> {
-        self.run()?;
-        Ok(())
     }
 
     pub async fn next(&mut self) -> Result<Event, Error> {

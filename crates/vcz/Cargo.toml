@@ -35,3 +35,6 @@ tracing-appender = { workspace = true }
 time = { workspace = true }
 vincenzo = { workspace = true }
 vcz_ui = { workspace = true }
+
+[features]
+test = []

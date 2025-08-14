@@ -7,7 +7,13 @@ use magnet_url::Magnet as Magnet_;
 use crate::{error::Error, torrent::InfoHash};
 
 #[derive(Debug, Clone, Hash)]
-pub struct Magnet(Magnet_);
+pub struct Magnet(pub Magnet_);
+
+impl From<Magnet_> for Magnet {
+    fn from(value: Magnet_) -> Self {
+        Self(value)
+    }
+}
 
 impl Deref for Magnet {
     type Target = Magnet_;

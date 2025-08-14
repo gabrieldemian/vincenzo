@@ -1,11 +1,14 @@
 //! Framed messages sent to/from Daemon
 use bytes::{Buf, BufMut, BytesMut};
 use speedy::{BigEndian, Readable, Writable};
-use std::io::Cursor;
 use tokio::io;
 use tokio_util::codec::{Decoder, Encoder};
+use tracing::warn;
 
-use crate::torrent::{InfoHash, TorrentState};
+use crate::{
+    error::Error,
+    torrent::{InfoHash, TorrentState},
+};
 
 /// Messages of [`DaemonCodec`], check the struct documentation
 /// to read how to send messages.
@@ -32,7 +35,7 @@ pub enum Message {
     /// Add a new torrent given a magnet link.
     ///
     /// <len=1+magnet_link_len><id=1><magnet_link>
-    NewTorrent(String),
+    NewTorrent(magnet_url::Magnet),
 
     /// Every second, the Daemon will send information about all torrents
     /// to all listeners
@@ -92,49 +95,12 @@ impl TryFrom<u8> for MessageId {
     }
 }
 
-/// The daemon messages follow the same logic as the peer messages:
-/// The first `u32` is the len of the entire payload that comes after itself.
-/// Followed by an `u8` which is the message_id. The rest of the bytes
-/// depends on the message type.
-///
-/// In other words:
-/// len,msg_id,payload
-///  u32    u8       x      (in bits)
-///
-/// # Example
-///
-/// You are sending a magnet of 18 bytes: "magnet:blabla"
-///
-/// ```
-/// use bytes::{Buf, BufMut, BytesMut};
-/// use vincenzo::daemon_wire::MessageId;
-///
-/// let mut buf = BytesMut::new();
-/// let magnet = "magnet:blabla".to_owned();
-///
-/// // len is: 1 byte of the message_id + the payload len
-/// let msg_len = 1 + magnet.len() as u32;
-///
-/// // len>
-/// buf.put_u32(msg_len);
-///
-/// // msg_id message_id is 1
-/// buf.put_u8(MessageId::NewTorrent as u8);
-///
-/// // payload
-/// buf.extend_from_slice(magnet.as_bytes());
-///
-/// // result
-/// // len  msg_id  payload
-/// // 19     1    "magnet:blabla"
-/// // u32    u8    (dynamic size)
-/// ```
 #[derive(Debug)]
 pub struct DaemonCodec;
 
 // From message to bytes
 impl Encoder<Message> for DaemonCodec {
-    type Error = io::Error;
+    type Error = Error;
 
     fn encode(
         &mut self,
@@ -143,6 +109,7 @@ impl Encoder<Message> for DaemonCodec {
     ) -> Result<(), Self::Error> {
         match item {
             Message::NewTorrent(magnet) => {
+                let magnet = magnet.to_string();
                 let msg_len = 1 + magnet.len() as u32;
 
                 buf.put_u32(msg_len);
@@ -212,7 +179,7 @@ impl Encoder<Message> for DaemonCodec {
 // From bytes to message
 impl Decoder for DaemonCodec {
     type Item = Message;
-    type Error = io::Error;
+    type Error = Error;
 
     fn decode(
         &mut self,
@@ -224,43 +191,43 @@ impl Decoder for DaemonCodec {
             return Ok(None);
         }
 
-        // `get_*` integer extractors consume the message bytes by advancing
-        // buf's internal cursor. However, we don't want to do this as at this
-        // point we aren't sure we have the full message in the buffer, and thus
-        // we just want to peek at this value.
-        let mut tmp_buf = Cursor::new(&buf);
-        let msg_len = tmp_buf.get_u32() as usize;
+        // cursor is at <size_u32>
+        // peek at length prefix without consuming
+        let size =
+            u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
 
-        tmp_buf.set_position(0);
+        if size == 0 {
+            return Ok(Some(Message::Quit));
+        }
 
-        if buf.remaining() >= 4 + msg_len {
-            // we have the full message in the buffer so advance the buffer
-            // cursor past the message length header
-            buf.advance(4);
-
-            // Only a Quit doesnt have ID
-            if msg_len == 0 {
-                return Ok(Some(Message::Quit));
+        // incomplete message, wait for more
+        if buf.len() < 4 + size {
+            if buf.capacity() < size {
+                buf.reserve((size + 4) - buf.capacity());
             }
-        } else {
-            tracing::trace!(
-                "Read buffer is {} bytes long but message is {} bytes long",
-                buf.remaining(),
-                msg_len
-            );
             return Ok(None);
         }
 
-        let msg_id = MessageId::try_from(buf.get_u8())?;
+        // advance past the size, into the msg_id
+        buf.advance(4);
 
-        // here, buf is already advanced past the len and msg_id,
-        // so all calls to `remaining` and `get_*` will start from the payload.
+        let msg_id = buf.get_u8();
+
+        let Ok(msg_id) = MessageId::try_from(msg_id) else {
+            warn!("unknown message_id {msg_id:?}");
+            buf.advance(size - 1);
+            return Ok(None);
+        };
+
         let msg = match msg_id {
             MessageId::NewTorrent => {
                 let mut payload = vec![0u8; buf.remaining()];
                 buf.copy_to_slice(&mut payload);
 
-                Message::NewTorrent(String::from_utf8(payload).unwrap())
+                let magnet =
+                    magnet_url::Magnet::new(&String::from_utf8(payload)?)?;
+
+                Message::NewTorrent(magnet)
             }
             MessageId::TorrentState => {
                 let mut payload = vec![0u8; buf.remaining()];
@@ -316,26 +283,6 @@ mod tests {
     use crate::torrent::TorrentStatus;
 
     use super::*;
-
-    #[test]
-    fn new_torrent() {
-        let mut buf = BytesMut::new();
-        let msg = Message::NewTorrent("magnet:blabla".to_owned());
-        DaemonCodec.encode(msg, &mut buf).unwrap();
-
-        println!("encoded {buf:?}");
-
-        let msg = DaemonCodec.decode(&mut buf).unwrap().unwrap();
-
-        println!("decoded {msg:?}");
-
-        match msg {
-            Message::NewTorrent(magnet) => {
-                assert_eq!(magnet, "magnet:blabla".to_owned());
-            }
-            _ => panic!(),
-        }
-    }
 
     #[test]
     fn torrent_states() {

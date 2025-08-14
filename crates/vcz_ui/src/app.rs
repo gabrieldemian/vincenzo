@@ -86,7 +86,7 @@ impl App {
                 }
 
                 if let Action::NewTorrent(magnet) = &action {
-                    sink.send(Message::NewTorrent(magnet.to_owned())).await?;
+                    sink.send(Message::NewTorrent(magnet.clone())).await?;
                 }
 
                 if let Action::DeleteTorrent(info_hash) = &action {
@@ -111,7 +111,7 @@ impl App {
     /// via mpsc [`Action`]. For example, when we receive
     /// a TorrentState message from the daemon, we forward it to ourselves.
     pub async fn listen_daemon<
-        T: Stream<Item = Result<Message, std::io::Error>> + Unpin,
+        T: Stream<Item = Result<Message, vincenzo::error::Error>> + Unpin,
     >(
         tx: UnboundedSender<Action>,
         mut stream: T,

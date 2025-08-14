@@ -372,20 +372,6 @@ impl Decoder for CoreCodec {
         let size =
             u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
 
-        // if size > MAX_MESSAGE_SIZE || buf.len() > MAX_MESSAGE_SIZE {
-        //     warn!(
-        //         "Oversized message: {} > {} bytes, buffer: {} bytes",
-        //         size,
-        //         MAX_MESSAGE_SIZE,
-        //         buf.len()
-        //     );
-        //     return Err(io::Error::new(
-        //         io::ErrorKind::InvalidData,
-        //         format!("Message size {size} exceeds limit
-        // {MAX_MESSAGE_SIZE}"),     )
-        //     .into());
-        // }
-
         if size == 0 {
             buf.advance(4);
             return Ok(Some(Core::KeepAlive));
@@ -396,7 +382,6 @@ impl Decoder for CoreCodec {
         // be called each time a packet arrive, but if the buffer is not
         // full yet, we don't avance the cursor and just wait.
         if buf.len() < 4 + size {
-            // incomplete message, wait for more.
             if buf.capacity() < size {
                 buf.reserve((size + 4) - buf.capacity());
             }
