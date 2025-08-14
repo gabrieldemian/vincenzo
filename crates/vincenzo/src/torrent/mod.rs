@@ -970,7 +970,7 @@ impl Torrent<Connected> {
                         .min(self.state.size);
                     let uploaded = self.state.counter.total_uploaded.load(Ordering::Relaxed);
                     let download_rate = self.state.counter.download_rate.load(Ordering::Relaxed);
-                    // let upload_rate = self.state.counter.upload_rate.load(Ordering::Relaxed);
+                    let upload_rate = self.state.counter.upload_rate.load(Ordering::Relaxed);
 
                     let downloading_from = self.state.connected_peers
                         .iter()
@@ -985,6 +985,7 @@ impl Torrent<Connected> {
                         uploaded,
                         stats: self.state.stats.clone(),
                         status: self.status.clone(),
+                        upload_rate,
                         download_rate,
                         info_hash: self.ctx.info_hash.clone(),
                         have_info: self.state.have_info,

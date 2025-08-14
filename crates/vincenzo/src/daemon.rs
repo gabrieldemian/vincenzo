@@ -257,19 +257,38 @@ impl Daemon {
                 _ = test_interval.tick(), if is_testing_frontend => {
                     let TorrentState {
                         download_rate,
+                        upload_rate,
+                        uploaded,
                         downloaded,
                         ..
                     } = &mut self.torrent_states[0];
                     *download_rate = rand::random_range(30_000..100_000);
+                    *upload_rate = rand::random_range(20_000..45_000);
+                    *uploaded += *upload_rate;
+                    *downloaded += *download_rate;
+
+                    let TorrentState {
+                        download_rate,
+                        upload_rate,
+                        uploaded,
+                        downloaded,
+                        ..
+                    } = &mut self.torrent_states[1];
+                    *upload_rate = rand::random_range(70_000..100_000);
+                    *download_rate = rand::random_range(0..1_000);
+                    *uploaded += *upload_rate;
                     *downloaded += *download_rate;
 
                     let TorrentState {
                         download_rate,
                         downloaded,
+                        upload_rate,
+                        uploaded,
                         ..
                     } = &mut self.torrent_states[2];
                     *download_rate = rand::random_range(30_000..100_000);
                     *downloaded += *download_rate;
+                    *uploaded += *upload_rate;
                 }
                 // listen for remote TCP connections
                 Ok((socket, addr)) = socket.accept() => {

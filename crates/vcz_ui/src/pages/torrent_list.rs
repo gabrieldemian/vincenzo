@@ -331,7 +331,10 @@ impl<'a> Page for TorrentList<'a> {
             Action::TorrentStates(torrent_states) => {
                 for (i, s) in torrent_states.iter().enumerate() {
                     if let Some(chart) = self.network_charts.get_mut(i) {
-                        chart.on_tick(s.download_rate as f64);
+                        chart.on_tick(
+                            s.download_rate as f64,
+                            s.upload_rate as f64,
+                        );
                     }
                 }
 

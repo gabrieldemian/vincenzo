@@ -163,6 +163,7 @@ pub struct TorrentState {
     pub downloaded: u64,
     pub download_rate: u64,
     pub uploaded: u64,
+    pub upload_rate: u64,
     pub size: u64,
     pub info_hash: InfoHash,
     pub have_info: bool,
