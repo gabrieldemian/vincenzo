@@ -77,7 +77,7 @@ pub enum TorrentMsg {
 pub struct InfoHash(pub [u8; 20]);
 
 impl InfoHash {
-    pub(crate) fn random() -> Self {
+    pub fn random() -> Self {
         InfoHash(rand::rng().random())
     }
 }

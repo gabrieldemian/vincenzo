@@ -38,13 +38,16 @@ impl<'a> TorrentList<'a> {
     pub fn new(tx: mpsc::UnboundedSender<Action>) -> Self {
         Self {
             tx,
+            #[cfg(not(feature = "test"))]
+            network_charts: Vec::new(),
+            #[cfg(feature = "test")]
             network_charts: vec![
-                NetworkChart::new(InfoHash(rand::random())),
-                NetworkChart::new(InfoHash(rand::random())),
-                NetworkChart::new(InfoHash(rand::random())),
-                NetworkChart::new(InfoHash(rand::random())),
-                NetworkChart::new(InfoHash(rand::random())),
-                NetworkChart::new(InfoHash(rand::random())),
+                NetworkChart::new(InfoHash::random()),
+                NetworkChart::new(InfoHash::random()),
+                NetworkChart::new(InfoHash::random()),
+                NetworkChart::new(InfoHash::random()),
+                NetworkChart::new(InfoHash::random()),
+                NetworkChart::new(InfoHash::random()),
             ],
             scroll_state: ScrollbarState::default(),
             scroll: 0,
