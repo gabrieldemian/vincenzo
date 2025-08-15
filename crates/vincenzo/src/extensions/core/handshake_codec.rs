@@ -7,14 +7,19 @@
 //! should be switched to [`PeerCodec`], but care should be taken not to
 //! discard the underlying receive and send buffers.
 
-use std::{io, io::Cursor};
+use bendy::{decoding::FromBencode, encoding::ToBencode};
+use std::io;
 use tracing::warn;
 
 use bytes::{BufMut, BytesMut};
 use speedy::{BigEndian, Readable, Writable};
 use tokio_util::codec::{Decoder, Encoder};
 
-use crate::extensions::core::PSTR;
+use crate::{
+    extensions::{core::PSTR, CoreId, ExtMsg, Extended, Extension, PSTR_LEN},
+    peer::PeerId,
+    torrent::InfoHash,
+};
 
 use bytes::Buf;
 
@@ -31,22 +36,28 @@ impl Encoder<Handshake> for HandshakeCodec {
         handshake: Handshake,
         buf: &mut BytesMut,
     ) -> io::Result<()> {
-        let Handshake { pstr_len, pstr, reserved, info_hash, peer_id } =
+        let Handshake { pstr, reserved, info_hash, peer_id, ext, .. } =
             handshake;
 
-        // protocol length prefix
-        debug_assert_eq!(pstr_len, 19);
-
         buf.put_u8(pstr.len() as u8);
-
-        // we should only be sending the bittorrent protocol string
-        debug_assert_eq!(pstr, PSTR);
-
-        // payload
         buf.extend_from_slice(&pstr);
         buf.extend_from_slice(&reserved);
-        buf.extend_from_slice(&info_hash);
-        buf.extend_from_slice(&peer_id);
+        buf.extend_from_slice(&info_hash.0);
+        buf.extend_from_slice(&peer_id.0);
+
+        let Some(ext) = ext else { return Ok(()) };
+
+        let bencoded_ext = ext.to_bencode().map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Error decoding ext handshake",
+            )
+        })?;
+
+        buf.put_u32(2 + bencoded_ext.len() as u32);
+        buf.put_u8(CoreId::Extended as u8);
+        buf.put_u8(Extended::ID);
+        buf.extend_from_slice(&bencoded_ext);
 
         Ok(())
     }
@@ -54,80 +65,147 @@ impl Encoder<Handshake> for HandshakeCodec {
 
 impl Decoder for HandshakeCodec {
     type Item = Handshake;
-    type Error = io::Error;
+    type Error = Error;
 
-    fn decode(&mut self, buf: &mut BytesMut) -> io::Result<Option<Handshake>> {
-        if buf.is_empty() {
+    // # IMPORTANT
+    //
+    // it is very common that some clients send 3-4 messages in the same buffer
+    // <handshake><extended_handshake><bitfield><unchoke>
+    //
+    // we try to decode the first 2 messages here, the rest are handled
+    // by the core codec.
+    fn decode(
+        &mut self,
+        buf: &mut BytesMut,
+    ) -> Result<Option<Handshake>, Self::Error> {
+        // minimum handshake size check (68 bytes)
+        if buf.len() < 68 {
             return Ok(None);
         }
 
-        // `get_*` integer extractors consume the message bytes by advancing
-        // buf's internal cursor. However, we don't want to do this as at this
-        // point we aren't sure we have the full message in the buffer, and thus
-        // we just want to peek at this value.
-        let mut tmp_buf = Cursor::new(&buf);
-        let prot_len = tmp_buf.get_u8() as usize;
-        if prot_len != PSTR.len() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "Handshake must have the string \"BitTorrent protocol\"",
-            ));
-        }
+        // handshake buf 0..68
+        let mut handshake_buf = buf.split_to(68);
 
-        // check that we got the full payload in the buffer (NOTE: we need to
-        // add the message length prefix's byte count to msg_len since the
-        // buffer cursor was not advanced and thus we need to consider the
-        // prefix too)
-        let payload_len = prot_len + 8 + 20 + 20;
-        if buf.remaining() > payload_len {
-            // we have the full message in the buffer so advance the buffer
-            // cursor past the message length header
-            buf.advance(1);
-        } else {
-            return Ok(None);
+        if handshake_buf.get_u8() as usize != PSTR_LEN {
+            return Err(Error::HandshakeInvalid);
         }
 
         // protocol string
         let mut pstr = [0; 19];
-        buf.copy_to_slice(&mut pstr);
+        handshake_buf.copy_to_slice(&mut pstr);
+
         // reserved field
         let mut reserved = [0; 8];
-        buf.copy_to_slice(&mut reserved);
+        handshake_buf.copy_to_slice(&mut reserved);
+
         // info hash
         let mut info_hash = [0; 20];
-        buf.copy_to_slice(&mut info_hash);
+        handshake_buf.copy_to_slice(&mut info_hash);
+
         // peer id
         let mut peer_id = [0; 20];
-        buf.copy_to_slice(&mut peer_id);
+        handshake_buf.copy_to_slice(&mut peer_id);
 
-        Ok(Some(Handshake {
+        let mut handshake = Handshake {
             pstr,
-            pstr_len: pstr.len() as u8,
+            pstr_len: PSTR_LEN as u8,
             reserved,
-            info_hash,
-            peer_id,
-        }))
+            info_hash: InfoHash(info_hash),
+            peer_id: PeerId(peer_id),
+            ext: None,
+        };
+
+        // it may exist an ext message appended.
+        // The next 32 bits are the size of the next msg.
+        // The next 8 bits are the extension protocol id = 20
+        // The next 8 bits are the extended msg id = 0 ext handshake.
+
+        // the cursor here is in size
+
+        // need at least 4 bytes for length prefix
+        // size + core_id + msg_id
+        if buf.len() < 6 {
+            return Ok(Some(handshake));
+        }
+
+        // don't advance cursor
+        let size =
+            u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
+
+        // incomplete message
+        if buf.len() < size + 4 {
+            return Ok(None);
+        }
+
+        // if not an extended handshake, return
+        if buf[4] != CoreId::Extended as u8 || buf[5] != Extended::ID {
+            return Ok(Some(handshake));
+        }
+
+        // advance cursor past the size and the 2 ids, into the payload.
+        buf.advance(6); // 4 (length) + core_id (1) + ext_id (1)
+
+        // get only the chunk of the current message.
+        // -2 because the size includes the size of the 2 messages.
+        let payload = buf.copy_to_bytes(size - 2);
+
+        let ext_handshake = Extension::from_bencode(&payload);
+
+        if let Ok(ext_handshake) = ext_handshake {
+            handshake.ext = Some(ext_handshake);
+        } else {
+            warn!("peer sent corrupted extension");
+        }
+
+        Ok(Some(handshake))
     }
 }
 
-/// pstrlen = 19
+/// pstrlen = dec 19, hex 0x13
 /// pstr = "BitTorrent protocol"
+///
 /// This is the very first message exchanged. If the peer's protocol string
 /// (`BitTorrent protocol`) or the info hash differs from ours, the connection
 /// is severed. The reserved field is 8 zero bytes, but will later be used to
 /// set which extensions the peer supports. The peer id is usually the client
 /// name and version.
-#[derive(Clone, Debug, Writable, Readable)]
+///
+/// 0x0030:  ---- ---- 1342 6974 546f 7272 656e 7420  .../.BitTorrent.
+/// 0x0040:  7072 6f74 6f63 6f6c 0000 0000 0010 0000  protocol........
+/// 0x0050:  d7e0 49fc 9182 5ac8 069e 640a b45a 511f  ..I...Z...d..ZQ.
+/// 0x0060:  87d8 f807 7663 7a2d 3030 3030 312d 6f54  ....vcz-00001-oT
+/// 0x0070:  4b6c 4e67 6e55 6568                      KlNgnUeh
+#[derive(Clone, Debug, Writable, Readable, Default)]
 pub struct Handshake {
+    /// 0013
     pub pstr_len: u8,
+
+    /// 0042 6974 546f 7272 656e 7420 7072 6f74
+    /// 6f63 6f6c
     pub pstr: [u8; 19],
+
+    /// 0000 0000 0010 0000
     pub reserved: [u8; 8],
-    pub info_hash: [u8; 20],
-    pub peer_id: [u8; 20],
+
+    /// d7e0 49fc 9182 5ac8 069e 640a b45a 511f
+    /// 87d8 f807
+    pub info_hash: InfoHash,
+
+    /// 7663 7a2d 3030 3030 312d 6f54 4b6c 4e67
+    /// 6e55 6568                      
+    pub peer_id: PeerId,
+
+    /// If the handshake has an extended handshake. Local handshakes always
+    /// have this to S0me. And in practice, all normal clients support this
+    /// extension too.
+    pub ext: Option<Extension>,
 }
 
 impl Handshake {
-    pub fn new(info_hash: [u8; 20], peer_id: [u8; 20]) -> Self {
+    pub fn new(
+        info_hash: impl Into<[u8; 20]>,
+        peer_id: impl Into<[u8; 20]>,
+    ) -> Self {
         let mut reserved = [0u8; 8];
 
         // we support the `extension protocol`
@@ -138,8 +216,9 @@ impl Handshake {
             pstr_len: u8::to_be(19),
             pstr: PSTR,
             reserved,
-            info_hash,
-            peer_id,
+            info_hash: InfoHash(info_hash.into()),
+            peer_id: PeerId(peer_id.into()),
+            ext: Some(Extension::supported(Some(0))),
         }
     }
     pub fn serialize(&self) -> Result<[u8; 68], Error> {
@@ -157,7 +236,7 @@ impl Handshake {
             .map_err(Error::SpeedyError)
     }
     pub fn validate(&self, target: &Self) -> bool {
-        if target.peer_id.len() != 20 {
+        if target.peer_id.0.len() != 20 {
             warn!("! invalid peer_id from receiving handshake");
             return false;
         }
@@ -179,29 +258,126 @@ impl Handshake {
 
 #[cfg(test)]
 pub mod tests {
+    use crate::extensions::{Core, CoreCodec};
+
     use super::*;
 
     #[test]
-    fn handshake() {
-        let info_hash = [5u8; 20];
-        let peer_id = [7u8; 20];
-        let our_handshake = Handshake::new(info_hash, peer_id);
+    fn handshake_with_ext() {
+        // [handshake][extended_handshake][bitfield]
+        let bytes: [u8; _] = [
+            0x13, 0x42, 0x69, 0x74, 0x54, 0x6f, 0x72, 0x72, 0x65, 0x6e, 0x74,
+            0x20, 0x70, 0x72, 0x6f, 0x74, 0x6f, 0x63, 0x6f, 0x6c, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x10, 0x00, 0x05, 0xd7, 0xe0, 0x49, 0xfc, 0x91,
+            0x82, 0x5a, 0xc8, 0x06, 0x9e, 0x64, 0x0a, 0xb4, 0x5a, 0x51, 0x1f,
+            0x87, 0xd8, 0xf8, 0x07, 0x2d, 0x71, 0x42, 0x34, 0x36, 0x37, 0x30,
+            0x2d, 0x62, 0x5f, 0x2a, 0x5f, 0x67, 0x4a, 0x78, 0x30, 0x4c, 0x71,
+            0x55, 0x2d, 0x00, 0x00, 0x00, 0xd6, 0x14, 0x00, 0x64, 0x31, 0x32,
+            0x3a, 0x63, 0x6f, 0x6d, 0x70, 0x6c, 0x65, 0x74, 0x65, 0x5f, 0x61,
+            0x67, 0x6f, 0x69, 0x33, 0x30, 0x33, 0x65, 0x31, 0x3a, 0x6d, 0x64,
+            0x31, 0x31, 0x3a, 0x6c, 0x74, 0x5f, 0x64, 0x6f, 0x6e, 0x74, 0x68,
+            0x61, 0x76, 0x65, 0x69, 0x37, 0x65, 0x31, 0x30, 0x3a, 0x73, 0x68,
+            0x61, 0x72, 0x65, 0x5f, 0x6d, 0x6f, 0x64, 0x65, 0x69, 0x38, 0x65,
+            0x31, 0x31, 0x3a, 0x75, 0x70, 0x6c, 0x6f, 0x61, 0x64, 0x5f, 0x6f,
+            0x6e, 0x6c, 0x79, 0x69, 0x33, 0x65, 0x31, 0x32, 0x3a, 0x75, 0x74,
+            0x5f, 0x68, 0x6f, 0x6c, 0x65, 0x70, 0x75, 0x6e, 0x63, 0x68, 0x69,
+            0x34, 0x65, 0x31, 0x31, 0x3a, 0x75, 0x74, 0x5f, 0x6d, 0x65, 0x74,
+            0x61, 0x64, 0x61, 0x74, 0x61, 0x69, 0x32, 0x65, 0x36, 0x3a, 0x75,
+            0x74, 0x5f, 0x70, 0x65, 0x78, 0x69, 0x31, 0x65, 0x65, 0x31, 0x33,
+            0x3a, 0x6d, 0x65, 0x74, 0x61, 0x64, 0x61, 0x74, 0x61, 0x5f, 0x73,
+            0x69, 0x7a, 0x65, 0x69, 0x32, 0x38, 0x32, 0x35, 0x38, 0x65, 0x34,
+            0x3a, 0x72, 0x65, 0x71, 0x71, 0x69, 0x32, 0x30, 0x30, 0x30, 0x65,
+            0x31, 0x31, 0x3a, 0x75, 0x70, 0x6c, 0x6f, 0x61, 0x64, 0x5f, 0x6f,
+            0x6e, 0x6c, 0x79, 0x69, 0x31, 0x65, 0x31, 0x3a, 0x76, 0x31, 0x37,
+            0x3a, 0x71, 0x42, 0x69, 0x74, 0x74, 0x6f, 0x72, 0x72, 0x65, 0x6e,
+            0x74, 0x2f, 0x34, 0x2e, 0x36, 0x2e, 0x37, 0x36, 0x3a, 0x79, 0x6f,
+            0x75, 0x72, 0x69, 0x70, 0x34, 0x3a, 0x68, 0x1c, 0xd3, 0xbe, 0x65,
+            0x00, 0x00, 0x00, 0xb1, 0x05, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+            0xff, 0xff, 0xff, 0xff, 0xfe,
+        ];
+        let mut buf = BytesMut::with_capacity(bytes.len());
+        buf.extend_from_slice(&bytes);
+        let _ext = HandshakeCodec.decode(&mut buf).unwrap();
 
-        assert_eq!(our_handshake.pstr_len, 19);
-        assert_eq!(our_handshake.pstr, PSTR);
-        assert_eq!(our_handshake.peer_id, peer_id);
-        assert_eq!(our_handshake.info_hash, info_hash);
+        // the last message is a bitfield, used in a different codec.
+        let core = CoreCodec.decode(&mut buf).unwrap().unwrap();
 
-        let our_handshake =
-            Handshake::new(info_hash, peer_id).serialize().unwrap();
-        assert_eq!(
-            our_handshake,
-            [
-                19, 66, 105, 116, 84, 111, 114, 114, 101, 110, 116, 32, 112,
-                114, 111, 116, 111, 99, 111, 108, 0, 0, 0, 0, 0, 16, 0, 0, 5,
-                5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 7, 7,
-                7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7
-            ]
-        );
+        if let Core::Bitfield(bitfield) = core {
+            assert_eq!(bitfield.len(), 1408);
+        } else {
+            panic!("wrong core message");
+        }
+
+        // the buffer was fully consumed
+        assert!(buf.is_empty());
+        assert!(HandshakeCodec.decode(&mut buf).unwrap().is_none());
+
+        // [handshake][extended_handshake][bitfield][unchoke]
+        let bytes: [u8; _] = [
+            0x13, 0x42, 0x69, 0x74, 0x54, 0x6f, 0x72, 0x72, 0x65, 0x6e, 0x74,
+            0x20, 0x70, 0x72, 0x6f, 0x74, 0x6f, 0x63, 0x6f, 0x6c, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x10, 0x00, 0x05, 0xe4, 0x29, 0x96, 0x0a, 0xbf,
+            0xb9, 0xc4, 0x91, 0x9e, 0xe1, 0x52, 0xad, 0x80, 0x28, 0x10, 0xec,
+            0x38, 0x70, 0x32, 0x37, 0x2d, 0x71, 0x42, 0x34, 0x35, 0x35, 0x30,
+            0x2d, 0x51, 0x50, 0x35, 0x28, 0x55, 0x68, 0x38, 0x21, 0x56, 0x2e,
+            0x61, 0x68, 0x00, 0x00, 0x00, 0xd5, 0x14, 0x00, 0x64, 0x31, 0x32,
+            0x3a, 0x63, 0x6f, 0x6d, 0x70, 0x6c, 0x65, 0x74, 0x65, 0x5f, 0x61,
+            0x67, 0x6f, 0x69, 0x35, 0x32, 0x38, 0x65, 0x31, 0x3a, 0x6d, 0x64,
+            0x31, 0x31, 0x3a, 0x6c, 0x74, 0x5f, 0x64, 0x6f, 0x6e, 0x74, 0x68,
+            0x61, 0x76, 0x65, 0x69, 0x37, 0x65, 0x31, 0x30, 0x3a, 0x73, 0x68,
+            0x61, 0x72, 0x65, 0x5f, 0x6d, 0x6f, 0x64, 0x65, 0x69, 0x38, 0x65,
+            0x31, 0x31, 0x3a, 0x75, 0x70, 0x6c, 0x6f, 0x61, 0x64, 0x5f, 0x6f,
+            0x6e, 0x6c, 0x79, 0x69, 0x33, 0x65, 0x31, 0x32, 0x3a, 0x75, 0x74,
+            0x5f, 0x68, 0x6f, 0x6c, 0x65, 0x70, 0x75, 0x6e, 0x63, 0x68, 0x69,
+            0x34, 0x65, 0x31, 0x31, 0x3a, 0x75, 0x74, 0x5f, 0x6d, 0x65, 0x74,
+            0x61, 0x64, 0x61, 0x74, 0x61, 0x69, 0x32, 0x65, 0x36, 0x3a, 0x75,
+            0x74, 0x5f, 0x70, 0x65, 0x78, 0x69, 0x31, 0x65, 0x65, 0x31, 0x33,
+            0x3a, 0x6d, 0x65, 0x74, 0x61, 0x64, 0x61, 0x74, 0x61, 0x5f, 0x73,
+            0x69, 0x7a, 0x65, 0x69, 0x31, 0x33, 0x32, 0x35, 0x65, 0x34, 0x3a,
+            0x72, 0x65, 0x71, 0x71, 0x69, 0x32, 0x30, 0x30, 0x30, 0x65, 0x31,
+            0x31, 0x3a, 0x75, 0x70, 0x6c, 0x6f, 0x61, 0x64, 0x5f, 0x6f, 0x6e,
+            0x6c, 0x79, 0x69, 0x31, 0x65, 0x31, 0x3a, 0x76, 0x31, 0x37, 0x3a,
+            0x71, 0x42, 0x69, 0x74, 0x74, 0x6f, 0x72, 0x72, 0x65, 0x6e, 0x74,
+            0x2f, 0x34, 0x2e, 0x35, 0x2e, 0x35, 0x36, 0x3a, 0x79, 0x6f, 0x75,
+            0x72, 0x69, 0x70, 0x34, 0x3a, 0x68, 0x1c, 0xd3, 0xbd, 0x65, 0x00,
+            0x00, 0x00, 0x08, 0x05, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xfe,
+            0x00, 0x00, 0x00, 0x01, 0x01,
+        ];
+
+        let mut buf = BytesMut::with_capacity(bytes.len());
+        buf.extend_from_slice(&bytes);
+        let ext = HandshakeCodec.decode(&mut buf).unwrap();
+        println!("handshake {ext:?}");
+
+        let bitfield = CoreCodec.decode(&mut buf).unwrap().unwrap();
+
+        if let Core::Bitfield(bitfield) = bitfield {
+            assert_eq!(bitfield.len(), 56);
+        } else {
+            panic!("wrong core message");
+        }
+
+        println!("buf {buf:#?} len {:?}", buf.remaining());
+
+        let unchoke = CoreCodec.decode(&mut buf).unwrap().unwrap();
+        println!("unchoke {unchoke:?}");
+
+        assert!(buf.is_empty());
+        assert!(HandshakeCodec.decode(&mut buf).unwrap().is_none());
     }
 }

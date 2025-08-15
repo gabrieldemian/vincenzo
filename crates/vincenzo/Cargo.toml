@@ -1,6 +1,6 @@
 [package]
 name = "vincenzo"
-version = "0.0.3"
+version = "0.0.1"
 description = "A BitTorrent protocol library that powers the Vincenzo client."
 keywords = ["distributed", "bittorrent", "torrent", "p2p", "networking"]
 categories = ["network-programming"]
@@ -12,26 +12,32 @@ readme = "README.md"
 license = "MIT"
 exclude = ["tests/*", "*.log"]
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
-config = { workspace = true }
+lru = { workspace = true }
+bendy = { workspace = true }
+bitvec = { workspace = true }
+bytes = { workspace = true }
 clap = { workspace = true }
+config = { workspace = true }
+derive_builder = { workspace = true }
+directories = { workspace = true }
 futures = { workspace = true }
 hashbrown = { workspace = true }
+hex = { workspace = true }
+magnet-url = { workspace = true }
 rand = { workspace = true }
 serde = { workspace = true }
+sha1_smol = { workspace = true }
+speedy = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
-bendy = { workspace = true }
-bytes = { workspace = true }
-hex = { workspace = true }
-magnet-url = { workspace = true }
-sha1_smol = { workspace = true }
-speedy = { workspace = true }
+toml = { workspace = true }
 tracing = { workspace = true }
 urlencoding = { workspace = true }
-directories = { workspace = true }
-toml = { workspace = true }
-bitvec = { workspace = true }
+vincenzo_macros = { workspace = true }
+signal-hook = { workspace = true }
+signal-hook-tokio = { workspace = true }
+
+[features]
+test = []

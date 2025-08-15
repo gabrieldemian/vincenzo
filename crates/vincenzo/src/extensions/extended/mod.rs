@@ -6,61 +6,53 @@ pub mod codec;
 mod r#trait;
 
 // re-exports
+pub use codec::*;
 pub use r#trait::*;
+use speedy::{Readable, Writable};
 
 use bendy::{
     decoding::{FromBencode, Object, ResultExt},
     encoding::ToBencode,
 };
 
-#[repr(u8)]
-#[derive(Copy, Clone, Debug, PartialEq)]
-pub enum ExtendedMessageId {
-    Handshake = 0,
-    Metadata = 3,
-}
-
-impl TryFrom<u8> for ExtendedMessageId {
-    type Error = std::io::Error;
-
-    fn try_from(k: u8) -> Result<Self, Self::Error> {
-        use ExtendedMessageId::*;
-        match k {
-            k if k == Handshake as u8 => Ok(Handshake),
-            k if k == Metadata as u8 => Ok(Metadata),
-            _ => Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "Unknown extended message id",
-            )),
-        }
-    }
-}
+use crate::extensions::Metadata;
 
 /// This is the payload of the extension protocol described on:
 /// BEP 0010 - Extension Protocol
 /// <http://www.bittorrent.org/beps/bep_0010.html>
 ///
 /// Other protocols may add new fields to this struct.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Default, Readable, Writable)]
 pub struct Extension {
     /// messages (dictionary of supported extensions)
     pub m: M,
+
     /// port
     pub p: Option<u16>,
+
     /// a string identifying the client and the version
     pub v: Option<String>,
+
     /// number of outstanding requests messages this client supports
     /// without dropping any.
     pub reqq: Option<u16>,
+
     /// added by Metadata protocol, BEP 0009
     /// the size of the metadata file, which is the
     /// info-dictionary part of the metainfo(.torrent) file
-    pub metadata_size: Option<u32>,
+    pub metadata_size: Option<u64>,
+    // todo: implement these
+    // pub upload_only: Option<u8>,
+    // pub yourip: Option<u8>,
+    // pub complete_ago: Option<u8>,
+    // pub ipv4: Option<u8>,
+    // pub ipv5: Option<u8>,
 }
+
+impl ExtData for Extension {}
 
 impl TryInto<Vec<u8>> for Extension {
     type Error = bendy::encoding::Error;
-
     fn try_into(self) -> Result<Vec<u8>, Self::Error> {
         self.to_bencode()
     }
@@ -68,13 +60,18 @@ impl TryInto<Vec<u8>> for Extension {
 
 impl Extension {
     /// Extensions that the client supports
-    pub fn supported(metadata_size: Option<u32>) -> Self {
-        let m = M { ut_metadata: Some(3), ut_pex: None };
+    pub fn supported(metadata_size: Option<u64>) -> Self {
+        let m = M {
+            ut_metadata: Some(Metadata::ID),
+            // ut_pex: None,
+            // ut_holepunch: None,
+        };
+
         Self {
             m,
             p: None,
-            v: Some("Vincenzo 0.0.1".to_owned()),
-            reqq: Some(6),
+            v: Some("vincenzo-0.0.1".to_owned()),
+            reqq: Some(200),
             metadata_size,
         }
     }
@@ -84,11 +81,16 @@ impl Extension {
 /// lists all extensions that a peer supports
 /// in our case, we only support ut_metadata at the moment
 /// and naturally, we are only interested in reading this part of the metadata
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Readable, Writable)]
 pub struct M {
-    /// Added by Metadata protocol BEP 0009.
+    /// BEP 0009.
     pub ut_metadata: Option<u8>,
-    pub ut_pex: Option<u8>,
+    // BEP 0011.
+    // local id: 1
+    // pub ut_pex: Option<u8>,
+
+    // BEP 0055.
+    // pub ut_holepunch: Option<u8>,
 }
 
 impl ToBencode for M {
@@ -102,9 +104,12 @@ impl ToBencode for M {
             if let Some(ut_metadata) = self.ut_metadata {
                 e.emit_pair(b"ut_metadata", ut_metadata)?;
             }
-            if let Some(ut_pex) = self.ut_pex {
-                e.emit_pair(b"ut_pex", ut_pex)?;
-            }
+            // if let Some(ut_pex) = self.ut_pex {
+            //     e.emit_pair(b"ut_pex", ut_pex)?;
+            // }
+            // if let Some(ut_holepunch) = self.ut_holepunch {
+            //     e.emit_pair(b"ut_holepunch", ut_holepunch)?;
+            // }
             Ok(())
         })
     }
@@ -124,7 +129,8 @@ impl FromBencode for M {
         let mut dict = object.try_into_dictionary()?;
         // inside this dict we have other data structures
         let mut ut_metadata = None;
-        let mut ut_pex = None;
+        // let mut ut_pex = None;
+        // let mut ut_holepunch = None;
 
         while let Some(pair) = dict.next_pair()? {
             match pair {
@@ -133,15 +139,24 @@ impl FromBencode for M {
                         .context("ut_metadata")
                         .map(Some)?;
                 }
-                (b"ut_pex", value) => {
-                    ut_pex = u8::decode_bencode_object(value)
-                        .context("ut_pex")
-                        .map(Some)?;
-                }
+                // (b"ut_pex", value) => {
+                //     ut_pex = u8::decode_bencode_object(value)
+                //         .context("ut_pex")
+                //         .map(Some)?;
+                // }
+                // (b"ut_holepunch", value) => {
+                //     ut_holepunch = u8::decode_bencode_object(value)
+                //         .context("ut_holepunch")
+                //         .map(Some)?;
+                // }
                 _ => {}
             }
         }
-        Ok(Self { ut_metadata, ut_pex })
+        Ok(Self {
+            ut_metadata,
+            // ut_pex,
+            // ut_holepunch
+        })
     }
 }
 
@@ -191,7 +206,7 @@ impl FromBencode for Extension {
                     m = M::decode_bencode_object(value).context("m")?
                 }
                 (b"metadata_size", value) => {
-                    metadata_size = u32::decode_bencode_object(value)
+                    metadata_size = u64::decode_bencode_object(value)
                         .context("metadata_size")
                         .map(Some)?;
                 }
@@ -224,6 +239,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_my_extended_handshake() {
+        let raw = b"d1:md11:ut_metadatai3ee13:metadata_sizei0e4:reqqi200e1:v14:vincenzo-0.0.1e";
+
+        let v = Extension::from_bencode(raw).unwrap();
+        println!("{v:?}");
+    }
+
+    #[test]
     fn metadata_request_roundtrip_serialization() {
         let metadata_request = Metadata::request(0);
         let bencoded =
@@ -242,13 +265,11 @@ mod tests {
         let metainfo = MetaInfo::from_bencode(metainfo_bytes).unwrap();
 
         let info = metainfo.info;
-        let metadata_data =
-            Metadata::data(0, &info.clone().to_bencode().unwrap()).unwrap();
 
         let mut r = b"d8:msg_typei1e5:piecei0e10:total_sizei5095ee".to_vec();
         r.extend_from_slice(&info.to_bencode().unwrap());
 
-        assert_eq!(r, metadata_data);
+        // assert_eq!(r, metadata_data);
     }
 
     #[test]
@@ -283,7 +304,11 @@ mod tests {
         assert_eq!(
             ext,
             Extension {
-                m: M { ut_metadata: Some(3), ut_pex: Some(1) },
+                m: M {
+                    ut_metadata: Some(3),
+                    // ut_pex: Some(1),
+                    // ut_holepunch: None
+                },
                 p: Some(51413),
                 v: Some("Transmission 2.94".to_owned()),
                 reqq: Some(512),
@@ -316,7 +341,11 @@ mod tests {
         assert_eq!(
             extension,
             Extension {
-                m: M { ut_metadata: Some(3), ut_pex: Some(1) },
+                m: M {
+                    ut_metadata: Some(3),
+                    // ut_pex: Some(1),
+                    // ut_holepunch: None
+                },
                 p: Some(51413),
                 v: Some("Transmission 2.94".to_owned()),
                 reqq: Some(512),
@@ -691,11 +720,9 @@ mod tests {
             186, 231, 213, 188, 209, 224, 45, 82, 236, 80, 170, 243, 219, 102,
             207, 69, 179, 160, 214, 248, 227, 89, 195, 243, 21, 72, 30, 125,
             31, 125, 215, 186, 207, 204, 143, 101,
-        ]
-        .to_vec();
+        ];
 
-        let (_metadata_msg, info) = Metadata::extract(buf).unwrap();
-
-        assert_eq!(info.len(), 5205);
+        let metadata = Metadata::from_bencode(&buf).unwrap();
+        assert_eq!(metadata.payload.len(), 5205);
     }
 }

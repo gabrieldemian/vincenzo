@@ -1,5 +1,5 @@
 use crossterm::event::KeyEvent;
-use vincenzo::torrent::TorrentState;
+use vincenzo::torrent::{InfoHash, TorrentState};
 
 /// A new component to be rendered on the UI.
 /// Used in conjunction with [`Action`]
@@ -21,7 +21,9 @@ pub enum Action {
     /// Render another page on the UI
     ChangePage(Page),
 
-    NewTorrent(String),
-    TogglePause([u8; 20]),
+    NewTorrent(magnet_url::Magnet),
+    TogglePause(InfoHash),
+    DeleteTorrent(InfoHash),
     TorrentState(TorrentState),
+    TorrentStates(Vec<TorrentState>),
 }

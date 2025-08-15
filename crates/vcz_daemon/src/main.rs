@@ -1,37 +1,63 @@
 use clap::Parser;
 use futures::SinkExt;
-use tokio::net::{TcpListener, TcpStream};
+use magnet_url::Magnet;
+use tokio::{
+    net::{TcpListener, TcpStream},
+    spawn,
+};
 use tokio_util::codec::Framed;
 use tracing::Level;
 use tracing_subscriber::FmtSubscriber;
 use vincenzo::{
     args::Args,
-    config::Config,
+    config::CONFIG,
     daemon::Daemon,
     daemon_wire::{DaemonCodec, Message},
+    disk::Disk,
+    error::Error,
 };
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<(), Error> {
+    let subscriber = FmtSubscriber::builder()
+        .without_time()
+        .with_target(false)
+        .with_file(false)
+        .with_max_level(Level::INFO)
+        .finish();
+
+    tracing::subscriber::set_global_default(subscriber)
+        .expect("setting default subscriber failed");
+
     let args = Args::parse();
-    let config = Config::load()?;
 
-    let daemon_addr = config.daemon_addr;
+    tracing::info!("config: {:?}", *CONFIG);
 
-    let is_daemon_running = TcpListener::bind(daemon_addr).await.is_err();
+    if CONFIG.max_global_peers == 0 || CONFIG.max_torrent_peers == 0 {
+        return Err(Error::ConfigError(
+            "max_global_peers or max_torrent_peers cannot be zero".into(),
+        ));
+    }
+
+    if CONFIG.max_global_peers < CONFIG.max_torrent_peers {
+        return Err(Error::ConfigError(
+            "max_global_peers cannot be less than max_torrent_peers".into(),
+        ));
+    }
+
+    let is_daemon_running =
+        TcpListener::bind(CONFIG.daemon_addr).await.is_err();
 
     // if the daemon is not running, run it
     if !is_daemon_running {
-        let subscriber = FmtSubscriber::builder()
-            .with_max_level(Level::INFO)
-            .without_time()
-            .finish();
+        let mut disk = Disk::new(CONFIG.download_dir.clone());
+        let disk_tx = disk.tx.clone();
 
-        tracing::subscriber::set_global_default(subscriber)
-            .expect("setting default subscriber failed");
+        spawn(async move {
+            let _ = disk.run().await;
+        });
 
-        let mut daemon = Daemon::new();
-
+        let mut daemon = Daemon::new(disk_tx);
         daemon.run().await?;
     }
 
@@ -41,7 +67,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // to listen to these flags and send messages to Daemon.
     //
     // 1. Create a TCP connection to Daemon
-    let socket = TcpStream::connect(daemon_addr).await?;
+    let socket = TcpStream::connect(CONFIG.daemon_addr).await?;
 
     let mut socket = Framed::new(socket, DaemonCodec);
 
@@ -49,6 +75,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     //
     // add a a new torrent to Daemon
     if let Some(magnet) = args.magnet {
+        let magnet = Magnet::new(&magnet)?;
         socket.send(Message::NewTorrent(magnet)).await?;
     }
 

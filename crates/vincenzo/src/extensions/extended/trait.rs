@@ -1,50 +1,60 @@
-use crate::{error::Error, extensions::core::Message};
+//! Types for extensions of the peer protocol.
+
 use std::future::Future;
 
-use futures::{Sink, SinkExt};
-use tokio_util::codec::{Decoder, Encoder};
+use crate::{
+    error::Error,
+    extensions::ExtendedMessage,
+    peer::{self, Peer},
+};
 
-use crate::{extensions::core::Core, peer::Peer};
+use bytes::BytesMut;
 
-use super::Extension;
+/// Data that the extension adds to the peer, which is mutated by it's messages.
+pub trait ExtData {}
 
-pub trait MessageTrait: TryInto<Core> {
-    /// Return the Codec for Self, which is a Message type.
-    fn codec(
-        &self,
-    ) -> impl Encoder<Self, Error = Error> + Decoder + ExtensionTrait<Msg = Self>;
+/// Messages of the extension, usually an enum.
+/// The ID const is the local peer's. The IDs of the remote peers are shared on
+/// the [`Extension`] struct, under the "M" dict and they are different from
+/// client to client.
+pub trait ExtMsg {
+    const ID: u8;
 }
 
-/// All extensions from the extended protocol (Bep 0010) must implement this
-/// trait.
-pub trait ExtensionTrait: Clone {
-    /// The Message of the extension must know how to convert itself to a
-    /// [`Core::Extended`]
-    type Msg: TryInto<Core>;
-
-    /// Codec for [`Self::Msg`]
-    type Codec: Encoder<Self::Msg> + Decoder + Clone;
-
-    /// The ID of this extension.
-    const ID: u8;
-
-    fn codec(&self) -> Self::Codec;
-
-    /// Given an Extension dict return a boolean if the extension "Self" is
-    /// supported or not.
-    fn is_supported(&self, extension: &Extension) -> bool;
-
-    fn handle_msg<T>(
+pub trait ExtMsgHandler<Msg: ExtMsg, Data: ExtData> {
+    fn handle_msg(
         &self,
-        msg: &Self::Msg,
-        peer: &mut Peer,
-        sink: &mut T,
-    ) -> impl Future<Output = Result<(), Error>> + Send + Sync
-    where
-        T: SinkExt<Message>
-            + Sized
-            + std::marker::Unpin
-            + Send
-            + Sync
-            + Sink<Message, Error = Error>;
+        peer: &mut Peer<peer::Connected>,
+        msg: Msg,
+    ) -> impl Future<Output = Result<(), Error>>;
+}
+
+/// This trait is not implemented manually, but through a blanket
+/// implementation for all messages that are : ExtMsg + Into<BytesMut>.
+///
+/// When the client sends an extended message, it has to be converted into a
+/// Core message first.
+///
+/// ExtMsg -> ExtendedMessage -> Core::Extended(ExtendedMessage)
+pub trait TryIntoExtendedMessage<M>
+where
+    M: TryInto<BytesMut> + ExtMsg,
+{
+    type Error;
+
+    fn try_into_extended_msg(msg: M) -> Result<ExtendedMessage, Self::Error>;
+}
+
+// --- BLANKET IMPLS ---
+
+impl<M> TryIntoExtendedMessage<M> for M
+where
+    M: TryInto<BytesMut> + ExtMsg,
+    crate::error::Error: From<<M as TryInto<BytesMut>>::Error>,
+{
+    type Error = Error;
+    fn try_into_extended_msg(msg: M) -> Result<ExtendedMessage, Self::Error> {
+        let bytes: BytesMut = msg.try_into()?;
+        Ok(ExtendedMessage(M::ID, bytes.to_vec()))
+    }
 }

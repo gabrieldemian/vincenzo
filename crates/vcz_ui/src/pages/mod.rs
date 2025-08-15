@@ -14,7 +14,7 @@ pub trait Page {
     fn draw(&mut self, f: &mut Frame);
 
     /// Handle an action, for example, key presses, change to another page, etc.
-    fn handle_action(&mut self, action: &Action);
+    fn handle_action(&mut self, action: Action);
 
     /// get an app event and transform into a page action
     fn get_action(&self, event: Event) -> Action;

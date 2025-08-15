@@ -1,29 +1,37 @@
 //! A daemon that runs on the background and handles everything
 //! that is not the UI.
-use futures::{SinkExt, StreamExt};
+use futures::{
+    stream::{SplitSink, StreamExt},
+    SinkExt,
+};
 use hashbrown::HashMap;
+use signal_hook::consts::signal::*;
+use signal_hook_tokio::Signals;
 use std::{
-    net::{IpAddr, Ipv4Addr, SocketAddr},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     sync::Arc,
     time::Duration,
 };
 use tokio_util::codec::Framed;
-use tracing::{error, info, trace, warn};
+use tracing::{debug, info, trace, warn};
 
 use tokio::{
     net::{TcpListener, TcpStream},
     select, spawn,
-    sync::{mpsc, oneshot, RwLock},
+    sync::{mpsc, oneshot},
     time::interval,
 };
 
 use crate::{
-    config::Config,
+    config::CONFIG,
     daemon_wire::{DaemonCodec, Message},
-    disk::{Disk, DiskMsg},
+    disk::DiskMsg,
     error::Error,
     magnet::Magnet,
-    torrent::{Torrent, TorrentMsg, TorrentState, TorrentStatus},
+    peer::PeerId,
+    torrent::{
+        InfoHash, Torrent, TorrentCtx, TorrentMsg, TorrentState, TorrentStatus,
+    },
     utils::to_human_readable,
 };
 
@@ -40,20 +48,22 @@ use crate::{
 /// and would reduce consistency since the BitTorrent protocol nowadays rarely
 /// uses HTTP.
 pub struct Daemon {
-    // pub config: DaemonConfig,
-    pub disk_tx: Option<mpsc::Sender<DiskMsg>>,
+    pub disk_tx: mpsc::Sender<DiskMsg>,
     pub ctx: Arc<DaemonCtx>,
-    /// key: info_hash
-    pub torrent_txs: HashMap<[u8; 20], mpsc::Sender<TorrentMsg>>,
+    pub torrent_ctxs: HashMap<InfoHash, Arc<TorrentCtx>>,
+
+    /// Connected peers of all torrents
+    connected_peers: u32,
+
+    /// States of all Torrents, updated each second by the Torrent struct.
+    torrent_states: Vec<TorrentState>,
     rx: mpsc::Receiver<DaemonMsg>,
 }
 
 /// Context of the [`Daemon`] that may be shared between other types.
 pub struct DaemonCtx {
     pub tx: mpsc::Sender<DaemonMsg>,
-    /// key: info_hash
-    /// States of all Torrents, updated each second by the Torrent struct.
-    pub torrent_states: RwLock<HashMap<[u8; 20], TorrentState>>,
+    pub local_peer_id: PeerId,
 }
 
 /// Messages used by the [`Daemon`] for internal communication.
@@ -63,43 +73,265 @@ pub struct DaemonCtx {
 pub enum DaemonMsg {
     /// Tell Daemon to add a new torrent and it will immediately
     /// announce to a tracker, connect to the peers, and start the download.
-    NewTorrent(Magnet),
+    NewTorrent(magnet_url::Magnet),
+
+    GetConnectedPeers(oneshot::Sender<u32>),
+    GetTorrentCtx(oneshot::Sender<Option<Arc<TorrentCtx>>>, InfoHash),
+    IncrementConnectedPeers,
+    DecrementConnectedPeers,
+    DeleteTorrent(InfoHash),
+
+    GetAllTorrentStates(oneshot::Sender<Vec<TorrentState>>),
+
     /// Message that the Daemon will send to all connectors when the state
     /// of a torrent updates (every 1 second).
     TorrentState(TorrentState),
+
     /// Ask the Daemon to send a [`TorrentState`] of the torrent with the given
-    /// hash_info.
-    RequestTorrentState([u8; 20], oneshot::Sender<Option<TorrentState>>),
+    RequestTorrentState(InfoHash, oneshot::Sender<Option<TorrentState>>),
+
     /// Pause/Resume a torrent.
-    TogglePause([u8; 20]),
-    /// Gracefully shutdown the Daemon
-    Quit,
+    TogglePause(InfoHash),
+
     /// Print the status of all Torrents to stdout
     PrintTorrentStatus,
+
+    /// Gracefully shutdown the Daemon
+    Quit,
 }
 
 impl Daemon {
     pub const DEFAULT_LISTENER: SocketAddr =
-        SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 3030);
+        SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 51411);
 
     /// Initialize the Daemon struct with the default [`DaemonConfig`].
-    pub fn new() -> Self {
-        let (tx, rx) = mpsc::channel::<DaemonMsg>(300);
+    pub fn new(disk_tx: mpsc::Sender<DiskMsg>) -> Self {
+        let (tx, rx) = mpsc::channel::<DaemonMsg>(100);
+
+        let local_peer_id = PeerId::gen();
 
         Self {
+            connected_peers: 0,
+            disk_tx,
             rx,
-            disk_tx: None,
-            torrent_txs: HashMap::new(),
-            ctx: Arc::new(DaemonCtx {
-                tx,
-                torrent_states: RwLock::new(HashMap::new()),
-            }),
+            torrent_ctxs: HashMap::new(),
+            torrent_states: Vec::new(),
+            ctx: Arc::new(DaemonCtx { tx, local_peer_id }),
         }
     }
 
+    pub async fn run_local_peer(&self) -> Result<(), Error> {
+        let local_addr = SocketAddr::new(
+            if CONFIG.is_ipv6 {
+                IpAddr::V6(Ipv6Addr::UNSPECIFIED)
+            } else {
+                IpAddr::V4(Ipv4Addr::UNSPECIFIED)
+            },
+            CONFIG.local_peer_port,
+        );
+
+        info!("local peer listening on: {local_addr}");
+
+        let local_socket = TcpListener::bind(local_addr).await?;
+        let daemon_ctx = self.ctx.clone();
+
+        // accept connections from other peers
+        spawn(async move {
+            debug!("accepting requests in {local_socket:?}");
+
+            loop {
+                if let Ok((socket, addr)) = local_socket.accept().await {
+                    info!("received inbound connection from {addr}");
+
+                    let daemon_ctx = daemon_ctx.clone();
+
+                    spawn(async move {
+                        Torrent::start_and_run_inbound_peer(daemon_ctx, socket)
+                            .await?;
+
+                        Ok::<(), Error>(())
+                    });
+                }
+            }
+        });
+        Ok(())
+    }
+
+    async fn handle_signals(mut signals: Signals, tx: mpsc::Sender<DaemonMsg>) {
+        while let Some(signal) = signals.next().await {
+            match signal {
+                SIGHUP => {
+                    // Reload configuration
+                    // Reopen the log file
+                }
+                sig @ (SIGTERM | SIGINT | SIGQUIT | SIGKILL) => {
+                    info!("received SIG {sig}");
+                    let _ = tx.send(DaemonMsg::Quit).await;
+                }
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    #[cfg(feature = "test")]
+    async fn add_test_torrents(&mut self) {
+        self.torrent_states.extend([
+            TorrentState {
+                name: "Test torrent 01".to_string(),
+                status: TorrentStatus::Downloading,
+                stats: Stats { leechers: 4, seeders: 35, interval: 1000 },
+                connected_peers: 25,
+                downloading_from: 5,
+                have_info: true,
+                download_rate: 15_000,
+                downloaded: 0,
+                size: 150_000_000_000,
+                info_hash: InfoHash::random(),
+                ..Default::default()
+            },
+            TorrentState {
+                name: "Test torrent 02".to_string(),
+                status: TorrentStatus::Seeding,
+                stats: Stats { leechers: 4, seeders: 35, interval: 1000 },
+                connected_peers: 30,
+                downloading_from: 3,
+                have_info: true,
+                download_rate: 0,
+                downloaded: 150_000_000,
+                size: 150_000_000,
+                info_hash: InfoHash::random(),
+                ..Default::default()
+            },
+            TorrentState {
+                name: "Test torrent 03".to_string(),
+                status: TorrentStatus::Downloading,
+                stats: Stats { leechers: 1, seeders: 9, interval: 1000 },
+                connected_peers: 25,
+                downloading_from: 3,
+                have_info: true,
+                download_rate: 12_000,
+                downloaded: 100,
+                size: 180_327_100_000,
+                info_hash: InfoHash::random(),
+                ..Default::default()
+            },
+            TorrentState {
+                name: "Test torrent 04".to_string(),
+                status: TorrentStatus::Downloading,
+                stats: Stats { leechers: 1, seeders: 9, interval: 1000 },
+                connected_peers: 25,
+                downloading_from: 3,
+                have_info: true,
+                download_rate: 12_000,
+                downloaded: 100,
+                size: 180_327_100_000,
+                info_hash: InfoHash::random(),
+                ..Default::default()
+            },
+            TorrentState {
+                name: "Test torrent 05".to_string(),
+                status: TorrentStatus::Downloading,
+                stats: Stats { leechers: 1, seeders: 9, interval: 1000 },
+                connected_peers: 25,
+                downloading_from: 3,
+                have_info: true,
+                download_rate: 12_000,
+                downloaded: 100,
+                size: 180_327_100_000,
+                info_hash: InfoHash::random(),
+                ..Default::default()
+            },
+            TorrentState {
+                name: "Test torrent 06".to_string(),
+                status: TorrentStatus::Downloading,
+                stats: Stats { leechers: 1, seeders: 9, interval: 1000 },
+                connected_peers: 25,
+                downloading_from: 3,
+                have_info: true,
+                download_rate: 12_000,
+                downloaded: 100,
+                size: 180_327_100_000,
+                info_hash: InfoHash::random(),
+                ..Default::default()
+            },
+        ]);
+    }
+
+    #[cfg(feature = "test")]
+    async fn tick_test(&mut self) {
+        let TorrentState {
+            download_rate,
+            upload_rate,
+            uploaded,
+            downloaded,
+            ..
+        } = &mut self.torrent_states[0];
+        *download_rate = rand::random_range(30_000..100_000);
+        *upload_rate = rand::random_range(20_000..45_000);
+        *uploaded += *upload_rate;
+        *downloaded += *download_rate;
+
+        let TorrentState {
+            download_rate,
+            upload_rate,
+            uploaded,
+            downloaded,
+            ..
+        } = &mut self.torrent_states[1];
+        *upload_rate = rand::random_range(70_000..100_000);
+        *download_rate = rand::random_range(0..1_000);
+        *uploaded += *upload_rate;
+        *downloaded += *download_rate;
+
+        let TorrentState {
+            download_rate,
+            downloaded,
+            upload_rate,
+            uploaded,
+            ..
+        } = &mut self.torrent_states[2];
+        *download_rate = rand::random_range(30_000..100_000);
+        *downloaded += *download_rate;
+        *uploaded += *upload_rate;
+
+        let TorrentState {
+            download_rate,
+            downloaded,
+            upload_rate,
+            uploaded,
+            ..
+        } = &mut self.torrent_states[3];
+
+        *download_rate = rand::random_range(30_000..100_000);
+        *downloaded += *download_rate;
+        *uploaded += *upload_rate;
+        let TorrentState {
+            download_rate,
+            downloaded,
+            upload_rate,
+            uploaded,
+            ..
+        } = &mut self.torrent_states[4];
+
+        *download_rate = rand::random_range(30_000..100_000);
+        *downloaded += *download_rate;
+        *uploaded += *upload_rate;
+
+        let TorrentState {
+            download_rate,
+            downloaded,
+            upload_rate,
+            uploaded,
+            ..
+        } = &mut self.torrent_states[5];
+        *download_rate = rand::random_range(30_000..100_000);
+        *downloaded += *download_rate;
+        *uploaded += *upload_rate;
+    }
+
     /// This function will listen to 3 different event loops:
-    /// - The daemon internal messages via MPSC [`DaemonMsg`] (external)
-    /// - The daemon TCP framed messages [`DaemonCodec`] (internal)
+    /// - The daemon internal messages via MPSC [`DaemonMsg`]
+    /// - The daemon TCP framed messages [`DaemonCodec`]
     /// - The Disk event loop [`Disk`]
     ///
     /// # Important
@@ -111,79 +343,140 @@ impl Daemon {
     /// This is useful to keep consistency, because the same command
     /// that can be fired remotely (via TCP),
     /// can also be fired internaly (via CLI flags).
+    #[tracing::instrument(name = "daemon", skip_all)]
     pub async fn run(&mut self) -> Result<(), Error> {
-        let config = Config::load()?;
-        let socket = TcpListener::bind(config.daemon_addr).await.unwrap();
+        let socket = TcpListener::bind(CONFIG.daemon_addr).await.unwrap();
 
-        let (disk_tx, disk_rx) = mpsc::channel::<DiskMsg>(300);
-        self.disk_tx = Some(disk_tx);
-
-        let mut disk = Disk::new(disk_rx, config.download_dir);
-
-        spawn(async move {
-            let _ = disk.run().await;
-        });
+        info!("listening on: {}", CONFIG.daemon_addr);
 
         let ctx = self.ctx.clone();
 
-        info!("Daemon listening on: {}", config.daemon_addr);
+        self.run_local_peer().await?;
 
-        // Listen to remote TCP messages
-        let handle = spawn(async move {
-            loop {
-                match socket.accept().await {
-                    Ok((socket, addr)) => {
-                        info!("Connected with remote: {addr}");
+        #[cfg(feature = "test")]
+        self.add_test_torrents().await;
 
+        let signals = Signals::new([SIGHUP, SIGTERM, SIGINT, SIGQUIT])?;
+        let handle = signals.handle();
+        let signals_task =
+            tokio::spawn(Daemon::handle_signals(signals, ctx.tx.clone()));
+
+        let mut test_interval = interval(Duration::from_secs(1));
+
+        'outer: loop {
+            select! {
+                _ = test_interval.tick() => {
+                    #[cfg(feature = "test")]
+                    self.tick_test().await;
+                }
+                // listen for remote TCP connections
+                Ok((socket, addr)) = socket.accept() => {
+                    info!("connected to remote: {addr}");
+
+                    let socket = Framed::new(socket, DaemonCodec);
+                    let (mut sink, mut stream) = socket.split();
+
+                    let ctx = ctx.clone();
+
+                    tokio::spawn(async move {
+                        // listen to messages sent locally, from the daemon binary.
+                        // a Torrent that is owned by the Daemon, may send messages to this channel
+                        let mut draw_interval = interval(Duration::from_secs(1));
                         let ctx = ctx.clone();
 
-                        spawn(async move {
-                            let socket = Framed::new(socket, DaemonCodec);
-                            let _ = Self::listen_remote_msgs(socket, ctx).await;
-                        });
-                    }
-                    Err(e) => {
-                        error!("Could not connect with remote: {e:#?}");
-                    }
+                        'inner: loop {
+                            select! {
+                                _ = draw_interval.tick() => {
+                                    let (otx, orx) = oneshot::channel();
+                                    ctx.tx.send(
+                                        DaemonMsg::GetAllTorrentStates(otx)
+                                    ).await?;
+
+                                    if sink.send(Message::TorrentStates(orx.await?)).await
+                                            .map_err(|_| Error::SendErrorTcp).is_err()
+                                    {
+                                        break 'inner;
+                                    }
+                                }
+                                Some(Ok(msg)) = stream.next() => {
+                                    if msg == Message::FrontendQuit {
+                                        break 'inner;
+                                    }
+                                    Self::handle_remote_msgs(&ctx.tx, msg, &mut sink).await?;
+                                }
+                                else => break 'inner
+                            }
+                        }
+
+                        info!("disconnected from remote: {addr}");
+
+                        Ok::<(), Error>(())
+                    });
                 }
-            }
-        });
-
-        let ctx = self.ctx.clone();
-
-        // Listen to internal mpsc messages
-        loop {
-            select! {
+                // Listen to internal mpsc messages
                 Some(msg) = self.rx.recv() => {
                     match msg {
+                        DaemonMsg::GetTorrentCtx(tx, info) => {
+                            let ctx = self.torrent_ctxs.get(&info).cloned();
+                            let _ = tx.send(ctx);
+                        }
+                        DaemonMsg::GetConnectedPeers(tx) => {
+                            let _ = tx.send(self.connected_peers);
+                        }
+                        DaemonMsg::DeleteTorrent(info_hash) => {
+                            info!("deleting torrent {info_hash:?}");
+
+                            let Some(ctx) = self.torrent_ctxs.get(&info_hash) else {
+                                continue
+                            };
+                            ctx.tx.send(TorrentMsg::Quit).await?;
+                            ctx.disk_tx.send(DiskMsg::DeleteTorrent(info_hash.clone())).await?;
+                            self.torrent_states.retain(|v| v.info_hash != info_hash);
+                        }
+                        DaemonMsg::IncrementConnectedPeers => self.connected_peers += 1,
+                        DaemonMsg::DecrementConnectedPeers => {
+                            if self.connected_peers > 0 {
+                                self.connected_peers -= 1;
+                            }
+                        },
+                        DaemonMsg::GetAllTorrentStates(tx) => {
+                            let _ = tx.send(self.torrent_states.clone());
+                        }
                         DaemonMsg::TorrentState(torrent_state) => {
-                            let mut torrent_states = self.ctx.torrent_states.write().await;
+                            let found =
+                                self.torrent_states
+                                    .iter_mut()
+                                    .find(|v| v.info_hash == torrent_state.info_hash);
 
-                            torrent_states.insert(torrent_state.info_hash, torrent_state.clone());
-
-                            if config.quit_after_complete && torrent_states.values().all(|v| v.status == TorrentStatus::Seeding) {
-                                let _ = ctx.tx.send(DaemonMsg::Quit).await;
+                            if let Some(found) = found {
+                                *found = torrent_state;
+                            } else {
+                                self.torrent_states.push(torrent_state);
                             }
 
-                            drop(torrent_states);
+                            if CONFIG.quit_after_complete
+                                &&
+                                self.torrent_states
+                                    .iter()
+                                    .all(|v| v.status == TorrentStatus::Seeding)
+                            {
+                                let _ = ctx.tx.send(DaemonMsg::Quit).await;
+                            }
                         }
                         DaemonMsg::NewTorrent(magnet) => {
                             let _ = self.new_torrent(magnet).await;
                         }
                         DaemonMsg::TogglePause(info_hash) => {
-                            let _ = self.toggle_pause(info_hash).await;
+                            let _ = self.toggle_pause(&info_hash).await;
                         }
                         DaemonMsg::RequestTorrentState(info_hash, recipient) => {
-                            let torrent_states = self.ctx.torrent_states.read().await;
-                            let torrent_state = torrent_states.get(&info_hash);
+                            let torrent_state = self.torrent_states.iter().find(|v| v.info_hash == info_hash);
                             let _ = recipient.send(torrent_state.cloned());
                         }
                         DaemonMsg::PrintTorrentStatus => {
-                            let torrent_states = self.ctx.torrent_states.read().await;
+                            println!("Showing stats of {} torrents.", self.torrent_states.len());
 
-                            println!("Showing stats of {} torrents.", torrent_states.len());
-
-                            for state in torrent_states.values() {
+                            for state in &self.torrent_states {
                                 let status_line: String = match state.status {
                                     TorrentStatus::Downloading => {
                                         format!(
@@ -205,9 +498,10 @@ impl Daemon {
                             }
                         }
                         DaemonMsg::Quit => {
-                            let _ = self.quit().await;
-                            handle.abort();
-                            break;
+                            let _ = self.quit_torrents_and_disk().await;
+                            handle.close();
+                            let _ = signals_task.await;
+                            break 'outer;
                         }
                     }
                 }
@@ -220,150 +514,115 @@ impl Daemon {
     /// Listen to messages sent remotely via TCP,
     /// A UI can be a standalone binary that is executing on another machine,
     /// and wants to control the daemon using the [`DaemonCodec`] protocol.
-    async fn listen_remote_msgs(
-        socket: Framed<TcpStream, DaemonCodec>,
-        ctx: Arc<DaemonCtx>,
+    async fn handle_remote_msgs(
+        tx: &mpsc::Sender<DaemonMsg>,
+        msg: Message,
+        sink: &mut SplitSink<Framed<TcpStream, DaemonCodec>, Message>,
     ) -> Result<(), Error> {
-        trace!("daemon listen_msgs");
+        // listen to messages sent remotely via TCP, and pass them
+        // to our rx. We do this so we can use the exact same messages
+        // when sent remotely via TCP (i.e UI on remote server),
+        // or locally on the same binary (i.e CLI).
+        match msg {
+            Message::DeleteTorrent(info_hash) => {
+                tx.send(DaemonMsg::DeleteTorrent(info_hash)).await?;
+            }
+            Message::NewTorrent(magnet) => {
+                info!("new_torrent: {:?}", magnet.hash());
 
-        let mut draw_interval = interval(Duration::from_secs(1));
-        let (mut sink, mut stream) = socket.split();
+                let _ = tx.send(DaemonMsg::NewTorrent(magnet)).await;
+            }
+            Message::GetTorrentState(info_hash) => {
+                trace!("daemon RequestTorrentState {info_hash:?}");
 
-        loop {
-            select! {
-                // listen to messages sent remotely via TCP, and pass them
-                // to our rx. We do this so we can use the exact same messages
-                // when sent remotely via TCP (i.e UI on remote server),
-                // or locally on the same binary (i.e CLI).
-                Some(Ok(msg)) = stream.next() => {
-                    match msg {
-                        Message::NewTorrent(magnet_link) => {
-                            trace!("daemon received NewTorrent {magnet_link}");
-                            let magnet = Magnet::new(&magnet_link);
-                            if let Ok(magnet) = magnet {
-                                let _ = ctx.tx.send(DaemonMsg::NewTorrent(magnet)).await;
-                            }
-                        }
-                        Message::RequestTorrentState(info_hash) => {
-                            trace!("daemon RequestTorrentState {info_hash:?}");
-                            let (tx, rx) = oneshot::channel();
-                            let _ = ctx.tx.send(DaemonMsg::RequestTorrentState(info_hash, tx)).await;
-                            let r = rx.await?;
+                let (otx, orx) = oneshot::channel();
 
-                            let _ = sink.send(Message::TorrentState(r)).await;
-                        }
-                        Message::TogglePause(id) => {
-                            trace!("daemon received TogglePause {id:?}");
-                            let _ = ctx.tx.send(DaemonMsg::TogglePause(id)).await;
-                        }
-                        Message::Quit => {
-                            info!("Daemon is quitting");
-                            let _ = ctx.tx.send(DaemonMsg::Quit).await;
-                        }
-                        Message::PrintTorrentStatus => {
-                            trace!("daemon received PrintTorrentStatus");
-                            let _ = ctx.tx.send(DaemonMsg::PrintTorrentStatus).await;
-                        }
-                        _ => {}
-                    }
-                }
-                // listen to messages sent locally, from the daemon binary.
-                // a Torrent that is owned by the Daemon, may send messages to this channel
-                _ = draw_interval.tick() => {
-                    let _ = Self::draw(&mut sink, ctx.clone()).await;
+                let _ = tx
+                    .send(DaemonMsg::RequestTorrentState(info_hash, otx))
+                    .await;
+
+                if let Some(r) = orx.await? {
+                    let _ = sink.send(Message::TorrentState(r)).await;
                 }
             }
-        }
-    }
-
-    /// Pause/resume the torrent, making the download an upload stale.
-    pub async fn toggle_pause(&self, info_hash: [u8; 20]) -> Result<(), Error> {
-        let tx = self
-            .torrent_txs
-            .get(&info_hash)
-            .ok_or(Error::TorrentDoesNotExist)?;
-
-        tx.send(TorrentMsg::TogglePause).await?;
+            Message::TogglePause(id) => {
+                trace!("daemon received TogglePause {id:?}");
+                let _ = tx.send(DaemonMsg::TogglePause(id)).await;
+            }
+            Message::Quit => {
+                info!("Daemon is quitting");
+                let _ = tx.send(DaemonMsg::Quit).await;
+            }
+            Message::PrintTorrentStatus => {
+                trace!("daemon received PrintTorrentStatus");
+                let _ = tx.send(DaemonMsg::PrintTorrentStatus).await;
+            }
+            _ => {}
+        };
 
         Ok(())
     }
 
-    /// Sends a Draw message to the [`UI`] with the updated state of a torrent.
-    async fn draw<T>(sink: &mut T, ctx: Arc<DaemonCtx>) -> Result<(), Error>
-    where
-        T: SinkExt<Message> + Sized + std::marker::Unpin + Send,
-    {
-        let torrent_states = ctx.torrent_states.read().await;
+    /// Pause/resume the torrent, making the download an upload stale.
+    pub async fn toggle_pause(
+        &self,
+        info_hash: &InfoHash,
+    ) -> Result<(), Error> {
+        let ctx = self
+            .torrent_ctxs
+            .get(info_hash)
+            .ok_or(Error::TorrentDoesNotExist)?;
 
-        for state in torrent_states.values().cloned() {
-            // debug!("{state:#?}");
-            sink.send(Message::TorrentState(Some(state)))
-                .await
-                .map_err(|_| Error::SendErrorTcp)?;
-        }
+        ctx.tx.send(TorrentMsg::TogglePause).await?;
 
-        drop(torrent_states);
         Ok(())
     }
 
     /// Create a new [`Torrent`] given a magnet link URL
     /// and run the torrent's event loop.
-    ///
-    /// # Errors
-    ///
-    /// This fn may return an [`Err`] if the magnet link is invalid
-    ///
-    /// # Panic
-    ///
-    /// This fn will panic if it is being called BEFORE run
-    pub async fn new_torrent(&mut self, magnet: Magnet) -> Result<(), Error> {
-        trace!("magnet: {}", *magnet);
-        let info_hash = magnet.parse_xt();
+    pub async fn new_torrent(
+        &mut self,
+        magnet: magnet_url::Magnet,
+    ) -> Result<(), Error> {
+        let magnet: Magnet = magnet.into();
+        let info_hash = magnet.parse_xt_infohash();
 
-        let mut torrent_states = self.ctx.torrent_states.write().await;
-
-        if torrent_states.get(&info_hash).is_some() {
-            warn!("This torrent is already present on the Daemon");
+        if self.torrent_states.iter().any(|v| v.info_hash == info_hash) {
+            warn!("this torrent is already present");
             return Err(Error::NoDuplicateTorrent);
         }
 
         let torrent_state = TorrentState {
             name: magnet.parse_dn(),
-            info_hash,
+            info_hash: info_hash.clone(),
             ..Default::default()
         };
 
-        torrent_states.insert(info_hash, torrent_state);
-        drop(torrent_states);
+        self.torrent_states.push(torrent_state);
 
-        // disk_tx is not None at this point, this is safe
-        // (if calling after run)
-        let disk_tx = self.disk_tx.clone().unwrap();
-        let mut torrent = Torrent::new(disk_tx, self.ctx.tx.clone(), magnet);
+        let torrent =
+            Torrent::new(self.disk_tx.clone(), self.ctx.clone(), magnet);
 
-        self.torrent_txs.insert(info_hash, torrent.ctx.tx.clone());
-        info!("Downloading torrent: {}", torrent.name);
+        self.torrent_ctxs.insert(info_hash, torrent.ctx.clone());
 
         spawn(async move {
-            torrent.start_and_run(None).await?;
+            let mut torrent = torrent.start().await?;
+            torrent.run().await?;
             Ok::<(), Error>(())
         });
 
         Ok(())
     }
 
-    async fn quit(&mut self) -> Result<(), Error> {
-        // tell all torrents that we are gracefully shutting down,
+    async fn quit_torrents_and_disk(&mut self) {
+        // tell all torrents that we are quitting the client,
         // each torrent will kill their peers tasks, and their tracker task
-        for (_, tx) in std::mem::take(&mut self.torrent_txs) {
-            spawn(async move {
-                let _ = tx.send(TorrentMsg::Quit).await;
-            });
+        for (_, ctx) in std::mem::take(&mut self.torrent_ctxs) {
+            //     spawn(async move {
+            let _ = ctx.tx.send(TorrentMsg::Quit).await;
+            //     });
         }
-        let _ = self
-            .disk_tx
-            .as_ref()
-            .map(|tx| async { tx.send(DiskMsg::Quit).await });
-        Ok(())
+
+        let _ = self.disk_tx.send(DiskMsg::Quit).await;
     }
 }

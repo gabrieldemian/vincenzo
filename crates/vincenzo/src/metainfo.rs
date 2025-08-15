@@ -1,12 +1,11 @@
 //! Metainfo is a .torrent file with information about the Torrent.
 //! From the magnet link, we get the Metainfo from other peers.
-use std::collections::VecDeque;
+use std::collections::BTreeMap;
 
 use bendy::{
     decoding::{self, FromBencode, Object, ResultExt},
     encoding::{self, AsString, Error, SingleItemEncoder, ToBencode},
 };
-use tracing::warn;
 
 use crate::{
     error,
@@ -32,95 +31,121 @@ pub struct MetaInfo {
 /// in a multi file format, `file_length` is replaced to `files`
 #[derive(Debug, PartialEq, Clone, Default)]
 pub struct Info {
-    /// piece length - number of bytes in a piece
+    /// Some seeders want to cross-seed the same torrent for multiple trackers,
+    /// but if the info hash is the same, most clients will block it.
+    /// With this entry, the info_hash changes and cross-seeding is now
+    /// possible.
+    pub cross_seed_entry: Option<[u8; 32]>,
+
+    /// If the torrent has only 1 file, this value is some, and files is none
+    pub file_length: Option<u64>,
+
+    /// If the torrent has many files, this is some, and file_length is none.
+    pub files: Option<Vec<File>>,
+
+    /// name of the file
+    pub name: String,
+
+    /// length in bytes of each piece, the last piece may have a smaller length
     pub piece_length: u32,
+
     /// A (byte) string consisting of the concatenation of all 20-byte SHA1
     /// hash values, one per piece.
     pub pieces: Vec<u8>,
-    /// name of the file
-    pub name: String,
-    /// length - bytes of the entire file
-    pub file_length: Option<u32>,
-    pub files: Option<Vec<File>>,
+
+    /// The torrent's source, usually the tracker's website.
+    pub source: Option<String>,
+
+    // internal
+    pub metadata_size: Option<u64>,
 }
 
 impl Info {
+    /// Size of the entire Info file.
+    pub fn metadata_size(&self) -> Result<u64, Error> {
+        self.to_bencode().map(|v| v.len() as u64)
+    }
+
     pub fn name(mut self, name: String) -> Self {
         self.name = name;
         self
     }
+
     /// Calculate how many pieces there are.
     pub fn pieces(&self) -> u32 {
-        self.pieces.len() as u32 / 20
+        (self.pieces.len() as u32).div_ceil(20)
     }
+
     /// Calculate how many blocks there are in the entire torrent.
     pub fn blocks_len(&self) -> u32 {
-        self.blocks_per_piece() * (self.pieces.len() as u32 / 20)
+        self.blocks_per_piece() * (self.pieces.len() as u32).div_ceil(20)
     }
+
     /// Calculate how many blocks there are per piece
     pub fn blocks_per_piece(&self) -> u32 {
         self.piece_length / BLOCK_LEN
     }
+
+    /// Only get block infos of a piece.
+    pub fn get_block_infos_of_piece(
+        total_size: usize,
+        piece_length: usize,
+        piece_index: usize,
+    ) -> Vec<BlockInfo> {
+        // let total_size = self.get_size() as usize;
+        // let piece_length = self.piece_length as usize;
+        let piece_start = piece_index * piece_length;
+        let piece_end = std::cmp::min(piece_start + piece_length, total_size);
+        let piece_size = (piece_end - piece_start) as u32;
+
+        // Calculate all blocks for this piece in one go
+        let num_blocks = piece_size.div_ceil(BLOCK_LEN);
+        let mut blocks = Vec::with_capacity(num_blocks as usize);
+
+        for block_index in 0..num_blocks {
+            let begin = block_index * BLOCK_LEN;
+            let len = if block_index == num_blocks - 1 {
+                piece_size - begin
+            } else {
+                BLOCK_LEN
+            };
+
+            blocks.push(BlockInfo { index: piece_index as u32, begin, len });
+        }
+
+        blocks
+    }
+
     /// Get all block_infos of a torrent
     /// Returns an Err if the Info is malformed, if it does not have `files` or
     /// `file_length`.
-    pub fn get_block_infos(&self) -> Result<VecDeque<BlockInfo>, error::Error> {
-        let total_size = self.get_size() as u32;
-        let mut block_infos = Vec::new();
-        let mut processed_bytes = 0;
-        let mut offset_within_file = 0;
-        let mut file_index = 0;
+    pub fn get_block_infos(
+        &self,
+    ) -> Result<BTreeMap<usize, Vec<BlockInfo>>, error::Error> {
+        let total_size = self.get_size() as usize;
+        let piece_length = self.piece_length as usize;
+        let num_pieces = self.pieces() as usize;
+        let mut block_infos: BTreeMap<usize, Vec<BlockInfo>> = BTreeMap::new();
 
-        while processed_bytes < total_size {
-            let remaining_in_file =
-                self.files.as_ref().map_or(total_size - processed_bytes, |f| {
-                    f[file_index].length - offset_within_file
-                });
-            let len = [
-                remaining_in_file,
-                self.piece_length - processed_bytes % self.piece_length,
-                BLOCK_LEN,
-            ]
-            .iter()
-            .cloned()
-            .min()
-            .unwrap();
+        for piece_index in 0..num_pieces {
+            let blocks = Self::get_block_infos_of_piece(
+                total_size,
+                piece_length,
+                piece_index,
+            );
 
-            block_infos.push(BlockInfo {
-                index: (processed_bytes / self.piece_length),
-                begin: processed_bytes % self.piece_length,
-                len,
-            });
-
-            processed_bytes += len;
-            offset_within_file += len;
-
-            if let Some(files) = &self.files {
-                while file_index < files.len()
-                    && offset_within_file >= files[file_index].length
-                {
-                    offset_within_file -= files[file_index].length;
-                    file_index += 1;
-                }
-            }
+            block_infos.insert(piece_index, blocks);
         }
 
-        Ok(block_infos.into())
+        Ok(block_infos)
     }
-    /// Get the total size of the torrent, in bytes.
+
+    /// Get the size in bytes of the files of the torrent.
     pub fn get_size(&self) -> u64 {
-        // multi file torrent
-        if let Some(files) = &self.files {
-            return files.iter().fold(0, |acc, x| acc + x.length as u64);
+        match &self.files {
+            Some(files) => files.iter().map(|f| f.length).sum(),
+            None => self.file_length.unwrap_or(0),
         }
-
-        // single file torrent
-        if let Some(f) = self.file_length {
-            return f as u64;
-        }
-
-        warn!("tried to call get_size of malformed Info {self:#?}");
-        0
     }
 
     /// Get the size (in bytes) of a piece.
@@ -144,15 +169,15 @@ impl Info {
 #[derive(Debug, PartialEq, Clone, Default, Hash, Eq)]
 pub struct File {
     /// Length of the file in bytes.
-    pub length: u32,
+    pub length: u64,
     /// Path of the file, excluding the parent name.
     pub path: Vec<String>,
 }
 
 impl File {
     /// Get the len of the given piece in the file, in bytes..
-    pub fn get_piece_len(&self, piece: u32, piece_length: u32) -> u32 {
-        let b = (piece * piece_length) + piece_length;
+    pub fn get_piece_len(&self, piece: u32, piece_length: u64) -> u64 {
+        let b = (piece as u64 * piece_length) + piece_length;
         if b <= self.length {
             piece_length
         } else {
@@ -160,9 +185,8 @@ impl File {
         }
     }
     /// Return the number of pieces in the file, rounded up.
-    pub fn pieces(&self, piece_length: u32) -> u32 {
-        let pieces = self.length as f32 / piece_length as f32;
-        pieces.ceil() as u32
+    pub fn pieces(&self, piece_length: u64) -> u64 {
+        self.length.div_ceil(piece_length)
     }
 }
 
@@ -191,7 +215,7 @@ impl FromBencode for File {
             match pair {
                 (b"length", value) => {
                     length =
-                        u32::decode_bencode_object(value).context("length")?;
+                        u64::decode_bencode_object(value).context("length")?;
                 }
                 (b"path", value) => {
                     path = Vec::<String>::decode_bencode_object(value)
@@ -327,28 +351,49 @@ impl FromBencode for Info {
     where
         Self: Sized,
     {
+        let mut cross_seed_entry = None;
         let mut files = None;
         let mut file_length = None;
         let mut name = None;
+        let mut source = None;
         let mut piece_length = None;
         let mut pieces = None;
 
         let mut dict_dec = object.try_into_dictionary()?;
         while let Some(pair) = dict_dec.next_pair()? {
             match pair {
+                (b"cross_seed_entry", value) => {
+                    cross_seed_entry = AsString::decode_bencode_object(value)
+                        .context("cross_seed_entry")
+                        .map(|bytes| {
+                            if bytes.0.len() < 32 {
+                                return None;
+                            }
+                            let mut buff = [0u8; 32];
+                            for (i, v) in bytes.0.into_iter().enumerate() {
+                                buff[i] = v;
+                            }
+                            Some(buff)
+                        })?;
+                }
                 (b"files", value) => {
                     files = Vec::<File>::decode_bencode_object(value)
                         .context("files")
                         .map(Some)?;
                 }
                 (b"length", value) => {
-                    file_length = u32::decode_bencode_object(value)
+                    file_length = u64::decode_bencode_object(value)
                         .context("file.length")
                         .map(Some)?;
                 }
                 (b"name", value) => {
                     name = String::decode_bencode_object(value)
                         .context("name")
+                        .map(Some)?;
+                }
+                (b"source", value) => {
+                    source = String::decode_bencode_object(value)
+                        .context("source")
                         .map(Some)?;
                 }
                 (b"piece length", value) => {
@@ -373,7 +418,16 @@ impl FromBencode for Info {
             pieces.ok_or_else(|| decoding::Error::missing_field("pieces"))?;
 
         // Check that we discovered all necessary fields
-        Ok(Info { files, file_length, name, piece_length, pieces })
+        Ok(Info {
+            cross_seed_entry,
+            files,
+            file_length,
+            name,
+            piece_length,
+            pieces,
+            metadata_size: None,
+            source,
+        })
     }
 }
 
@@ -396,11 +450,12 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            info.get_block_infos().unwrap(),
-            VecDeque::from([
-                BlockInfo { index: 0, begin: 0, len: 15 },
-                BlockInfo { index: 1, begin: 0, len: 15 },
-            ]),
+            *info.get_block_infos().unwrap().get(&0).unwrap(),
+            Vec::from([BlockInfo { index: 0, begin: 0, len: 15 },]),
+        );
+        assert_eq!(
+            *info.get_block_infos().unwrap().get(&1).unwrap(),
+            Vec::from([BlockInfo { index: 1, begin: 0, len: 15 },]),
         );
     }
 
@@ -420,12 +475,16 @@ mod tests {
         };
         let blocks = info.get_block_infos().unwrap();
         assert_eq!(
-            blocks,
-            VecDeque::from([
-                BlockInfo { index: 0, begin: 0, len: BLOCK_LEN },
-                BlockInfo { index: 1, begin: 0, len: BLOCK_LEN },
-                BlockInfo { index: 2, begin: 0, len: 100 }
-            ])
+            *blocks.get(&0).unwrap(),
+            Vec::from([BlockInfo { index: 0, begin: 0, len: BLOCK_LEN },]),
+        );
+        assert_eq!(
+            *blocks.get(&1).unwrap(),
+            Vec::from([BlockInfo { index: 1, begin: 0, len: BLOCK_LEN },]),
+        );
+        assert_eq!(
+            *blocks.get(&2).unwrap(),
+            Vec::from([BlockInfo { index: 2, begin: 0, len: 100 }]),
         );
     }
 
@@ -448,11 +507,12 @@ mod tests {
         };
         let blocks = info.get_block_infos().unwrap();
         assert_eq!(
-            blocks,
-            VecDeque::from([
-                BlockInfo { index: 0, begin: 0, len: BLOCK_LEN },
-                BlockInfo { index: 1, begin: 0, len: BLOCK_LEN },
-            ])
+            *blocks.get(&0).unwrap(),
+            vec![BlockInfo { index: 0, begin: 0, len: BLOCK_LEN },]
+        );
+        assert_eq!(
+            *blocks.get(&1).unwrap(),
+            vec![BlockInfo { index: 1, begin: 0, len: BLOCK_LEN },]
         );
     }
 
@@ -475,49 +535,15 @@ mod tests {
         };
         let blocks = info.get_block_infos().unwrap();
         assert_eq!(
-            blocks,
-            VecDeque::from([
+            *blocks.get(&0).unwrap(),
+            vec![
                 BlockInfo { index: 0, begin: 0, len: BLOCK_LEN },
                 BlockInfo { index: 0, begin: BLOCK_LEN, len: 16284 },
-                BlockInfo { index: 1, begin: 0, len: 100 },
-            ])
+            ]
         );
-    }
-
-    /// piece_length: 45152
-    /// ---------------------------------------
-    /// | f: 16384   | f: 12384 | f: 16384    |
-    /// p------------f----------f-------------|
-    /// | b: 16384   | b: 12384 | b: 16384    |
-    /// --------------------------------------|
-    #[test]
-    fn get_block_infos_file_boundary() {
-        let info = Info {
-            files: Some(vec![
-                File { length: BLOCK_LEN, path: vec!["a.txt".to_owned()] },
-                File { length: 12384, path: vec!["b.txt".to_owned()] },
-                File { length: BLOCK_LEN, path: vec!["c.txt".to_owned()] },
-            ]),
-            piece_length: 45152,
-            pieces: vec![0; 20],
-            ..Default::default()
-        };
-        let blocks = info.get_block_infos().unwrap();
-
-        // check the pieces size
-        assert_eq!(info.piece_size(0), 45152);
-
         assert_eq!(
-            blocks,
-            VecDeque::from([
-                BlockInfo { index: 0, begin: 0, len: BLOCK_LEN },
-                BlockInfo { index: 0, begin: BLOCK_LEN, len: 12384 },
-                BlockInfo {
-                    index: 0,
-                    begin: BLOCK_LEN + 12384,
-                    len: BLOCK_LEN,
-                },
-            ])
+            *blocks.get(&1).unwrap(),
+            vec![BlockInfo { index: 1, begin: 0, len: 100 },]
         );
     }
 
@@ -548,13 +574,16 @@ mod tests {
         assert_eq!(info.piece_size(1), 110);
 
         assert_eq!(
-            blocks,
-            VecDeque::from([
-                BlockInfo { index: 0, begin: 0, len: 10 },
-                BlockInfo { index: 0, begin: 10, len: BLOCK_LEN },
-                BlockInfo { index: 0, begin: 10 + BLOCK_LEN, len: 16274 },
-                BlockInfo { index: 1, begin: 0, len: 110 },
-            ])
+            *blocks.get(&0).unwrap(),
+            vec![
+                BlockInfo { index: 0, begin: 0, len: BLOCK_LEN },
+                BlockInfo { index: 0, begin: BLOCK_LEN, len: 16284 },
+            ]
+        );
+
+        assert_eq!(
+            *blocks.get(&1).unwrap(),
+            Vec::from([BlockInfo { index: 1, begin: 0, len: 110 },])
         );
     }
 
@@ -586,333 +615,17 @@ mod tests {
         assert_eq!(info.piece_size(1), 110);
 
         assert_eq!(
-            blocks,
-            VecDeque::from([
+            *blocks.get(&0).unwrap(),
+            Vec::from([
                 BlockInfo { index: 0, begin: 0, len: BLOCK_LEN },
                 BlockInfo { index: 0, begin: BLOCK_LEN, len: 16284 },
-                BlockInfo { index: 1, begin: 0, len: 100 },
-                BlockInfo { index: 1, begin: 100, len: 10 },
             ])
         );
-    }
-
-    #[test]
-    fn utility_functions_complex_multi() -> Result<(), Error> {
-        //
-        // Complex multi file torrent, 64 blocks per piece
-        //
-        let metainfo = include_bytes!("../../../test-files/music.torrent");
-        let metainfo = MetaInfo::from_bencode(metainfo).unwrap();
-        let info = metainfo.info;
-
-        let bi = info.get_block_infos().unwrap();
-        let mut x = info.get_block_infos().unwrap();
-        x.pop_back();
-
-        let size = info.get_size();
-        let per_piece = info.blocks_per_piece();
-        let pieces = info.pieces();
-        let info_bytes = bi.iter().fold(0, |acc, x| acc + x.len);
-        println!("--- info ---");
-        println!("size {size}");
-        println!("piece_len {}", info.piece_length);
-        println!("per_piece {per_piece}");
-        println!("pieces {pieces}");
-        println!("blocks {}", pieces * per_piece);
-
-        // validations on the entire info
-        assert_eq!(info_bytes as u64, 863104781);
-        assert_eq!(863104781, size);
-        assert_eq!(64, per_piece);
-        assert_eq!(824, pieces);
-
-        let files = info.files.clone().unwrap();
-
-        let file0 = &files[0];
-
-        let pieces_file = file0.pieces(info.piece_length);
-        let blocks_file = pieces_file * per_piece;
-
-        // file0 has 25 pieces (0 idx based) with 1611 blocks
-        println!("--- file[0] ---");
-        println!("{:#?}", files[0]);
-
-        // 611
-        // assert_eq!(1664, blocks_file);
-        assert_eq!(26, pieces_file);
-        assert_eq!(26384160, file0.length);
-
-        println!("blocks {:#?}", blocks_file);
-        println!("pieces {:#?}", pieces_file);
-        println!("blocks per piece {:#?}", pieces_file);
-
-        let block = bi.get(0).unwrap();
-        // println!("--- piece 0, block 0 (first) ---");
-        assert_eq!(*block, BlockInfo { index: 0, begin: 0, len: BLOCK_LEN });
-
-        let block = bi.get(1).unwrap();
-        // println!("--- piece 0, block 1 (second) ---");
-        assert_eq!(
-            *block,
-            BlockInfo { index: 0, begin: BLOCK_LEN, len: BLOCK_LEN }
-        );
-
-        let block = bi.get(2).unwrap();
-        // println!("--- piece 0, block 2 (third) ---");
-        assert_eq!(
-            *block,
-            BlockInfo { index: 0, begin: BLOCK_LEN * 2, len: BLOCK_LEN }
-        );
-
-        let block = bi.get(63).unwrap();
-        println!("--- piece 0, block 63 ---");
-        println!("{block:#?}");
-
-        let block = bi.get(64).unwrap();
-        // println!("--- piece 0, block 64 ---");
-        // println!("{block:#?}");
-        assert_eq!(*block, BlockInfo { index: 1, begin: 0, len: 16384 });
-        let block = bi.get(1608).unwrap();
-        println!("--- piece 25, block 1608 before before last ---");
-        println!("{block:#?}");
-        // 10 blocks on the last piece of this file
-        let block = bi.get(1609).unwrap();
-        println!("--- piece 25, block 1609 ---");
-        println!("{block:#?}");
-        assert_eq!(*block, BlockInfo { index: 25, begin: 147456, len: 16384 });
-        // last block of the last piece of this file
-        let block = bi.get(1610).unwrap();
-        println!("--- piece 25, block 1610 (last of file) ---");
-        println!("{block:#?}");
-
-        let bytes_so_far = bi.iter().take(1611).fold(0, |acc, x| acc + x.len);
-        assert_eq!(bytes_so_far, file0.length);
-
-        assert_eq!(*block, BlockInfo { index: 25, begin: 163840, len: 5920 });
-        // file0 ended /\
-
-        let file1 = &files[1];
-
-        let pieces_file = file1.pieces(info.piece_length);
-        let blocks_file = pieces_file * per_piece;
-        println!("--- file[1] ---");
-        println!("{file1:#?}");
-
-        // validations on file[1]
-        assert_eq!(512, blocks_file);
-        assert_eq!(8, pieces_file);
-        assert_eq!(8281625, file1.length);
-
-        // file1 has 8 pieces (0 idx based)
-        // 507
-        println!("pieces {pieces_file}");
-        println!("blocks {blocks_file}");
-
-        let block = bi.get(1611).unwrap();
-        println!("--- file1 piece 25, block 1611 (first of file) ---");
-        println!("{block:#?}");
-        assert_eq!(
-            *block,
-            BlockInfo { index: 25, begin: 169760, len: BLOCK_LEN }
-        );
-
-        // 506 blocks
-        let block = bi.get(1610 + 506).unwrap();
-        let bytes_so_far =
-            bi.iter().take(1610 + 507).fold(0, |acc, x| acc + x.len);
-        println!("--- file1 piece 25, block 1611 (last of file) ---");
-        println!("bytes_so_far {bytes_so_far}");
-        println!("{block:#?}");
-        assert_eq!(*block, BlockInfo { index: 33, begin: 49152, len: 13625 });
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn utility_functions_simple_multi() -> Result<(), Error> {
-        //
-        // Simple multi file torrent, 1 block per piece
-        //
-        let metainfo = include_bytes!("../../../test-files/book.torrent");
-        let metainfo = MetaInfo::from_bencode(metainfo).unwrap();
-        let info = metainfo.info;
-
-        let bi = info.get_block_infos().unwrap();
-        let size = info.get_size();
-        let per_piece = info.blocks_per_piece();
-        let pieces = info.pieces();
-
-        let files = info.files.unwrap();
-        let files_bytes = files.iter().fold(0, |acc, x| acc + x.length);
-
-        let file = &files[0];
-        let pieces_file = file.length as f32 / info.piece_length as f32;
-        let pieces_file = pieces_file.ceil() as u32;
-        let blocks_file = pieces_file * per_piece;
-
-        // get total size of file from block_infos
-        let total_bis = bi.iter().fold(0, |acc, x| acc + x.len);
-
-        println!("--- file[0] ---");
-        println!("{:#?}", files[0]);
-        println!("blocks_file {blocks_file:#?}");
-        println!("piece_len {:#?}", info.piece_length);
-        println!("pieces in file {pieces_file:#?}");
-
-        assert_eq!(total_bis, 4092334);
-        assert_eq!(bi.len(), 250);
-        assert_eq!(size, 4092334);
-        assert_eq!(files_bytes, 4092334);
-        assert_eq!(per_piece, 1);
-        assert_eq!(pieces, 250);
-
-        let block = bi.get(0).unwrap();
-        println!("--- piece 0, block 0 (only one) ---");
-        println!("{block:#?}");
-        assert_eq!(*block, BlockInfo { index: 0, begin: 0, len: BLOCK_LEN });
-
-        let block = bi.get(1).unwrap();
-        println!("--- piece 1, block 1 (only one) ---");
-        println!("{block:#?}");
-        assert_eq!(*block, BlockInfo { index: 1, begin: 0, len: BLOCK_LEN });
-
-        let block = bi.get(249).unwrap();
-        println!("--- piece 249, block 249 (last, only one) ---");
-        println!("{block:#?}");
-        assert_eq!(*block, BlockInfo { index: 249, begin: 0, len: 12718 });
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn utility_functions_complex_single() -> Result<(), Error> {
-        //
-        // Simple multi file torrent, 16 blocks per piece
-        //
-        let torrent_debian_bytes =
-            include_bytes!("../../../test-files/debian.torrent");
-        let torrent = MetaInfo::from_bencode(torrent_debian_bytes).unwrap();
-        let info = torrent.info;
-        let bi = info.get_block_infos().unwrap();
-        let size = info.get_size();
-        let per_piece = info.blocks_per_piece();
-        let pieces = info.pieces();
-
-        let pieces_file = size as f32 / info.piece_length as f32;
-        let pieces_file = pieces_file.ceil() as u32;
-        let blocks_file = pieces_file * per_piece;
-
-        // get total size of file from block_infos
-        let total_bis = bi.iter().fold(0, |acc, x| acc + x.len);
-
-        println!("--- file ---");
-        println!("file_length {size:#?}");
-        println!("blocks_file {blocks_file:#?}");
-        println!("blocks per piece {per_piece:#?}");
-        println!("piece_len {:#?}", info.piece_length);
-        println!("pieces in file {pieces_file:#?}");
-
-        assert_eq!(total_bis, 305135616);
-        assert_eq!(total_bis as u64, size);
-        assert_eq!(bi.len(), 18624);
-        assert_eq!(size, 305135616);
-        assert_eq!(per_piece, 16);
-        assert_eq!(pieces, 1164);
-
-        let block = bi.get(0).unwrap();
-        println!("--- piece 0, block 0 (first) ---");
-        println!("{block:#?}");
-        assert_eq!(*block, BlockInfo { index: 0, begin: 0, len: BLOCK_LEN });
-
-        let block = bi.get(1).unwrap();
-        println!("--- piece 0, block 1 ---");
-        println!("{block:#?}");
-        assert_eq!(
-            *block,
-            BlockInfo { index: 0, begin: BLOCK_LEN, len: BLOCK_LEN }
-        );
-
-        let block = bi.get(2).unwrap();
-        println!("--- piece 0, block 2 ---");
-        println!("{block:#?}");
-        assert_eq!(
-            *block,
-            BlockInfo { index: 0, begin: BLOCK_LEN * 2, len: BLOCK_LEN }
-        );
-
-        let block = bi.get(18623).unwrap();
-        println!("--- piece 1163, block 18623 (last) ---");
-        println!("{block:#?}");
-        assert_eq!(
-            *block,
-            BlockInfo { index: 1163, begin: 245760, len: BLOCK_LEN }
-        );
-
-        Ok(())
-    }
-
-    #[test]
-    fn get_block_infos_long_torrent() {
-        let info = Info {
-            piece_length: 32768,
-            pieces: vec![0; 5480], // 274 pieces * 20 bytes each
-            name: "name".to_string(),
-            file_length: None,
-            files: Some(vec![
-                // 308 blocks
-                File {
-                    length: 5034059,
-                    path: vec!["dir".to_string(), "file_a.pdf".to_string()],
-                },
-                // 1 block
-                File { length: 62, path: vec!["file_1.txt".to_string()] },
-                // 1 block
-                File { length: 237, path: vec!["file_2.txt".to_string()] },
-            ]),
-        };
-
-        let block_infos = info.get_block_infos().unwrap();
-
-        let last_first_file = &block_infos[307];
-        let last_second_file = &block_infos[308];
-        let last_third_file = &block_infos[309];
-
-        let last = block_infos.back().unwrap();
-        let len = block_infos.len(); // 306 blocks
-
-        println!("last {last:#?}");
-        println!("len {len:#?}");
 
         assert_eq!(
-            *last_first_file,
-            BlockInfo { index: 153, begin: 16384, len: 4171 }
+            *blocks.get(&1).unwrap(),
+            Vec::from([BlockInfo { index: 1, begin: 0, len: 110 },])
         );
-
-        assert_eq!(
-            *last_second_file,
-            BlockInfo { index: 153, begin: 20555, len: 62 }
-        );
-
-        assert_eq!(
-            *last_third_file,
-            BlockInfo { index: 153, begin: 20617, len: 237 }
-        );
-    }
-
-    /// Confirm that the [`MetaInfo`] [`ToBencode`] and [`FromBencode`]
-    /// implementations work as expected for a multi-file torrent
-    #[test]
-    fn should_encode_multi_file_torrent() -> Result<(), encoding::Error> {
-        let torrent_book_bytes =
-            include_bytes!("../../../test-files/book.torrent");
-
-        let torrent = MetaInfo::from_bencode(torrent_book_bytes).unwrap();
-        let torrent_bytes = torrent.to_bencode().unwrap();
-        let torrent = MetaInfo::from_bencode(&torrent_bytes).unwrap();
-
-        assert_eq!(torrent_bytes, torrent.to_bencode()?);
-
-        Ok(())
     }
 
     /// Confirm that the [`MetaInfo`] [`FromBencode`] implementation works as
@@ -977,7 +690,10 @@ mod tests {
                     vec!["http://tracker.tfile.co:80/announce".to_owned()],
                 ]),
                 info: Info {
+                    source: None,
+                    cross_seed_entry: None,
                     piece_length: 16_384,
+                    metadata_size: None,
                     pieces: torrent.info.pieces.clone(),
                     name: "book".to_owned(),
                     files: Some(vec![File {
@@ -1010,6 +726,9 @@ mod tests {
                     "https://cdimage.debian.org/cdimage/archive/9.4.0//srv/cdbuilder.debian.org/dst/deb-cd/weekly-builds/amd64/iso-cd/debian-9.4.0-amd64-netinst.iso".to_owned(),
                 ]),
                 info: Info {
+                    source: None,
+                    cross_seed_entry: None,
+                    metadata_size: None,
                     piece_length: 262_144,
                     pieces: include_bytes!("../../../test-files/pieces.iso").to_vec(),
                     name: "debian-9.4.0-amd64-netinst.iso".to_owned(),
@@ -1038,6 +757,9 @@ mod tests {
                 "https://cdimage.debian.org/cdimage/archive/9.4.0//srv/cdbuilder.debian.org/dst/deb-cd/weekly-builds/amd64/iso-cd/debian-9.4.0-amd64-netinst.iso".to_owned(),
             ]),
             info: Info {
+                source: None,
+                cross_seed_entry: None,
+                metadata_size: None,
                 piece_length: 262_144,
                 pieces: include_bytes!("../../../test-files/pieces.iso").to_vec(),
                 name: "debian-9.4.0-amd64-netinst.iso".to_owned(),

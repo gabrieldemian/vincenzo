@@ -2,12 +2,12 @@ use futures::{SinkExt, Stream, StreamExt};
 use tokio::{
     net::TcpStream,
     select, spawn,
-    sync::mpsc::{self, unbounded_channel, UnboundedReceiver, UnboundedSender},
+    sync::mpsc::{UnboundedReceiver, UnboundedSender},
 };
 use tokio_util::codec::Framed;
 use tracing::debug;
 use vincenzo::{
-    config::Config,
+    config::CONFIG,
     daemon_wire::{DaemonCodec, Message},
 };
 
@@ -22,7 +22,6 @@ pub struct App {
     pub is_detached: bool,
     pub tx: UnboundedSender<Action>,
     should_quit: bool,
-    rx: Option<UnboundedReceiver<Action>>,
     page: Box<dyn Page>,
 }
 
@@ -32,23 +31,24 @@ impl App {
         self
     }
 
-    pub fn new() -> Self {
-        let (tx, rx) = unbounded_channel();
-
+    pub fn new(tx: UnboundedSender<Action>) -> Self {
         let page = Box::new(TorrentList::new(tx.clone()));
 
-        App { should_quit: false, tx, rx: Some(rx), page, is_detached: false }
+        App { should_quit: false, tx, page, is_detached: false }
     }
 
-    pub async fn run(&mut self) -> Result<(), Error> {
+    pub async fn run(
+        &mut self,
+        mut rx: UnboundedReceiver<Action>,
+    ) -> Result<(), Error> {
         let mut tui = Tui::new()?;
         tui.run()?;
 
         let tx = self.tx.clone();
-        let mut rx = std::mem::take(&mut self.rx).unwrap();
 
-        let daemon_addr = Config::load().unwrap().daemon_addr;
-        let socket = TcpStream::connect(daemon_addr).await.unwrap();
+        let socket = TcpStream::connect(CONFIG.daemon_addr)
+            .await
+            .map_err(|_| Error::DaemonNotRunning(CONFIG.daemon_addr))?;
 
         // spawn event loop to listen to messages sent by the daemon
         let socket = Framed::new(socket, DaemonCodec);
@@ -66,8 +66,6 @@ impl App {
             let _ = tx.send(a);
 
             while let Ok(action) = rx.try_recv() {
-                self.page.handle_action(&action);
-
                 if let Action::Render = action {
                     let _ = tui.draw(|f| {
                         self.page.draw(f);
@@ -77,8 +75,8 @@ impl App {
                 if let Action::Quit = action {
                     if !self.is_detached {
                         let _ = sink.send(Message::Quit).await;
-                        handle.abort();
                     }
+                    handle.abort();
                     tui.cancel();
                     self.should_quit = true;
                 }
@@ -87,17 +85,23 @@ impl App {
                     self.handle_change_component(component)?
                 }
 
-                if let Action::NewTorrent(magnet) = action {
-                    let _ =
-                        sink.send(Message::NewTorrent(magnet.to_owned())).await;
+                if let Action::NewTorrent(magnet) = &action {
+                    sink.send(Message::NewTorrent(magnet.clone())).await?;
                 }
+
+                if let Action::DeleteTorrent(info_hash) = &action {
+                    sink.send(Message::DeleteTorrent(info_hash.clone()))
+                        .await?;
+                }
+
+                self.page.handle_action(action);
             }
 
             if self.should_quit {
+                sink.send(Message::FrontendQuit).await?;
                 break;
             }
         }
-        tui.exit()?;
 
         Ok(())
     }
@@ -107,25 +111,25 @@ impl App {
     /// via mpsc [`Action`]. For example, when we receive
     /// a TorrentState message from the daemon, we forward it to ourselves.
     pub async fn listen_daemon<
-        T: Stream<Item = Result<Message, std::io::Error>> + Unpin,
+        T: Stream<Item = Result<Message, vincenzo::error::Error>> + Unpin,
     >(
-        tx: mpsc::UnboundedSender<Action>,
+        tx: UnboundedSender<Action>,
         mut stream: T,
     ) {
-        debug!("ui listen_daemon");
-        println!("am i listening to daemon msgs");
         loop {
             select! {
                 Some(Ok(msg)) = stream.next() => {
                     match msg {
-                        Message::TorrentState(Some(torrent_state)) => {
+                        Message::TorrentState(torrent_state) => {
                             let _ = tx.send(Action::TorrentState(torrent_state));
                         }
+                        Message::TorrentStates(torrent_states) => {
+                            let _ = tx.send(Action::TorrentStates(torrent_states));
+                        }
                         Message::Quit => {
-                            println!("ui Quit - noooo");
-                            // debug!("ui Quit");
-                            // let _ = tx.send(Action::Quit);
-                            // break;
+                            debug!("ui Quit");
+                            let _ = tx.send(Action::Quit);
+                            break;
                         }
                         Message::TogglePause(torrent) => {
                             let _ = tx.send(Action::TogglePause(torrent));
@@ -133,6 +137,7 @@ impl App {
                         _ => {}
                     }
                 }
+                else => break
             }
         }
     }

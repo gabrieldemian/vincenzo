@@ -3,44 +3,52 @@ members = [
   "crates/vcz_daemon",
   "crates/vcz_ui",
   "crates/vincenzo",
+  "crates/vincenzo_macros",
   "crates/vcz",
 ]
 
 resolver = "2"
 
 [workspace.dependencies]
-bendy = { version = "0.3.3", features = ["std"] }
+quote = "1.0.36"
+lru = "0.16.0"
+syn = "2.0.74"
+derive_builder = "0.20.0"
+bendy = { version = "0.3.3", features = ["std", "serde"] }
 bitvec = "1.0.1"
 bytes = "1.4.0"
 clap = { version = "4.3.4", features = ["derive"] }
-config = "0.14.0"
-crossterm = { version = "0.27.0", features = ["event-stream", "serde"] }
-directories = "5.0.1"
+config = "0.15.13"
+crossterm = { version = "0.29.0", features = ["event-stream", "serde"] }
+directories = "6.0.0"
 futures = "0.3.28"
-hashbrown = "0.14.5"
+hashbrown = "0.15.4"
 hex = "0.4.3"
-magnet-url = "2.0.0"
-rand = "0.8.5"
-ratatui = { version = "0.28.0", features = ["all-widgets"] }
+magnet-url = "3.0.0"
+rand = "0.9.1"
+ratatui = { version = "0.29.0", features = ["all-widgets"] }
 serde = { version = "1.0.185", features = ["derive"] }
+signal-hook = { version = "0.3.18" }
+signal-hook-tokio = { version = "0.3.1", features = ["futures-v0_3"] }
 sha1_smol = { version = "1.0.0", features = ["serde"] }
 speedy = "0.8.6"
-thiserror = "1.0.47"
+thiserror = "2.0.12"
 time = "0.3.36"
-tokio = { version = "1.32.0", features = [
+tokio = { version = "1.46.1", features = [
   "rt",
   "fs",
   "tracing",
   "time",
   "macros",
-  "rt-multi-thread",
+  # "rt-multi-thread",
   "sync",
   "io-std",
   "io-util",
+  "bytes",
   "net",
 ] }
 tokio-util = { version = "0.7.8", features = ["codec"] }
-toml = "0.8.0"
+toml = "0.9.2"
 tracing = "0.1.37"
 tracing-appender = "0.2.2"
 tracing-subscriber = { version = "0.3.17", features = ["time"] }
@@ -49,3 +57,7 @@ vcz = { path = "crates/vcz" }
 vcz_daemon = { path = "crates/vcz_daemon" }
 vcz_ui = { path = "crates/vcz_ui" }
 vincenzo = { path = "crates/vincenzo" }
+vincenzo_macros = { path = "crates/vincenzo_macros" }
+
+[workspace.features]
+test = []

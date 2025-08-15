@@ -3,12 +3,10 @@
 
 mod codec;
 mod handshake_codec;
-mod message;
 
 // re-exports
 pub use codec::*;
 pub use handshake_codec::*;
-pub use message::*;
 
 use bytes::{BufMut, BytesMut};
 use tokio::io;
@@ -25,6 +23,8 @@ pub const PSTR: [u8; 19] = [
     66, 105, 116, 84, 111, 114, 114, 101, 110, 116, 32, 112, 114, 111, 116,
     111, 99, 111, 108,
 ];
+
+pub const PSTR_LEN: usize = 19;
 
 /// A Block is a subset of a Piece,
 /// pieces are subsets of the entire Torrent data.
@@ -92,6 +92,16 @@ impl Default for BlockInfo {
 
 impl From<Block> for BlockInfo {
     fn from(val: Block) -> Self {
+        BlockInfo {
+            index: val.index as u32,
+            begin: val.begin,
+            len: val.block.len() as u32,
+        }
+    }
+}
+
+impl From<&Block> for BlockInfo {
+    fn from(val: &Block) -> Self {
         BlockInfo {
             index: val.index as u32,
             begin: val.begin,

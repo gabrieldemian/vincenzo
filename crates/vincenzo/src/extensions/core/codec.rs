@@ -1,31 +1,94 @@
+use bitvec::bitvec;
 use bytes::{Buf, BufMut, BytesMut};
-use futures::{Sink, SinkExt};
-use std::io::Cursor;
+use futures::SinkExt;
+use std::sync::atomic::Ordering;
 use tokio::{io, sync::oneshot};
 use tokio_util::codec::{Decoder, Encoder};
-use tracing::{debug, trace, warn};
+use tracing::{debug, warn};
+use vincenzo_macros::Message;
 
-use super::{Block, BlockInfo, Message};
+use super::{Block, BlockInfo};
 use crate::{
-    bitfield::Bitfield, disk::DiskMsg, error::Error,
-    extensions::extended::ExtensionTrait, peer::Peer,
+    bitfield::Bitfield,
+    disk::DiskMsg,
+    error::Error,
+    extensions::{ExtData, ExtMsg, ExtMsgHandler},
+    peer::{self, MsgHandler},
 };
+
+pub static MAX_MESSAGE_SIZE: usize = 2 * 1024 * 1024; // 2MB maximum message size
+
+/// State that comes with the Core protocol.
+#[derive(Clone)]
+pub struct CoreState {
+    /// If we're choked, peer doesn't allow us to download pieces from them.
+    pub am_choking: bool,
+
+    /// If we're interested, peer has pieces that we don't have.
+    pub am_interested: bool,
+
+    /// If peer is choked, we don't allow them to download pieces from us.
+    pub peer_choking: bool,
+
+    /// If peer is interested in us, they mean to download pieces that we have.
+    pub peer_interested: bool,
+}
+
+impl ExtMsg for Core {
+    // not really used since core does not use this.
+    const ID: u8 = u8::MAX;
+}
+
+impl ExtData for CoreState {}
+
+impl Default for CoreState {
+    /// By default, both sides of the connection start off as choked and not
+    /// interested in the other.
+    fn default() -> Self {
+        Self {
+            am_choking: true,
+            am_interested: false,
+            peer_choking: true,
+            peer_interested: false,
+        }
+    }
+}
+
+/// The first value is decided when the peer sends its extension header, in the
+/// m field.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExtendedMessage(pub u8, pub Vec<u8>);
+
+impl From<ExtendedMessage> for Vec<u8> {
+    fn from(val: ExtendedMessage) -> Self {
+        let mut buff = Vec::with_capacity(1 + val.1.len());
+        buff.push(val.0);
+        buff.extend(val.1);
+        buff
+    }
+}
+
+impl From<ExtendedMessage> for Core {
+    fn from(value: ExtendedMessage) -> Self {
+        Self::Extended(value)
+    }
+}
 
 /// Core messages exchanged after a successful handshake.
 /// These are from the vanilla protocol, with no extensions.
 #[repr(u8)]
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Message)]
 pub enum Core {
-    Choke,
-    Unchoke,
-    Interested,
-    NotInterested,
-    Have(usize),
-    Bitfield(Bitfield),
-    Request(BlockInfo),
-    Piece(Block),
-    Cancel(BlockInfo),
-    Extended(u8, Vec<u8>),
+    Choke = 0,
+    Unchoke = 1,
+    Interested = 2,
+    NotInterested = 3,
+    Have(usize) = 4,
+    Bitfield(Bitfield) = 5,
+    Request(BlockInfo) = 6,
+    Piece(Block) = 7,
+    Cancel(BlockInfo) = 8,
+    Extended(ExtendedMessage) = 20,
     KeepAlive,
 }
 
@@ -71,6 +134,137 @@ impl TryFrom<u8> for CoreId {
 
 #[derive(Debug, Clone)]
 pub struct CoreCodec;
+
+#[derive(Clone, Debug, Copy)]
+pub struct CoreExt;
+
+impl TryInto<Vec<u8>> for Core {
+    type Error = Error;
+
+    fn try_into(self) -> Result<Vec<u8>, Error> {
+        let mut dst = BytesMut::new();
+        let mut codec = CoreCodec;
+        codec.encode(self, &mut dst)?;
+        Ok(dst.into())
+    }
+}
+
+impl From<Core> for BytesMut {
+    fn from(val: Core) -> Self {
+        let mut dst = BytesMut::new();
+        let _ = CoreCodec.encode(val, &mut dst);
+        dst
+    }
+}
+
+impl ExtMsgHandler<Core, CoreState> for MsgHandler {
+    async fn handle_msg(
+        &self,
+        peer: &mut peer::Peer<peer::Connected>,
+        msg: Core,
+    ) -> Result<(), Error> {
+        match msg {
+            // handled by the extended messages
+            Core::Extended(_) => {}
+            Core::KeepAlive => {
+                debug!("< keepalive");
+            }
+            Core::Bitfield(bitfield) => {
+                debug!(
+                    "< bitfield len: {} ones: {}",
+                    bitfield.len(),
+                    bitfield.count_ones()
+                );
+
+                peer.state.pieces = bitfield;
+            }
+            Core::Unchoke => {
+                peer.state.ctx.peer_choking.store(false, Ordering::Relaxed);
+                peer.state_log[3] = 'u';
+                debug!("< unchoke");
+            }
+            Core::Choke => {
+                // remote peer is choking the local peer
+                debug!("< choke");
+                peer.state.ctx.peer_choking.store(true, Ordering::Relaxed);
+                peer.free_pending_blocks().await;
+                peer.state_log[3] = '-';
+            }
+            Core::Interested => {
+                // remote peer is interested the local peer
+                debug!("< interested");
+                peer.state.ctx.peer_interested.store(true, Ordering::Relaxed);
+                peer.state_log[4] = 'i';
+            }
+            Core::NotInterested => {
+                debug!("< not_interested");
+                peer.state.ctx.peer_interested.store(false, Ordering::Relaxed);
+                peer.state_log[4] = '-';
+            }
+            Core::Have(piece) => {
+                debug!("< have {piece}");
+
+                // Overwrite pieces on bitfield, if the peer has one
+                let peer_pieces = &mut peer.state.pieces;
+
+                // peer sent a piece which is out of bounds with it's pieces
+                if peer_pieces.get(piece).is_none() {
+                    warn!("sent have but it's bitfield is out of bounds");
+                    warn!(
+                        "initializing an empty bitfield with the len of the \
+                         piece {piece}"
+                    );
+
+                    let missing_bits = piece - peer_pieces.len();
+                    peer_pieces.extend_from_bitslice(&bitvec![0; missing_bits]);
+                }
+
+                peer_pieces.set(piece, true);
+            }
+            Core::Piece(block) => {
+                peer.handle_piece_msg(block).await?;
+            }
+            Core::Cancel(block_info) => {
+                debug!("< cancel {block_info:?}");
+                peer.state.incoming_requests.retain(|v| *v != block_info);
+            }
+            Core::Request(block_info) => {
+                debug!("< request {block_info:?}");
+
+                if peer.state.ctx.peer_choking.load(Ordering::Relaxed) {
+                    return Ok(());
+                }
+
+                let (tx, rx) = oneshot::channel();
+
+                peer.state.incoming_requests.push(block_info.clone());
+
+                peer.state
+                    .torrent_ctx
+                    .disk_tx
+                    .send(DiskMsg::ReadBlock {
+                        block_info,
+                        recipient: tx,
+                        info_hash: peer.state.torrent_ctx.info_hash.clone(),
+                    })
+                    .await?;
+
+                let block = rx.await?;
+
+                peer.state.ctx.counter.record_upload(block.block.len() as u64);
+
+                peer.state
+                    .ctx
+                    .downloaded
+                    .fetch_add(block.block.len() as u64, Ordering::Relaxed);
+
+                let _ = peer.state.sink.send(Core::Piece(block)).await;
+            }
+        }
+
+        Ok(())
+    }
+}
 
 impl Encoder<Core> for CoreCodec {
     type Error = Error;
@@ -146,21 +340,18 @@ impl Encoder<Core> for CoreCodec {
 
                 block.encode(buf)?;
             }
-            Core::Extended(ext_id, payload) => {
+            Core::Extended(ExtendedMessage(ext_id, payload)) => {
                 let msg_len = payload.len() as u32 + 2;
+
                 buf.put_u32(msg_len);
                 buf.put_u8(CoreId::Extended as u8);
                 buf.put_u8(ext_id);
-
-                if !payload.is_empty() {
-                    buf.extend_from_slice(&payload);
-                }
+                buf.extend_from_slice(&payload);
             }
         }
         Ok(())
     }
 }
-
 impl Decoder for CoreCodec {
     type Item = Core;
     type Error = Error;
@@ -171,93 +362,131 @@ impl Decoder for CoreCodec {
     ) -> Result<Option<Self::Item>, Self::Error> {
         // the message length header must be present at the minimum, otherwise
         // we can't determine the message type
-        if buf.remaining() < 4 {
+        if buf.len() < 4 {
             return Ok(None);
         }
 
-        // `get_*` integer extractors consume the message bytes by advancing
-        // buf's internal cursor. However, we don't want to do this as at this
-        // point we aren't sure we have the full message in the buffer, and thus
-        // we just want to peek at this value.
-        let mut tmp_buf = Cursor::new(&buf);
-        let msg_len = tmp_buf.get_u32() as usize;
+        // cursor is at <size_u32>
 
-        tmp_buf.set_position(0);
+        // peek at length prefix without consuming
+        let size =
+            u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
 
-        if buf.remaining() >= 4 + msg_len {
-            // we have the full message in the buffer so advance the buffer
-            // cursor past the message length header
+        if size == 0 {
             buf.advance(4);
-            // the message length is only 0 if this is a keep alive message (all
-            // other message types have at least one more field, the message id)
-            if msg_len == 0 {
-                return Ok(Some(Core::KeepAlive));
+            return Ok(Some(Core::KeepAlive));
+        }
+
+        // incomplete message, if the packet is to large to fit the MTU (~1,500
+        // bytes) the packet will be split into many packets. The decoder will
+        // be called each time a packet arrive, but if the buffer is not
+        // full yet, we don't avance the cursor and just wait.
+        if buf.len() < 4 + size {
+            if buf.capacity() < size {
+                buf.reserve((size + 4) - buf.capacity());
             }
-        } else {
-            trace!(
-                "Read buffer is {} bytes long but message is {} bytes long",
-                buf.remaining(),
-                msg_len
-            );
             return Ok(None);
         }
 
-        let msg_id = CoreId::try_from(buf.get_u8())?;
+        // advance past the size, into the msg_id
+        buf.advance(4);
+
+        // with keepalive out of the way,
+        // all the messages have at least 1 byte of size
+        if buf.is_empty() {
+            return Ok(None);
+        }
+
+        let msg_id = buf.get_u8();
+
+        let Ok(msg_id) = CoreId::try_from(msg_id) else {
+            // unknown message id, just skip the segment
+            // cursor here is after msg_id
+            warn!("unknown message_id {msg_id:?}");
+            buf.advance(size - 1);
+            // buf.clear();
+            return Ok(None);
+        };
+
+        // cursor is already past the size here and msg_id,
+        // it's into the payload.
 
         let msg = match msg_id {
             // <len=0001><id=0>
             CoreId::Choke => Core::Choke,
+
             // <len=0001><id=1>
             CoreId::Unchoke => Core::Unchoke,
+
             // <len=0001><id=2>
             CoreId::Interested => Core::Interested,
+
             // <len=0001><id=3>
             CoreId::NotInterested => Core::NotInterested,
+
             // <len=0005><id=4><piece index>
             CoreId::Have => {
-                let piece_index = buf.get_u32();
-                Core::Have(piece_index as usize)
+                if buf.remaining() < 4 {
+                    return Ok(None);
+                }
+                Core::Have(buf.get_u32() as usize)
             }
+
             // <len=0001+X><id=5><bitfield>
             CoreId::Bitfield => {
-                let mut bitfield = vec![0; msg_len - 1];
-                buf.copy_to_slice(&mut bitfield);
+                let bitfield = buf.copy_to_bytes(size - 1).to_vec();
                 Core::Bitfield(Bitfield::from_vec(bitfield))
             }
+
             // <len=0013><id=6><index><begin><length>
             CoreId::Request => {
+                if buf.remaining() < 4 + 4 + 4 {
+                    return Ok(None);
+                }
                 let index = buf.get_u32();
                 let begin = buf.get_u32();
                 let len = buf.get_u32();
 
                 Core::Request(BlockInfo { index, begin, len })
             }
+
             // <len=0009+X><id=7><index><begin><block>
             CoreId::Piece => {
+                if buf.remaining() < 4 + 4 {
+                    return Ok(None);
+                }
                 let index = buf.get_u32() as usize;
                 let begin = buf.get_u32();
 
-                let mut block = vec![0; msg_len - 9];
-                buf.copy_to_slice(&mut block);
+                // size - 4 bytes (index) - 4 bytes (begin) - 1 byte (msg_id)
+                let block = buf.copy_to_bytes(size - 9).to_vec();
 
                 Core::Piece(Block { index, begin, block })
             }
+
             // <len=0013><id=8><index><begin><length>
             CoreId::Cancel => {
+                if buf.remaining() < 4 + 4 + 4 {
+                    return Ok(None);
+                }
                 let index = buf.get_u32();
                 let begin = buf.get_u32();
                 let len = buf.get_u32();
 
                 Core::Cancel(BlockInfo { index, begin, len })
             }
+
             // <len=002 + payload><id=20><ext_id><payload>
             CoreId::Extended => {
+                if buf.remaining() < 1 {
+                    return Ok(None);
+                }
                 let ext_id = buf.get_u8();
 
-                let mut payload = vec![0u8; msg_len - 2];
-                buf.copy_to_slice(&mut payload);
+                // size - 1 byte (msg_id) - 1 byte (ext_id)
+                let payload = buf.copy_to_bytes(size - 2).to_vec();
 
-                Core::Extended(ext_id, payload)
+                Core::Extended(ExtendedMessage(ext_id, payload))
             }
         };
 
@@ -265,215 +494,9 @@ impl Decoder for CoreCodec {
     }
 }
 
-impl ExtensionTrait for CoreCodec {
-    type Codec = CoreCodec;
-    type Msg = Core;
-
-    // Core does not have an extension ID,
-    // maybe create another trait for an extension that has an id?
-    const ID: u8 = 255;
-
-    async fn handle_msg<
-        T: SinkExt<Message>
-            + Sized
-            + std::marker::Unpin
-            + Sink<Message, Error = Error>,
-    >(
-        &self,
-        msg: &Self::Msg,
-        peer: &mut Peer,
-        sink: &mut T,
-    ) -> Result<(), Error> {
-        let local = peer.ctx.local_addr;
-        let remote = peer.ctx.remote_addr;
-
-        match msg {
-            Core::KeepAlive => {
-                debug!("{local} keepalive");
-            }
-            Core::Bitfield(bitfield) => {
-                // take entire pieces from bitfield
-                // and put in pending_requests
-                debug!("{local} bitfield");
-
-                let mut b = peer.ctx.pieces.write().await;
-                *b = bitfield.clone();
-
-                // remove excess bits
-                let pieces =
-                    peer.torrent_ctx.info.read().await.pieces() as usize;
-
-                if bitfield.len() != pieces && pieces > 0 && peer.have_info {
-                    unsafe {
-                        b.set_len(pieces);
-                    }
-                }
-
-                debug!("{local} bitfield is len {:?}", bitfield.len());
-                drop(b);
-
-                let peer_has_piece = peer.has_piece_not_in_local().await;
-                debug!("{local} peer_has_piece {peer_has_piece}");
-
-                if peer_has_piece {
-                    debug!("{local} interested due to Bitfield");
-
-                    peer.session.state.am_interested = true;
-                    sink.send(Core::Interested.into()).await?;
-
-                    if peer.can_request() {
-                        peer.prepare_for_download().await;
-                        peer.request_block_infos(sink).await?;
-                    }
-                }
-            }
-            Core::Unchoke => {
-                peer.session.state.peer_choking = false;
-                debug!("{local} unchoke");
-
-                if peer.can_request() {
-                    peer.prepare_for_download().await;
-                    peer.request_block_infos(sink).await?;
-                }
-            }
-            Core::Choke => {
-                peer.session.state.peer_choking = true;
-                debug!("{local} choke");
-                peer.free_pending_blocks().await;
-            }
-            Core::Interested => {
-                debug!("{local} interested");
-                peer.session.state.peer_interested = true;
-            }
-            Core::NotInterested => {
-                debug!("{local} NotInterested");
-                peer.session.state.peer_interested = false;
-            }
-            Core::Have(piece) => {
-                debug!("{local} Have {piece}");
-                // Have is usually sent when the peer has downloaded
-                // a new piece, however, some peers, after handshake,
-                // send an incomplete bitfield followed by a sequence of
-                // have's. They do this to try to prevent censhorship
-                // from ISPs.
-                // Overwrite pieces on bitfield, if the peer has one
-                let ctx = peer.ctx.clone();
-                let mut pieces = ctx.pieces.write().await;
-
-                if pieces.clone().get(*piece).is_none() {
-                    warn!(
-                        "{local} sent Have but it's bitfield is out of bounds"
-                    );
-                    warn!("initializing an empty bitfield with the len of the piece {piece}");
-                    *pieces = Bitfield::from_vec(vec![0u8; *piece]);
-                }
-
-                pieces.set(*piece, true);
-                drop(pieces);
-
-                let torrent_ctx = peer.torrent_ctx.clone();
-                let local_bitfield = torrent_ctx.bitfield.read().await;
-                let piece = local_bitfield.get(*piece);
-
-                // maybe become interested in peer and request blocks
-                if !peer.session.state.am_interested {
-                    if let Some(a) = piece {
-                        if *a {
-                            debug!("already have this piece, ignoring");
-                        } else {
-                            debug!(
-                                "We do not have this piece, sending interested"
-                            );
-                            debug!("{local} we are interested due to Have");
-
-                            peer.session.state.am_interested = true;
-                            sink.send(Core::Interested.into()).await?;
-
-                            if peer.can_request() {
-                                peer.prepare_for_download().await;
-                                peer.request_block_infos(sink).await?;
-                            }
-                        }
-                    }
-                }
-            }
-            Core::Piece(block) => {
-                debug!("{local} piece {}", block.index);
-                debug!(
-                    "index: {:?}, begin: {:?}, len: {:?}",
-                    block.index,
-                    block.begin,
-                    block.block.len()
-                );
-
-                peer.handle_piece_msg(block.clone()).await?;
-                if peer.can_request() {
-                    peer.prepare_for_download().await;
-                    peer.request_block_infos(sink).await?;
-                }
-            }
-            Core::Cancel(block_info) => {
-                debug!("{local} cancel from {remote}");
-                debug!("{block_info:?}");
-                peer.incoming_requests.remove(block_info);
-            }
-            Core::Request(block_info) => {
-                debug!("{local} request from {remote}");
-                debug!("{block_info:?}");
-
-                if !peer.session.state.peer_choking {
-                    let begin = block_info.begin;
-                    let index = block_info.index as usize;
-                    let (tx, rx) = oneshot::channel();
-
-                    // check if peer is not already requesting this block
-                    if peer.incoming_requests.contains(block_info) {
-                        // TODO: if peer keeps spamming us, close connection
-                        warn!("Peer sent duplicate block request");
-                    }
-
-                    peer.incoming_requests.insert(block_info.clone());
-
-                    peer.torrent_ctx
-                        .disk_tx
-                        .send(DiskMsg::ReadBlock {
-                            block_info: block_info.clone(),
-                            recipient: tx,
-                            info_hash: peer.torrent_ctx.info_hash,
-                        })
-                        .await?;
-
-                    let bytes = rx.await?;
-
-                    let block = Block { index, begin, block: bytes };
-                    let _ = sink.send(Core::Piece(block).into()).await;
-                }
-            }
-            Core::Extended(_, _) => {
-                // this branch is only used when the local peer convert an
-                // extended enum message to Core::Message just
-                // to send on the sink.
-            }
-        }
-
-        Ok(())
-    }
-
-    fn codec(&self) -> Self::Codec {
-        CoreCodec
-    }
-
-    fn is_supported(
-        &self,
-        _extension: &crate::extensions::extended::Extension,
-    ) -> bool {
-        true
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use crate::extensions::core::BLOCK_LEN;
+    use crate::extensions::{core::BLOCK_LEN, Metadata, MetadataMsgType};
 
     use super::*;
     use bitvec::{bitvec, prelude::Msb0};
@@ -481,9 +504,120 @@ mod tests {
     use tokio_util::codec::{Decoder, Encoder};
 
     #[test]
+    fn fragmented_extended_message() {
+        let mut codec = CoreCodec {};
+        let mut buffer = BytesMut::new();
+
+        // Create metadata with 50,000 bytes
+        let metadata = vec![0xAA; 50_000];
+
+        // For extended message:
+        // Total length = 1 (msg_id) + 1 (ext_id) + 50_000 (payload) = 50,002
+        // bytes
+        let total_length = 50_002_u32;
+        let header = total_length.to_be_bytes();
+
+        // Build message content: [msg_id][ext_id][payload]
+        let mut message_content = Vec::with_capacity(total_length as usize);
+        message_content.push(CoreId::Extended as u8); // 1 byte
+        message_content.push(0); // ext_id: 1 byte
+        message_content.extend_from_slice(&metadata); // 50,000 bytes
+
+        // Split into 3 chunks
+        let chunk1 = &message_content[..15_002]; // First 15,002 bytes
+        let chunk2 = &message_content[15_002..35_002]; // Next 20,000 bytes
+        let chunk3 = &message_content[35_002..]; // Last 15,000 bytes
+
+        // Simulate TCP fragmentation
+        buffer.extend_from_slice(&header);
+        buffer.extend_from_slice(chunk1);
+
+        // First chunk should be incomplete
+        assert!(codec.decode(&mut buffer).unwrap().is_none());
+
+        // Add second chunk
+        buffer.extend_from_slice(chunk2);
+        assert!(codec.decode(&mut buffer).unwrap().is_none());
+
+        // Add final chunk
+        buffer.extend_from_slice(chunk3);
+
+        let keepalive = [0x00, 0x00, 0x00, 0x00];
+        let interested = [0x00, 0x00, 0x00, 0x01, 0x02]; // Length=1, ID=2 (Interested)
+
+        buffer.extend_from_slice(&keepalive);
+        buffer.extend_from_slice(&interested);
+
+        let msg = codec.decode(&mut buffer).unwrap().unwrap();
+
+        match msg {
+            Core::Extended(ExtendedMessage(ext_id, payload)) => {
+                assert_eq!(ext_id, 0);
+                assert_eq!(payload.len(), 50_000);
+                assert!(payload.iter().all(|&b| b == 0xAA));
+            }
+            _ => panic!("Wrong message type"),
+        }
+
+        // ----------------
+
+        let msg = codec.decode(&mut buffer).unwrap().unwrap();
+        assert_eq!(msg, Core::KeepAlive);
+
+        let msg = codec.decode(&mut buffer).unwrap().unwrap();
+        assert_eq!(msg, Core::Interested);
+
+        assert!(buffer.is_empty());
+        assert!(codec.decode(&mut buffer).unwrap().is_none());
+    }
+
+    #[test]
+    fn from_ext_piece() {
+        let bytes: [u8; _] = [
+            0x00, 0x00, 0x00, 0xf8, 0x14, 0x03, 0x64, 0x38, 0x3a, 0x6d, 0x73,
+            0x67, 0x5f, 0x74, 0x79, 0x70, 0x65, 0x69, 0x31, 0x65, 0x35, 0x3a,
+            0x70, 0x69, 0x65, 0x63, 0x65, 0x69, 0x30, 0x65, 0x31, 0x30, 0x3a,
+            0x74, 0x6f, 0x74, 0x61, 0x6c, 0x5f, 0x73, 0x69, 0x7a, 0x65, 0x69,
+            0x32, 0x38, 0x32, 0x35, 0x38, 0x65, 0x65, 0x64, 0x36, 0x3a, 0x6c,
+            0x65, 0x6e, 0x67, 0x74, 0x68, 0x69, 0x31, 0x34, 0x37, 0x34, 0x37,
+            0x35, 0x38, 0x31, 0x33, 0x32, 0x65, 0x34, 0x3a, 0x6e, 0x61, 0x6d,
+            0x65, 0x34, 0x39, 0x3a, 0x5b, 0x53, 0x75, 0x62, 0x73, 0x50, 0x6c,
+            0x65, 0x61, 0x73, 0x65, 0x5d, 0x20, 0x44, 0x61, 0x6e, 0x64, 0x61,
+            0x64, 0x61, 0x6e, 0x20, 0x2d, 0x20, 0x31, 0x37, 0x20, 0x28, 0x31,
+            0x30, 0x38, 0x30, 0x70, 0x29, 0x20, 0x5b, 0x44, 0x43, 0x42, 0x41,
+            0x34, 0x38, 0x42, 0x41, 0x5d, 0x2e, 0x6d, 0x6b, 0x76, 0x31, 0x32,
+            0x3a, 0x70, 0x69, 0x65, 0x63, 0x65, 0x20, 0x6c, 0x65, 0x6e, 0x67,
+            0x74, 0x68, 0x69, 0x31, 0x30, 0x34, 0x38, 0x35, 0x37, 0x36, 0x65,
+            0x36, 0x3a, 0x70, 0x69, 0x65, 0x63, 0x65, 0x73, 0x32, 0x38, 0x31,
+            0x34, 0x30, 0x3a, 0x78, 0xe0, 0x9b, 0x23, 0xcc, 0x37, 0x7c, 0xd0,
+            0x24, 0xbc, 0xea, 0x74, 0xed, 0xa1, 0x24, 0xca, 0x21, 0x72, 0x47,
+            0x69, 0x5e, 0x53, 0x2a, 0x14, 0x25, 0xb4, 0x97, 0xfb, 0x22, 0x08,
+            0x0f, 0xbe, 0xb3, 0x0e, 0xa8, 0xf8, 0xc3, 0xc7, 0x50, 0xa3, 0x30,
+            0xb1, 0xc2, 0x74, 0xc0, 0x89, 0xd6, 0x83, 0x27, 0xf3, 0xf2, 0xd0,
+            0xa2, 0x07, 0x89, 0x95, 0x72, 0x2a, 0x9b, 0x1b, 0xe8, 0x53, 0x2d,
+            0xd4, 0x22, 0xab, 0x4e, 0x7d, 0xfe, 0x0d, 0x61, 0x84, 0x3c, 0x08,
+            0xa0, 0x92, 0x2e, 0x27, 0x98, 0xf8, 0xc2, 0x5f, 0x9f, 0x32,
+        ];
+        let mut buf = BytesMut::with_capacity(bytes.len());
+        buf.extend_from_slice(&bytes);
+
+        let ext = CoreCodec.decode(&mut buf).unwrap().unwrap();
+
+        if let Core::Extended(msg @ ExtendedMessage(..)) = ext {
+            assert_eq!(msg.0, Metadata::ID);
+            let msg: Metadata = msg.try_into().unwrap();
+            assert_eq!(msg.piece, 0);
+            assert_eq!(msg.msg_type, MetadataMsgType::Response);
+            assert_eq!(msg.total_size, Some(28258));
+            assert_eq!(msg.payload.len(), 201);
+        }
+        assert!(buf.is_empty());
+    }
+
+    #[test]
     fn extended() {
         let mut buf = BytesMut::new();
-        let msg = Core::Extended(0, vec![]);
+        let msg: Core = ExtendedMessage(0, vec![]).into();
         CoreCodec.encode(msg.clone(), &mut buf).unwrap();
 
         // len
@@ -500,43 +634,40 @@ mod tests {
         let msg = CoreCodec.decode(&mut buf).unwrap().unwrap();
 
         match msg {
-            Core::Extended(ext_id, _payload) => {
+            Core::Extended(ExtendedMessage(ext_id, _payload)) => {
                 assert_eq!(ext_id, 0);
             }
             _ => panic!(),
         }
+        assert!(buf.is_empty());
     }
 
     #[test]
     fn bitfield() {
-        let mut buf = BytesMut::new();
         let mut original = bitvec![u8, Msb0; 0; 10];
+        println!("original {original:?}");
+        let original_len_bytes = original.len().div_ceil(8);
+
         original.set(8, true);
         original.set(9, true);
-        // let original = Bitfield::from_vec(vec![255]);
+
         let msg = Core::Bitfield(original.clone());
 
+        let mut buf = BytesMut::new();
         CoreCodec.encode(msg.clone(), &mut buf).unwrap();
 
         // len
-        assert_eq!(buf.get_u32(), 1 + original.clone().into_vec().len() as u32);
-        // ext id
+        assert_eq!(buf.get_u32(), 1 + original_len_bytes as u32);
+
+        // msg_id
         assert_eq!(buf.get_u8(), CoreId::Bitfield as u8);
 
-        let mut buf = BytesMut::new();
-        CoreCodec.encode(msg, &mut buf).unwrap();
-        let msg = CoreCodec.decode(&mut buf).unwrap().unwrap();
-
-        match msg {
-            Core::Bitfield(mut bitfield) => {
-                // remove excess bits
-                unsafe {
-                    bitfield.set_len(original.len());
-                }
-                assert_eq!(bitfield, original);
-            }
-            _ => panic!(),
-        }
+        // bitfield
+        // we compare the capacity because if the bit len is not multiple of 8,
+        // bitvec! will cut the unused bits but will keep the capacity. And when
+        // we send a bitfield over to the network, it gets converted
+        // with the "useless" bits.
+        assert_eq!(Bitfield::from_slice(&buf).capacity(), original.capacity());
     }
 
     #[test]
@@ -570,6 +701,7 @@ mod tests {
             }
             _ => panic!(),
         }
+        assert!(buf.is_empty());
     }
 
     #[test]
@@ -603,6 +735,7 @@ mod tests {
             }
             _ => panic!(),
         }
+        assert!(buf.is_empty());
     }
 
     #[test]
