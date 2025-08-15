@@ -168,7 +168,7 @@ static FILE_CACHE_CAPACITY: usize = 512;
 
 impl Disk {
     pub fn new(download_dir: String) -> Self {
-        let (tx, rx) = mpsc::channel::<DiskMsg>(100);
+        let (tx, rx) = mpsc::channel::<DiskMsg>(256);
 
         Self {
             rx,

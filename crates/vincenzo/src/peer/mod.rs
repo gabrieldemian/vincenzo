@@ -157,7 +157,7 @@ impl Peer<Connected> {
                     self.request_block_infos().await?;
                 }
                 _ = rerequest_timeout_interval.tick(), if self.can_request() => {
-                    self.check_request_timeout().await?;
+                    self.rerequest_timeout_blocks().await?;
                 }
                 _ = interested_interval.tick(), if !self.state.seed_only && !self.state.is_paused => {
                     let should_be_interested = self.has_piece_not_in_local().await?;
@@ -390,12 +390,17 @@ impl Peer<Connected> {
         Ok(())
     }
 
-    /// Re-request blocks that timed-out
-    async fn check_request_timeout(&mut self) -> Result<(), Error> {
+    // todo: some peers dont resend the blocks no matter how many times we
+    // resend, even if they have the piece. Maybe after 3 tries send all the
+    // blocks to another peer.
+    async fn rerequest_timeout_blocks(&mut self) -> Result<(), Error> {
         let now = Instant::now();
+        let request_len = self.available_blocks();
 
         // Identify timed-out requests
-        for (block_info, mut request_time) in &self.state.outgoing_requests {
+        for (block_info, mut request_time) in
+            self.state.outgoing_requests.iter().take(request_len)
+        {
             if now.duration_since(request_time) >= BLOCK_TIMEOUT {
                 trace!("rerequesting block {:?}", block_info);
                 self.state.sink.send(Core::Request(block_info.clone())).await?;
@@ -437,22 +442,23 @@ impl Peer<Connected> {
         }
     }
 
-    /// Request new block infos to this Peer's remote address.
-    /// Must be used after checking that the Peer is able to send blocks with
-    /// [`Self::can_request`].
-    pub async fn request_block_infos(&mut self) -> Result<(), Error> {
+    pub fn available_blocks(&self) -> usize {
         let target_request_queue_len =
             self.state.target_request_queue_len as usize;
 
         let current_requests = self.state.outgoing_requests.len();
 
         // the number of blocks we can request right now
-        let request_len =
-            target_request_queue_len.saturating_sub(current_requests);
+        target_request_queue_len.saturating_sub(current_requests)
+    }
 
-        trace!(
-            "requesting block infos: {request_len} pending: {current_requests}"
-        );
+    /// Request new block infos to this Peer's remote address.
+    /// Must be used after checking that the Peer is able to send blocks with
+    /// [`Self::can_request`].
+    pub async fn request_block_infos(&mut self) -> Result<(), Error> {
+        let request_len = self.available_blocks();
+
+        trace!("requesting block infos: {request_len}");
 
         if request_len == 0 {
             return Ok(());
@@ -486,9 +492,15 @@ impl Peer<Connected> {
         Ok(())
     }
 
-    /// Start endgame mode. This will take the few remaining block infos
-    /// and request them to all the peers of the torrent. After the first peer
-    /// receives it, it send Cancel messages to all other peers.
+    // todo: use start_endgame, disk will detect if all pieces has been
+    // requested and send a message
+    // also get the timeout blocks and send to torrent.
+    //
+    // all peers will get their pending blocks and send to the torrent.
+
+    /// Start endgame mode. This will take the few pending block infos
+    /// and request them to all downloading peers of the torrent. When the block
+    /// arrives, send Cancel messages to all other peers.
     #[tracing::instrument(skip_all)]
     pub async fn start_endgame(&mut self) {
         self.state.in_endgame = true;

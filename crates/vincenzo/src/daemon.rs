@@ -30,8 +30,7 @@ use crate::{
     magnet::Magnet,
     peer::PeerId,
     torrent::{
-        InfoHash, Stats, Torrent, TorrentCtx, TorrentMsg, TorrentState,
-        TorrentStatus,
+        InfoHash, Torrent, TorrentCtx, TorrentMsg, TorrentState, TorrentStatus,
     },
     utils::to_human_readable,
 };
