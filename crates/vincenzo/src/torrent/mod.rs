@@ -19,7 +19,6 @@ use crate::{
     daemon::{DaemonCtx, DaemonMsg},
     disk::DiskMsg,
     error::Error,
-    extensions::BLOCK_LEN,
     magnet::Magnet,
     metainfo::Info,
     peer::{self, Peer, PeerCtx, PeerId, PeerMsg},
@@ -971,23 +970,25 @@ impl Torrent<Connected> {
 
                             for peer in &self.state.connected_peers {
                                 let tx = peer.tx.clone();
-                                spawn(async move {
-                                    let _ = tx.send(PeerMsg::Quit).await;
-                                });
+                                let _ = tx.send(PeerMsg::Quit).await;
                             }
 
                             let downloaded =
                                 self.state.counter.total_downloaded.load(Ordering::Relaxed);
 
+                            let (otx, orx) = oneshot::channel();
+
                             let _ = tracker_tx.send(
                                 TrackerMsg::Announce {
                                     event: Event::Stopped,
-                                    recipient: None,
+                                    recipient: Some(otx),
                                     downloaded,
                                     uploaded: self.state.counter.total_uploaded.load(Ordering::Relaxed),
                                     left: self.state.size.saturating_sub(downloaded),
                                 })
                             .await;
+
+                            let _ = orx.await;
 
                             return Ok(());
                         }

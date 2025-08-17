@@ -173,6 +173,34 @@ impl Daemon {
         }
     }
 
+    async fn delete_torrent(
+        &mut self,
+        info_hash: &InfoHash,
+    ) -> Result<(), Error> {
+        let Some(ctx) = self.torrent_ctxs.get(info_hash) else {
+            return Ok(());
+        };
+        let _ = ctx.tx.send(TorrentMsg::Quit).await;
+        let _ =
+            ctx.disk_tx.send(DiskMsg::DeleteTorrent(info_hash.clone())).await;
+        self.torrent_states.retain(|v| *v.info_hash != **info_hash);
+        self.torrent_ctxs.remove(info_hash);
+        Ok(())
+    }
+
+    async fn delete_all_torrents(&mut self) -> Result<(), Error> {
+        for ctx in self.torrent_ctxs.values() {
+            let _ = ctx.tx.send(TorrentMsg::Quit).await;
+            let _ = ctx
+                .disk_tx
+                .send(DiskMsg::DeleteTorrent(ctx.info_hash.clone()))
+                .await;
+            let _ = self.disk_tx.send(DiskMsg::Quit).await;
+        }
+        self.torrent_ctxs.clear();
+        Ok(())
+    }
+
     /// This function will listen to 3 different event loops:
     /// - The daemon internal messages via MPSC [`DaemonMsg`]
     /// - The daemon TCP framed messages [`DaemonCodec`]
@@ -244,6 +272,9 @@ impl Daemon {
                                 }
                                 Some(Ok(msg)) = stream.next() => {
                                     if msg == Message::FrontendQuit {
+                                        ctx.tx.send(
+                                            DaemonMsg::Quit
+                                        ).await?;
                                         break 'inner;
                                     }
                                     Self::handle_remote_msgs(&ctx.tx, msg, &mut sink).await?;
@@ -269,13 +300,7 @@ impl Daemon {
                         }
                         DaemonMsg::DeleteTorrent(info_hash) => {
                             info!("deleting torrent {info_hash:?}");
-
-                            let Some(ctx) = self.torrent_ctxs.get(&info_hash) else {
-                                continue
-                            };
-                            ctx.tx.send(TorrentMsg::Quit).await?;
-                            ctx.disk_tx.send(DiskMsg::DeleteTorrent(info_hash.clone())).await?;
-                            self.torrent_states.retain(|v| v.info_hash != info_hash);
+                            let _ = self.delete_torrent(&info_hash).await;
                         }
                         DaemonMsg::IncrementConnectedPeers => self.connected_peers += 1,
                         DaemonMsg::DecrementConnectedPeers => {
@@ -342,7 +367,7 @@ impl Daemon {
                             }
                         }
                         DaemonMsg::Quit => {
-                            let _ = self.quit_torrents_and_disk().await;
+                            let _ = self.delete_all_torrents().await;
                             handle.close();
                             let _ = signals_task.await;
                             break 'outer;
@@ -456,18 +481,6 @@ impl Daemon {
         });
 
         Ok(())
-    }
-
-    async fn quit_torrents_and_disk(&mut self) {
-        // tell all torrents that we are quitting the client,
-        // each torrent will kill their peers tasks, and their tracker task
-        for (_, ctx) in std::mem::take(&mut self.torrent_ctxs) {
-            //     spawn(async move {
-            let _ = ctx.tx.send(TorrentMsg::Quit).await;
-            //     });
-        }
-
-        let _ = self.disk_tx.send(DiskMsg::Quit).await;
     }
 
     #[cfg(feature = "test")]
