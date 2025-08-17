@@ -2,14 +2,10 @@ use std::{
     fmt::Display,
     net::SocketAddr,
     ops::{Deref, DerefMut},
-    sync::{
-        atomic::{AtomicBool, AtomicU64},
-        Arc,
-    },
+    sync::{atomic::AtomicBool, Arc},
     time::Duration,
 };
 
-use bitvec::{array::BitArray, order::Msb0};
 use futures::{
     stream::{SplitSink, SplitStream, StreamExt},
     SinkExt,
@@ -28,9 +24,10 @@ use tokio_util::codec::{Framed, FramedParts};
 use tracing::{debug, warn};
 
 use crate::{
-    bitfield::{Bitfield, Reserved},
+    bitfield::Reserved,
     counter::Counter,
     daemon::{DaemonCtx, DaemonMsg},
+    disk::DiskMsg,
     error::Error,
     extensions::{
         core::BlockInfo, Core, CoreCodec, Extension, Handshake, HandshakeCodec,
@@ -171,6 +168,8 @@ pub struct PeerCtx {
 
     pub tx: mpsc::Sender<PeerMsg>,
 
+    pub torrent_ctx: Arc<TorrentCtx>,
+
     /// Id of the remote peer.
     pub id: PeerId,
 
@@ -183,18 +182,10 @@ pub struct PeerCtx {
     /// The info_hash of the torrent that this Peer belongs to.
     pub info_hash: InfoHash,
 
-    /// Download bytes of remote peer in the previous 10 seconds, tracked by
-    /// the torrent.
-    pub downloaded: AtomicU64,
-
     /// Counter for upload and download rates, in the local peer perspective.
     pub counter: Counter,
 
     pub last_download_rate_update: Mutex<Instant>,
-
-    /// Upload bytes of remote peer in the previous 10 seconds, tracked by the
-    /// torrent.
-    pub uploaded: AtomicU64,
 
     /// Client is choking the peer.
     pub am_choking: AtomicBool,
@@ -219,8 +210,8 @@ pub enum PeerMsg {
     /// to peers that dont Have it.
     HavePiece(usize),
 
-    /// Get the pieces of the peer.
-    GetPieces(oneshot::Sender<Bitfield>),
+    // Get the pieces of the peer.
+    // GetPieces(oneshot::Sender<Bitfield>),
 
     // If the peer supports the local extension id
     // SupportsExt(u8, oneshot::Sender<bool>),
@@ -362,7 +353,6 @@ impl peer::Peer<Idle> {
                     return Err(Error::HandshakeInvalid);
                 }
                 Ok(None) => {
-                    // EOF (peer closed connection)
                     tracing::warn!(
                         "peer closed connection during handshake, retrying \
                          count: {attempts}"
@@ -405,8 +395,6 @@ impl peer::Peer<Idle> {
             return Err(Error::HandshakeInvalid);
         }
 
-        let reserved = Reserved::from(peer_handshake.reserved);
-
         let old_parts = socket.into_parts();
         let mut new_parts = FramedParts::new(old_parts.io, CoreCodec);
         new_parts.read_buf = old_parts.read_buf;
@@ -415,22 +403,24 @@ impl peer::Peer<Idle> {
 
         let (tx, rx) = mpsc::channel::<PeerMsg>(100);
 
-        let ctx = PeerCtx {
+        let ctx = Arc::new(PeerCtx {
+            torrent_ctx,
             last_download_rate_update: Mutex::new(Instant::now()),
             counter: Counter::default(),
             am_interested: false.into(),
             am_choking: true.into(),
             peer_choking: true.into(),
             peer_interested: false.into(),
-            downloaded: 0.into(),
-            uploaded: 0.into(),
             direction: Direction::Outbound,
             remote_addr: remote,
             id: peer_handshake.peer_id,
             tx,
             info_hash: peer_handshake.info_hash,
             local_addr: local,
-        };
+        });
+
+        let _ =
+            ctx.torrent_ctx.disk_tx.send(DiskMsg::NewPeer(ctx.clone())).await;
 
         let (sink, stream) = socket.split();
 
@@ -441,8 +431,7 @@ impl peer::Peer<Idle> {
                 seed_only: false,
                 connection: ConnectionState::default(),
                 target_request_queue_len: DEFAULT_REQUEST_QUEUE_LEN,
-                pieces: Bitfield::new(),
-                ctx: Arc::new(ctx),
+                ctx,
                 ext_states: ExtStates::default(),
                 sink,
                 stream,
@@ -455,8 +444,7 @@ impl peer::Peer<Idle> {
                 outgoing_requests_info_pieces: Vec::new(),
                 have_info: false,
                 in_endgame: false,
-                reserved,
-                torrent_ctx,
+                reserved: peer_handshake.reserved,
                 rx,
             },
         };
@@ -573,8 +561,6 @@ impl peer::Peer<Idle> {
                 .await?;
         };
 
-        let reserved = Reserved::from(peer_handshake.reserved);
-
         let old_parts = socket.into_parts();
         let mut new_parts = FramedParts::new(old_parts.io, CoreCodec);
         new_parts.read_buf = old_parts.read_buf;
@@ -584,14 +570,13 @@ impl peer::Peer<Idle> {
         let (tx, rx) = mpsc::channel::<PeerMsg>(100);
 
         let ctx = PeerCtx {
+            torrent_ctx,
             last_download_rate_update: Mutex::new(Instant::now()),
             counter: Counter::default(),
             am_interested: false.into(),
             am_choking: true.into(),
             peer_choking: true.into(),
             peer_interested: false.into(),
-            downloaded: 0.into(),
-            uploaded: 0.into(),
             direction: Direction::Inbound,
             remote_addr: remote,
             id: peer_handshake.peer_id,
@@ -609,7 +594,6 @@ impl peer::Peer<Idle> {
                 seed_only: false,
                 connection: ConnectionState::default(),
                 target_request_queue_len: DEFAULT_REQUEST_QUEUE_LEN,
-                pieces: Bitfield::new(),
                 ctx: Arc::new(ctx),
                 ext_states: ExtStates::default(),
                 sink,
@@ -619,8 +603,7 @@ impl peer::Peer<Idle> {
                 outgoing_requests_info_pieces: Vec::new(),
                 have_info: false,
                 in_endgame: false,
-                reserved,
-                torrent_ctx,
+                reserved: peer_handshake.reserved,
                 rx,
             },
         };
@@ -649,13 +632,8 @@ pub struct ExtStates {
 pub struct Connected {
     pub stream: SplitStream<Framed<TcpStream, CoreCodec>>,
     pub sink: SplitSink<Framed<TcpStream, CoreCodec>, Core>,
-    pub reserved: BitArray<[u8; 8], Msb0>,
-    pub torrent_ctx: Arc<TorrentCtx>,
+    pub reserved: Reserved,
     pub rx: Receiver<PeerMsg>,
-
-    /// a `Bitfield` with pieces that this peer has, and hasn't, containing 0s
-    /// and 1s
-    pub pieces: Bitfield,
 
     pub ext_states: ExtStates,
 

@@ -3,10 +3,7 @@
 
 use crate::{
     error::Error,
-    extensions::{
-        Core, ExtMsg, ExtMsgHandler, ExtendedMessage, HolepunchData,
-        MetadataData,
-    },
+    extensions::{Core, ExtMsg, ExtMsgHandler, ExtendedMessage, MetadataData},
     peer::{self, Direction, MsgHandler, DEFAULT_REQUEST_QUEUE_LEN},
     torrent::TorrentMsg,
 };
@@ -15,7 +12,7 @@ use std::{fmt::Debug, ops::Deref};
 use bendy::{decoding::FromBencode, encoding::ToBencode};
 use bytes::BytesMut;
 use futures::SinkExt;
-use tracing::{debug, info, trace};
+use tracing::{debug, trace};
 use vincenzo_macros::Message;
 
 use super::Extension;
@@ -97,6 +94,7 @@ impl ExtMsgHandler<Extended, Extension> for MsgHandler {
 
         if let Some(meta_size) = ext.metadata_size {
             peer.state
+                .ctx
                 .torrent_ctx
                 .tx
                 .send(TorrentMsg::MetadataSize(meta_size))
@@ -105,9 +103,9 @@ impl ExtMsgHandler<Extended, Extension> for MsgHandler {
 
         // send ours extended msg if outbound
         if peer.state.ctx.direction == Direction::Outbound {
-            let magnet = &peer.state.torrent_ctx.magnet;
+            let magnet = &peer.state.ctx.torrent_ctx.magnet;
 
-            let info = peer.state.torrent_ctx.info.read().await;
+            let info = peer.state.ctx.torrent_ctx.info.read().await;
             let metadata_size = match info.metadata_size {
                 Some(size) => size,
                 None => magnet.length().unwrap_or(0),

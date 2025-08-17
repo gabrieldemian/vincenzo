@@ -11,19 +11,14 @@ use bendy::{
     decoding::{self, Decoder, FromBencode, Object, ResultExt},
     encoding::{Encoder, ToBencode},
 };
+use int_enum::IntEnum;
 
-use crate::extensions::ExtMsg;
+use crate::{error::Error, extensions::ExtMsg};
 
 use super::super::error;
 
 /// Metadata dict used in the Metadata protocol messages,
 /// this dict is used to request, reject, and send data (info).
-///
-/// # Important
-///
-/// Since the Metadata codec is handling [`codec::Metadata`] Reject and
-/// Request branches with just the [`Metadata::piece`], this is only used in the
-/// [`codec::Metadata::Response`] branch.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Metadata {
     pub msg_type: MetadataMsgType,
@@ -46,25 +41,11 @@ impl TryInto<Vec<u8>> for Metadata {
 }
 
 #[repr(u8)]
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq, IntEnum)]
 pub enum MetadataMsgType {
     Request = 0,
     Response = 1,
     Reject = 2,
-}
-
-impl TryFrom<u8> for MetadataMsgType {
-    type Error = error::Error;
-
-    fn try_from(value: u8) -> Result<Self, Self::Error> {
-        use MetadataMsgType::*;
-        match value {
-            v if v == Request as u8 => Ok(Request),
-            v if v == Response as u8 => Ok(Response),
-            v if v == Reject as u8 => Ok(Reject),
-            _ => Err(error::Error::BencodeError),
-        }
-    }
 }
 
 impl Metadata {
@@ -152,7 +133,12 @@ impl FromBencode for Metadata {
             }
         }
 
-        Ok(Self { msg_type: msg_type.try_into()?, piece, total_size, payload })
+        Ok(Self {
+            msg_type: msg_type.try_into().map_err(|_| Error::BencodeError)?,
+            piece,
+            total_size,
+            payload,
+        })
     }
 }
 

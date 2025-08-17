@@ -1,6 +1,6 @@
-use bitvec::bitvec;
 use bytes::{Buf, BufMut, BytesMut};
 use futures::SinkExt;
+use int_enum::IntEnum;
 use std::sync::atomic::Ordering;
 use tokio::{io, sync::oneshot};
 use tokio_util::codec::{Decoder, Encoder};
@@ -14,6 +14,7 @@ use crate::{
     error::Error,
     extensions::{ExtData, ExtMsg, ExtMsgHandler},
     peer::{self, MsgHandler},
+    torrent::TorrentMsg,
 };
 
 pub static MAX_MESSAGE_SIZE: usize = 2 * 1024 * 1024; // 2MB maximum message size
@@ -94,7 +95,7 @@ pub enum Core {
 
 /// The IDs of the [`Core`] messages.
 #[repr(u8)]
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq, IntEnum)]
 pub enum CoreId {
     Choke = 0,
     Unchoke = 1,
@@ -106,30 +107,6 @@ pub enum CoreId {
     Piece = 7,
     Cancel = 8,
     Extended = 20,
-}
-
-impl TryFrom<u8> for CoreId {
-    type Error = io::Error;
-
-    fn try_from(k: u8) -> Result<Self, Self::Error> {
-        use CoreId::*;
-        match k {
-            k if k == Choke as u8 => Ok(Choke),
-            k if k == Unchoke as u8 => Ok(Unchoke),
-            k if k == Interested as u8 => Ok(Interested),
-            k if k == NotInterested as u8 => Ok(NotInterested),
-            k if k == Have as u8 => Ok(Have),
-            k if k == Bitfield as u8 => Ok(Bitfield),
-            k if k == Request as u8 => Ok(Request),
-            k if k == Piece as u8 => Ok(Piece),
-            k if k == Cancel as u8 => Ok(Cancel),
-            k if k == Extended as u8 => Ok(Extended),
-            _ => Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "Unknown message id",
-            )),
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -176,7 +153,15 @@ impl ExtMsgHandler<Core, CoreState> for MsgHandler {
                     bitfield.count_ones()
                 );
 
-                peer.state.pieces = bitfield;
+                peer.state
+                    .ctx
+                    .torrent_ctx
+                    .tx
+                    .send(TorrentMsg::SetPeerBitfield(
+                        peer.state.ctx.id.clone(),
+                        bitfield.clone(),
+                    ))
+                    .await?;
             }
             Core::Unchoke => {
                 peer.state.ctx.peer_choking.store(false, Ordering::Relaxed);
@@ -204,22 +189,15 @@ impl ExtMsgHandler<Core, CoreState> for MsgHandler {
             Core::Have(piece) => {
                 debug!("< have {piece}");
 
-                // Overwrite pieces on bitfield, if the peer has one
-                let peer_pieces = &mut peer.state.pieces;
-
-                // peer sent a piece which is out of bounds with it's pieces
-                if peer_pieces.get(piece).is_none() {
-                    warn!("sent have but it's bitfield is out of bounds");
-                    warn!(
-                        "initializing an empty bitfield with the len of the \
-                         piece {piece}"
-                    );
-
-                    let missing_bits = piece - peer_pieces.len();
-                    peer_pieces.extend_from_bitslice(&bitvec![0; missing_bits]);
-                }
-
-                peer_pieces.set(piece, true);
+                peer.state
+                    .ctx
+                    .torrent_ctx
+                    .tx
+                    .send(TorrentMsg::PeerHave(
+                        peer.state.ctx.id.clone(),
+                        piece,
+                    ))
+                    .await?;
             }
             Core::Piece(block) => {
                 peer.handle_piece_msg(block).await?;
@@ -240,23 +218,19 @@ impl ExtMsgHandler<Core, CoreState> for MsgHandler {
                 peer.state.incoming_requests.push(block_info.clone());
 
                 peer.state
+                    .ctx
                     .torrent_ctx
                     .disk_tx
                     .send(DiskMsg::ReadBlock {
                         block_info,
                         recipient: tx,
-                        info_hash: peer.state.torrent_ctx.info_hash.clone(),
+                        info_hash: peer.state.ctx.torrent_ctx.info_hash.clone(),
                     })
                     .await?;
 
                 let block = rx.await?;
 
                 peer.state.ctx.counter.record_upload(block.block.len() as u64);
-
-                peer.state
-                    .ctx
-                    .downloaded
-                    .fetch_add(block.block.len() as u64, Ordering::Relaxed);
 
                 let _ = peer.state.sink.send(Core::Piece(block)).await;
             }

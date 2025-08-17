@@ -1,7 +1,7 @@
 //! Framed messages sent to/from Daemon
 use bytes::{Buf, BufMut, BytesMut};
+use int_enum::IntEnum;
 use speedy::{BigEndian, Readable, Writable};
-use tokio::io;
 use tokio_util::codec::{Decoder, Encoder};
 use tracing::warn;
 
@@ -59,7 +59,7 @@ pub enum Message {
 }
 
 #[repr(u8)]
-#[derive(Copy, Clone, Debug, PartialEq, Readable, Writable)]
+#[derive(Copy, Clone, Debug, PartialEq, Readable, Writable, IntEnum)]
 pub enum MessageId {
     NewTorrent = 1,
     TorrentState = 2,
@@ -70,29 +70,6 @@ pub enum MessageId {
     FrontendQuit = 7,
     TorrentStates = 8,
     DeleteTorrent = 9,
-}
-
-impl TryFrom<u8> for MessageId {
-    type Error = io::Error;
-
-    fn try_from(k: u8) -> Result<Self, Self::Error> {
-        use MessageId::*;
-        match k {
-            k if k == NewTorrent as u8 => Ok(NewTorrent),
-            k if k == TorrentState as u8 => Ok(TorrentState),
-            k if k == TorrentStates as u8 => Ok(TorrentStates),
-            k if k == GetTorrentState as u8 => Ok(GetTorrentState),
-            k if k == DeleteTorrent as u8 => Ok(DeleteTorrent),
-            k if k == Quit as u8 => Ok(Quit),
-            k if k == FrontendQuit as u8 => Ok(FrontendQuit),
-            k if k == PrintTorrentStatus as u8 => Ok(PrintTorrentStatus),
-            k if k == TogglePause as u8 => Ok(TogglePause),
-            _ => Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "Unknown message id",
-            )),
-        }
-    }
 }
 
 #[derive(Debug)]

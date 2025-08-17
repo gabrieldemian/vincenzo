@@ -77,13 +77,13 @@ impl Info {
     }
 
     /// Calculate how many blocks there are in the entire torrent.
-    pub fn blocks_len(&self) -> u32 {
-        self.blocks_per_piece() * (self.pieces.len() as u32).div_ceil(20)
+    pub fn blocks_count(&self) -> u64 {
+        self.get_size().div_ceil(BLOCK_LEN as u64)
     }
 
     /// Calculate how many blocks there are per piece
     pub fn blocks_per_piece(&self) -> u32 {
-        self.piece_length / BLOCK_LEN
+        self.piece_length.div_ceil(BLOCK_LEN)
     }
 
     /// Only get block infos of a piece.
@@ -92,8 +92,6 @@ impl Info {
         piece_length: usize,
         piece_index: usize,
     ) -> Vec<BlockInfo> {
-        // let total_size = self.get_size() as usize;
-        // let piece_length = self.piece_length as usize;
         let piece_start = piece_index * piece_length;
         let piece_end = std::cmp::min(piece_start + piece_length, total_size);
         let piece_size = (piece_end - piece_start) as u32;
@@ -435,6 +433,18 @@ impl FromBencode for Info {
 mod tests {
     use super::*;
 
+    fn create_test_info(total_size: u64, piece_length: u32) -> Info {
+        let pieces_len =
+            (total_size as f64 / piece_length as f64).ceil() as usize * 20;
+        Info {
+            file_length: Some(total_size),
+            name: "test".to_string(),
+            piece_length,
+            pieces: vec![0; pieces_len],
+            ..Default::default()
+        }
+    }
+
     /// piece_length: 15
     /// -------------------
     /// | f: 30           |
@@ -443,12 +453,7 @@ mod tests {
     /// -------------------
     #[test]
     fn get_block_infos_smaller_than_block_info() {
-        let info = Info {
-            file_length: Some(30),
-            piece_length: 15,
-            pieces: vec![0; 40],
-            ..Default::default()
-        };
+        let info = create_test_info(30, 15);
         assert_eq!(
             *info.get_block_infos().unwrap().get(&0).unwrap(),
             Vec::from([BlockInfo { index: 0, begin: 0, len: 15 },]),
@@ -467,12 +472,7 @@ mod tests {
     /// -------------------------------------
     #[test]
     fn get_block_infos_one_block_piece() {
-        let info = Info {
-            file_length: Some(32868),
-            piece_length: BLOCK_LEN,
-            pieces: vec![0; 60],
-            ..Default::default()
-        };
+        let info = create_test_info(32868, BLOCK_LEN);
         let blocks = info.get_block_infos().unwrap();
         assert_eq!(
             *blocks.get(&0).unwrap(),
@@ -496,15 +496,7 @@ mod tests {
     /// ----------------------------
     #[test]
     fn get_block_infos_even() {
-        let info = Info {
-            files: Some(vec![File {
-                length: 32768,
-                path: vec!["a.txt".to_owned()],
-            }]),
-            piece_length: BLOCK_LEN,
-            pieces: vec![0; 40],
-            ..Default::default()
-        };
+        let info = create_test_info(32768, BLOCK_LEN);
         let blocks = info.get_block_infos().unwrap();
         assert_eq!(
             *blocks.get(&0).unwrap(),
@@ -524,15 +516,7 @@ mod tests {
     /// ----------------------------
     #[test]
     fn get_block_infos_odd() {
-        let info = Info {
-            files: Some(vec![File {
-                length: 32768,
-                path: vec!["a.txt".to_owned()],
-            }]),
-            piece_length: 32668,
-            pieces: vec![0; 40],
-            ..Default::default()
-        };
+        let info = create_test_info(32768, 32668);
         let blocks = info.get_block_infos().unwrap();
         assert_eq!(
             *blocks.get(&0).unwrap(),
@@ -555,18 +539,7 @@ mod tests {
     /// --------------------------------------
     #[test]
     fn get_block_infos_odd_pre() {
-        let info = Info {
-            files: Some(vec![
-                File { length: 10, path: vec!["".to_owned()] },
-                File {
-                    length: 32768, // 2 blocks
-                    path: vec!["".to_owned()],
-                },
-            ]),
-            piece_length: 32668, // -100 of block_len
-            pieces: vec![0; 40],
-            ..Default::default()
-        };
+        let info = create_test_info(32778, 32668);
         let blocks = info.get_block_infos().unwrap();
 
         // check the pieces size
@@ -595,19 +568,7 @@ mod tests {
     /// ------------------------------
     #[test]
     fn get_block_infos_odd_post() {
-        let info = Info {
-            files: Some(vec![
-                File {
-                    length: 32768, // 2 blocks
-                    path: vec!["".to_owned()],
-                },
-                File { length: 10, path: vec!["".to_owned()] },
-            ]),
-            piece_length: 32668, // -100 of block_len
-            pieces: vec![0u8; 40],
-            ..Default::default()
-        };
-
+        let info = create_test_info(32778, 32668);
         let blocks = info.get_block_infos().unwrap();
 
         // check the pieces size
@@ -616,16 +577,103 @@ mod tests {
 
         assert_eq!(
             *blocks.get(&0).unwrap(),
-            Vec::from([
+            vec![
                 BlockInfo { index: 0, begin: 0, len: BLOCK_LEN },
                 BlockInfo { index: 0, begin: BLOCK_LEN, len: 16284 },
-            ])
+            ]
         );
 
         assert_eq!(
             *blocks.get(&1).unwrap(),
-            Vec::from([BlockInfo { index: 1, begin: 0, len: 110 },])
+            vec![BlockInfo { index: 1, begin: 0, len: 110 },]
         );
+    }
+
+    #[test]
+    fn get_block_infos_partial_last_block() {
+        let info = create_test_info(BLOCK_LEN as u64 + 1, BLOCK_LEN);
+        let blocks = info.get_block_infos().unwrap();
+
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(
+            blocks[&0],
+            vec![BlockInfo { index: 0, begin: 0, len: BLOCK_LEN }]
+        );
+        assert_eq!(blocks[&1], vec![BlockInfo { index: 1, begin: 0, len: 1 }]);
+    }
+
+    #[test]
+    fn get_block_infos_empty_torrent() {
+        let info = create_test_info(0, BLOCK_LEN);
+        let blocks = info.get_block_infos().unwrap();
+        assert!(blocks.is_empty());
+    }
+
+    #[test]
+    fn get_block_infos_single_block() {
+        let info = create_test_info(10000, BLOCK_LEN);
+        let blocks = info.get_block_infos().unwrap();
+
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(
+            blocks[&0],
+            vec![BlockInfo { index: 0, begin: 0, len: 10000 }]
+        );
+    }
+
+    #[test]
+    fn test_piece_size() {
+        let info = create_test_info(32768, BLOCK_LEN);
+        assert_eq!(info.piece_size(0), BLOCK_LEN);
+        assert_eq!(info.piece_size(1), BLOCK_LEN);
+
+        let info = create_test_info(32769, BLOCK_LEN);
+        assert_eq!(info.piece_size(0), BLOCK_LEN);
+        assert_eq!(info.piece_size(1), BLOCK_LEN);
+        assert_eq!(info.piece_size(2), 1); // last piece
+
+        // Piece length not divisible by block size
+        let info = create_test_info(33000, 17000);
+        assert_eq!(info.piece_size(0), 17000);
+        assert_eq!(info.piece_size(1), 16000);
+    }
+
+    #[test]
+    fn test_blocks_per_piece() {
+        let info = create_test_info(100_000, 16_384);
+        assert_eq!(info.blocks_per_piece(), 1);
+
+        let info = create_test_info(100_000, 32_768);
+        assert_eq!(info.blocks_per_piece(), 2);
+
+        let info = create_test_info(100_000, 10_000);
+        assert_eq!(info.blocks_per_piece(), 1); // 10,000 / 16,384 = 0.61 → ceil
+                                                // to 1
+    }
+
+    #[test]
+    fn test_total_blocks() {
+        // Exact block boundaries
+        let info = create_test_info(16384, 16384);
+        assert_eq!(info.blocks_count(), 1);
+
+        // Partial block
+        let info = create_test_info(16385, 16384);
+        assert_eq!(info.blocks_count(), 2);
+
+        // Multiple files
+        let info = Info {
+            files: Some(vec![
+                File { length: 16384, path: vec![] },
+                File { length: 1, path: vec![] },
+            ]),
+            ..create_test_info(0, 16384)
+        };
+        assert_eq!(info.blocks_count(), 2);
+
+        // Empty torrent
+        let info = create_test_info(0, 16384);
+        assert_eq!(info.blocks_count(), 0);
     }
 
     /// Confirm that the [`MetaInfo`] [`FromBencode`] implementation works as

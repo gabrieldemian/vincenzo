@@ -8,21 +8,21 @@ mod r#trait;
 // re-exports
 pub use codec::*;
 pub use r#trait::*;
-use speedy::{Readable, Writable};
+use speedy::{Context, Readable, Writable, Writer};
 
 use bendy::{
     decoding::{FromBencode, Object, ResultExt},
     encoding::ToBencode,
 };
 
-use crate::extensions::Metadata;
+use crate::{error::Error, extensions::Metadata};
 
 /// This is the payload of the extension protocol described on:
 /// BEP 0010 - Extension Protocol
 /// <http://www.bittorrent.org/beps/bep_0010.html>
 ///
 /// Other protocols may add new fields to this struct.
-#[derive(Debug, Clone, PartialEq, Default, Readable, Writable)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct Extension {
     /// messages (dictionary of supported extensions)
     pub m: M,
@@ -47,6 +47,34 @@ pub struct Extension {
     // pub complete_ago: Option<u8>,
     // pub ipv4: Option<u8>,
     // pub ipv5: Option<u8>,
+}
+
+impl<'a, C: Context> Readable<'a, C> for Extension {
+    fn read_from<R: speedy::Reader<'a, C>>(
+        reader: &mut R,
+    ) -> Result<Self, C::Error> {
+        let bytes = reader
+            .read_vec_until_eof::<u8>()
+            .map_err(|_| speedy::Error::custom(Error::BencodeError.to_string()))
+            .unwrap();
+        Ok(Self::from_bencode(&bytes).map_err(|_| {
+            speedy::Error::custom(Error::BencodeError.to_string())
+        })?)
+    }
+}
+
+impl<C: Context> Writable<C> for Extension {
+    fn write_to<T: ?Sized + Writer<C>>(
+        &self,
+        writer: &mut T,
+    ) -> Result<(), C::Error> {
+        let b = self.to_bencode().unwrap();
+        writer.write_bytes(&b)
+    }
+}
+
+impl Extension {
+    pub const SIZE: usize = M::SIZE + 2 + 14 + 2 + 8;
 }
 
 impl ExtData for Extension {}
@@ -81,7 +109,7 @@ impl Extension {
 /// lists all extensions that a peer supports
 /// in our case, we only support ut_metadata at the moment
 /// and naturally, we are only interested in reading this part of the metadata
-#[derive(Debug, Clone, Default, PartialEq, Readable, Writable)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct M {
     /// BEP 0009.
     pub ut_metadata: Option<u8>,
@@ -91,6 +119,34 @@ pub struct M {
 
     // BEP 0055.
     // pub ut_holepunch: Option<u8>,
+}
+
+impl<'a, C: Context> Readable<'a, C> for M {
+    fn read_from<R: speedy::Reader<'a, C>>(
+        reader: &mut R,
+    ) -> Result<Self, C::Error> {
+        let bytes = reader
+            .read_vec_until_eof::<u8>()
+            .map_err(|_| speedy::Error::custom(Error::BencodeError.to_string()))
+            .unwrap();
+        Ok(Self::from_bencode(&bytes).map_err(|_| {
+            speedy::Error::custom(Error::BencodeError.to_string())
+        })?)
+    }
+}
+
+impl<C: Context> Writable<C> for M {
+    fn write_to<T: ?Sized + Writer<C>>(
+        &self,
+        writer: &mut T,
+    ) -> Result<(), C::Error> {
+        let b = self.to_bencode().unwrap();
+        writer.write_bytes(&b)
+    }
+}
+
+impl M {
+    pub const SIZE: usize = 1;
 }
 
 impl ToBencode for M {
@@ -237,6 +293,24 @@ mod tests {
     use crate::{extensions::metadata::Metadata, metainfo::MetaInfo};
 
     use super::*;
+
+    #[test]
+    fn serialize() {
+        let a = b"d11:ut_metadatai3ee";
+        println!("{a:?}");
+
+        let b = M::from_bencode(a).unwrap();
+        println!("{b:?}");
+
+        let x = b.write_to_vec().unwrap();
+        println!("{x:?}");
+
+        let x = M::read_from_buffer(&x).unwrap();
+        println!("{x:?}");
+
+        let x = b.write_to_vec().unwrap();
+        println!("{x:?}");
+    }
 
     #[test]
     fn test_my_extended_handshake() {

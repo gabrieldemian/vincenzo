@@ -78,7 +78,7 @@ impl<'a> TorrentList<'a> {
                 Block::default()
                     .borders(Borders::ALL)
                     .border_style(PALETTE.error)
-                    .title(format!("Err: {err}")),
+                    .title(format!(" Err: {err} ")),
             );
             false
         } else {
@@ -87,7 +87,7 @@ impl<'a> TorrentList<'a> {
                 Block::default()
                     .border_style(PALETTE.success)
                     .borders(Borders::ALL)
-                    .title("Ok (Press Enter)"),
+                    .title(" Ok (Press Enter) "),
             );
             true
         }

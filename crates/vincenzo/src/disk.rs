@@ -8,6 +8,7 @@ use std::{
     sync::Arc,
 };
 
+use bitvec::{bitvec, order::Msb0};
 use futures::future::join_all;
 use hashbrown::HashMap;
 use lru::LruCache;
@@ -25,11 +26,10 @@ use tokio::{
 use tracing::{debug, info, trace, warn};
 
 use crate::{
-    bitfield::Bitfield,
     error::Error,
     extensions::core::{Block, BlockInfo},
     metainfo::Info,
-    peer::{PeerCtx, PeerId, PeerMsg},
+    peer::{PeerCtx, PeerId},
     torrent::{InfoHash, TorrentCtx, TorrentMsg},
 };
 
@@ -74,9 +74,7 @@ pub enum DiskMsg {
     /// Request block infos that the peer has, that we do not have ir nor
     /// requested it.
     RequestBlocks {
-        info_hash: InfoHash,
         peer_id: PeerId,
-        peer_pieces: Bitfield,
         recipient: Sender<Vec<BlockInfo>>,
         qnt: usize,
     },
@@ -118,6 +116,7 @@ pub struct TorrentCache {
     pub file_metadata: Vec<FileMetadata>,
     pub piece_length: u64,
     pub total_size: u64,
+    pub is_single_file_torrent: bool,
 }
 
 /// The Disk struct responsabilities:
@@ -127,19 +126,19 @@ pub struct TorrentCache {
 /// - Validate hash of pieces
 #[derive(Debug)]
 pub struct Disk {
-    pub tx: mpsc::Sender<DiskMsg>,
     pub torrent_ctxs: HashMap<InfoHash, Arc<TorrentCtx>>,
     pub peer_ctxs: Vec<Arc<PeerCtx>>,
+    pub tx: mpsc::Sender<DiskMsg>,
+    rx: Receiver<DiskMsg>,
 
     /// The sequence in which pieces will be downloaded,
-    /// based on `PieceOrder`.
-    pub piece_order: HashMap<InfoHash, Vec<u32>>,
+    /// based on `PieceStrategy`.
+    pub piece_order: HashMap<InfoHash, Vec<usize>>,
+
+    pub piece_strategy: HashMap<InfoHash, PieceStrategy>,
 
     /// How many pieces were downloaded.
     pub downloaded_pieces: HashMap<InfoHash, u64>,
-
-    /// How pieces will be downloaded.
-    pub piece_strategy: HashMap<InfoHash, PieceStrategy>,
 
     /// Where to put downloaded torrents.
     pub download_dir: String,
@@ -150,7 +149,7 @@ pub struct Disk {
     /// A complete clone of Info to avoid locking.
     torrent_info: HashMap<InfoHash, Info>,
 
-    /// The block infos of each piece of a torrent, ordered from 0 to last.
+    /// The block infos of each piece of a torrent.
     pieces_blocks: HashMap<InfoHash, BTreeMap<usize, Vec<BlockInfo>>>,
 
     /// A cache of torrent files with pre-computed lengths.
@@ -159,8 +158,6 @@ pub struct Disk {
     /// A LRU cache of file handles to avoid doing a sys call each time the
     /// disk needs to read or write to a file.
     file_handle_cache: LruCache<PathBuf, Arc<Mutex<tokio::fs::File>>>,
-
-    rx: Receiver<DiskMsg>,
 }
 
 /// Cache capacity of files.
@@ -168,7 +165,7 @@ static FILE_CACHE_CAPACITY: usize = 512;
 
 impl Disk {
     pub fn new(download_dir: String) -> Self {
-        let (tx, rx) = mpsc::channel::<DiskMsg>(256);
+        let (tx, rx) = mpsc::channel::<DiskMsg>(512);
 
         Self {
             rx,
@@ -202,8 +199,8 @@ impl Disk {
                     self.downloaded_pieces.remove_entry(&info_hash);
                     self.piece_strategy.remove_entry(&info_hash);
                     self.pieces_blocks.remove_entry(&info_hash);
-                    self.torrent_info.remove_entry(&info_hash);
                     self.piece_order.remove_entry(&info_hash);
+                    self.torrent_info.remove_entry(&info_hash);
                     self.peer_ctxs.retain(|v| v.info_hash != info_hash);
                 }
                 DiskMsg::DeletePeer(addr) => {
@@ -224,15 +221,9 @@ impl Disk {
                 DiskMsg::WriteBlock { block, info_hash } => {
                     self.write_block(&info_hash, block).await?;
                 }
-                DiskMsg::RequestBlocks {
-                    qnt,
-                    recipient,
-                    info_hash,
-                    peer_id,
-                    peer_pieces,
-                } => {
+                DiskMsg::RequestBlocks { qnt, recipient, peer_id } => {
                     let infos = self
-                        .request_blocks(&info_hash, &peer_id, peer_pieces, qnt)
+                        .request_blocks(&peer_id, qnt)
                         .await
                         .unwrap_or_default();
 
@@ -298,7 +289,8 @@ impl Disk {
     ) -> Result<(), Error> {
         if let Some(cache) = self.torrent_cache.get(info_hash) {
             for meta in &cache.file_metadata {
-                let path = self.base_path(info_hash).join(&meta.path);
+                let mut path = self.base_path(info_hash);
+                path.push(&meta.path);
 
                 if let Some(parent) = path.parent() {
                     tokio::fs::create_dir_all(parent).await?;
@@ -334,6 +326,7 @@ impl Disk {
         if let Some(files) = &info.files {
             for file in files {
                 file_metadata.push(FileMetadata {
+                    // todo: just appened the base_path here
                     path: PathBuf::from_iter(&file.path),
                     start_offset: current_offset,
                     length: file.length,
@@ -342,7 +335,7 @@ impl Disk {
             }
         } else {
             file_metadata.push(FileMetadata {
-                path: PathBuf::from(&info.name),
+                path: PathBuf::from(""),
                 start_offset: 0,
                 length: info.file_length.unwrap_or(0),
             });
@@ -350,22 +343,35 @@ impl Disk {
 
         self.torrent_cache.insert(
             info_hash.clone(),
-            TorrentCache { file_metadata, piece_length, total_size },
+            TorrentCache {
+                file_metadata,
+                piece_length,
+                total_size,
+                is_single_file_torrent: info.files.is_none(),
+            },
         );
 
         // create folders, files, and preallocate them.
         self.preallocate_files(info_hash).await?;
 
-        self.piece_strategy.insert(info_hash.clone(), PieceStrategy::default());
+        self.block_cache.insert(info_hash.clone(), BTreeMap::new());
 
-        let mut all_pieces: Vec<u32> = (0..info.pieces()).collect();
+        let block_infos = info.get_block_infos()?;
+        info!("generated {} block infos", block_infos.len());
 
-        all_pieces.shuffle(&mut rand::rng());
+        self.pieces_blocks.insert(info_hash.clone(), block_infos);
+        self.downloaded_pieces.insert(info_hash.clone(), 0);
+
+        let piece_strategy =
+            self.piece_strategy.entry(info_hash.clone()).or_default();
+
+        let mut all_pieces: Vec<usize> = (0..info.pieces() as usize).collect();
+
+        if *piece_strategy == PieceStrategy::Rarest {
+            all_pieces.shuffle(&mut rand::rng());
+        }
 
         self.piece_order.insert(info_hash.clone(), all_pieces);
-        self.block_cache.insert(info_hash.clone(), BTreeMap::new());
-        self.pieces_blocks.insert(info_hash.clone(), info.get_block_infos()?);
-        self.downloaded_pieces.insert(info_hash.clone(), 0);
 
         Ok(())
     }
@@ -419,9 +425,13 @@ impl Disk {
         // traverse pieces of the peers
         for ctx in peer_ctxs {
             let (otx, orx) = oneshot::channel();
-            let _ = ctx.tx.send(PeerMsg::GetPieces(otx)).await;
+            let _ = ctx
+                .torrent_ctx
+                .tx
+                .send(TorrentMsg::GetPeerBitfield(ctx.id.clone(), otx))
+                .await;
 
-            let Some(pieces) = orx.await.ok() else {
+            let Ok(Some(pieces)) = orx.await else {
                 continue;
             };
 
@@ -449,9 +459,11 @@ impl Disk {
             score.remove(rarest_idx);
         }
 
-        let piece_order = self.piece_strategy.get_mut(info_hash).unwrap();
-        if *piece_order == PieceStrategy::Random {
-            *piece_order = PieceStrategy::Rarest;
+        let piece_strategy =
+            self.piece_strategy.entry(info_hash.clone()).or_default();
+
+        if *piece_strategy == PieceStrategy::Random {
+            *piece_strategy = PieceStrategy::Rarest;
         }
 
         Ok(())
@@ -460,92 +472,68 @@ impl Disk {
     /// Request available block infos following the order of PieceStrategy.
     pub async fn request_blocks(
         &mut self,
-        info_hash: &InfoHash,
-        _peer_id: &PeerId,
-        peer_pieces: Bitfield,
+        peer_id: &PeerId,
         qnt: usize,
     ) -> Result<Vec<BlockInfo>, Error> {
-        if peer_pieces.is_empty() {
-            warn!("peer_pieces is empty");
+        let Some(peer_ctx) = self.peer_ctxs.iter().find(|v| v.id == *peer_id)
+        else {
+            warn!("peer not found: {peer_id:?}");
+            return Ok(vec![]);
+        };
+
+        let (otx, orx) = oneshot::channel();
+        peer_ctx
+            .torrent_ctx
+            .tx
+            .send(TorrentMsg::GetMissingPieces(peer_id.clone(), otx))
+            .await?;
+
+        let pieces = orx.await?;
+        let mut result = Vec::with_capacity(qnt);
+
+        let piece_order = self
+            .piece_order
+            .get(&peer_ctx.info_hash)
+            .ok_or(Error::TorrentDoesNotExist)?;
+
+        // todo: enter endgame mode here
+        if piece_order.is_empty() {
             return Ok(vec![]);
         }
 
-        // let Some(peer_ctx) = self.peer_ctxs.iter().find(|v| v.id == *peer_id)
-        // else {
-        //     warn!("peer not found: {peer_id:?}");
-        //     return Ok(vec![]);
-        // };
+        let mut piece_order_keep = bitvec![u8, Msb0; 1; piece_order.len()];
 
-        let torrent_ctx = self
-            .torrent_ctxs
-            .get(info_hash)
-            .ok_or(Error::TorrentDoesNotExist)?
-            .clone();
-
-        // info!("peer_pieces len {}", peer_pieces.len());
-        // info!("peer_pieces ones {}", peer_pieces.count_ones());
-
-        // --------
-        let (otx, orx) = oneshot::channel();
-        torrent_ctx.tx.send(TorrentMsg::ReadBitfield(otx)).await?;
-        let local_pieces = orx.await?;
-        // info!("request_blocks local_pieces {}", local_pieces.len());
-        // --------
-
-        // --------
-        // let (otx, orx) = oneshot::channel();
-        // peer_ctx.tx.send(PeerMsg::GetPieces(otx)).await?;
-        // let peer_pieces = orx.await?;
-        // info!("request_blocks peer_pieces len {}", peer_pieces.len());
-        // --------
-
-        // order of pieces to download
-        let piece_order = self
-            .piece_order
-            .get(info_hash)
-            .ok_or(Error::TorrentDoesNotExist)?;
-
-        let mut result: Vec<BlockInfo> = Vec::with_capacity(qnt);
-
-        for piece in 0..piece_order.len() {
-            // get a piece that the remote peer has...
-            let Some(_p @ true) = peer_pieces.get(piece).as_deref() else {
+        for (i, piece) in piece_order.iter().enumerate() {
+            if !unsafe { *pieces.get_unchecked(*piece) } {
                 continue;
             };
-
-            // but the local peer does not.
-            let Some(_p @ false) = local_pieces.get(piece).as_deref() else {
-                continue;
-            };
-
-            // block infos of the current piece
-            let Some(mut block_infos) = self
+            let to_drain = qnt.saturating_sub(result.len());
+            let Some(block_infos) = self
                 .pieces_blocks
-                .get_mut(info_hash)
+                .get_mut(&peer_ctx.info_hash)
                 .ok_or(Error::TorrentDoesNotExist)?
-                .remove(&piece)
-            // todo: maybe also delete self.peers if piece was fully requested ?
+                .get_mut(piece)
             else {
-                continue;
+                return Ok(vec![]);
             };
 
-            let to_add: Vec<BlockInfo> =
-                block_infos.drain(0..qnt.min(block_infos.len())).collect();
+            result
+                .extend(block_infos.drain(0..to_drain.min(block_infos.len())));
 
-            result.extend(to_add);
-
-            // if not all blocks were pushed to result, put them back
-            if !block_infos.is_empty() {
-                self.pieces_blocks
-                    .get_mut(info_hash)
-                    .ok_or(Error::TorrentDoesNotExist)?
-                    .insert(piece, block_infos);
+            unsafe {
+                piece_order_keep.set_unchecked(i, !block_infos.is_empty());
             }
 
             if result.len() >= qnt {
                 break;
             }
         }
+
+        let mut keep_iter = piece_order_keep.into_iter();
+        self.piece_order
+            .get_mut(&peer_ctx.info_hash)
+            .unwrap()
+            .retain(|_| keep_iter.next().unwrap());
 
         Ok(result)
     }
@@ -568,18 +556,6 @@ impl Disk {
                 Error::FileOpenError(path.to_str().unwrap().to_owned())
             })
     }
-
-    // pub async fn maintain_cache(&mut self) {
-    //     let now = Instant::now();
-    //     self.file_handle_cache.iter_mut().for_each(|(_, file)| {
-    //         if now.duration_since(file.last_accessed) >
-    // Duration::from_secs(300) {             file.cleanup().await;  //
-    // Custom flush/close logic         }
-    //     });
-    //
-    //     let new_size = todo!();
-    //     self.file_handle_cache.resize(new_size);
-    // }
 
     pub async fn read_block(
         &mut self,
@@ -679,8 +655,6 @@ impl Disk {
 
         cache.push(block);
 
-        // we change perspectives here because those values are
-        // going to be sent to the tracker in our perspective.
         let _ = torrent_ctx
             .tx
             .send(TorrentMsg::IncrementDownloaded(len as u64))
@@ -692,7 +666,7 @@ impl Disk {
             .get(info_hash)
             .ok_or(Error::TorrentDoesNotExist)?
             .get(&index)
-            .ok_or(Error::TorrentDoesNotExist)?
+            .ok_or(Error::PieceInvalid)?
             .iter()
             .fold(0, |acc, v| acc + v.block.len())
             < self.piece_size(info_hash, index)? as usize
@@ -703,8 +677,6 @@ impl Disk {
         // validate that the downloaded pieces hash
         // matches the hash of the info.
         if (self.validate_piece(info_hash, index).await).is_err() {
-            warn!("piece {index} is corrupted");
-
             let info = self
                 .torrent_cache
                 .get(info_hash)
@@ -714,6 +686,11 @@ impl Disk {
                 info.total_size as usize,
                 info.piece_length as usize,
                 index,
+            );
+
+            warn!(
+                "piece {index} is corrupted, generating more {} block infos",
+                info_blocks.len()
             );
 
             // as the piece is corrupted, try to download it again and return
@@ -751,8 +728,8 @@ impl Disk {
             == PieceStrategy::Random
         {
             debug!(
-                "first piece downloaded, and piece order is random, switching \
-                 to rarest-first"
+                "first piece downloaded, and piece order is random, switching
+                  to rarest-first"
             );
             self.rarest_first(info_hash).await?;
         }
@@ -971,12 +948,13 @@ mod tests {
     use tokio_util::codec::Framed;
 
     use crate::{
+        bitfield::Reserved,
         counter::Counter,
         daemon::Daemon,
         extensions::{core::BLOCK_LEN, CoreCodec},
         magnet::Magnet,
         metainfo::{self, Info},
-        peer::{self, Peer, StateLog, DEFAULT_REQUEST_QUEUE_LEN},
+        peer::{self, Peer, PeerMsg, StateLog, DEFAULT_REQUEST_QUEUE_LEN},
         torrent::{Connected, Stats, Torrent},
         tracker::{TrackerCtx, TrackerMsg},
     };
@@ -1097,6 +1075,7 @@ mod tests {
         let (peer_tx, peer_rx) = mpsc::channel::<PeerMsg>(100);
 
         let peer_ctx = Arc::new(PeerCtx {
+            torrent_ctx: torrent_ctx.clone(),
             remote_addr: SocketAddr::V4(SocketAddrV4::new(
                 Ipv4Addr::new(127, 0, 0, 1),
                 8080,
@@ -1110,14 +1089,15 @@ mod tests {
             info_hash: magnet.parse_xt_infohash(),
             tx: peer_tx.clone(),
             peer_interested: true.into(),
-            uploaded: 0.into(),
-            downloaded: 0.into(),
             id: PeerId::gen(),
             am_interested: true.into(),
             am_choking: false.into(),
             peer_choking: false.into(),
             direction: peer::Direction::Outbound,
         });
+
+        disk.piece_strategy
+            .insert(info_hash.clone(), PieceStrategy::Sequential);
 
         let listener = TcpListener::bind("0.0.0.0:0").await?;
         let local_addr = listener.local_addr()?;
@@ -1126,12 +1106,12 @@ mod tests {
             bitvec::bitvec![u8, bitvec::prelude::Msb0; 1; pieces_len as usize];
 
         let peer_ctx_ = peer_ctx.clone();
-        let torrent_ctx_ = torrent_ctx.clone();
 
         let stream = TcpStream::connect(local_addr).await?;
 
         let mut torrent = Torrent {
             state: Connected {
+                peer_pieces: HashMap::from([(peer_ctx_.id.clone(), pieces)]),
                 size: 0,
                 counter: Counter::new(),
                 unchoked_peers: Vec::new(),
@@ -1178,8 +1158,6 @@ mod tests {
             Ok::<(), Error>(())
         });
 
-        let peer_pieces = pieces.clone();
-
         spawn(async move {
             let (_socket, _) = listener.accept().await.unwrap();
             let socket = Framed::new(stream, CoreCodec);
@@ -1197,14 +1175,12 @@ mod tests {
                     incoming_requests: Vec::new(),
                     outgoing_requests: Vec::new(),
                     outgoing_requests_info_pieces: Vec::new(),
-                    pieces: peer_pieces,
-                    reserved: bitvec::bitarr![u8, bitvec::prelude::Msb0; 0; 8 * 8],
+                    reserved: Reserved::default(),
                     rx: peer_rx,
                     seed_only: false,
                     sink,
                     stream,
                     target_request_queue_len: DEFAULT_REQUEST_QUEUE_LEN,
-                    torrent_ctx: torrent_ctx_,
                 },
             };
 
@@ -1214,11 +1190,9 @@ mod tests {
         let (otx, orx) = oneshot::channel();
         disk_tx
             .send(DiskMsg::RequestBlocks {
-                info_hash: info_hash.clone(),
                 peer_id: peer_ctx.id.clone(),
                 recipient: otx,
                 qnt: 3,
-                peer_pieces: pieces,
             })
             .await?;
 

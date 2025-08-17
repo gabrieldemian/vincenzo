@@ -5,10 +5,11 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use crate::{error::Error, extensions::ExtMsg};
 
 pub use codec::*;
+use int_enum::IntEnum;
 use speedy::{BigEndian, Readable, Writable};
 
 #[repr(u8)]
-#[derive(PartialEq, Debug, Readable, Writable, Clone, Copy)]
+#[derive(PartialEq, Debug, Readable, Writable, Clone, Copy, IntEnum)]
 pub enum HolepunchMsgType {
     /// Send connect messages to both the initiating peer and target peer
     Rendezvous = 0,
@@ -21,7 +22,9 @@ pub enum HolepunchMsgType {
 }
 
 #[repr(u8)]
-#[derive(PartialEq, Debug, Readable, Writable, Clone, Copy, Default)]
+#[derive(
+    PartialEq, Debug, Readable, Writable, Clone, Copy, Default, IntEnum,
+)]
 pub enum HolepunchErrorCodes {
     /// No error
     #[default]
@@ -41,7 +44,7 @@ pub enum HolepunchErrorCodes {
 }
 
 #[repr(u8)]
-#[derive(PartialEq, Debug, Readable, Writable, Clone, Copy)]
+#[derive(PartialEq, Debug, Readable, Writable, Clone, Copy, IntEnum)]
 pub enum HolepunchAddrType {
     Ipv4 = 0,
     Ipv6 = 1,
@@ -72,20 +75,6 @@ impl From<SocketAddr> for HolepunchAddr {
             SocketAddr::V6(ip) => {
                 HolepunchAddr::Ipv6(u128::from_be_bytes(*ip.ip().as_octets()))
             }
-        }
-    }
-}
-
-impl TryFrom<u8> for HolepunchMsgType {
-    type Error = Error;
-
-    fn try_from(value: u8) -> Result<Self, Error> {
-        use HolepunchMsgType::*;
-        match value {
-            v if v == Rendezvous as u8 => Ok(Rendezvous),
-            v if v == Connect as u8 => Ok(Connect),
-            v if v == Error as u8 => Ok(Error),
-            _ => Err(crate::error::Error::Timeout),
         }
     }
 }

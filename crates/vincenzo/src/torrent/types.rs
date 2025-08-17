@@ -46,6 +46,21 @@ pub enum TorrentMsg {
     /// When we can't do a TCP connection with the ip of the Peer.
     PeerError(SocketAddr),
 
+    /// Get the missing pieces of local. Where 1 = missing, 0 = not missing
+    GetMissingPieces(PeerId, oneshot::Sender<Bitfield>),
+
+    SetPeerBitfield(PeerId, Bitfield),
+
+    /// If the remote peer has a piece in which the local hasn't
+    /// Returns Some with the absent piece or None if local has it.
+    PeerHasPieceNotInLocal(PeerId, oneshot::Sender<Option<usize>>),
+
+    /// Clone the peer's bitfield.
+    GetPeerBitfield(PeerId, oneshot::Sender<Option<Bitfield>>),
+
+    /// Set a piece of the peer's bitfield to true
+    PeerHave(PeerId, usize),
+
     /// Error when handshaking a peer, even though the TCP connection was
     /// established.
     PeerConnectingError(SocketAddr),

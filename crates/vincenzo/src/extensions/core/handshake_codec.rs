@@ -12,10 +12,10 @@ use std::io;
 use tracing::warn;
 
 use bytes::{BufMut, BytesMut};
-use speedy::{BigEndian, Readable, Writable};
 use tokio_util::codec::{Decoder, Encoder};
 
 use crate::{
+    bitfield::Reserved,
     extensions::{core::PSTR, CoreId, ExtMsg, Extended, Extension, PSTR_LEN},
     peer::PeerId,
     torrent::InfoHash,
@@ -25,37 +25,103 @@ use bytes::Buf;
 
 use crate::error::Error;
 
+/// pstrlen = dec 19, hex 0x13
+/// pstr = "BitTorrent protocol"
+///
+/// This is the very first message exchanged. If the peer's protocol string
+/// (`BitTorrent protocol`) or the info hash differs from ours, the connection
+/// is severed. The reserved field is 8 zero bytes, but will later be used to
+/// set which extensions the peer supports. The peer id is usually the client
+/// name and version.
+///
+/// 0x0030:  ---- ---- 1342 6974 546f 7272 656e 7420  .../.BitTorrent.
+/// 0x0040:  7072 6f74 6f63 6f6c 0000 0000 0010 0000  protocol........
+/// 0x0050:  d7e0 49fc 9182 5ac8 069e 640a b45a 511f  ..I...Z...d..ZQ.
+/// 0x0060:  87d8 f807 7663 7a2d 3030 3030 312d 6f54  ....vcz-00001-oT
+/// 0x0070:  4b6c 4e67 6e55 6568                      KlNgnUeh
+#[derive(Clone, Debug, Default)]
+pub struct Handshake {
+    /// 0013
+    pub pstr_len: u8,
+
+    /// 0042 6974 546f 7272 656e 7420 7072 6f74
+    /// 6f63 6f6c
+    pub pstr: [u8; 19],
+
+    pub reserved: Reserved,
+
+    /// d7e0 49fc 9182 5ac8 069e 640a b45a 511f
+    /// 87d8 f807
+    pub info_hash: InfoHash,
+
+    /// 7663 7a2d 3030 3030 312d 6f54 4b6c 4e67
+    /// 6e55 6568                      
+    pub peer_id: PeerId,
+
+    /// If the handshake has an extended handshake. Local handshakes always
+    /// have this to S0me. And in practice, all normal clients support this
+    /// extension too.
+    pub ext: Option<Extension>,
+}
+
+impl Handshake {
+    pub fn new(info_hash: InfoHash, peer_id: PeerId) -> Self {
+        Self {
+            pstr_len: PSTR_LEN as u8,
+            pstr: PSTR,
+            reserved: Reserved::supported(),
+            info_hash,
+            peer_id,
+            ext: Some(Extension::supported(Some(0))),
+        }
+    }
+    pub fn validate(&self, target: &Self) -> bool {
+        if target.peer_id.0.len() != 20 {
+            warn!("! invalid peer_id from receiving handshake");
+            return false;
+        }
+        if self.info_hash != target.info_hash {
+            warn!("! info_hash from receiving handshake does not match ours");
+            return false;
+        }
+        if target.pstr_len != 19 {
+            warn!("! handshake with wrong pstr_len, dropping connection");
+            return false;
+        }
+        if target.pstr != PSTR {
+            warn!("! handshake with wrong pstr, dropping connection");
+            return false;
+        }
+        true
+    }
+}
+
 #[derive(Debug)]
 pub struct HandshakeCodec;
 
 impl Encoder<Handshake> for HandshakeCodec {
-    type Error = io::Error;
+    type Error = Error;
 
     fn encode(
         &mut self,
         handshake: Handshake,
         buf: &mut BytesMut,
-    ) -> io::Result<()> {
+    ) -> Result<(), Error> {
         let Handshake { pstr, reserved, info_hash, peer_id, ext, .. } =
             handshake;
 
-        buf.put_u8(pstr.len() as u8);
+        buf.put_u8(PSTR_LEN as u8);
         buf.extend_from_slice(&pstr);
-        buf.extend_from_slice(&reserved);
+        buf.extend_from_slice(reserved.0.as_raw_slice());
         buf.extend_from_slice(&info_hash.0);
         buf.extend_from_slice(&peer_id.0);
 
         let Some(ext) = ext else { return Ok(()) };
 
-        let bencoded_ext = ext.to_bencode().map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "Error decoding ext handshake",
-            )
-        })?;
+        let bencoded_ext = ext.to_bencode()?;
 
         buf.put_u32(2 + bencoded_ext.len() as u32);
-        buf.put_u8(CoreId::Extended as u8);
+        buf.put_u8(CoreId::Extended.into());
         buf.put_u8(Extended::ID);
         buf.extend_from_slice(&bencoded_ext);
 
@@ -109,7 +175,7 @@ impl Decoder for HandshakeCodec {
         let mut handshake = Handshake {
             pstr,
             pstr_len: PSTR_LEN as u8,
-            reserved,
+            reserved: Reserved::new(reserved),
             info_hash: InfoHash(info_hash),
             peer_id: PeerId(peer_id),
             ext: None,
@@ -158,101 +224,6 @@ impl Decoder for HandshakeCodec {
         }
 
         Ok(Some(handshake))
-    }
-}
-
-/// pstrlen = dec 19, hex 0x13
-/// pstr = "BitTorrent protocol"
-///
-/// This is the very first message exchanged. If the peer's protocol string
-/// (`BitTorrent protocol`) or the info hash differs from ours, the connection
-/// is severed. The reserved field is 8 zero bytes, but will later be used to
-/// set which extensions the peer supports. The peer id is usually the client
-/// name and version.
-///
-/// 0x0030:  ---- ---- 1342 6974 546f 7272 656e 7420  .../.BitTorrent.
-/// 0x0040:  7072 6f74 6f63 6f6c 0000 0000 0010 0000  protocol........
-/// 0x0050:  d7e0 49fc 9182 5ac8 069e 640a b45a 511f  ..I...Z...d..ZQ.
-/// 0x0060:  87d8 f807 7663 7a2d 3030 3030 312d 6f54  ....vcz-00001-oT
-/// 0x0070:  4b6c 4e67 6e55 6568                      KlNgnUeh
-#[derive(Clone, Debug, Writable, Readable, Default)]
-pub struct Handshake {
-    /// 0013
-    pub pstr_len: u8,
-
-    /// 0042 6974 546f 7272 656e 7420 7072 6f74
-    /// 6f63 6f6c
-    pub pstr: [u8; 19],
-
-    /// 0000 0000 0010 0000
-    pub reserved: [u8; 8],
-
-    /// d7e0 49fc 9182 5ac8 069e 640a b45a 511f
-    /// 87d8 f807
-    pub info_hash: InfoHash,
-
-    /// 7663 7a2d 3030 3030 312d 6f54 4b6c 4e67
-    /// 6e55 6568                      
-    pub peer_id: PeerId,
-
-    /// If the handshake has an extended handshake. Local handshakes always
-    /// have this to S0me. And in practice, all normal clients support this
-    /// extension too.
-    pub ext: Option<Extension>,
-}
-
-impl Handshake {
-    pub fn new(
-        info_hash: impl Into<[u8; 20]>,
-        peer_id: impl Into<[u8; 20]>,
-    ) -> Self {
-        let mut reserved = [0u8; 8];
-
-        // we support the `extension protocol`
-        // set the bit 44 to the left
-        reserved[5] |= 0x10;
-
-        Self {
-            pstr_len: u8::to_be(19),
-            pstr: PSTR,
-            reserved,
-            info_hash: InfoHash(info_hash.into()),
-            peer_id: PeerId(peer_id.into()),
-            ext: Some(Extension::supported(Some(0))),
-        }
-    }
-    pub fn serialize(&self) -> Result<[u8; 68], Error> {
-        let mut buf: [u8; 68] = [0u8; 68];
-        let temp = self
-            .write_to_vec_with_ctx(BigEndian {})
-            .map_err(Error::SpeedyError)?;
-
-        buf.copy_from_slice(&temp[..]);
-
-        Ok(buf)
-    }
-    pub fn deserialize(buf: &[u8]) -> Result<Self, Error> {
-        Self::read_from_buffer_with_ctx(BigEndian {}, buf)
-            .map_err(Error::SpeedyError)
-    }
-    pub fn validate(&self, target: &Self) -> bool {
-        if target.peer_id.0.len() != 20 {
-            warn!("! invalid peer_id from receiving handshake");
-            return false;
-        }
-        if self.info_hash != target.info_hash {
-            warn!("! info_hash from receiving handshake does not match ours");
-            return false;
-        }
-        if target.pstr_len != 19 {
-            warn!("! handshake with wrong pstr_len, dropping connection");
-            return false;
-        }
-        if target.pstr != PSTR {
-            warn!("! handshake with wrong pstr, dropping connection");
-            return false;
-        }
-        true
     }
 }
 

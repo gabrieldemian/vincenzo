@@ -13,6 +13,8 @@ license = "MIT"
 exclude = ["tests/*", "*.log"]
 
 [dependencies]
+int-enum = "1.2.0"
+bitcode = { workspace = true }
 lru = { workspace = true }
 bendy = { workspace = true }
 bitvec = { workspace = true }

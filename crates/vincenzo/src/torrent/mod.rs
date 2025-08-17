@@ -5,20 +5,21 @@
 //! [`PeerMsg`].
 
 use bendy::decoding::FromBencode;
-use bitvec::{bitvec, prelude::Msb0};
 mod types;
 
+use hashbrown::HashMap;
 use rand::Rng;
 // re-exports
 pub use types::*;
 
 use crate::{
-    bitfield::Bitfield,
+    bitfield::{Bitfield, VczBitfield},
     config::CONFIG,
     counter::Counter,
     daemon::{DaemonCtx, DaemonMsg},
     disk::DiskMsg,
     error::Error,
+    extensions::BLOCK_LEN,
     magnet::Magnet,
     metainfo::Info,
     peer::{self, Peer, PeerCtx, PeerId, PeerMsg},
@@ -89,6 +90,9 @@ pub struct Connected {
 
     /// Size of the `info` bencoded string.
     pub metadata_size: u64,
+
+    /// Pieces that all peers have.
+    pub peer_pieces: HashMap<PeerId, Bitfield>,
 
     pub tracker_ctx: Arc<TrackerCtx>,
 }
@@ -214,6 +218,7 @@ impl Torrent<Idle> {
 
         Ok(Torrent {
             state: Connected {
+                peer_pieces: HashMap::default(),
                 counter: Counter::default(),
                 size: self.ctx.magnet.length().unwrap_or(0),
                 unchoked_peers: Vec::with_capacity(3),
@@ -224,7 +229,6 @@ impl Torrent<Idle> {
                 error_peers: Vec::with_capacity(
                     CONFIG.max_torrent_peers as usize,
                 ),
-                // downloaded_info_bytes: 0,
                 bitfield: Bitfield::default(),
                 stats,
                 idle_peers: peers,
@@ -268,6 +272,7 @@ impl Torrent<Connected> {
         Ok(max_torrent_peers as usize - currently_active)
     }
 
+    // todo: implement reconnect algo
     pub async fn reconnect_errored_peers(&mut self) -> Result<(), Error> {
         // let errored: Vec<_> =
         //     self.state.error_peers.drain(..).map(|v| v.state.addr).collect();
@@ -311,15 +316,16 @@ impl Torrent<Connected> {
                         .await
                         {
                             warn!("error with peer: {:?} {e:?}", peer);
-                            match e {
-                                Error::PeerClosedSocket
-                                | Error::HandshakeTimeout => {
-                                    ctx.tx
-                                        .send(TorrentMsg::PeerError(peer))
-                                        .await?;
-                                }
-                                _ => {}
-                            }
+                            ctx.tx.send(TorrentMsg::PeerError(peer)).await?;
+                            // match e {
+                            // Error::PeerClosedSocket
+                            // | Error::HandshakeTimeout => {
+                            //     ctx.tx
+                            //         .send(TorrentMsg::PeerError(peer))
+                            //         .await?;
+                            // }
+                            // _ => {}
+                            // }
                         };
                     }
                     Err(e) => {
@@ -423,7 +429,8 @@ impl Torrent<Connected> {
         let mut result = None;
 
         for peer in &self.state.connected_peers {
-            let peer_uploaded = peer.uploaded.load(Ordering::Relaxed);
+            let peer_uploaded =
+                peer.counter.upload_rate.load(Ordering::Relaxed);
 
             match &self.state.opt_unchoked_peer {
                 Some(opt_unchoked) => {
@@ -476,9 +483,9 @@ impl Torrent<Connected> {
             }
 
             let uploaded_or_downloaded = if get_uploaded {
-                peer.uploaded.load(Ordering::Relaxed)
+                peer.counter.upload_rate.load(Ordering::Relaxed)
             } else {
-                peer.downloaded.load(Ordering::Relaxed)
+                peer.counter.download_rate.load(Ordering::Relaxed)
             };
 
             if len < n {
@@ -606,6 +613,34 @@ impl Torrent<Connected> {
         Err(Error::PeerNotFound(id))
     }
 
+    /// Return the first piece that the remote peer has and the local client
+    /// hasn't.
+    pub fn peer_has_piece_not_in_local(
+        &self,
+        peer_id: &PeerId,
+    ) -> Option<usize> {
+        let local = &self.state.bitfield;
+        if !local.any() {
+            return Some(0);
+        };
+        let remote = self.state.peer_pieces.get(peer_id)?;
+        remote
+            .iter_ones()
+            .find(|&piece_index| !unsafe { *local.get_unchecked(piece_index) })
+    }
+
+    /// Return a bitfield representing the pieces that the local client does not
+    /// have, and that the remote has.
+    pub fn get_missing_pieces(&self, peer_id: &PeerId) -> Bitfield {
+        self.state
+            .peer_pieces
+            .get(peer_id)
+            // even though i'm doing a clone here, the compiler *probably*
+            // optimizes this with SIMD.
+            .map(|remote| !self.state.bitfield.clone() & remote)
+            .unwrap_or_default()
+    }
+
     /// Run the Torrent main event loop to listen to internal [`TorrentMsg`].
     #[tracing::instrument(name = "torrent", skip_all,
         fields(
@@ -646,6 +681,26 @@ impl Torrent<Connected> {
             select! {
                 Some(msg) = self.rx.recv() => {
                     match msg {
+                        TorrentMsg::PeerHasPieceNotInLocal(id, tx) => {
+                            let r = self.peer_has_piece_not_in_local(&id);
+                            let _ = tx.send(r);
+                        }
+                        TorrentMsg::GetMissingPieces(id, tx) => {
+                            let r = self.get_missing_pieces(&id);
+                            let _ = tx.send(r);
+                        }
+                        TorrentMsg::GetPeerBitfield(id, tx) => {
+                            let bitfield = self.state.peer_pieces.get(&id).cloned();
+                            let _ = tx.send(bitfield);
+                        }
+                        TorrentMsg::SetPeerBitfield(id, bitfield) => {
+                            let entry = self.state.peer_pieces.entry(id).or_default();
+                            *entry = bitfield;
+                        }
+                        TorrentMsg::PeerHave(id, piece) => {
+                            let bitfield = self.state.peer_pieces.entry(id).or_default();
+                            bitfield.safe_set(piece);
+                        }
                         TorrentMsg::GetConnectedPeers(otx) => {
                             let _ = otx.send(self.state.connected_peers.clone());
                         }
@@ -672,22 +727,12 @@ impl Torrent<Connected> {
                         TorrentMsg::DownloadedPiece(piece) => {
                             debug!("downloaded_piece {piece}");
 
-                            // if fore some reason the local bitfield is smaller than the piece
-                            if self.state.bitfield.get(piece).is_none() {
-                                let missing_bits = piece - self.state.bitfield.len();
-                                self.state.bitfield.extend_from_bitslice(&bitvec![0; missing_bits]);
-                            }
+                            self.state.bitfield.safe_set(piece);
 
-                            // only send Have's if the piece was not downloaded
-                            // as this message could be called many times by accident.
-                            if !self.state.bitfield.get(piece).unwrap() {
-                                // send Have messages to peers that dont have our pieces
-                                for peer in &self.state.connected_peers {
-                                    let _ = peer.tx.send(PeerMsg::HavePiece(piece)).await;
-                                }
+                            // send Have messages
+                            for peer in &self.state.connected_peers {
+                                let _ = peer.tx.send(PeerMsg::HavePiece(piece)).await;
                             }
-
-                            self.state.bitfield.set(piece, true);
 
                             let total_pieces = self.state.bitfield.len();
                             let downloaded_pieces = self.state.bitfield.count_ones();
@@ -745,7 +790,6 @@ impl Torrent<Connected> {
                                 if opt_addr == addr {
                                     self.state.opt_unchoked_peer = None;
                                 }
-
                             }
                             self.state.idle_peers.retain(|v| *v != addr);
 
@@ -847,18 +891,21 @@ impl Torrent<Connected> {
                                 return Err(Error::PieceInvalid);
                             }
 
-                            debug!("--info--");
                             debug!("name: {:?}", downloaded_info.name);
                             debug!("files: {:?}", downloaded_info.files);
                             debug!("piece_length: {:?}", downloaded_info.piece_length);
-                            debug!("pieces: {:?}", downloaded_info.pieces());
+                            info!(
+                                "pieces: {}, blocks count: {}",
+                                downloaded_info.pieces(),
+                                downloaded_info.blocks_count(),
+                            );
 
                             let meta_size = downloaded_info.metadata_size()?;
                             self.state.metadata_size = meta_size;
                             self.state.size = downloaded_info.get_size();
                             let pieces = downloaded_info.pieces();
-                            self.state.bitfield = bitvec![u8, Msb0; 0; pieces as usize];
-                            self.state.bitfield.force_align();
+                            self.state.bitfield = Bitfield::from_piece(pieces as usize);
+
 
                             downloaded_info.metadata_size = Some(meta_size);
 
@@ -871,11 +918,6 @@ impl Torrent<Connected> {
 
                             for peer in &self.state.connected_peers {
                                 let _ = peer.tx.send(PeerMsg::HaveInfo).await;
-                                let _ = self
-                                    .ctx
-                                    .disk_tx
-                                    .send(DiskMsg::NewPeer(peer.clone()))
-                                    .await;
                             }
                         }
                         TorrentMsg::RequestInfoPiece(index, recipient) => {
@@ -978,6 +1020,8 @@ impl Torrent<Connected> {
                             acc + if !v.peer_choking.load(Ordering::Relaxed) && v.am_interested.load(Ordering::Relaxed) { 1 } else {0}
                         });
 
+                    // send periodic updates to the TUI
+                    // todo: use bitcode crate end send encoded payload.
                     let torrent_state = TorrentState {
                         name: self.name.clone(),
                         size: self.state.size,
@@ -1008,11 +1052,13 @@ impl Torrent<Connected> {
                     let download_rate = self.state.counter.download_rate.load(Ordering::Relaxed);
                     let upload_rate = self.state.counter.upload_rate.load(Ordering::Relaxed);
 
-                    info!("d: {} u: {} dr: {} ur: {}",
+                    info!("d: {} u: {} dr: {} ur: {}\np: {} dp: {}",
                         to_human_readable(downloaded as f64),
                         to_human_readable(uploaded as f64),
                         to_human_readable(download_rate as f64),
                         to_human_readable(upload_rate as f64),
+                        self.state.bitfield.len(),
+                        self.state.bitfield.count_ones()
                     );
                 }
                 _ = optimistic_unchoke_interval.tick() => {
@@ -1051,11 +1097,6 @@ impl Torrent<Connected> {
                             let _ = uploader.tx.send(PeerMsg::Unchoke).await;
                             self.state.unchoked_peers.push(uploader.clone());
                         }
-                    }
-
-                    for peer in &self.state.connected_peers {
-                        peer.downloaded.store(0, Ordering::Relaxed);
-                        peer.uploaded.store(0, Ordering::Relaxed);
                     }
                 }
                 _ = announce_interval.tick(), if self.state.have_info => {

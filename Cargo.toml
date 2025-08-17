@@ -10,6 +10,8 @@ members = [
 resolver = "2"
 
 [workspace.dependencies]
+int-enum = "1.2.0"
+bitcode = { version = "=0.6.6", features = ["serde"] }
 quote = "1.0.36"
 lru = "0.16.0"
 syn = "2.0.74"

@@ -61,6 +61,7 @@ impl ExtMsgHandler<Holepunch, HolepunchData> for MsgHandler {
                 let (otx, orx) = oneshot::channel();
 
                 peer.state
+                    .ctx
                     .torrent_ctx
                     .tx
                     .send(TorrentMsg::ReadPeerByIp(

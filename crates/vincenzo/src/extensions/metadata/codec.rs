@@ -65,11 +65,11 @@ impl ExtMsgHandler<Metadata, MetadataData> for MsgHandler {
                     .retain(|&p| p.0 != msg.piece);
 
                 peer.state
+                    .ctx
                     .torrent_ctx
                     .tx
                     .send(TorrentMsg::DownloadedInfoPiece(
-                        // todo: maybe total_size doesn't need to be option
-                        msg.total_size.unwrap_or(u64::MAX),
+                        msg.total_size.ok_or(Error::MessageResponse)?,
                         msg.piece,
                         msg.payload,
                     ))
@@ -81,6 +81,7 @@ impl ExtMsgHandler<Metadata, MetadataData> for MsgHandler {
                 let (tx, rx) = oneshot::channel();
 
                 peer.state
+                    .ctx
                     .torrent_ctx
                     .tx
                     .send(TorrentMsg::RequestInfoPiece(msg.piece, tx))

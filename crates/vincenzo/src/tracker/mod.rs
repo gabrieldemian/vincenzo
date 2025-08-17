@@ -280,7 +280,7 @@ impl TrackerTrait for Tracker<Udp> {
 
     /// Bind UDP socket and send a connect handshake,
     /// to one of the trackers.
-    // todo: get a new tracker if download is stale
+    // todo: announce again if download is stale
     async fn connect_to_tracker<A>(
         trackers: &[A],
         info_hash: InfoHash,
