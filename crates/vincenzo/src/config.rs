@@ -32,6 +32,14 @@ pub struct Config {
 }
 
 pub static CONFIG: LazyLock<Config> = LazyLock::new(|| Config::get().unwrap());
+pub static CONFIG_BINCODE: LazyLock<
+    bincode::config::Configuration<
+        bincode::config::BigEndian,
+        bincode::config::Varint,
+    >,
+> = LazyLock::new(|| {
+    bincode::config::standard().with_big_endian().with_variable_int_encoding()
+});
 
 impl Config {
     /// Try to load the configuration. Environmental variables have priviledge

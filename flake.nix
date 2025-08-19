@@ -30,9 +30,7 @@
             export XDG_DATA_HOME="$HOME/.local/share";
           '';
           buildInputs = [
-
             (writeShellScriptBin "writedump" ''sudo tcpdump -i CloudflareWARP -XX 'tcp and port not https' -w dump.pcap'')
-
             rustup
             taplo
             trippy

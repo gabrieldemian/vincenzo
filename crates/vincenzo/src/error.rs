@@ -56,6 +56,12 @@ pub enum Error {
     #[error("Tried to unchoke a peer but the maximum amount is already full")]
     MaximumUnchokedPeers,
 
+    #[error("Failed to encode")]
+    BincodeEncodeError(#[from] bincode::error::EncodeError),
+
+    #[error("Failed to dencode")]
+    BincodeDecodeError(#[from] bincode::error::DecodeError),
+
     #[error("Configuration error: {0}")]
     ConfigError(String),
 

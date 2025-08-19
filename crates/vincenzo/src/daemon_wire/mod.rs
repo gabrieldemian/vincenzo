@@ -1,11 +1,11 @@
 //! Framed messages sent to/from Daemon
 use bytes::{Buf, BufMut, BytesMut};
 use int_enum::IntEnum;
-use speedy::{BigEndian, Readable, Writable};
 use tokio_util::codec::{Decoder, Encoder};
 use tracing::warn;
 
 use crate::{
+    config::CONFIG_BINCODE,
     error::Error,
     torrent::{InfoHash, TorrentState},
 };
@@ -59,7 +59,7 @@ pub enum Message {
 }
 
 #[repr(u8)]
-#[derive(Copy, Clone, Debug, PartialEq, Readable, Writable, IntEnum)]
+#[derive(Copy, Clone, Debug, PartialEq, IntEnum)]
 pub enum MessageId {
     NewTorrent = 1,
     TorrentState = 2,
@@ -95,7 +95,7 @@ impl Encoder<Message> for DaemonCodec {
             }
             Message::TorrentState(torrent_state) => {
                 let bytes =
-                    torrent_state.write_to_vec_with_ctx(BigEndian {})?;
+                    bincode::encode_to_vec(torrent_state, *CONFIG_BINCODE)?;
 
                 let msg_len = 1 + bytes.len() as u32;
 
@@ -105,7 +105,7 @@ impl Encoder<Message> for DaemonCodec {
             }
             Message::TorrentStates(torrent_states) => {
                 let bytes =
-                    torrent_states.write_to_vec_with_ctx(BigEndian {})?;
+                    bincode::encode_to_vec(torrent_states, *CONFIG_BINCODE)?;
 
                 let msg_len = 1 + bytes.len() as u32;
 
@@ -210,21 +210,18 @@ impl Decoder for DaemonCodec {
                 let mut payload = vec![0u8; buf.remaining()];
                 buf.copy_to_slice(&mut payload);
 
-                let info = TorrentState::read_from_buffer_with_ctx(
-                    BigEndian {},
-                    &payload,
-                )?;
+                let info: (TorrentState, usize) =
+                    bincode::decode_from_slice(&payload, *CONFIG_BINCODE)?;
 
-                Message::TorrentState(info)
+                Message::TorrentState(info.0)
             }
             MessageId::TorrentStates => {
                 let mut payload = vec![0u8; buf.remaining()];
                 buf.copy_to_slice(&mut payload);
 
-                let states = Vec::<TorrentState>::read_from_buffer_with_ctx(
-                    BigEndian {},
-                    &payload,
-                )?;
+                let states: Vec<TorrentState> =
+                    bincode::decode_from_slice(&payload, *CONFIG_BINCODE)
+                        .map(|v| v.0)?;
 
                 Message::TorrentStates(states)
             }
@@ -316,7 +313,7 @@ mod tests {
             ..Default::default()
         };
 
-        let a = info.write_to_vec_with_ctx(BigEndian {}).unwrap();
+        let a = bincode::encode_to_vec(&info, *CONFIG_BINCODE).unwrap();
         println!("encoding a {a:?}");
 
         let mut buf = BytesMut::new();

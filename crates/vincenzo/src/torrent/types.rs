@@ -5,6 +5,7 @@ use std::{
     sync::Arc,
 };
 
+use bincode::{Decode, Encode};
 use rand::Rng;
 use speedy::{Readable, Writable};
 use tokio::sync::oneshot;
@@ -88,7 +89,9 @@ pub enum TorrentMsg {
     Quit,
 }
 
-#[derive(Clone, PartialEq, Eq, Hash, Default, Readable, Writable)]
+#[derive(
+    Clone, PartialEq, Eq, Hash, Default, Readable, Writable, Encode, Decode,
+)]
 pub struct InfoHash(pub [u8; 20]);
 
 impl InfoHash {
@@ -158,7 +161,7 @@ impl TryFrom<Vec<u8>> for InfoHash {
     }
 }
 
-#[derive(Debug, Default, Clone, PartialEq, Readable, Writable)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Encode, Decode)]
 pub enum TorrentStatus {
     #[default]
     ConnectingTrackers,
@@ -170,7 +173,7 @@ pub enum TorrentStatus {
 }
 
 /// State of a [`Torrent`], used by the UI to present data.
-#[derive(Debug, Clone, Default, PartialEq, Readable, Writable)]
+#[derive(Debug, Clone, Default, PartialEq, Encode, Decode)]
 pub struct TorrentState {
     pub name: String,
     pub stats: Stats,
@@ -189,7 +192,7 @@ pub struct TorrentState {
 }
 
 /// Status of the current Torrent, updated at every announce request.
-#[derive(Clone, Debug, PartialEq, Default, Readable, Writable)]
+#[derive(Clone, Debug, PartialEq, Default, Readable, Writable, Encode, Decode)]
 pub struct Stats {
     pub interval: u32,
     pub leechers: u32,

@@ -14,7 +14,8 @@ exclude = ["tests/*", "*.log"]
 
 [dependencies]
 int-enum = "1.2.0"
-bitcode = { workspace = true }
+bincode = { workspace = true }
+flate2 = { workspace = true }
 lru = { workspace = true }
 bendy = { workspace = true }
 bitvec = { workspace = true }

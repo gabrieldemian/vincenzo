@@ -11,7 +11,8 @@ resolver = "2"
 
 [workspace.dependencies]
 int-enum = "1.2.0"
-bitcode = { version = "=0.6.6", features = ["serde"] }
+bincode = { version = "=2.0.1" }
+flate2 = { version = "1.0.17", features = ["zlib-rs"], default-features = false }
 quote = "1.0.36"
 lru = "0.16.0"
 syn = "2.0.74"

@@ -159,7 +159,7 @@ impl Peer<Connected> {
                     self.request_block_infos().await?;
                 }
                 _ = rerequest_timeout_interval.tick(), if self.can_request() => {
-                    tracing::info!("{} pending blocks", self.state.outgoing_requests.len());
+                    debug!("{} pending blocks", self.state.outgoing_requests.len());
                     self.rerequest_timeout_blocks().await?;
                 }
                 _ = interested_interval.tick(), if !self.state.seed_only && !self.state.is_paused => {
