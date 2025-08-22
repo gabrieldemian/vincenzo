@@ -27,34 +27,15 @@ use crate::{
     bitfield::Reserved,
     counter::Counter,
     daemon::{DaemonCtx, DaemonMsg},
-    disk::DiskMsg,
+    disk::{DiskMsg, ReturnBlockInfos},
     error::Error,
     extensions::{
         core::BlockInfo, Core, CoreCodec, Extension, Handshake, HandshakeCodec,
         HolepunchData, MetadataData,
     },
-    peer::{self},
+    peer::{self, Peer},
     torrent::{InfoHash, TorrentCtx, TorrentMsg},
 };
-
-/// At any given time, a connection with a handshaked(connected) peer has 3
-/// possible states. ConnectionState means TCP connection, Even if the peer is
-/// choked they are still marked here as connected.
-#[derive(Clone, Default, Copy, Debug, PartialEq)]
-pub enum ConnectionState {
-    /// The handshake just happened, probably computing choke algorithm and
-    /// sending bitfield messages.
-    #[default]
-    Connecting,
-
-    // Connected and downloading and uploading.
-    Connected,
-
-    /// This state is set when the program is gracefully shutting down,
-    /// In this state, we don't send the outgoing blocks to the tracker on
-    /// shutdown.
-    Quitting,
-}
 
 #[derive(Clone, PartialEq, Eq, Hash, Default, Readable, Writable)]
 pub struct PeerId(pub [u8; 20]);
@@ -70,9 +51,9 @@ impl PeerId {
         peer_id[4..9].copy_from_slice(b"00001");
         peer_id[9] = b'-';
 
-        for i in 10..20 {
+        (10..20).for_each(|i| {
             peer_id[i] = rand::rng().sample(Alphanumeric);
-        }
+        });
 
         PeerId(peer_id)
     }
@@ -80,6 +61,7 @@ impl PeerId {
 
 /// Only used for logging the state of the per in a compact way.
 /// am_choking, am_interested, peer_choking, peer_interested
+#[derive(PartialEq, Eq)]
 pub(crate) struct StateLog(pub [char; 4]);
 
 impl Default for StateLog {
@@ -270,7 +252,9 @@ pub enum Direction {
 }
 
 /// A peer can be: Idle, Connected, or Error.
-pub trait PeerState {}
+pub trait PeerState {
+    fn free_pending_blocks(&mut self) {}
+}
 
 /// New peers just returned by the tracker, without any type of connection,
 /// ready to be handshaked at any moment.
@@ -283,9 +267,9 @@ impl Default for peer::Peer<Idle> {
     }
 }
 
-const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
-const RETRY_INTERVAL: Duration = Duration::from_millis(500);
-const MAX_ATTEMPTS: usize = 3;
+static HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+static RETRY_INTERVAL: Duration = Duration::from_millis(500);
+static MAX_ATTEMPTS: usize = 3;
 
 impl peer::Peer<Idle> {
     pub fn new() -> Self {
@@ -427,9 +411,9 @@ impl peer::Peer<Idle> {
         let mut peer = peer::Peer {
             state_log: StateLog::default(),
             state: Connected {
+                free_tx: daemon_ctx.free_tx.clone(),
                 is_paused: false,
                 seed_only: false,
-                connection: ConnectionState::default(),
                 target_request_queue_len: DEFAULT_REQUEST_QUEUE_LEN,
                 ctx,
                 ext_states: ExtStates::default(),
@@ -590,9 +574,9 @@ impl peer::Peer<Idle> {
         let peer = peer::Peer {
             state_log: StateLog::default(),
             state: Connected {
+                free_tx: daemon_ctx.free_tx.clone(),
                 is_paused: false,
                 seed_only: false,
-                connection: ConnectionState::default(),
                 target_request_queue_len: DEFAULT_REQUEST_QUEUE_LEN,
                 ctx: Arc::new(ctx),
                 ext_states: ExtStates::default(),
@@ -635,6 +619,8 @@ pub struct Connected {
     pub reserved: Reserved,
     pub rx: Receiver<PeerMsg>,
 
+    pub free_tx: mpsc::UnboundedSender<ReturnBlockInfos>,
+
     pub ext_states: ExtStates,
 
     /// Context of the Peer which is shared for anyone who needs it.
@@ -664,9 +650,6 @@ pub struct Connected {
     /// This is a cache of have_info on Torrent
     /// to avoid using locks or atomics.
     pub have_info: bool,
-
-    /// The current state of the connection.
-    pub connection: ConnectionState,
 
     /// Whether we're in endgame mode.
     pub in_endgame: bool,
@@ -715,3 +698,10 @@ impl PeerState for PeerError {}
 impl PeerState for Connected {}
 impl PeerState for Connecting {}
 impl PeerState for Idle {}
+impl<S: PeerState> PeerState for Peer<S> {}
+
+impl<S: PeerState> Drop for Peer<S> {
+    fn drop(&mut self) {
+        self.free_pending_blocks();
+    }
+}

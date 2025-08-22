@@ -25,7 +25,7 @@ use tokio::{
 use crate::{
     config::CONFIG,
     daemon_wire::{DaemonCodec, Message},
-    disk::DiskMsg,
+    disk::{DiskMsg, ReturnBlockInfos},
     error::Error,
     magnet::Magnet,
     peer::PeerId,
@@ -63,6 +63,7 @@ pub struct Daemon {
 /// Context of the [`Daemon`] that may be shared between other types.
 pub struct DaemonCtx {
     pub tx: mpsc::Sender<DaemonMsg>,
+    pub free_tx: mpsc::UnboundedSender<ReturnBlockInfos>,
     pub local_peer_id: PeerId,
 }
 
@@ -105,7 +106,10 @@ impl Daemon {
         SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 51411);
 
     /// Initialize the Daemon struct with the default [`DaemonConfig`].
-    pub fn new(disk_tx: mpsc::Sender<DiskMsg>) -> Self {
+    pub fn new(
+        disk_tx: mpsc::Sender<DiskMsg>,
+        free_tx: mpsc::UnboundedSender<ReturnBlockInfos>,
+    ) -> Self {
         let (tx, rx) = mpsc::channel::<DaemonMsg>(100);
 
         let local_peer_id = PeerId::gen();
@@ -116,7 +120,7 @@ impl Daemon {
             rx,
             torrent_ctxs: HashMap::new(),
             torrent_states: Vec::new(),
-            ctx: Arc::new(DaemonCtx { tx, local_peer_id }),
+            ctx: Arc::new(DaemonCtx { tx, local_peer_id, free_tx }),
         }
     }
 
@@ -272,9 +276,6 @@ impl Daemon {
                                 }
                                 Some(Ok(msg)) = stream.next() => {
                                     if msg == Message::FrontendQuit {
-                                        ctx.tx.send(
-                                            DaemonMsg::Quit
-                                        ).await?;
                                         break 'inner;
                                     }
                                     Self::handle_remote_msgs(&ctx.tx, msg, &mut sink).await?;
@@ -354,7 +355,7 @@ impl Daemon {
                                             to_human_readable(state.download_rate as f64),
                                         )
                                     }
-                                    _ => state.status.clone().into()
+                                    _ => state.status.into()
                                 };
 
                                 println!(
@@ -368,8 +369,8 @@ impl Daemon {
                         }
                         DaemonMsg::Quit => {
                             let _ = self.delete_all_torrents().await;
-                            handle.close();
                             let _ = signals_task.await;
+                            handle.close();
                             break 'outer;
                         }
                     }
@@ -394,7 +395,7 @@ impl Daemon {
         // or locally on the same binary (i.e CLI).
         match msg {
             Message::DeleteTorrent(info_hash) => {
-                tx.send(DaemonMsg::DeleteTorrent(info_hash)).await?;
+                let _ = tx.send(DaemonMsg::DeleteTorrent(info_hash)).await;
             }
             Message::NewTorrent(magnet) => {
                 info!("new_torrent: {:?}", magnet.hash());
@@ -469,8 +470,12 @@ impl Daemon {
 
         self.torrent_states.push(torrent_state);
 
-        let torrent =
-            Torrent::new(self.disk_tx.clone(), self.ctx.clone(), magnet);
+        let torrent = Torrent::new(
+            self.disk_tx.clone(),
+            self.ctx.free_tx.clone(),
+            self.ctx.clone(),
+            magnet,
+        );
 
         self.torrent_ctxs.insert(info_hash, torrent.ctx.clone());
 

@@ -17,7 +17,7 @@ use crate::{
     config::CONFIG,
     counter::Counter,
     daemon::{DaemonCtx, DaemonMsg},
-    disk::DiskMsg,
+    disk::{DiskMsg, ReturnBlockInfos},
     error::Error,
     magnet::Magnet,
     metainfo::Info,
@@ -114,6 +114,7 @@ pub struct Torrent<S: TorrentTrait> {
 #[derive(Debug)]
 pub struct TorrentCtx {
     pub disk_tx: mpsc::Sender<DiskMsg>,
+    pub free_tx: mpsc::UnboundedSender<ReturnBlockInfos>,
     pub tx: mpsc::Sender<TorrentMsg>,
     pub magnet: Magnet,
     pub info_hash: InfoHash,
@@ -123,6 +124,7 @@ pub struct TorrentCtx {
 impl Torrent<Idle> {
     pub fn new(
         disk_tx: mpsc::Sender<DiskMsg>,
+        free_tx: mpsc::UnboundedSender<ReturnBlockInfos>,
         daemon_ctx: Arc<DaemonCtx>,
         magnet: Magnet,
     ) -> Torrent<Idle> {
@@ -139,6 +141,7 @@ impl Torrent<Idle> {
         let (tx, rx) = mpsc::channel::<TorrentMsg>(100);
 
         let ctx = Arc::new(TorrentCtx {
+            free_tx,
             tx: tx.clone(),
             disk_tx,
             info_hash: magnet.parse_xt_infohash(),
@@ -287,12 +290,10 @@ impl Torrent<Connected> {
 
         let to_request = self.available_connections().await?;
 
-        if to_request > 0 {
-            trace!(
-                "{:?} sending handshakes to {to_request} peers",
-                self.ctx.info_hash
-            );
-        }
+        trace!(
+            "{:?} sending handshakes to {to_request} peers",
+            self.ctx.info_hash
+        );
 
         let metadata_size =
             self.ctx.info.read().await.metadata_size.unwrap_or_default();
@@ -302,7 +303,7 @@ impl Torrent<Connected> {
             let daemon_ctx = daemon_ctx.clone();
             let torrent_ctx = self.ctx.clone();
 
-            // send connections too other peers
+            // send connections to other peers
             spawn(async move {
                 match TcpStream::connect(peer).await {
                     Ok(socket) => {
@@ -339,7 +340,7 @@ impl Torrent<Connected> {
         Ok(())
     }
 
-    async fn start_and_run_outbound_peer(
+    pub async fn start_and_run_outbound_peer(
         daemon_ctx: Arc<DaemonCtx>,
         socket: TcpStream,
         torrent_ctx: Arc<TorrentCtx>,
@@ -356,7 +357,6 @@ impl Torrent<Connected> {
                 "{} peer loop stopped due to an error: {r:?}",
                 connected_peer.state.ctx.remote_addr
             );
-            connected_peer.free_pending_blocks().await;
             return Err(r);
         }
         Ok(connected_peer)
@@ -376,7 +376,6 @@ impl Torrent<Connected> {
                 "{} peer loop stopped due to an error: {r:?}",
                 connected_peer.state.ctx.remote_addr
             );
-            connected_peer.free_pending_blocks().await;
             return Err(r);
         }
         Ok(connected_peer)
@@ -1053,7 +1052,7 @@ impl Torrent<Connected> {
                     let download_rate = self.state.counter.download_rate.load(Ordering::Relaxed);
                     let upload_rate = self.state.counter.upload_rate.load(Ordering::Relaxed);
 
-                    info!("d: {} u: {} dr: {} ur: {}\np: {} dp: {}",
+                    info!("d: {} u: {} dr: {} ur: {} p: {} dp: {}",
                         to_human_readable(downloaded as f64),
                         to_human_readable(uploaded as f64),
                         to_human_readable(download_rate as f64),

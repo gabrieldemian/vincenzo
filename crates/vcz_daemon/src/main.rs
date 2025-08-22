@@ -52,12 +52,13 @@ async fn main() -> Result<(), Error> {
     if !is_daemon_running {
         let mut disk = Disk::new(CONFIG.download_dir.clone());
         let disk_tx = disk.tx.clone();
+        let free_tx = disk.free_tx.clone();
 
         spawn(async move {
             let _ = disk.run().await;
         });
 
-        let mut daemon = Daemon::new(disk_tx);
+        let mut daemon = Daemon::new(disk_tx, free_tx);
         daemon.run().await?;
     }
 

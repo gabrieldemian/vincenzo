@@ -17,6 +17,7 @@ use std::num::NonZeroUsize;
 use tokio::{
     fs::{File, OpenOptions},
     io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
+    select,
     sync::{
         mpsc::{self, Receiver},
         oneshot::{self, Sender},
@@ -79,10 +80,6 @@ pub enum DiskMsg {
         qnt: usize,
     },
 
-    /// When a peer is Choked, or receives an error and must close the
-    /// connection, the outgoing/pending blocks of this peer must be
-    /// appended back to the list of available block_infos.
-    ReturnBlockInfos(InfoHash, Vec<BlockInfo>),
     Quit,
 }
 
@@ -119,6 +116,11 @@ pub struct TorrentCache {
     pub is_single_file_torrent: bool,
 }
 
+/// When a peer is Choked, or receives an error and must close the
+/// connection, the outgoing/pending blocks of this peer must be
+/// appended back to the list of available block_infos.
+pub struct ReturnBlockInfos(pub InfoHash, pub Vec<BlockInfo>);
+
 /// The Disk struct responsabilities:
 /// - Open and create files, create directories
 /// - Read/Write blocks to files
@@ -130,6 +132,9 @@ pub struct Disk {
     pub peer_ctxs: Vec<Arc<PeerCtx>>,
     pub tx: mpsc::Sender<DiskMsg>,
     rx: Receiver<DiskMsg>,
+
+    pub free_tx: mpsc::UnboundedSender<ReturnBlockInfos>,
+    free_rx: mpsc::UnboundedReceiver<ReturnBlockInfos>,
 
     /// The sequence in which pieces will be downloaded,
     /// based on `PieceStrategy`.
@@ -166,8 +171,11 @@ static FILE_CACHE_CAPACITY: usize = 512;
 impl Disk {
     pub fn new(download_dir: String) -> Self {
         let (tx, rx) = mpsc::channel::<DiskMsg>(512);
+        let (free_tx, free_rx) = mpsc::unbounded_channel();
 
         Self {
+            free_tx,
+            free_rx,
             rx,
             tx,
             download_dir,
@@ -190,79 +198,83 @@ impl Disk {
     pub async fn run(&mut self) -> Result<(), Error> {
         debug!("disk started event loop");
 
-        while let Some(msg) = self.rx.recv().await {
-            match msg {
-                DiskMsg::DeleteTorrent(info_hash) => {
-                    self.torrent_cache.remove_entry(&info_hash);
-                    self.block_cache.remove_entry(&info_hash);
-                    self.torrent_ctxs.remove_entry(&info_hash);
-                    self.downloaded_pieces.remove_entry(&info_hash);
-                    self.piece_strategy.remove_entry(&info_hash);
-                    self.pieces_blocks.remove_entry(&info_hash);
-                    self.piece_order.remove_entry(&info_hash);
-                    self.torrent_info.remove_entry(&info_hash);
-                    self.peer_ctxs.retain(|v| v.info_hash != info_hash);
-                }
-                DiskMsg::DeletePeer(addr) => {
-                    trace!("delete_peer {addr:?}");
-                    self.delete_peer(addr);
-                }
-                DiskMsg::NewTorrent(torrent) => {
-                    let _ = self.new_torrent(torrent).await;
-                }
-                DiskMsg::ReadBlock { block_info, recipient, info_hash } => {
-                    trace!("read_block");
-
-                    let block =
-                        self.read_block(&info_hash, &block_info).await?;
-
-                    let _ = recipient.send(block);
-                }
-                DiskMsg::WriteBlock { block, info_hash } => {
-                    self.write_block(&info_hash, block).await?;
-                }
-                DiskMsg::RequestBlocks { qnt, recipient, peer_id } => {
-                    let infos = self
-                        .request_blocks(&peer_id, qnt)
-                        .await
-                        .unwrap_or_default();
-
-                    trace!("disk sending {} block infos", infos.len());
-
-                    let _ = recipient.send(infos);
-                }
-                DiskMsg::ValidatePiece { info_hash, recipient, piece } => {
-                    trace!("validate_piece");
-                    let r = self.validate_piece(&info_hash, piece).await;
-                    let _ = recipient.send(r);
-                }
-                DiskMsg::NewPeer(peer) => {
-                    trace!("new_peer");
-                    self.new_peer(peer);
-                }
-                DiskMsg::ReturnBlockInfos(info_hash, block_infos) => {
-                    debug!("return_block_infos");
-
-                    for block in block_infos {
+        loop {
+            select! {
+                // todo: make block_infos on peer have the same data structure
+                // as disk.
+                Some(rt) = self.free_rx.recv() => {
+                    for block in rt.1 {
                         // get vector of piece_blocks for each
                         // piece of the blocks.
                         self.pieces_blocks
-                            .get_mut(&info_hash)
+                            .get_mut(&rt.0)
                             .ok_or(Error::TorrentDoesNotExist)?
                             .entry(block.index as usize)
                             .or_default()
                             .push(block);
                     }
                 }
-                DiskMsg::Quit => {
-                    debug!("Quit");
-                    return Ok(());
+                Some(msg) = self.rx.recv() => {
+                    match msg {
+                        DiskMsg::DeleteTorrent(info_hash) => {
+                            self.torrent_cache.remove_entry(&info_hash);
+                            self.block_cache.remove_entry(&info_hash);
+                            self.torrent_ctxs.remove_entry(&info_hash);
+                            self.downloaded_pieces.remove_entry(&info_hash);
+                            self.piece_strategy.remove_entry(&info_hash);
+                            self.pieces_blocks.remove_entry(&info_hash);
+                            self.piece_order.remove_entry(&info_hash);
+                            self.torrent_info.remove_entry(&info_hash);
+                            self.peer_ctxs.retain(|v| v.info_hash != info_hash);
+                        }
+                        DiskMsg::DeletePeer(addr) => {
+                            trace!("delete_peer {addr:?}");
+                            self.delete_peer(addr);
+                        }
+                        DiskMsg::NewTorrent(torrent) => {
+                            let _ = self.new_torrent(torrent).await;
+                        }
+                        DiskMsg::ReadBlock { block_info, recipient, info_hash } => {
+                            trace!("read_block");
+
+                            let block =
+                                self.read_block(&info_hash, &block_info).await?;
+
+                            let _ = recipient.send(block);
+                        }
+                        DiskMsg::WriteBlock { block, info_hash } => {
+                            self.write_block(&info_hash, block).await?;
+                        }
+                        DiskMsg::RequestBlocks { qnt, recipient, peer_id } => {
+                            let infos = self
+                                .request_blocks(&peer_id, qnt)
+                                .await
+                                .unwrap_or_default();
+
+                            trace!("disk sending {} block infos", infos.len());
+
+                            let _ = recipient.send(infos);
+                        }
+                        DiskMsg::ValidatePiece { info_hash, recipient, piece } => {
+                            trace!("validate_piece");
+                            let r = self.validate_piece(&info_hash, piece).await;
+                            let _ = recipient.send(r);
+                        }
+                        DiskMsg::NewPeer(peer) => {
+                            trace!("new_peer");
+                            self.new_peer(peer);
+                        }
+                        DiskMsg::Quit => {
+                            debug!("Quit");
+                            return Ok(());
+                        }
+                    }
                 }
             }
         }
-        info!("disk leaving fn run");
 
-        Ok(())
+        // while let Some(msg) = self.rx.recv().await {}
+        // info!("disk leaving fn run");
     }
 
     async fn get_cached_file(
@@ -1028,7 +1040,8 @@ mod tests {
         let magnet = Magnet::new(&magnet).unwrap();
         let mut disk = Disk::new(format!("/tmp/{download_dir}"));
         let disk_tx = disk.tx.clone();
-        let mut daemon = Daemon::new(disk_tx.clone());
+        let free_tx = disk.free_tx.clone();
+        let mut daemon = Daemon::new(disk_tx.clone(), disk.free_tx.clone());
         let daemon_ctx = daemon.ctx.clone();
         let _daemon_tx = daemon_ctx.tx.clone();
 
@@ -1065,6 +1078,7 @@ mod tests {
         let info = RwLock::new(info);
 
         let torrent_ctx = Arc::new(TorrentCtx {
+            free_tx: disk.free_tx.clone(),
             disk_tx: disk_tx.clone(),
             tx: torrent_tx,
             magnet: magnet.clone(),
@@ -1166,6 +1180,7 @@ mod tests {
             let mut peer = Peer::<peer::Connected> {
                 state_log: StateLog::default(),
                 state: peer::Connected {
+                    free_tx,
                     is_paused: false,
                     connection: peer::ConnectionState::default(),
                     ctx: peer_ctx_,

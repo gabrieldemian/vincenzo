@@ -169,10 +169,9 @@ impl ExtMsgHandler<Core, CoreState> for MsgHandler {
                 debug!("< unchoke");
             }
             Core::Choke => {
-                // remote peer is choking the local peer
                 debug!("< choke");
                 peer.state.ctx.peer_choking.store(true, Ordering::Relaxed);
-                peer.free_pending_blocks().await;
+                peer.free_pending_blocks();
                 peer.state_log[3] = '-';
             }
             Core::Interested => {

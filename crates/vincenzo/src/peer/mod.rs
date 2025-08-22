@@ -15,8 +15,9 @@ use tokio::{
 
 use tracing::{debug, trace};
 
-use crate::extensions::{
-    ExtMsg, ExtMsgHandler, Extended, ExtendedMessage, Metadata,
+use crate::{
+    disk::ReturnBlockInfos,
+    extensions::{ExtMsg, ExtMsgHandler, Extended, ExtendedMessage, Metadata},
 };
 
 use crate::{
@@ -28,7 +29,7 @@ use crate::{
 
 /// Data about a remote Peer that the client is connected to,
 /// but the client itself does not have a Peer struct.
-#[derive(Default)]
+#[derive(Default, PartialEq, Eq)]
 pub struct Peer<S: PeerState> {
     pub state: S,
     pub(crate) state_log: StateLog,
@@ -51,15 +52,12 @@ impl Peer<Connected> {
         )
     )]
     pub async fn run(&mut self) -> Result<(), Error> {
-        self.state.connection = ConnectionState::Connecting;
-
-        let _ = self
-            .state
+        self.state
             .ctx
             .torrent_ctx
             .tx
             .send(TorrentMsg::PeerConnected(self.state.ctx.clone()))
-            .await;
+            .await?;
 
         // request info
         let mut info_interval = interval(Duration::from_secs(1));
@@ -87,13 +85,12 @@ impl Peer<Connected> {
         // maybe send bitfield
         {
             let (otx, orx) = oneshot::channel();
-            let _ = self
-                .state
+            self.state
                 .ctx
                 .torrent_ctx
                 .tx
                 .send(TorrentMsg::ReadBitfield(otx))
-                .await;
+                .await?;
 
             let bitfield = orx.await?;
 
@@ -114,8 +111,6 @@ impl Peer<Connected> {
             let info = self.state.ctx.torrent_ctx.info.read().await;
             self.state.have_info = info.piece_length > 0;
         }
-
-        self.state.connection = ConnectionState::Connected;
 
         loop {
             select! {
@@ -301,13 +296,10 @@ impl Peer<Connected> {
                         }
                         PeerMsg::GracefullyShutdown => {
                             debug!("gracefully_shutdown");
-                            self.state.connection = ConnectionState::Quitting;
-                            self.free_pending_blocks().await;
                             return Ok(());
                         }
                         PeerMsg::Quit => {
                             debug!("quit");
-                            self.state.connection = ConnectionState::Quitting;
                             return Ok(());
                         }
                         PeerMsg::HaveInfo => {
@@ -408,32 +400,18 @@ impl Peer<Connected> {
     /// to the disk so that other peers can request those blocks.
     /// A good example to use this is when the Peer is no longer
     /// available (disconnected).
-    pub async fn free_pending_blocks(&mut self) {
-        let local = self.state.ctx.local_addr;
-        let remote = self.state.ctx.remote_addr;
-
+    pub fn free_pending_blocks(&mut self) {
         let blocks: Vec<BlockInfo> =
             self.state.outgoing_requests.drain(..).map(|v| v.0).collect();
 
-        trace!(
-            "{local} freeing {:?} blocks for download of {remote}",
-            blocks.len()
-        );
+        trace!("freeing {:?} blocks for download", blocks.len());
 
         // send this block_info back to the vec of available block_infos,
         // so that other peers can download it.
-        if !blocks.is_empty() {
-            let _ = self
-                .state
-                .ctx
-                .torrent_ctx
-                .disk_tx
-                .send(DiskMsg::ReturnBlockInfos(
-                    self.state.ctx.torrent_ctx.info_hash.clone(),
-                    blocks,
-                ))
-                .await;
-        }
+        let _ = self.state.free_tx.send(ReturnBlockInfos(
+            self.state.ctx.torrent_ctx.info_hash.clone(),
+            blocks,
+        ));
     }
 
     pub fn available_blocks(&self) -> usize {

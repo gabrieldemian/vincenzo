@@ -8,7 +8,6 @@
 //! discard the underlying receive and send buffers.
 
 use bendy::{decoding::FromBencode, encoding::ToBencode};
-use std::io;
 use tracing::warn;
 
 use bytes::{BufMut, BytesMut};
