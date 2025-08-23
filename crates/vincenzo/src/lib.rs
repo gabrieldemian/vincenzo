@@ -1,6 +1,7 @@
 #![feature(macro_metavar_expr)]
 #![feature(new_range_api)]
 #![feature(ip_as_octets)]
+#![feature(trait_alias)]
 
 pub mod args;
 pub mod avg;

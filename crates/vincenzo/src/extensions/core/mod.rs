@@ -84,6 +84,18 @@ pub struct BlockInfo {
     pub len: u32,
 }
 
+impl From<&BlockInfo> for usize {
+    fn from(val: &BlockInfo) -> Self {
+        val.index as usize
+    }
+}
+
+impl From<BlockInfo> for usize {
+    fn from(val: BlockInfo) -> Self {
+        val.index as usize
+    }
+}
+
 impl Default for BlockInfo {
     fn default() -> Self {
         Self { index: 0, begin: 0, len: BLOCK_LEN }
@@ -111,8 +123,8 @@ impl From<&Block> for BlockInfo {
 }
 
 impl BlockInfo {
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(index: u32, begin: u32, len: u32) -> Self {
+        Self { index, begin, len }
     }
     pub fn index(mut self, index: u32) -> Self {
         self.index = index;
