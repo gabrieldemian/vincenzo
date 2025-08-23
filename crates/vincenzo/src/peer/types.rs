@@ -47,6 +47,7 @@ impl PeerId {
         let mut peer_id = [0; 20];
         peer_id[..3].copy_from_slice(b"vcz");
         peer_id[3] = b'-';
+        // version
         // 0.00.01
         peer_id[4..9].copy_from_slice(b"00001");
         peer_id[9] = b'-';

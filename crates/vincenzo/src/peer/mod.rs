@@ -4,6 +4,8 @@ mod types;
 use bendy::encoding::ToBencode;
 // re-exports
 pub use types::*;
+mod request_manager;
+pub use request_manager::*;
 
 use futures::{SinkExt, StreamExt};
 use std::{sync::atomic::Ordering, time::Duration};
@@ -345,6 +347,20 @@ impl Peer<Connected> {
         // remove pending block request
         self.state.outgoing_requests.retain(|v| v.0 != block_info);
 
+        self.state.ctx.counter.record_download(block_info.len as u64);
+
+        self.state
+            .ctx
+            .torrent_ctx
+            .disk_tx
+            .send(DiskMsg::WriteBlock {
+                block,
+                info_hash: self.state.ctx.torrent_ctx.info_hash.clone(),
+            })
+            .await?;
+
+        Ok(())
+
         // if in endgame, send cancels to all other peers
         // if self.state.in_endgame {
         //     let from = self.state.ctx.id.clone();
@@ -359,20 +375,6 @@ impl Peer<Connected> {
         //         })
         //         .await;
         // }
-
-        self.state.ctx.counter.record_download(block_info.len as u64);
-
-        self.state
-            .ctx
-            .torrent_ctx
-            .disk_tx
-            .send(DiskMsg::WriteBlock {
-                block,
-                info_hash: self.state.ctx.torrent_ctx.info_hash.clone(),
-            })
-            .await?;
-
-        Ok(())
     }
 
     // todo: some peers dont resend the blocks no matter how many times we

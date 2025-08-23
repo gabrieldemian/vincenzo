@@ -1182,7 +1182,6 @@ mod tests {
                 state: peer::Connected {
                     free_tx,
                     is_paused: false,
-                    connection: peer::ConnectionState::default(),
                     ctx: peer_ctx_,
                     ext_states: peer::ExtStates::default(),
                     have_info: true,
