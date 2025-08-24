@@ -31,9 +31,9 @@ use crate::{
     error::Error,
     extensions::{
         core::BlockInfo, Core, CoreCodec, Extension, Handshake, HandshakeCodec,
-        HolepunchData, MetadataData,
+        HolepunchData, MetadataData, MetadataPiece,
     },
-    peer::{self, Peer},
+    peer::{self, Peer, RequestManager},
     torrent::{InfoHash, TorrentCtx, TorrentMsg},
 };
 
@@ -187,8 +187,6 @@ pub struct PeerCtx {
 /// message.
 #[derive(Debug)]
 pub enum PeerMsg {
-    SendToSink(Core),
-
     /// When we download a full piece, we need to send Have's
     /// to peers that dont Have it.
     HavePiece(usize),
@@ -423,10 +421,8 @@ impl peer::Peer<Idle> {
                 incoming_requests: Vec::with_capacity(
                     DEFAULT_REQUEST_QUEUE_LEN as usize,
                 ),
-                outgoing_requests: Vec::with_capacity(
-                    DEFAULT_REQUEST_QUEUE_LEN as usize,
-                ),
-                outgoing_requests_info_pieces: Vec::new(),
+                req_man_block: RequestManager::new(),
+                req_man_meta: RequestManager::new(),
                 have_info: false,
                 in_endgame: false,
                 reserved: peer_handshake.reserved,
@@ -584,8 +580,8 @@ impl peer::Peer<Idle> {
                 sink,
                 stream,
                 incoming_requests: Vec::with_capacity(50),
-                outgoing_requests: Vec::with_capacity(100),
-                outgoing_requests_info_pieces: Vec::new(),
+                req_man_block: RequestManager::new(),
+                req_man_meta: RequestManager::new(),
                 have_info: false,
                 in_endgame: false,
                 reserved: peer_handshake.reserved,
@@ -632,13 +628,9 @@ pub struct Connected {
     ///
     /// If we receive a block whose request entry is here, that entry is
     /// removed. A request is also removed here when it is timed out.
-    pub outgoing_requests: Vec<(BlockInfo, Instant)>,
+    pub req_man_block: RequestManager<BlockInfo>,
 
-    // The Instant of each timeout value of [`Self::outgoing_requests`]
-    // blocks.
-    // pub outgoing_requests_timeout: HashMap<BlockInfo, Instant>,
-    /// Outgoing requests of info pieces.
-    pub outgoing_requests_info_pieces: Vec<(u64, Instant)>,
+    pub req_man_meta: RequestManager<MetadataPiece>,
 
     // pub outgoing_requests_info_pieces_times: HashMap<u64, Instant>,
     /// The requests we got from peer.

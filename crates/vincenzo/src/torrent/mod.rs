@@ -35,7 +35,7 @@ use tokio::{
     net::TcpStream,
     select, spawn,
     sync::{mpsc, oneshot, RwLock},
-    time::{interval, interval_at, Instant},
+    time::{interval, interval_at, timeout, Instant},
 };
 use tracing::{debug, info, trace, warn};
 
@@ -305,8 +305,10 @@ impl Torrent<Connected> {
 
             // send connections to other peers
             spawn(async move {
-                match TcpStream::connect(peer).await {
-                    Ok(socket) => {
+                match timeout(Duration::from_secs(5), TcpStream::connect(peer))
+                    .await
+                {
+                    Ok(Ok(socket)) => {
                         if let Err(e) = Self::start_and_run_outbound_peer(
                             daemon_ctx.clone(),
                             socket,
@@ -328,11 +330,14 @@ impl Torrent<Connected> {
                             // }
                         };
                     }
-                    Err(e) => {
+                    Ok(Err(e)) => {
                         warn!("connection fin with peer: {} {e}", peer);
                         ctx.tx.send(TorrentMsg::PeerError(peer)).await?;
                     }
+                    // timeout
+                    Err(_) => {}
                 }
+
                 Ok::<(), Error>(())
             });
         }

@@ -40,6 +40,21 @@ impl TryInto<Vec<u8>> for Metadata {
     }
 }
 
+#[derive(Clone, Debug, Copy, Ord, PartialOrd, Eq, PartialEq, Hash, Default)]
+pub struct MetadataPiece(pub usize);
+
+impl From<MetadataPiece> for usize {
+    fn from(value: MetadataPiece) -> Self {
+        value.0
+    }
+}
+
+impl From<&MetadataPiece> for usize {
+    fn from(value: &MetadataPiece) -> Self {
+        value.0
+    }
+}
+
 #[repr(u8)]
 #[derive(Copy, Clone, Debug, PartialEq, IntEnum)]
 pub enum MetadataMsgType {

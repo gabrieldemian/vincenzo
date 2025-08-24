@@ -119,7 +119,7 @@ pub struct TorrentCache {
 /// When a peer is Choked, or receives an error and must close the
 /// connection, the outgoing/pending blocks of this peer must be
 /// appended back to the list of available block_infos.
-pub struct ReturnBlockInfos(pub InfoHash, pub Vec<BlockInfo>);
+pub struct ReturnBlockInfos(pub InfoHash, pub BTreeMap<usize, Vec<BlockInfo>>);
 
 /// The Disk struct responsabilities:
 /// - Open and create files, create directories
@@ -200,19 +200,11 @@ impl Disk {
 
         loop {
             select! {
-                // todo: make block_infos on peer have the same data structure
-                // as disk.
-                Some(rt) = self.free_rx.recv() => {
-                    for block in rt.1 {
-                        // get vector of piece_blocks for each
-                        // piece of the blocks.
-                        self.pieces_blocks
-                            .get_mut(&rt.0)
-                            .ok_or(Error::TorrentDoesNotExist)?
-                            .entry(block.index as usize)
-                            .or_default()
-                            .push(block);
-                    }
+                Some(ReturnBlockInfos(info_hash, blocks)) = self.free_rx.recv() => {
+                    self.pieces_blocks
+                        .entry(info_hash)
+                        .or_default()
+                        .extend(blocks);
                 }
                 Some(msg) = self.rx.recv() => {
                     match msg {
@@ -966,7 +958,10 @@ mod tests {
         extensions::{core::BLOCK_LEN, CoreCodec},
         magnet::Magnet,
         metainfo::{self, Info},
-        peer::{self, Peer, PeerMsg, StateLog, DEFAULT_REQUEST_QUEUE_LEN},
+        peer::{
+            self, Peer, PeerMsg, RequestManager, StateLog,
+            DEFAULT_REQUEST_QUEUE_LEN,
+        },
         torrent::{Connected, Stats, Torrent},
         tracker::{TrackerCtx, TrackerMsg},
     };
@@ -1187,8 +1182,8 @@ mod tests {
                     have_info: true,
                     in_endgame: false,
                     incoming_requests: Vec::new(),
-                    outgoing_requests: Vec::new(),
-                    outgoing_requests_info_pieces: Vec::new(),
+                    req_man_meta: RequestManager::new(),
+                    req_man_block: RequestManager::new(),
                     reserved: Reserved::default(),
                     rx: peer_rx,
                     seed_only: false,

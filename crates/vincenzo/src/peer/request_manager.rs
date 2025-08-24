@@ -8,13 +8,13 @@ use hashbrown::HashMap;
 use std::cmp::Reverse;
 use tokio::time::Instant;
 
-pub(crate) trait Managed =
+pub trait Managed =
     Eq + Default + Clone + Ord + Hash where for<'a> &'a Self: Into<usize>;
 
 /// Struct to centralize the logic of requesting something.
 /// This will be implemented by BlockInfo and usize (metadata pieces).
 #[derive(Default)]
-pub(crate) struct RequestManager<T: Managed> {
+pub struct RequestManager<T: Managed> {
     timeouts: BinaryHeap<(Reverse<Instant>, T)>,
     requests: BTreeMap<usize, Vec<T>>,
     // reverse index for requests
@@ -27,20 +27,46 @@ impl<T: Managed> RequestManager<T> {
         Self::default()
     }
 
+    pub fn contains(&self, v: &T) -> bool {
+        self.index.contains_key(v)
+    }
+
+    pub fn len(&self) -> usize {
+        self.requests.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.requests.is_empty()
+    }
+
     pub fn drain(&mut self) -> BTreeMap<usize, Vec<T>> {
         self.index.clear();
         self.timeouts.clear();
         std::mem::take(&mut self.requests)
     }
 
-    pub fn add_request(&mut self, block: T, timeout: Instant) {
+    pub fn clear(&mut self) {
+        self.index.clear();
+        self.timeouts.clear();
+        self.requests.clear();
+    }
+
+    /// Return true if the item was inserted, false if duplicate.
+    pub fn add_request(&mut self, block: T, timeout: Instant) -> bool {
         let i: usize = (&block).into();
+
+        // avoid duplicates
+        if self.index.contains_key(&block) {
+            return false;
+        }
+
         let req_entry = self.requests.entry(i).or_default();
         let pos = req_entry.len();
 
         req_entry.push(block.clone());
         self.index.insert(block.clone(), pos);
-        self.timeouts.push((Reverse(timeout), block.clone()));
+        self.timeouts.push((Reverse(timeout), block));
+        true
     }
 
     /// Return true if the request exists, and false otherwise.
@@ -48,17 +74,18 @@ impl<T: Managed> RequestManager<T> {
         let Some(pos) = self.index.remove(block) else { return false };
         let i: usize = block.into();
 
-        let Some(blocks) = self.requests.get_mut(&i) else { return false };
-        blocks.remove(pos);
+        let Some(requests) = self.requests.get_mut(&i) else { return false };
+        requests.remove(pos);
 
         self.timeouts.retain(|v| v.1 != *block);
 
         // update indices for remaining blocks in the same piece
-        for (new_pos, remaining_block) in blocks.iter().enumerate().skip(pos) {
+        for (new_pos, remaining_block) in requests.iter().enumerate().skip(pos)
+        {
             self.index.insert(remaining_block.clone(), new_pos);
         }
 
-        if blocks.is_empty() {
+        if requests.is_empty() {
             self.requests.remove(&i);
         }
 
@@ -109,6 +136,7 @@ impl<T: Managed> RequestManager<T> {
     pub fn get_timeout_blocks_and_update(
         &mut self,
         new_timeout: Instant,
+        take: usize,
     ) -> Vec<T> {
         // assume around 25% of blocks are timed out
         let mut timed_out_blocks: Vec<T> =
@@ -116,7 +144,7 @@ impl<T: Managed> RequestManager<T> {
 
         let now = Instant::now();
 
-        for (mut timeout, block) in self.timeouts.iter().peekable() {
+        for (mut timeout, block) in self.timeouts.iter().peekable().take(take) {
             if timeout.0 <= now {
                 {
                     timed_out_blocks.push(block.clone());
@@ -313,8 +341,10 @@ mod tests {
             now.0 - Duration::from_secs(10),
         );
 
-        let timed_out_blocks = manager
-            .get_timeout_blocks_and_update(now.0 + Duration::from_secs(60));
+        let timed_out_blocks = manager.get_timeout_blocks_and_update(
+            now.0 + Duration::from_secs(60),
+            1000,
+        );
 
         assert_eq!(timed_out_blocks.len(), 2);
         assert_eq!(timed_out_blocks[0], timed_out_block1);

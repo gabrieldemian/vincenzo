@@ -2,7 +2,9 @@
 
 use crate::{
     error::Error,
-    extensions::{ExtData, ExtMsg, ExtMsgHandler, ExtendedMessage},
+    extensions::{
+        ExtData, ExtMsg, ExtMsgHandler, ExtendedMessage, MetadataPiece,
+    },
     peer::{self, MsgHandler},
     torrent::TorrentMsg,
 };
@@ -61,8 +63,8 @@ impl ExtMsgHandler<Metadata, MetadataData> for MsgHandler {
                 debug!("< metadata res piece {}", msg.piece);
 
                 peer.state
-                    .outgoing_requests_info_pieces
-                    .retain(|&p| p.0 != msg.piece);
+                    .req_man_meta
+                    .remove_request(&MetadataPiece(msg.piece as usize));
 
                 peer.state
                     .ctx
