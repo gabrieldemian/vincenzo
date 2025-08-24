@@ -40,7 +40,7 @@ use crate::{
 #[derive(Clone, PartialEq, Eq, Hash, Default, Readable, Writable)]
 pub struct PeerId(pub [u8; 20]);
 
-pub const DEFAULT_REQUEST_QUEUE_LEN: u16 = 200;
+pub const DEFAULT_REQUEST_QUEUE_LEN: u16 = 250;
 
 impl PeerId {
     pub fn gen() -> Self {

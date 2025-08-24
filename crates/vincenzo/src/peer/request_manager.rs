@@ -8,6 +8,8 @@ use hashbrown::HashMap;
 use std::cmp::Reverse;
 use tokio::time::Instant;
 
+use crate::extensions::BlockInfo;
+
 pub trait Managed =
     Eq + Default + Clone + Ord + Hash where for<'a> &'a Self: Into<usize>;
 
@@ -22,6 +24,12 @@ pub struct RequestManager<T: Managed> {
     index: HashMap<T, usize>,
 }
 
+impl RequestManager<BlockInfo> {
+    pub fn get_requests(&self) -> BTreeMap<usize, Vec<BlockInfo>> {
+        self.requests.clone()
+    }
+}
+
 impl<T: Managed> RequestManager<T> {
     pub fn new() -> Self {
         Self::default()
@@ -32,6 +40,10 @@ impl<T: Managed> RequestManager<T> {
     }
 
     pub fn len(&self) -> usize {
+        self.timeouts.len()
+    }
+
+    pub fn len_pieces(&self) -> usize {
         self.requests.len()
     }
 
@@ -175,7 +187,7 @@ mod tests {
         let mut manager = RequestManager::<BlockInfo>::new();
         let now = Instant::now();
 
-        for i in 0..10_00 {
+        for i in 0..1_000 {
             let block =
                 BlockInfo::new(i as u32 / 10, (i as u32 % 10) * 16384, 16384);
             let timeout = if i % 10 == 0 {
@@ -189,6 +201,9 @@ mod tests {
         let start = Instant::now();
         let _timed_out = manager.get_timeout_blocks(now);
         let duration = start.elapsed();
+
+        assert_eq!(manager.len(), 1_000);
+
         println!("timedout_heap took {:?}", duration);
     }
 

@@ -199,7 +199,6 @@ impl Daemon {
                 .disk_tx
                 .send(DiskMsg::DeleteTorrent(ctx.info_hash.clone()))
                 .await;
-            let _ = self.disk_tx.send(DiskMsg::Quit).await;
         }
         self.torrent_ctxs.clear();
         Ok(())
@@ -369,7 +368,8 @@ impl Daemon {
                         }
                         DaemonMsg::Quit => {
                             let _ = self.delete_all_torrents().await;
-                            let _ = signals_task.await;
+                            let _ = self.disk_tx.send(DiskMsg::Quit).await;
+                            signals_task.abort();
                             handle.close();
                             break 'outer;
                         }
