@@ -199,7 +199,7 @@ impl ExtMsgHandler<Core, CoreState> for MsgHandler {
                     .await?;
             }
             Core::Piece(block) => {
-                peer.handle_block_msg(block).await?;
+                peer.handle_block(block).await?;
             }
             Core::Cancel(block_info) => {
                 debug!("< cancel {block_info:?}");

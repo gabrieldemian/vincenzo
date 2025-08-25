@@ -68,7 +68,9 @@ async fn main() -> Result<(), Error> {
     // to listen to these flags and send messages to Daemon.
     //
     // 1. Create a TCP connection to Daemon
-    let socket = TcpStream::connect(CONFIG.daemon_addr).await?;
+    let Ok(socket) = TcpStream::connect(CONFIG.daemon_addr).await else {
+        return Ok(());
+    };
 
     let mut socket = Framed::new(socket, DaemonCodec);
 

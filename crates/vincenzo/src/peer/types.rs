@@ -187,20 +187,6 @@ pub struct PeerCtx {
 /// message.
 #[derive(Debug)]
 pub enum PeerMsg {
-    /// When we download a full piece, we need to send Have's
-    /// to peers that dont Have it.
-    HavePiece(usize),
-
-    // Get the pieces of the peer.
-    // GetPieces(oneshot::Sender<Bitfield>),
-
-    // If the peer supports the local extension id
-    // SupportsExt(u8, oneshot::Sender<bool>),
-    /// Sometimes a peer either takes too long to answer,
-    /// or simply does not answer at all. In both cases
-    /// we need to request the block again.
-    RequestBlockInfos(Vec<BlockInfo>),
-
     /// Tell this peer that we choked them
     Choke,
 
@@ -216,29 +202,6 @@ pub enum PeerMsg {
     /// Sends a Cancel message to cancel a block info that we
     /// expect the peer to send us, because we requested it previously.
     CancelBlock(BlockInfo),
-
-    /// Sent when the torrent has downloaded the entire info of the torrent.
-    HaveInfo,
-
-    /// Sent when the torrent is paused, it makes the peer pause downloads and
-    /// uploads
-    Pause,
-
-    /// Sent when the torrent was unpaused.
-    Resume,
-
-    /// Sent to make this peer read-only, the peer won't download
-    /// anymore, but it will still seed.
-    /// This usually happens when the torrent is fully downloaded.
-    SeedOnly,
-
-    /// When the program is being gracefuly shutdown, we need to kill the tokio
-    /// green thread of the peer.
-    GracefullyShutdown,
-
-    /// An error happened and we want to quit and also send this peer's blocks
-    /// back to the torrent.
-    Quit,
 }
 
 /// Determines who initiated the connection.

@@ -116,7 +116,7 @@ pub struct TorrentCtx {
     pub disk_tx: mpsc::Sender<DiskMsg>,
     pub free_tx: mpsc::UnboundedSender<ReturnBlockInfos>,
     pub tx: mpsc::Sender<TorrentMsg>,
-    pub btx: broadcast::Sender<TorrentBrMsg>,
+    pub btx: broadcast::Sender<PeerBrMsg>,
     pub magnet: Magnet,
     pub info_hash: InfoHash,
     pub info: RwLock<Info>,
@@ -140,7 +140,7 @@ impl Torrent<Idle> {
         let info = RwLock::new(info);
 
         let (tx, rx) = mpsc::channel::<TorrentMsg>(100);
-        let (btx, _brx) = broadcast::channel::<TorrentBrMsg>(500);
+        let (btx, _brx) = broadcast::channel::<PeerBrMsg>(500);
 
         let ctx = Arc::new(TorrentCtx {
             free_tx,
@@ -343,10 +343,7 @@ impl Torrent<Connected> {
 
                             self.state.bitfield.safe_set(piece);
 
-                            // send Have messages
-                            for peer in &self.state.connected_peers {
-                                let _ = peer.tx.send(PeerMsg::HavePiece(piece)).await;
-                            }
+                            let _ = self.ctx.btx.send(PeerBrMsg::HavePiece(piece));
 
                             let total_pieces = self.state.bitfield.len();
                             let downloaded_pieces = self.state.bitfield.count_ones();
@@ -378,10 +375,7 @@ impl Torrent<Connected> {
                                 self.state.stats = r.0.into();
                             }
 
-                            // enter seed only mode
-                            for peer in &self.state.connected_peers {
-                                let _ = peer.tx.send(PeerMsg::SeedOnly).await;
-                            }
+                            let _ = self.ctx.btx.send(PeerBrMsg::Seedonly);
                         }
                         TorrentMsg::PeerConnecting(addr) => {
                             self.state.idle_peers.retain(|v| *v != addr);
@@ -431,10 +425,8 @@ impl Torrent<Connected> {
                                 .send(DaemonMsg::IncrementConnectedPeers)
                                 .await;
                         }
-                        // todo: move to broadcast
-                        TorrentMsg::Endgame => {
-                            info!("started endgame mode for {}", self.name);
-                            let _ = self.ctx.btx.send(TorrentBrMsg::Endgame);
+                        TorrentMsg::Endgame(blocks) => {
+                            let _ = self.ctx.btx.send(PeerBrMsg::Endgame(blocks));
                         }
                         TorrentMsg::DownloadedInfoPiece(total, index, bytes) => {
                             debug!("downloaded_info_piece");
@@ -515,9 +507,7 @@ impl Torrent<Connected> {
                             self.ctx.disk_tx.send(DiskMsg::NewTorrent(self.ctx.clone())).await?;
                             self.status = TorrentStatus::Downloading;
 
-                            for peer in &self.state.connected_peers {
-                                let _ = peer.tx.send(PeerMsg::HaveInfo).await;
-                            }
+                            let _ = self.ctx.btx.send(PeerBrMsg::HaveInfo);
                         }
                         TorrentMsg::RequestInfoPiece(index, recipient) => {
                             let bytes = self.state.info_pieces.get(&index).cloned();
@@ -545,13 +535,9 @@ impl Torrent<Connected> {
                             info!("toggle pause");
 
                             if self.status == TorrentStatus::Paused {
-                                for peer in &self.state.connected_peers {
-                                    let _ = peer.tx.send(PeerMsg::Resume).await;
-                                }
+                                let _ = self.ctx.btx.send(PeerBrMsg::Resume);
                             } else {
-                                for peer in &self.state.connected_peers {
-                                    let _ = peer.tx.send(PeerMsg::Pause).await;
-                                }
+                                let _ = self.ctx.btx.send(PeerBrMsg::Pause);
                             }
 
                             if self.status == TorrentStatus::Paused {
@@ -568,10 +554,7 @@ impl Torrent<Connected> {
                             info!("quitting torrent {:?}", self.name);
                             let tracker_tx = &self.state.tracker_ctx.tx;
 
-                            for peer in &self.state.connected_peers {
-                                let tx = peer.tx.clone();
-                                let _ = tx.send(PeerMsg::Quit).await;
-                            }
+                            let _ = self.ctx.btx.send(PeerBrMsg::Quit);
 
                             let downloaded =
                                 self.state.counter.total_downloaded.load(Ordering::Relaxed);
@@ -837,6 +820,7 @@ impl Torrent<Connected> {
                 "{} peer loop stopped due to an error: {r:?}",
                 connected_peer.state.ctx.remote_addr
             );
+            connected_peer.free_pending_blocks();
             return Err(r);
         }
         Ok(connected_peer)
@@ -856,6 +840,7 @@ impl Torrent<Connected> {
                 "{} peer loop stopped due to an error: {r:?}",
                 connected_peer.state.ctx.remote_addr
             );
+            connected_peer.free_pending_blocks();
             return Err(r);
         }
         Ok(connected_peer)

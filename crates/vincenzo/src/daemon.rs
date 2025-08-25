@@ -12,13 +12,14 @@ use std::{
     sync::Arc,
     time::Duration,
 };
-use tokio_util::codec::Framed;
+use tokio_util::{codec::Framed, sync::CancellationToken};
 use tracing::{debug, info, trace, warn};
 
 use tokio::{
     net::{TcpListener, TcpStream},
     select, spawn,
     sync::{mpsc, oneshot},
+    task::JoinHandle,
     time::interval,
 };
 
@@ -54,6 +55,8 @@ pub struct Daemon {
 
     /// Connected peers of all torrents
     connected_peers: u32,
+
+    local_peer_handle: Option<JoinHandle<()>>,
 
     /// States of all Torrents, updated each second by the Torrent struct.
     torrent_states: Vec<TorrentState>,
@@ -118,13 +121,14 @@ impl Daemon {
             connected_peers: 0,
             disk_tx,
             rx,
+            local_peer_handle: None,
             torrent_ctxs: HashMap::new(),
             torrent_states: Vec::new(),
             ctx: Arc::new(DaemonCtx { tx, local_peer_id, free_tx }),
         }
     }
 
-    pub async fn run_local_peer(&self) -> Result<(), Error> {
+    pub async fn run_local_peer(&mut self) -> Result<JoinHandle<()>, Error> {
         let local_addr = SocketAddr::new(
             if CONFIG.is_ipv6 {
                 IpAddr::V6(Ipv6Addr::UNSPECIFIED)
@@ -140,25 +144,26 @@ impl Daemon {
         let daemon_ctx = self.ctx.clone();
 
         // accept connections from other peers
-        spawn(async move {
+        Ok(spawn(async move {
             debug!("accepting requests in {local_socket:?}");
 
             loop {
-                if let Ok((socket, addr)) = local_socket.accept().await {
-                    info!("received inbound connection from {addr}");
+                select! {
+                    Ok((socket, addr)) = local_socket.accept() => {
+                        info!("received inbound connection from {addr}");
 
-                    let daemon_ctx = daemon_ctx.clone();
+                        let daemon_ctx = daemon_ctx.clone();
 
-                    spawn(async move {
-                        Torrent::start_and_run_inbound_peer(daemon_ctx, socket)
+                        spawn(async move {
+                            Torrent::start_and_run_inbound_peer(daemon_ctx, socket)
                             .await?;
 
-                        Ok::<(), Error>(())
-                    });
+                            Ok::<(), Error>(())
+                        });
+                    }
                 }
             }
-        });
-        Ok(())
+        }))
     }
 
     async fn handle_signals(mut signals: Signals, tx: mpsc::Sender<DaemonMsg>) {
@@ -226,7 +231,7 @@ impl Daemon {
 
         let ctx = self.ctx.clone();
 
-        self.run_local_peer().await?;
+        self.local_peer_handle = Some(self.run_local_peer().await?);
 
         #[cfg(feature = "test")]
         self.add_test_torrents().await;
@@ -237,6 +242,9 @@ impl Daemon {
             tokio::spawn(Daemon::handle_signals(signals, ctx.tx.clone()));
 
         let mut test_interval = interval(Duration::from_secs(1));
+
+        // token to cancel all frontend's tasks
+        let token = CancellationToken::new();
 
         'outer: loop {
             select! {
@@ -252,6 +260,7 @@ impl Daemon {
                     let (mut sink, mut stream) = socket.split();
 
                     let ctx = ctx.clone();
+                    let token = token.clone();
 
                     tokio::spawn(async move {
                         // listen to messages sent locally, from the daemon binary.
@@ -261,30 +270,31 @@ impl Daemon {
 
                         'inner: loop {
                             select! {
+                                _ = token.cancelled() => {
+                                    info!("disconnected from remote: {addr}");
+                                    sink.close().await?;
+                                    break 'inner;
+                                }
                                 _ = draw_interval.tick() => {
                                     let (otx, orx) = oneshot::channel();
-                                    ctx.tx.send(
-                                        DaemonMsg::GetAllTorrentStates(otx)
-                                    ).await?;
+
+                                    ctx.tx.send(DaemonMsg::GetAllTorrentStates(otx)).await?;
 
                                     if sink.send(Message::TorrentStates(orx.await?)).await
-                                            .map_err(|_| Error::SendErrorTcp).is_err()
+                                        .map_err(|_| Error::SendErrorTcp).is_err()
                                     {
-                                        break 'inner;
+                                        token.cancel();
                                     }
                                 }
                                 Some(Ok(msg)) = stream.next() => {
                                     if msg == Message::FrontendQuit {
-                                        break 'inner;
+                                        token.cancel();
                                     }
                                     Self::handle_remote_msgs(&ctx.tx, msg, &mut sink).await?;
                                 }
-                                else => break 'inner
+                                else => token.cancel(),
                             }
                         }
-
-                        info!("disconnected from remote: {addr}");
-
                         Ok::<(), Error>(())
                     });
                 }
@@ -370,7 +380,11 @@ impl Daemon {
                             let _ = self.delete_all_torrents().await;
                             let _ = self.disk_tx.send(DiskMsg::Quit).await;
                             signals_task.abort();
+                            if let Some(h) = &self.local_peer_handle {
+                                h.abort();
+                            }
                             handle.close();
+                            token.cancel();
                             break 'outer;
                         }
                     }

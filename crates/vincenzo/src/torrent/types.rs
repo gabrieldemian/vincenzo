@@ -19,16 +19,24 @@ use crate::{
 
 /// Broadcasted messages for all peers in a torrent.
 #[derive(Debug, Clone)]
-pub enum TorrentBrMsg {
-    /// Start endgame mode.
-    Endgame,
+pub enum PeerBrMsg {
+    /// Start endgame mode with block infos sent by the disk.
+    Endgame(BTreeMap<usize, Vec<BlockInfo>>),
 
     /// Send request blocks to all peers.
-    Request { blocks: BTreeMap<usize, Vec<BlockInfo>> },
+    Request(BTreeMap<usize, Vec<BlockInfo>>),
 
     /// When in endgame mode, the first peer that receives this info,
     /// sends this message to send Cancel's to all other peers.
     Cancel { from: PeerId, block_info: BlockInfo },
+
+    /// The download finished
+    Seedonly,
+    HavePiece(usize),
+    Pause,
+    Resume,
+    Quit,
+    HaveInfo,
 }
 
 /// Messages used to control the local peer or the state of the torrent.
@@ -82,7 +90,7 @@ pub enum TorrentMsg {
     PeerConnectingError(SocketAddr),
 
     /// Start endgame mode, sent by the disk.
-    Endgame,
+    Endgame(BTreeMap<usize, Vec<BlockInfo>>),
 
     /// When a peer request a piece of the info
     /// index, recipient

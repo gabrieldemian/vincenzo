@@ -23,7 +23,7 @@ use crate::{
         ExtMsg, ExtMsgHandler, Extended, ExtendedMessage, Metadata,
         MetadataPiece,
     },
-    torrent::TorrentBrMsg,
+    torrent::PeerBrMsg,
 };
 
 use crate::{
@@ -197,24 +197,56 @@ impl Peer<Connected> {
                 }
                 Ok(msg) = brx.recv() => {
                     match msg {
-                        TorrentBrMsg::Endgame => {
+                        PeerBrMsg::Endgame(blocks) => {
                             self.start_endgame().await;
-                        }
-                        TorrentBrMsg::Request { blocks } => {
                             for block in blocks.into_values().flatten() {
-                                if self
+                                self
                                     .state
                                     .req_man_block
-                                    .add_request(block.clone(), self.get_block_timeout())
-                                {
-                                    self.state.sink.feed(Core::Request(block)).await?;
-                                }
+                                    .add_request(block.clone(), self.get_block_timeout());
                             }
-                            self.state.sink.flush().await?;
                         }
-                        TorrentBrMsg::Cancel { block_info, from} => {
-                            if self.state.ctx.id == from { continue };
-                            self.state.sink.send(Core::Cancel(block_info)).await?;
+                        PeerBrMsg::Request(blocks) => {
+                            for block in blocks.into_values().flatten() {
+                                self
+                                    .state
+                                    .req_man_block
+                                    .add_request(block.clone(), self.get_block_timeout());
+                            }
+                        }
+                        PeerBrMsg::Cancel { block_info, ..} => {
+                            if self.state.req_man_block.remove_request(&block_info) {
+                                self.state.sink.send(Core::Cancel(block_info)).await?;
+                            }
+                        }
+                        PeerBrMsg::HavePiece(piece) => {
+                            self.state.sink.send(Core::Have(piece)).await?;
+                        }
+                        PeerBrMsg::Pause => {
+                            debug!("pause");
+                            self.state.is_paused = true;
+                            self.state.ctx.tx.send(PeerMsg::Choke).await?;
+                            self.state.ctx.tx.send(PeerMsg::NotInterested).await?;
+                        }
+                        PeerBrMsg::Resume => {
+                            debug!("resume");
+                            self.state.is_paused = false;
+                        }
+                        PeerBrMsg::Seedonly => {
+                            debug!("seed_only");
+                            self.state.seed_only = true;
+                            self.state.ctx.tx.send(PeerMsg::Unchoke).await?;
+                            self.state.req_man_meta.clear();
+                            self.state.req_man_block.clear();
+                        }
+                        PeerBrMsg::Quit => {
+                            debug!("quit");
+                            return Ok(());
+                        }
+                        PeerBrMsg::HaveInfo => {
+                            debug!("have_info");
+                            self.state.have_info = true;
+                            self.state.req_man_meta.clear();
                         }
                     }
                 }
@@ -252,21 +284,6 @@ impl Peer<Connected> {
                 }
                 Some(msg) = self.state.rx.recv() => {
                     match msg {
-                        PeerMsg::HavePiece(piece) => {
-                            self.state.sink.send(Core::Have(piece)).await?;
-                        }
-                        PeerMsg::RequestBlockInfos(block_infos) => {
-                            for block_info in block_infos {
-                                if self.state.req_man_block.add_request(
-                                    block_info.clone(),
-                                    self.get_block_timeout(),
-                                ) {
-                                    self.state.sink.feed(Core::Request(block_info)).await?;
-                                }
-                            }
-
-                            self.state.sink.flush().await?;
-                        }
                         PeerMsg::NotInterested => {
                             debug!("> not_interested");
                             self.state.ctx.am_interested.store(false, Ordering::Relaxed);
@@ -291,42 +308,11 @@ impl Peer<Connected> {
                             self.state_log[0] = 'u';
                             self.state.sink.send(Core::Unchoke).await?;
                         }
-                        PeerMsg::Pause => {
-                            debug!("pause");
-                            self.state.is_paused = true;
-                            self.state.ctx.tx.send(PeerMsg::Choke).await?;
-                            self.state.ctx.tx.send(PeerMsg::NotInterested).await?;
-                        }
-                        PeerMsg::Resume => {
-                            debug!("resume");
-                            self.state.is_paused = false;
-                        }
                         PeerMsg::CancelBlock(block_info) => {
                             debug!("> cancel_block");
                             self.state.req_man_block.remove_request(&block_info);
                             self.state.sink.feed(Core::Cancel(block_info)).await?;
                             self.state.sink.flush().await?;
-                        }
-                        PeerMsg::SeedOnly => {
-                            debug!("seed_only");
-                            self.state.seed_only = true;
-                            self.state.ctx.tx.send(PeerMsg::Unchoke).await?;
-                            self.state.ctx.tx.send(PeerMsg::NotInterested).await?;
-                            self.state.req_man_meta.clear();
-                            self.state.req_man_block.clear();
-                        }
-                        PeerMsg::GracefullyShutdown => {
-                            debug!("gracefully_shutdown");
-                            return Ok(());
-                        }
-                        PeerMsg::Quit => {
-                            debug!("quit");
-                            return Ok(());
-                        }
-                        PeerMsg::HaveInfo => {
-                            debug!("have_info");
-                            self.state.have_info = true;
-                            self.state.req_man_meta.clear();
                         }
                     }
                 }
@@ -349,6 +335,7 @@ impl Peer<Connected> {
 
         am_interested
             && !peer_choking
+            && !self.state.in_endgame
             && self.state.have_info
             && have_capacity
             && !self.state.seed_only
@@ -356,10 +343,7 @@ impl Peer<Connected> {
     }
 
     /// Handle a block sent by the core codec.
-    pub async fn handle_block_msg(
-        &mut self,
-        block: Block,
-    ) -> Result<(), Error> {
+    pub async fn handle_block(&mut self, block: Block) -> Result<(), Error> {
         let block_info = BlockInfo::from(&block);
 
         let was_requested =
@@ -386,10 +370,9 @@ impl Peer<Connected> {
 
         // if in endgame, send cancels to all other peers
         if self.state.in_endgame {
-            let from = self.state.ctx.id.clone();
-            let _ = self.state.ctx.torrent_ctx.btx.send(TorrentBrMsg::Cancel {
-                from,
-                block_info: block_info.clone(),
+            let _ = self.state.ctx.torrent_ctx.btx.send(PeerBrMsg::Cancel {
+                from: self.state.ctx.id.clone(),
+                block_info,
             });
         }
 
@@ -412,6 +395,7 @@ impl Peer<Connected> {
             .state
             .req_man_block
             .get_timeout_blocks_and_update(self.get_block_timeout(), qnt);
+        info!("rerequesting {}", blocks.len());
 
         for block in blocks {
             self.state.sink.feed(Core::Request(block)).await?;
@@ -429,7 +413,7 @@ impl Peer<Connected> {
     pub fn free_pending_blocks(&mut self) {
         let blocks = self.state.req_man_block.drain();
 
-        info!("returning {} blocks", blocks.len());
+        debug!("returning {} blocks", blocks.len());
 
         // send this block_info back to the vec of available block_infos,
         // so that other peers can download it.
@@ -497,12 +481,6 @@ impl Peer<Connected> {
         Ok(())
     }
 
-    // todo: use start_endgame, disk will detect if all pieces has been
-    // requested and send a message
-    // also get the timeout blocks and send to torrent.
-    //
-    // all peers will get their pending blocks and send to the torrent.
-
     /// Start endgame mode. This will take the few pending block infos
     /// and request them to all downloading peers of the torrent. When the block
     /// arrives, send Cancel messages to all other peers.
@@ -512,12 +490,7 @@ impl Peer<Connected> {
 
         let blocks = self.state.req_man_block.get_requests();
 
-        let _ = self
-            .state
-            .ctx
-            .torrent_ctx
-            .btx
-            .send(TorrentBrMsg::Request { blocks });
+        let _ = self.state.ctx.torrent_ctx.btx.send(PeerBrMsg::Request(blocks));
     }
 
     /// Try to request the metadata (info) if:

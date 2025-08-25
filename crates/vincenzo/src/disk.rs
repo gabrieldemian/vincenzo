@@ -10,7 +10,7 @@ use std::{
 };
 
 use futures::future::join_all;
-use hashbrown::{HashMap, HashSet};
+use hashbrown::HashMap;
 use lru::LruCache;
 use rand::seq::SliceRandom;
 use std::num::NonZeroUsize;
@@ -28,6 +28,7 @@ use tokio::{
 use tracing::{debug, info, trace, warn};
 
 use crate::{
+    bitfield::{Bitfield, VczBitfield},
     error::Error,
     extensions::core::{Block, BlockInfo},
     metainfo::Info,
@@ -49,6 +50,8 @@ pub enum DiskMsg {
     DeletePeer(SocketAddr),
 
     DeleteTorrent(InfoHash),
+
+    Endgame(InfoHash),
 
     ReadBlock {
         info_hash: InfoHash,
@@ -142,7 +145,7 @@ pub struct Disk {
     pub piece_order: HashMap<InfoHash, Vec<usize>>,
 
     /// Pieces that were requested and will be used to skip `piece_order`.
-    pub pieces_requested: HashMap<InfoHash, HashSet<usize>>,
+    pub pieces_requested: HashMap<InfoHash, Bitfield>,
 
     pub piece_strategy: HashMap<InfoHash, PieceStrategy>,
 
@@ -163,7 +166,7 @@ pub struct Disk {
     torrent_info: HashMap<InfoHash, Info>,
 
     /// The block infos of each piece of a torrent.
-    pieces_blocks: HashMap<InfoHash, BTreeMap<usize, Vec<BlockInfo>>>,
+    block_infos: HashMap<InfoHash, BTreeMap<usize, Vec<BlockInfo>>>,
 
     /// A cache of torrent files with pre-computed lengths.
     torrent_cache: HashMap<InfoHash, TorrentCache>,
@@ -199,7 +202,7 @@ impl Disk {
             endgame: HashMap::new(),
             downloaded_blocks: HashMap::new(),
             piece_strategy: HashMap::default(),
-            pieces_blocks: HashMap::default(),
+            block_infos: HashMap::default(),
             torrent_info: HashMap::default(),
             piece_order: HashMap::default(),
         }
@@ -214,30 +217,42 @@ impl Disk {
         'outer: loop {
             select! {
                 _ = disk_interval.tick() => {
-                    for (k,v) in self.pieces_blocks.iter() {
+                    for (k, v) in self.block_infos.iter() {
                         let pr = self.pieces_requested.get(k).unwrap();
                         let db = self.downloaded_blocks.get(k).unwrap();
                         info!(
-                            "p: {} b: {} rp: {} db {}",
+                            "p: {} b: {} pr: {} db: {}",
                             v.len(),
                             v.values().fold(0, |acc, v| acc + v.len()),
-                            pr.len(),
+                            pr.count_ones(),
                             db,
                         );
                     }
                 }
                 Some(ReturnBlockInfos(info_hash, blocks)) = self.free_rx.recv() => {
-                    info!("returning {} blocks", blocks.len());
-                    for k in blocks.keys() {
-                        self.pieces_requested
-                            .entry(info_hash.clone())
-                            .or_default()
-                            .remove(k);
+                    let endgame = self
+                        .endgame
+                        .get(&info_hash)
+                        .ok_or(Error::TorrentDoesNotExist)?;
+
+                    if *endgame {
+                        let torrent_ctx = self
+                            .torrent_ctxs
+                            .get_mut(&info_hash)
+                            .ok_or(Error::TorrentDoesNotExist)?;
+                        torrent_ctx.tx.send(TorrentMsg::Endgame(blocks)).await?;
+                    } else {
+                        for k in blocks.keys() {
+                            self.pieces_requested
+                                .get_mut(&info_hash)
+                                .ok_or(Error::TorrentDoesNotExist)?
+                                .set(*k, false);
+                        }
+                        self.block_infos
+                            .get_mut(&info_hash)
+                            .ok_or(Error::TorrentDoesNotExist)?
+                            .extend(blocks);
                     }
-                    self.pieces_blocks
-                        .entry(info_hash)
-                        .or_default()
-                        .extend(blocks);
                 }
                 Some(msg) = self.rx.recv() => {
                     match msg {
@@ -249,11 +264,14 @@ impl Disk {
                             self.endgame.remove_entry(&info_hash);
                             self.downloaded_blocks.remove_entry(&info_hash);
                             self.piece_strategy.remove_entry(&info_hash);
-                            self.pieces_blocks.remove_entry(&info_hash);
+                            self.block_infos.remove_entry(&info_hash);
                             self.piece_order.remove_entry(&info_hash);
                             self.pieces_requested.remove_entry(&info_hash);
                             self.torrent_info.remove_entry(&info_hash);
                             self.peer_ctxs.retain(|v| v.info_hash != info_hash);
+                        }
+                        DiskMsg::Endgame(info_hash) => {
+                            let _ = self.enter_endgame(info_hash).await;
                         }
                         DiskMsg::DeletePeer(addr) => {
                             trace!("delete_peer {addr:?}");
@@ -342,7 +360,13 @@ impl Disk {
             .get(&info_hash)
             .ok_or(Error::TorrentDoesNotExist)?;
 
-        torrent_ctx.tx.send(TorrentMsg::Endgame).await?;
+        let blocks = std::mem::take(
+            self.block_infos
+                .get_mut(&info_hash)
+                .ok_or(Error::TorrentDoesNotExist)?,
+        );
+
+        torrent_ctx.tx.send(TorrentMsg::Endgame(blocks)).await?;
 
         Ok(())
     }
@@ -427,7 +451,7 @@ impl Disk {
             block_infos.values().fold(0, |acc, v| acc + v.len())
         );
 
-        self.pieces_blocks.insert(info_hash.clone(), block_infos);
+        self.block_infos.insert(info_hash.clone(), block_infos);
         self.downloaded_pieces.insert(info_hash.clone(), 0);
         self.endgame.insert(info_hash.clone(), false);
         self.downloaded_blocks.insert(info_hash.clone(), 0);
@@ -435,14 +459,15 @@ impl Disk {
         let piece_strategy =
             self.piece_strategy.entry(info_hash.clone()).or_default();
 
-        let mut all_pieces: Vec<usize> = (0..info.pieces() as usize).collect();
+        let mut piece_order: Vec<usize> = (0..info.pieces() as usize).collect();
 
         if *piece_strategy == PieceStrategy::Rarest {
-            all_pieces.shuffle(&mut rand::rng());
+            piece_order.shuffle(&mut rand::rng());
         }
 
-        self.piece_order.insert(info_hash.clone(), all_pieces);
-        self.pieces_requested.entry(info_hash.clone()).or_default();
+        let entry = self.pieces_requested.entry(info_hash.clone()).or_default();
+        entry.resize(piece_order.len(), false);
+        self.piece_order.insert(info_hash.clone(), piece_order);
 
         Ok(())
     }
@@ -552,6 +577,10 @@ impl Disk {
             return Ok(vec![]);
         };
 
+        // todo: this can be precomputed. Keep a bitfield relative to the
+        // piece_order. Only mutate it when receiving Have's from the peer.
+        // And then it's possible to zip the bitfield with the piece order
+        // and avoid the 2nd if statement.
         let (otx, orx) = oneshot::channel();
         peer_ctx
             .torrent_ctx
@@ -572,21 +601,23 @@ impl Disk {
             .get_mut(&peer_ctx.info_hash)
             .ok_or(Error::TorrentDoesNotExist)?;
 
-        if pieces_requested.len() >= pieces.len() {
-            self.enter_endgame(peer_ctx.info_hash.clone()).await?;
-            return Ok(vec![]);
+        if pieces_requested.count_ones() >= pieces_requested.len() {
+            self.tx.send(DiskMsg::Endgame(peer_ctx.info_hash.clone())).await?;
         }
 
         for piece in piece_order.iter() {
-            if pieces_requested.contains(piece) {
+            // if this piece was already requested, skip
+            if *pieces_requested.safe_get(*piece) {
                 continue;
             }
+
+            // if this piece is not marked to be requested on `pieces`, skip
             if !unsafe { *pieces.get_unchecked(*piece) } {
                 continue;
             };
-            let to_drain = qnt.saturating_sub(result.len());
+
             let Some(block_infos) = self
-                .pieces_blocks
+                .block_infos
                 .get_mut(&peer_ctx.info_hash)
                 .ok_or(Error::TorrentDoesNotExist)?
                 .get_mut(piece)
@@ -594,13 +625,18 @@ impl Disk {
                 return Ok(vec![]);
             };
 
+            let to_drain = qnt.saturating_sub(result.len());
+            if to_drain == 0 {
+                break;
+            }
+
             result
                 .extend(block_infos.drain(0..to_drain.min(block_infos.len())));
 
             if block_infos.is_empty() {
-                pieces_requested.insert(*piece);
+                pieces_requested.safe_set(*piece);
 
-                self.pieces_blocks
+                self.block_infos
                     .get_mut(&peer_ctx.info_hash)
                     .ok_or(Error::TorrentDoesNotExist)?
                     .remove(piece);
@@ -778,7 +814,7 @@ impl Disk {
 
             // as the piece is corrupted, try to download it again and return
             // the block infos so that another peer can get them.
-            self.pieces_blocks
+            self.block_infos
                 .get_mut(info_hash)
                 .ok_or(Error::TorrentDoesNotExist)?
                 .entry(index)
@@ -1041,7 +1077,7 @@ mod tests {
             self, Peer, PeerMsg, RequestManager, StateLog,
             DEFAULT_REQUEST_QUEUE_LEN,
         },
-        torrent::{Connected, Stats, Torrent, TorrentBrMsg},
+        torrent::{Connected, Stats, Torrent, PeerBrMsg},
         tracker::{TrackerCtx, TrackerMsg},
     };
 
@@ -1150,7 +1186,7 @@ mod tests {
         info.metadata_size = Some(metadata_size);
 
         let info = RwLock::new(info);
-        let (btx, _brx) = broadcast::channel::<TorrentBrMsg>(500);
+        let (btx, _brx) = broadcast::channel::<PeerBrMsg>(500);
 
         let torrent_ctx = Arc::new(TorrentCtx {
             btx,
