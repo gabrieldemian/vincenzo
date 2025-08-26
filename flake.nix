@@ -32,6 +32,8 @@
           buildInputs = [
             (writeShellScriptBin "writedump" ''sudo tcpdump -i CloudflareWARP -XX 'tcp and port not https' -w dump.pcap'')
             rustup
+            cargo-bloat
+            cargo-unused-features
             taplo
             trippy
             netscanner
