@@ -398,6 +398,8 @@ impl peer::Peer<Idle> {
             let n = ext.reqq.unwrap_or(DEFAULT_REQUEST_QUEUE_LEN);
 
             peer.state.target_request_queue_len = n;
+            peer.state.req_man_meta.set_limit(n as usize);
+            peer.state.req_man_block.set_limit(n as usize);
 
             // set the peer's extensions
             if ext.m.ut_metadata.is_some() {

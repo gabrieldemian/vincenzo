@@ -1,6 +1,7 @@
 use std::{
-    collections::{BTreeMap, BinaryHeap},
+    collections::{BTreeMap, BinaryHeap, VecDeque},
     hash::Hash,
+    time::Duration,
 };
 
 use bitvec::{bitvec, order::Msb0};
@@ -8,20 +9,56 @@ use hashbrown::HashMap;
 use std::cmp::Reverse;
 use tokio::time::Instant;
 
-use crate::extensions::BlockInfo;
+use crate::{extensions::BlockInfo, peer::DEFAULT_REQUEST_QUEUE_LEN};
 
-pub trait Managed =
+/// A type that can be requested.
+/// The `Into<usize>` bound refers to the ability of a requestable type to have
+/// an ID.
+pub trait Requestable =
     Eq + Default + Clone + Ord + Hash where for<'a> &'a Self: Into<usize>;
 
-/// Struct to centralize the logic of requesting something.
-/// This will be implemented by BlockInfo and usize (metadata pieces).
-#[derive(Default)]
-pub struct RequestManager<T: Managed> {
+/// Struct to centralize the logic of requesting something,
+/// used by BlockInfo and MetadataPiece (usize).
+///
+/// It also handles the calculation of timeouts with EMA (exponential moving
+/// average) and a dynamic multiplier.
+pub struct RequestManager<T: Requestable> {
     timeouts: BinaryHeap<(Reverse<Instant>, T)>,
     requests: BTreeMap<usize, Vec<T>>,
-    // reverse index for requests
-    // `BlockInfo → index in Vec`
+
+    /// Inverse index for requests
     index: HashMap<T, usize>,
+
+    /// Max amount of pending requests
+    limit: usize,
+
+    /// Last 10 response times
+    response_times: VecDeque<Duration>,
+
+    /// Smoothed average
+    avg_response_time: Duration,
+
+    /// Multiplier of the average (to calculate timeout), low on low variance
+    /// requests and high otherwise.
+    timeout_multiplier: f32,
+
+    /// Track when each request was made
+    request_start_times: HashMap<T, Instant>,
+}
+
+impl<T: Requestable> Default for RequestManager<T> {
+    fn default() -> Self {
+        Self {
+            timeouts: BinaryHeap::default(),
+            requests: BTreeMap::default(),
+            index: HashMap::default(),
+            response_times: VecDeque::with_capacity(10),
+            avg_response_time: Duration::ZERO,
+            timeout_multiplier: 3.0,
+            request_start_times: HashMap::default(),
+            limit: DEFAULT_REQUEST_QUEUE_LEN as usize,
+        }
+    }
 }
 
 impl RequestManager<BlockInfo> {
@@ -30,25 +67,77 @@ impl RequestManager<BlockInfo> {
     }
 }
 
-impl<T: Managed> RequestManager<T> {
+impl<T: Requestable> RequestManager<T> {
     pub fn new() -> Self {
         Self::default()
     }
 
-    pub fn contains(&self, v: &T) -> bool {
-        self.index.contains_key(v)
+    pub fn set_limit(&mut self, limit: usize) {
+        self.limit = limit;
     }
 
-    pub fn len(&self) -> usize {
-        self.timeouts.len()
+    /// How many requests the client can make right now.
+    pub fn get_available_request_len(&self) -> usize {
+        self.limit.saturating_sub(self.index.len())
     }
 
-    pub fn len_pieces(&self) -> usize {
-        self.requests.len()
+    pub fn get_timeout(&self) -> Duration {
+        if self.avg_response_time == Duration::ZERO {
+            return Duration::from_secs(3);
+        }
+
+        let timeout = self.avg_response_time.mul_f32(self.timeout_multiplier);
+
+        timeout.clamp(timeout, Duration::from_secs(30))
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.requests.is_empty()
+    fn update_response_time(&mut self, response_time: Duration) {
+        // keep only the last 10 response times
+        if self.response_times.len() >= 10 {
+            self.response_times.pop_front();
+        }
+        self.response_times.push_back(response_time);
+
+        // calculate exponential moving average
+        let alpha = 0.2; // smoothing factor
+        if self.avg_response_time == Duration::ZERO {
+            self.avg_response_time = response_time;
+        } else {
+            let current_avg = self.avg_response_time.as_micros() as f64;
+            let new_time = response_time.as_micros() as f64;
+            let new_avg = alpha * new_time + (1.0 - alpha) * current_avg;
+            self.avg_response_time = Duration::from_micros(new_avg as u64);
+        }
+
+        self.adjust_timeout_multiplier();
+    }
+
+    /// Adjust timeout multiplier based on response time variance
+    fn adjust_timeout_multiplier(&mut self) {
+        if self.response_times.len() < 5 {
+            return;
+        }
+
+        // calculate variance of response times
+        let avg = self.avg_response_time.as_millis() as f64;
+        let variance = self
+            .response_times
+            .iter()
+            .map(|d| {
+                let time_in_millis = d.as_millis() as f64;
+                (time_in_millis - avg).powi(2)
+            })
+            .sum::<f64>()
+            / self.response_times.len() as f64;
+
+        // adjust multiplier based on variance
+        if variance > 100.0 {
+            // high variance
+            self.timeout_multiplier = (self.timeout_multiplier * 1.1).min(4.0);
+        } else {
+            // low variance
+            self.timeout_multiplier = (self.timeout_multiplier * 0.9).max(2.0);
+        }
     }
 
     pub fn drain(&mut self) -> BTreeMap<usize, Vec<T>> {
@@ -64,13 +153,16 @@ impl<T: Managed> RequestManager<T> {
     }
 
     /// Return true if the item was inserted, false if duplicate.
-    pub fn add_request(&mut self, block: T, timeout: Instant) -> bool {
+    pub fn add_request(&mut self, block: T) -> bool {
         let i: usize = (&block).into();
 
         // avoid duplicates
         if self.index.contains_key(&block) {
             return false;
         }
+
+        let timeout = Instant::now() + self.get_timeout();
+        self.request_start_times.insert(block.clone(), Instant::now());
 
         let req_entry = self.requests.entry(i).or_default();
         let pos = req_entry.len();
@@ -85,6 +177,11 @@ impl<T: Managed> RequestManager<T> {
     pub fn remove_request(&mut self, block: &T) -> bool {
         let Some(pos) = self.index.remove(block) else { return false };
         let i: usize = block.into();
+
+        if let Some(start_time) = self.request_start_times.remove(block) {
+            let response_time = Instant::now().duration_since(start_time);
+            self.update_response_time(response_time);
+        }
 
         let Some(requests) = self.requests.get_mut(&i) else { return false };
         requests.remove(pos);
@@ -126,7 +223,9 @@ impl<T: Managed> RequestManager<T> {
     }
 
     /// Get timed out blocks without mutating the timeout.
-    pub fn get_timeout_blocks(&self, now: Instant) -> Vec<&T> {
+    pub fn get_timeout_blocks(&self) -> Vec<&T> {
+        let now = Instant::now();
+
         // assume around 25% of blocks are timed out
         let mut timed_out_blocks: Vec<&T> =
             Vec::with_capacity(self.timeouts.len() / 4);
@@ -144,19 +243,21 @@ impl<T: Managed> RequestManager<T> {
         timed_out_blocks
     }
 
-    /// Get timed out blocks and mutate the timeout to now.
-    pub fn get_timeout_blocks_and_update(
-        &mut self,
-        new_timeout: Instant,
-        take: usize,
-    ) -> Vec<T> {
+    /// Get timed out blocks and calculate a new timeout.
+    pub fn get_timeout_blocks_and_update(&mut self) -> Vec<T> {
         // assume around 25% of blocks are timed out
         let mut timed_out_blocks: Vec<T> =
             Vec::with_capacity(self.timeouts.len() / 4);
 
         let now = Instant::now();
+        let new_timeout = now + self.get_timeout();
 
-        for (mut timeout, block) in self.timeouts.iter().peekable().take(take) {
+        for (mut timeout, block) in self
+            .timeouts
+            .iter()
+            .peekable()
+            .take(self.get_available_request_len())
+        {
             if timeout.0 <= now {
                 {
                     timed_out_blocks.push(block.clone());
@@ -173,6 +274,22 @@ impl<T: Managed> RequestManager<T> {
     pub fn get_blocks_for_piece(&self, piece_index: usize) -> Option<&[T]> {
         self.requests.get(&piece_index).map(|v| v.as_slice())
     }
+
+    pub fn contains(&self, v: &T) -> bool {
+        self.index.contains_key(v)
+    }
+
+    pub fn len(&self) -> usize {
+        self.timeouts.len()
+    }
+
+    pub fn len_pieces(&self) -> usize {
+        self.requests.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.requests.is_empty()
+    }
 }
 
 #[cfg(test)]
@@ -180,40 +297,84 @@ mod tests {
     use super::*;
     use crate::extensions::BlockInfo;
     use std::time::Duration;
-    use tokio::time::Instant;
 
     #[test]
-    fn get_timedout_blocks_performance() {
+    fn update_response_time() {
         let mut manager = RequestManager::<BlockInfo>::new();
-        let now = Instant::now();
 
-        for i in 0..1_000 {
-            let block =
-                BlockInfo::new(i as u32 / 10, (i as u32 % 10) * 16384, 16384);
-            let timeout = if i % 10 == 0 {
-                now - Duration::from_secs(10) // 10% time out
-            } else {
-                now + Duration::from_secs(10) // 90% don't time out
-            };
-            manager.add_request(block.clone(), timeout);
+        manager.update_response_time(Duration::from_millis(100));
+        manager.update_response_time(Duration::from_millis(200));
+        manager.update_response_time(Duration::from_millis(300));
+
+        assert_eq!(manager.avg_response_time, Duration::from_millis(156));
+        assert!(manager.get_timeout() < Duration::from_millis(500));
+
+        println!("avg     {:?}", manager.avg_response_time);
+        println!("timeout {:?}", manager.get_timeout());
+
+        // should keep only the last 10 response times
+        for i in 4..24 {
+            manager.update_response_time(Duration::from_millis(i * 100));
         }
 
-        let start = Instant::now();
-        let _timed_out = manager.get_timeout_blocks(now);
-        let duration = start.elapsed();
+        assert_eq!(manager.response_times.len(), 10);
+    }
 
-        assert_eq!(manager.len(), 1_000);
+    #[test]
+    fn adjust_timeout_multiplier() {
+        let mut manager = RequestManager::<BlockInfo>::new();
 
-        println!("timedout_heap took {:?}", duration);
+        manager.response_times.extend(vec![
+            Duration::from_millis(100),
+            Duration::from_millis(110),
+            Duration::from_millis(105),
+            Duration::from_millis(95),
+            Duration::from_millis(100),
+            Duration::from_millis(100),
+            Duration::from_millis(100),
+            Duration::from_millis(100),
+            Duration::from_millis(100),
+            Duration::from_millis(100),
+        ]);
+
+        manager.avg_response_time = Duration::from_millis(100);
+
+        let initial_multiplier = manager.timeout_multiplier;
+        manager.adjust_timeout_multiplier();
+        println!("multi {:?}", manager.timeout_multiplier);
+
+        // multiplier should decrease for low variance
+        assert!(manager.timeout_multiplier < initial_multiplier);
+        assert!(manager.timeout_multiplier >= 2.0);
+
+        // test with high variance
+        manager.response_times.extend(vec![
+            Duration::from_millis(100),
+            Duration::from_millis(1000),
+            Duration::from_millis(50),
+            Duration::from_millis(2000),
+            Duration::from_millis(200),
+            Duration::from_millis(9000),
+            Duration::from_millis(7000),
+            Duration::from_millis(10),
+        ]);
+        manager.avg_response_time = Duration::from_millis(500);
+
+        let current_multiplier = manager.timeout_multiplier;
+        manager.adjust_timeout_multiplier();
+        println!("multi {:?}", manager.timeout_multiplier);
+
+        // multiplier should increase for high variance
+        assert!(manager.timeout_multiplier > current_multiplier);
+        assert!(manager.timeout_multiplier <= 4.0);
     }
 
     #[test]
     fn add_request() {
         let mut manager = RequestManager::<BlockInfo>::new();
         let block = BlockInfo::new(0, 0, 16384);
-        let timeout = Instant::now();
 
-        manager.add_request(block.clone(), timeout);
+        manager.add_request(block.clone());
 
         assert_eq!(manager.requests.len(), 1);
         assert_eq!(manager.timeouts.len(), 1);
@@ -224,7 +385,6 @@ mod tests {
         assert!(manager.index.contains_key(&block));
 
         assert_eq!(manager.requests[&0][0], block);
-        assert_eq!(manager.timeouts.peek().unwrap().0 .0, timeout);
         assert_eq!(manager.index[&block], 0);
     }
 
@@ -233,10 +393,9 @@ mod tests {
         let mut manager = RequestManager::new();
         let block1 = BlockInfo::new(0, 0, 16384);
         let block2 = BlockInfo::new(0, 16384, 16384);
-        let timeout = Instant::now();
 
-        manager.add_request(block1.clone(), timeout);
-        manager.add_request(block2.clone(), timeout);
+        manager.add_request(block1.clone());
+        manager.add_request(block2.clone());
 
         assert_eq!(manager.requests.len(), 1);
         assert_eq!(manager.timeouts.len(), 2);
@@ -253,10 +412,9 @@ mod tests {
         let mut manager = RequestManager::new();
         let block1 = BlockInfo::new(0, 0, 16384);
         let block2 = BlockInfo::new(1, 0, 16384);
-        let timeout = Instant::now();
 
-        manager.add_request(block1.clone(), timeout);
-        manager.add_request(block2.clone(), timeout);
+        manager.add_request(block1.clone());
+        manager.add_request(block2.clone());
 
         assert_eq!(manager.requests.len(), 2);
         assert_eq!(manager.timeouts.len(), 2);
@@ -271,9 +429,9 @@ mod tests {
     fn remove_request() {
         let mut manager = RequestManager::new();
         let block = BlockInfo::new(0, 0, 16384);
-        let timeout = Instant::now();
 
-        manager.add_request(block.clone(), timeout);
+        manager.add_request(block.clone());
+
         assert_eq!(manager.requests.len(), 1);
         assert_eq!(manager.timeouts.len(), 1);
         assert_eq!(manager.index.len(), 1);
@@ -289,10 +447,9 @@ mod tests {
         let mut manager = RequestManager::new();
         let block1 = BlockInfo::new(0, 0, 16384);
         let block2 = BlockInfo::new(0, 16384, 16384);
-        let timeout = Instant::now();
 
-        manager.add_request(block1.clone(), timeout);
-        manager.add_request(block2.clone(), timeout);
+        manager.add_request(block1.clone());
+        manager.add_request(block2.clone());
         assert_eq!(manager.requests[&0].len(), 2);
         assert_eq!(manager.timeouts.len(), 2);
         assert_eq!(manager.index.len(), 2);
@@ -316,50 +473,57 @@ mod tests {
     #[test]
     fn get_timeout_blocks() {
         let mut manager = RequestManager::new();
-        let now = Instant::now();
 
         // add a block that timed out in the past
         let timed_out_block = BlockInfo::new(0, 0, 16384);
-        manager.add_request(
+        manager.add_request(timed_out_block.clone());
+
+        let past_timeout = Instant::now() - Duration::from_secs(10);
+        manager.timeouts.push((Reverse(past_timeout), timed_out_block.clone()));
+        manager.request_start_times.insert(
             timed_out_block.clone(),
-            now - Duration::from_secs(10),
+            Instant::now() - Duration::from_secs(10),
         );
 
         // add a block that hasn't timed out yet
         let not_timed_out_block = BlockInfo::new(0, 16384, 16384);
-        manager.add_request(
-            not_timed_out_block.clone(),
-            now + Duration::from_secs(10),
-        );
+        manager.add_request(not_timed_out_block.clone());
 
-        let timed_out_blocks = manager.get_timeout_blocks(now);
+        let timed_out_blocks = manager.get_timeout_blocks();
 
         assert_eq!(timed_out_blocks.len(), 1);
-        assert_eq!(*timed_out_blocks[0], timed_out_block);
-        assert!(!timed_out_blocks.contains(&&not_timed_out_block));
+        assert_eq!(*timed_out_blocks, [&timed_out_block]);
     }
 
     #[tokio::test]
     async fn get_timeout_blocks_and_update() {
         let mut manager = RequestManager::new();
 
-        let now = Reverse(Instant::now());
-
         let timed_out_block1 = BlockInfo::new(0, 0, 100);
-        manager.add_request(
-            timed_out_block1.clone(),
-            now.0 - Duration::from_secs(15),
-        );
+        manager.add_request(timed_out_block1.clone());
+
         let timed_out_block2 = BlockInfo::new(0, 100, 200);
-        manager.add_request(
-            timed_out_block2.clone(),
-            now.0 - Duration::from_secs(10),
+        manager.add_request(timed_out_block2.clone());
+
+        let past_timeout = Instant::now() - Duration::from_secs(10);
+        manager
+            .timeouts
+            .push((Reverse(past_timeout), timed_out_block1.clone()));
+        manager.request_start_times.insert(
+            timed_out_block1.clone(),
+            Instant::now() - Duration::from_secs(10),
         );
 
-        let timed_out_blocks = manager.get_timeout_blocks_and_update(
-            now.0 + Duration::from_secs(60),
-            1000,
+        let past_timeout = Instant::now() - Duration::from_secs(10);
+        manager
+            .timeouts
+            .push((Reverse(past_timeout), timed_out_block2.clone()));
+        manager.request_start_times.insert(
+            timed_out_block2.clone(),
+            Instant::now() - Duration::from_secs(10),
         );
+
+        let timed_out_blocks = manager.get_timeout_blocks_and_update();
 
         assert_eq!(timed_out_blocks.len(), 2);
         assert_eq!(timed_out_blocks[0], timed_out_block1);
@@ -367,20 +531,18 @@ mod tests {
 
         let timed_out_block = manager.timeouts.pop().unwrap();
         assert_eq!(timed_out_block.1, timed_out_block1);
-        assert!(timed_out_block.0 > now);
 
         let timed_out_block = manager.timeouts.pop().unwrap();
         assert_eq!(timed_out_block.1, timed_out_block2);
-        assert!(timed_out_block.0 > now);
 
-        let timed_out_blocks = manager.get_timeout_blocks(now.0);
+        let timed_out_blocks = manager.get_timeout_blocks();
         assert!(timed_out_blocks.is_empty());
     }
 
     #[test]
     fn get_timedout_blocks_empty() {
         let manager = RequestManager::<BlockInfo>::new();
-        let timed_out_blocks = manager.get_timeout_blocks(Instant::now());
+        let timed_out_blocks = manager.get_timeout_blocks();
         assert!(timed_out_blocks.is_empty());
     }
 
@@ -390,11 +552,10 @@ mod tests {
         let block1 = BlockInfo::new(0, 0, 16384);
         let block2 = BlockInfo::new(0, 16384, 16384);
         let block3 = BlockInfo::new(1, 0, 16384);
-        let timeout = Instant::now();
 
-        manager.add_request(block1.clone(), timeout);
-        manager.add_request(block2.clone(), timeout);
-        manager.add_request(block3.clone(), timeout);
+        manager.add_request(block1.clone());
+        manager.add_request(block2.clone());
+        manager.add_request(block3.clone());
 
         let blocks_for_piece_0 = manager.get_blocks_for_piece(0).unwrap();
         assert_eq!(blocks_for_piece_0.len(), 2);
@@ -414,11 +575,10 @@ mod tests {
         let block1 = BlockInfo::new(0, 0, 16384);
         let block2 = BlockInfo::new(0, 16384, 16384);
         let block3 = BlockInfo::new(1, 0, 16384);
-        let timeout = Instant::now();
 
-        manager.add_request(block1.clone(), timeout);
-        manager.add_request(block2.clone(), timeout);
-        manager.add_request(block3.clone(), timeout);
+        manager.add_request(block1.clone());
+        manager.add_request(block2.clone());
+        manager.add_request(block3.clone());
 
         assert_eq!(manager.requests.len(), 2);
         assert_eq!(manager.timeouts.len(), 3);
@@ -448,11 +608,10 @@ mod tests {
         let block1 = BlockInfo::new(0, 0, 16384);
         let block2 = BlockInfo::new(0, 16384, 16384);
         let block3 = BlockInfo::new(0, 32768, 16384);
-        let timeout = Instant::now();
 
-        manager.add_request(block1.clone(), timeout);
-        manager.add_request(block2.clone(), timeout);
-        manager.add_request(block3.clone(), timeout);
+        manager.add_request(block1.clone());
+        manager.add_request(block2.clone());
+        manager.add_request(block3.clone());
 
         assert_eq!(manager.index[&block1], 0);
         assert_eq!(manager.index[&block2], 1);

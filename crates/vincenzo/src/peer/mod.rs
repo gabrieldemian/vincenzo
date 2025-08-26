@@ -137,11 +137,7 @@ impl Peer<Connected> {
                         continue;
                     };
 
-                    // check for timed-out requests (3 seconds)
-                    for piece in self.state.req_man_meta.get_timeout_blocks_and_update(
-                        self.get_block_timeout(),
-                        self.available_target_queue_len()
-                    ) {
+                    for piece in self.state.req_man_meta.get_timeout_blocks_and_update() {
                         let msg = Metadata::request(piece.0 as u64);
                         let buf = msg.to_bencode()?;
 
@@ -153,9 +149,6 @@ impl Peer<Connected> {
                             .await?;
                     }
                 }
-                _ = request_interval.tick(), if self.can_request() => {
-                    self.request_blocks().await?;
-                }
                 _ = rerequest_timeout_interval.tick(), if self.can_request() => {
                     self.rerequest_timeout_blocks().await?;
 
@@ -163,6 +156,9 @@ impl Peer<Connected> {
                         self.state.req_man_block.len(),
                         self.state.req_man_block.len_pieces(),
                     );
+                }
+                _ = request_interval.tick(), if self.can_request() => {
+                    self.request_blocks().await?;
                 }
                 _ = interested_interval.tick(), if !self.state.seed_only && !self.state.is_paused => {
                     let (otx, orx) = oneshot::channel();
@@ -203,7 +199,7 @@ impl Peer<Connected> {
                                 self
                                     .state
                                     .req_man_block
-                                    .add_request(block.clone(), self.get_block_timeout());
+                                    .add_request(block.clone());
                             }
                         }
                         PeerBrMsg::Request(blocks) => {
@@ -211,7 +207,7 @@ impl Peer<Connected> {
                                 self
                                     .state
                                     .req_man_block
-                                    .add_request(block.clone(), self.get_block_timeout());
+                                    .add_request(block.clone());
                             }
                         }
                         PeerBrMsg::Cancel { block_info, ..} => {
@@ -379,22 +375,11 @@ impl Peer<Connected> {
         Ok(())
     }
 
-    /// Get when a block request should be expired (timed out)
-    pub fn get_block_timeout(&self) -> Instant {
-        // todo: calculate this dynamically based on the peer's speed.
-        Instant::now() + Duration::from_secs(3)
-    }
-
     // todo: some peers dont resend the blocks no matter how many times we
     // resend, even if they have the piece. Maybe after 3 tries send all the
     // blocks to another peer.
     async fn rerequest_timeout_blocks(&mut self) -> Result<(), Error> {
-        let qnt = self.available_target_queue_len();
-
-        let blocks = self
-            .state
-            .req_man_block
-            .get_timeout_blocks_and_update(self.get_block_timeout(), qnt);
+        let blocks = self.state.req_man_block.get_timeout_blocks_and_update();
         info!("rerequesting {}", blocks.len());
 
         for block in blocks {
@@ -423,25 +408,12 @@ impl Peer<Connected> {
         ));
     }
 
-    /// How many more requests this peer can receive from local without
-    /// dropping the connection.
-    pub fn available_target_queue_len(&self) -> usize {
-        let target_request_queue_len =
-            self.state.target_request_queue_len as usize;
-
-        let current_requests =
-            self.state.req_man_block.len() + self.state.req_man_meta.len();
-
-        // the number of blocks we can request right now
-        target_request_queue_len.saturating_sub(current_requests)
-    }
-
     /// Request new block infos to this Peer.
     /// Must be used after checking that the Peer is able to send blocks with
     /// [`Self::can_request`].
     pub async fn request_blocks(&mut self) -> Result<(), Error> {
         // max available requests for this peer at the current moment
-        let qnt = self.available_target_queue_len();
+        let qnt = self.state.req_man_block.get_available_request_len();
 
         trace!("requesting block infos: {qnt}");
 
@@ -467,11 +439,7 @@ impl Peer<Connected> {
         let blocks: Vec<BlockInfo> = orx.await?;
 
         for block in blocks {
-            if self
-                .state
-                .req_man_block
-                .add_request(block.clone(), self.get_block_timeout())
-            {
+            if self.state.req_man_block.add_request(block.clone()) {
                 self.state.sink.feed(Core::Request(block)).await?;
             }
         }
@@ -526,10 +494,11 @@ impl Peer<Connected> {
         debug!("total_pieces {total_pieces}");
 
         for piece in 0..total_pieces {
-            if self.state.req_man_meta.add_request(
-                MetadataPiece(piece as usize),
-                self.get_block_timeout(),
-            ) {
+            if self
+                .state
+                .req_man_meta
+                .add_request(MetadataPiece(piece as usize))
+            {
                 let msg = Metadata::request(piece);
                 let buf = msg.to_bencode()?;
 
