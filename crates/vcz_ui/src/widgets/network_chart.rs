@@ -59,7 +59,7 @@ impl NetworkChart {
         self.upload_data.retain(|&(t, _)| t >= min_time);
 
         // periodically reset max rate if it's much higher than current rates
-        if (self.current_time as u64).is_multiple_of(30) {
+        if (self.current_time as u64).is_multiple_of(10) {
             let current_max = self
                 .download_data
                 .iter()
@@ -97,9 +97,9 @@ impl NetworkChart {
             .data(&self.upload_data);
 
         let x_labels = vec![
-            Span::from("60s").bold(),
-            Span::from("30s").bold(),
             Span::from("0s").bold(),
+            Span::from("30s").bold(),
+            Span::from("60s").bold(),
         ];
 
         let y_labels = vec![

@@ -38,23 +38,13 @@ impl<'a> TorrentList<'a> {
     pub fn new(tx: mpsc::UnboundedSender<Action>) -> Self {
         Self {
             tx,
-            #[cfg(not(feature = "test"))]
             network_charts: Vec::new(),
-            #[cfg(feature = "test")]
-            network_charts: vec![
-                NetworkChart::new(InfoHash::random()),
-                NetworkChart::new(InfoHash::random()),
-                NetworkChart::new(InfoHash::random()),
-                NetworkChart::new(InfoHash::random()),
-                NetworkChart::new(InfoHash::random()),
-                NetworkChart::new(InfoHash::random()),
-            ],
+            state: ListState::default(),
             scroll_state: ScrollbarState::default(),
             scroll: 0,
             chars_per_line: 50,
             textarea: None,
             focused: true,
-            state: ListState::default(),
             active_torrent: None,
             torrent_infos: Vec::new(),
         }
@@ -199,7 +189,7 @@ impl<'a> Page for TorrentList<'a> {
                 _ => PALETTE.primary,
             };
 
-            let status_txt: &str = state.status.clone().into();
+            let status_txt: &str = state.status.into();
             let mut status_txt = vec![Span::styled(status_txt, status_style)];
 
             if state.status == TorrentStatus::Downloading {
@@ -330,8 +320,10 @@ impl<'a> Page for TorrentList<'a> {
             f.render_stateful_widget(torrent_list, chunks[0], &mut self.state);
 
             if has_active_torrent {
-                self.network_charts[self.state.selected().unwrap()]
-                    .draw(f, chunks[1]);
+                let selected = self.state.selected().unwrap();
+                if let Some(network_chart) = self.network_charts.get(selected) {
+                    network_chart.draw(f, chunks[1]);
+                }
             }
         }
     }
@@ -349,6 +341,13 @@ impl<'a> Page for TorrentList<'a> {
         match action {
             Action::TorrentStates(torrent_states) => {
                 for (i, s) in torrent_states.iter().enumerate() {
+                    if !self
+                        .network_charts
+                        .iter()
+                        .any(|v| v.info_hash == s.info_hash)
+                    {
+                        self.new_network_chart(s.info_hash.clone());
+                    }
                     if let Some(chart) = self.network_charts.get_mut(i) {
                         chart.on_tick(
                             s.download_rate as f64,

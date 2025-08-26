@@ -244,7 +244,7 @@ impl Daemon {
         let mut test_interval = interval(Duration::from_secs(1));
 
         // token to cancel all frontend's tasks
-        let token = CancellationToken::new();
+        let all_fr_token = CancellationToken::new();
 
         'outer: loop {
             select! {
@@ -252,7 +252,6 @@ impl Daemon {
                     #[cfg(feature = "test")]
                     self.tick_test().await;
                 }
-                // listen for remote TCP connections
                 Ok((socket, addr)) = socket.accept() => {
                     info!("connected to remote: {addr}");
 
@@ -260,17 +259,21 @@ impl Daemon {
                     let (mut sink, mut stream) = socket.split();
 
                     let ctx = ctx.clone();
-                    let token = token.clone();
+                    let all_fr_token = all_fr_token.clone();
+                    let fr_token = CancellationToken::new();
 
                     tokio::spawn(async move {
-                        // listen to messages sent locally, from the daemon binary.
-                        // a Torrent that is owned by the Daemon, may send messages to this channel
                         let mut draw_interval = interval(Duration::from_secs(1));
                         let ctx = ctx.clone();
 
                         'inner: loop {
                             select! {
-                                _ = token.cancelled() => {
+                                _ = all_fr_token.cancelled() => {
+                                    info!("disconnected from remote: {addr}");
+                                    sink.close().await?;
+                                    break 'inner;
+                                }
+                                _ = fr_token.cancelled() => {
                                     info!("disconnected from remote: {addr}");
                                     sink.close().await?;
                                     break 'inner;
@@ -283,16 +286,16 @@ impl Daemon {
                                     if sink.send(Message::TorrentStates(orx.await?)).await
                                         .map_err(|_| Error::SendErrorTcp).is_err()
                                     {
-                                        token.cancel();
+                                        fr_token.cancel();
                                     }
                                 }
                                 Some(Ok(msg)) = stream.next() => {
                                     if msg == Message::FrontendQuit {
-                                        token.cancel();
+                                        fr_token.cancel();
                                     }
                                     Self::handle_remote_msgs(&ctx.tx, msg, &mut sink).await?;
                                 }
-                                else => token.cancel(),
+                                else => fr_token.cancel(),
                             }
                         }
                         Ok::<(), Error>(())
@@ -384,7 +387,7 @@ impl Daemon {
                                 h.abort();
                             }
                             handle.close();
-                            token.cancel();
+                            all_fr_token.cancel();
                             break 'outer;
                         }
                     }
@@ -504,6 +507,7 @@ impl Daemon {
 
     #[cfg(feature = "test")]
     async fn add_test_torrents(&mut self) {
+        use crate::torrent::Stats;
         self.torrent_states.extend([
             TorrentState {
                 name: "Test torrent 01".to_string(),
