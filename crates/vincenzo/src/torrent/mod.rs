@@ -17,7 +17,7 @@ use crate::{
     config::CONFIG,
     counter::Counter,
     daemon::{DaemonCtx, DaemonMsg},
-    disk::{DiskMsg, ReturnBlockInfos},
+    disk::{DiskMsg, ReturnToDisk},
     error::Error,
     magnet::Magnet,
     metainfo::Info,
@@ -114,7 +114,7 @@ pub struct Torrent<S: TorrentTrait> {
 #[derive(Debug)]
 pub struct TorrentCtx {
     pub disk_tx: mpsc::Sender<DiskMsg>,
-    pub free_tx: mpsc::UnboundedSender<ReturnBlockInfos>,
+    pub free_tx: mpsc::UnboundedSender<ReturnToDisk>,
     pub tx: mpsc::Sender<TorrentMsg>,
     pub btx: broadcast::Sender<PeerBrMsg>,
     pub magnet: Magnet,
@@ -125,7 +125,7 @@ pub struct TorrentCtx {
 impl Torrent<Idle> {
     pub fn new(
         disk_tx: mpsc::Sender<DiskMsg>,
-        free_tx: mpsc::UnboundedSender<ReturnBlockInfos>,
+        free_tx: mpsc::UnboundedSender<ReturnToDisk>,
         daemon_ctx: Arc<DaemonCtx>,
         magnet: Magnet,
     ) -> Torrent<Idle> {
@@ -175,10 +175,17 @@ impl Torrent<Idle> {
 
     /// Start the Torrent, by sending `connect` and `announce_exchange`
     /// messages to one of the trackers, and returning a list of peers.
-    /// But it doesn't run the torrent event loop.
     pub async fn start(self) -> Result<Torrent<Connected>, Error> {
         let c = self.ctx.clone();
         let org_trackers = c.magnet.organize_trackers();
+
+        // todo: support multi tracker torrents.
+        // after connecting to the first tracker, have an interval that
+        // calculates the number of missing active peers from the local
+        // torrent limit and request more to other trackers.
+        //
+        // create a cancellation token for all trackers,
+        // store idle trackers and active trackers.
 
         let udp_trackers = org_trackers.get("udp").unwrap();
 
@@ -332,8 +339,19 @@ impl Torrent<Connected> {
                             if self.state.have_info {continue};
 
                             let mut info = self.ctx.info.write().await;
+                            let info_hash = self.ctx.info_hash.clone();
+                            // todo: delete info.metadata_size
                             info.metadata_size = Some(meta_size);
                             self.state.metadata_size = meta_size;
+
+                            let _ = self
+                                .ctx
+                                .disk_tx
+                                .send(DiskMsg::MetadataSize(
+                                    info_hash,
+                                    meta_size
+                                ))
+                                .await;
                         }
                         TorrentMsg::ReadBitfield(oneshot) => {
                             let _ = oneshot.send(self.state.bitfield.clone());
@@ -486,7 +504,7 @@ impl Torrent<Connected> {
                             debug!("files: {:?}", downloaded_info.files);
                             debug!("piece_length: {:?}", downloaded_info.piece_length);
                             info!(
-                                "pieces: {}, blocks count: {}",
+                                "pieces: {}, blocks: {}",
                                 downloaded_info.pieces(),
                                 downloaded_info.blocks_count(),
                             );
@@ -628,7 +646,7 @@ impl Torrent<Connected> {
                     let downloaded =
                         self.state.counter.total_downloaded.load(Ordering::Relaxed)
                         .min(self.state.size);
-                    let uploaded = self.state.counter.total_downloaded.load(Ordering::Relaxed);
+                    let uploaded = self.state.counter.total_uploaded.load(Ordering::Relaxed);
                     let download_rate = self.state.counter.download_rate.load(Ordering::Relaxed);
                     let upload_rate = self.state.counter.upload_rate.load(Ordering::Relaxed);
 
@@ -988,43 +1006,6 @@ impl Torrent<Connected> {
         buffer[..n].iter().map(|&(_, idx)| peers[idx].clone()).collect()
     }
 
-    /// Become interested in the connected peer.
-    pub async fn interested_peer(&self, id: PeerId) -> Result<(), Error> {
-        if let Some(ctx) =
-            self.state.connected_peers.iter().find(|v| v.id == id)
-        {
-            ctx.tx.send(PeerMsg::Interested).await?;
-            return Ok(());
-        }
-        Err(Error::PeerNotFound(id))
-    }
-
-    /// Become disinterested in the connected peer.
-    pub async fn disinterested_peer(&self, id: PeerId) -> Result<(), Error> {
-        if let Some(ctx) =
-            self.state.connected_peers.iter().find(|v| v.id == id)
-        {
-            ctx.tx.send(PeerMsg::NotInterested).await?;
-            return Ok(());
-        }
-        Err(Error::PeerNotFound(id))
-    }
-
-    /// Unchoke a connected peer and update local state.
-    pub async fn unchoke_peer(&mut self, id: PeerId) -> Result<(), Error> {
-        if self.state.unchoked_peers.len() >= 3 {
-            return Err(Error::MaximumUnchokedPeers);
-        }
-        if let Some(ctx) =
-            self.state.connected_peers.iter().find(|v| v.id == id)
-        {
-            ctx.tx.send(PeerMsg::Unchoke).await?;
-            self.state.unchoked_peers.push(ctx.clone());
-            return Ok(());
-        }
-        Err(Error::PeerNotFound(id))
-    }
-
     fn get_random_choked_interested_peer(&self) -> Option<Arc<PeerCtx>> {
         let mut rng = rand::rng();
         let mut candidates = Vec::new();
@@ -1050,30 +1031,6 @@ impl Torrent<Connected> {
             let idx = rng.random_range(0..candidates.len());
             Some(candidates[idx].clone())
         }
-    }
-
-    /// Choke a connected peer and update local state without doing any
-    /// checks.
-    pub async fn choke_peer(&mut self, id: PeerId) -> Result<(), Error> {
-        if let Some(ctx) = self.state.unchoked_peers.iter().find(|v| v.id == id)
-        {
-            ctx.tx.send(PeerMsg::Choke).await?;
-            self.state.unchoked_peers.retain(|v| v.id != id);
-            return Ok(());
-        }
-        Err(Error::PeerNotFound(id))
-    }
-
-    /// Optimistically unchoke a connected peer
-    pub async fn opt_unchoke_peer(&mut self, id: PeerId) -> Result<(), Error> {
-        if let Some(ctx) =
-            self.state.connected_peers.iter().find(|v| v.id == id)
-        {
-            ctx.tx.send(PeerMsg::Unchoke).await?;
-            self.state.opt_unchoked_peer = Some(ctx.clone());
-            return Ok(());
-        }
-        Err(Error::PeerNotFound(id))
     }
 
     /// Return the first piece that the remote peer has and the local client

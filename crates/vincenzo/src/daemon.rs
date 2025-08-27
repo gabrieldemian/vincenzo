@@ -26,7 +26,7 @@ use tokio::{
 use crate::{
     config::CONFIG,
     daemon_wire::{DaemonCodec, Message},
-    disk::{DiskMsg, ReturnBlockInfos},
+    disk::{DiskMsg, ReturnToDisk},
     error::Error,
     magnet::Magnet,
     peer::PeerId,
@@ -66,7 +66,7 @@ pub struct Daemon {
 /// Context of the [`Daemon`] that may be shared between other types.
 pub struct DaemonCtx {
     pub tx: mpsc::Sender<DaemonMsg>,
-    pub free_tx: mpsc::UnboundedSender<ReturnBlockInfos>,
+    pub free_tx: mpsc::UnboundedSender<ReturnToDisk>,
     pub local_peer_id: PeerId,
 }
 
@@ -111,7 +111,7 @@ impl Daemon {
     /// Initialize the Daemon struct with the default [`DaemonConfig`].
     pub fn new(
         disk_tx: mpsc::Sender<DiskMsg>,
-        free_tx: mpsc::UnboundedSender<ReturnBlockInfos>,
+        free_tx: mpsc::UnboundedSender<ReturnToDisk>,
     ) -> Self {
         let (tx, rx) = mpsc::channel::<DaemonMsg>(100);
 

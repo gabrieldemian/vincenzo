@@ -15,10 +15,10 @@ use tokio::{
     time::{interval, interval_at, Instant},
 };
 
-use tracing::{debug, info, trace};
+use tracing::{debug, trace};
 
 use crate::{
-    disk::ReturnBlockInfos,
+    disk::ReturnToDisk,
     extensions::{
         ExtMsg, ExtMsgHandler, Extended, ExtendedMessage, Metadata,
         MetadataPiece,
@@ -29,7 +29,7 @@ use crate::{
 use crate::{
     disk::DiskMsg,
     error::Error,
-    extensions::core::{Block, BlockInfo, Core, BLOCK_LEN},
+    extensions::core::{Block, BlockInfo, Core},
     torrent::TorrentMsg,
 };
 
@@ -64,13 +64,10 @@ impl Peer<Connected> {
             .await?;
 
         // request info
-        let mut info_interval = interval(Duration::from_secs(1));
+        let mut metadata_interval = interval(Duration::from_millis(100));
 
         // request block infos
-        let mut request_interval = interval(Duration::from_millis(500));
-
-        // rerequest timedout blocks
-        let mut rerequest_timeout_interval = interval(Duration::from_secs(3));
+        let mut block_interval = interval(Duration::from_millis(100));
 
         // send interested or uninterested.
         // algorithm:
@@ -116,51 +113,31 @@ impl Peer<Connected> {
             self.state.have_info = info.piece_length > 0;
         }
 
-        if !self.state.have_info {
-            self.request_metadata().await?;
-        }
-
         let mut brx = self.state.ctx.torrent_ctx.btx.subscribe();
 
         loop {
             select! {
-                // try to rerequest timedout meta info requests,
-                // and request new ones if the peer can accept more.
-                _ = info_interval.tick(), if !self.state.have_info => {
-                    let Some(ut_metadata) = self
-                        .state
-                        .ext_states
-                        .extension
-                        .as_ref()
-                        .and_then(|v| v.m.ut_metadata)
-                    else {
-                        continue;
-                    };
-
-                    for piece in self.state.req_man_meta.get_timeout_blocks_and_update() {
-                        let msg = Metadata::request(piece.0 as u64);
-                        let buf = msg.to_bencode()?;
-
-                        debug!("re-requesting meta piece: {piece:?}");
-
-                        self.state
-                            .sink
-                            .send(Core::Extended(ExtendedMessage(ut_metadata, buf)))
-                            .await?;
-                    }
+                _ = metadata_interval.tick(), if !self.state.have_info => {
+                    self.request_metadata().await?;
+                    self.rerequest_metadata().await?;
                 }
-                _ = rerequest_timeout_interval.tick(), if self.can_request() => {
-                    self.rerequest_timeout_blocks().await?;
-
-                    info!("inflight b: {} inflight p {}",
-                        self.state.req_man_block.len(),
-                        self.state.req_man_block.len_pieces(),
-                    );
-                }
-                _ = request_interval.tick(), if self.can_request() => {
+                _ = block_interval.tick(), if self.can_request() => {
                     self.request_blocks().await?;
+                    self.rerequest_blocks().await?;
                 }
                 _ = interested_interval.tick(), if !self.state.seed_only && !self.state.is_paused => {
+
+                    // if !self.state.ctx.peer_choking.load(Ordering::Relaxed) {
+                    //     tracing::info!(
+                    //         "a {:?} b {:?} p {} tout {:?} avg {:?} l {:?}",
+                    //         self.state.req_man_block.get_available_request_len(),
+                    //         self.state.req_man_block.len(),
+                    //         self.state.req_man_block.len_pieces(),
+                    //         self.state.req_man_block.get_timeout(),
+                    //         self.state.req_man_block.get_avg(),
+                    //         self.state.req_man_block.last_response(),
+                    //     );
+                    // }
                     let (otx, orx) = oneshot::channel();
 
                     self.state.ctx.torrent_ctx.tx.send(
@@ -304,12 +281,6 @@ impl Peer<Connected> {
                             self.state_log[0] = 'u';
                             self.state.sink.send(Core::Unchoke).await?;
                         }
-                        PeerMsg::CancelBlock(block_info) => {
-                            debug!("> cancel_block");
-                            self.state.req_man_block.remove_request(&block_info);
-                            self.state.sink.feed(Core::Cancel(block_info)).await?;
-                            self.state.sink.flush().await?;
-                        }
                     }
                 }
             }
@@ -375,37 +346,29 @@ impl Peer<Connected> {
         Ok(())
     }
 
-    // todo: some peers dont resend the blocks no matter how many times we
-    // resend, even if they have the piece. Maybe after 3 tries send all the
-    // blocks to another peer.
-    async fn rerequest_timeout_blocks(&mut self) -> Result<(), Error> {
-        let blocks = self.state.req_man_block.get_timeout_blocks_and_update();
-        info!("rerequesting {}", blocks.len());
-
-        for block in blocks {
-            self.state.sink.feed(Core::Request(block)).await?;
-        }
-
-        self.state.sink.flush().await?;
-
-        Ok(())
-    }
-
     /// Take outgoing block infos that are in queue and send them back
     /// to the disk so that other peers can request those blocks.
     /// A good example to use this is when the Peer is no longer
     /// available (disconnected).
     pub fn free_pending_blocks(&mut self) {
-        let blocks = self.state.req_man_block.drain();
+        if self.state.have_info {
+            let blocks = self.state.req_man_block.drain();
+            debug!("returning {} blocks", blocks.len());
 
-        debug!("returning {} blocks", blocks.len());
+            let _ = self.state.free_tx.send(ReturnToDisk::Block(
+                self.state.ctx.torrent_ctx.info_hash.clone(),
+                blocks,
+            ));
+        } else {
+            let pieces = self.state.req_man_meta.drain();
+            let pieces = pieces.into_values().flatten().collect::<Vec<_>>();
+            debug!("returning {} pieces", pieces.len());
 
-        // send this block_info back to the vec of available block_infos,
-        // so that other peers can download it.
-        let _ = self.state.free_tx.send(ReturnBlockInfos(
-            self.state.ctx.torrent_ctx.info_hash.clone(),
-            blocks,
-        ));
+            let _ = self.state.free_tx.send(ReturnToDisk::Metadata(
+                self.state.ctx.torrent_ctx.info_hash.clone(),
+                pieces,
+            ));
+        }
     }
 
     /// Request new block infos to this Peer.
@@ -437,6 +400,7 @@ impl Peer<Connected> {
             .await?;
 
         let blocks: Vec<BlockInfo> = orx.await?;
+        let is_empty = blocks.is_empty();
 
         for block in blocks {
             if self.state.req_man_block.add_request(block.clone()) {
@@ -444,32 +408,35 @@ impl Peer<Connected> {
             }
         }
 
-        self.state.sink.flush().await?;
+        if !is_empty {
+            self.state.sink.flush().await?;
+        }
 
         Ok(())
     }
 
-    /// Start endgame mode. This will take the few pending block infos
-    /// and request them to all downloading peers of the torrent. When the block
-    /// arrives, send Cancel messages to all other peers.
-    #[tracing::instrument(skip_all)]
-    pub async fn start_endgame(&mut self) {
-        self.state.in_endgame = true;
+    /// Check for timed out block requests and request them again.
+    async fn rerequest_blocks(&mut self) -> Result<(), Error> {
+        let blocks = self.state.req_man_block.get_timeout_blocks_and_update();
+        debug!("rerequesting {}", blocks.len());
 
-        let blocks = self.state.req_man_block.get_requests();
-
-        let _ = self.state.ctx.torrent_ctx.btx.send(PeerBrMsg::Request(blocks));
-    }
-
-    /// Try to request the metadata (info) if:
-    /// - The peer supports the "ut_metadata" extension from the extension
-    ///   protocol
-    /// - We do not have the info downloaded
-    pub async fn request_metadata(&mut self) -> Result<(), Error> {
-        if self.state.have_info {
-            return Ok(());
+        let is_empty = blocks.is_empty();
+        for block in blocks {
+            self.state.sink.feed(Core::Request(block)).await?;
         }
 
+        // todo: some peers dont resend the blocks no matter how many times we
+        // resend, even if they have the piece. Maybe after 3 tries send all the
+        // blocks to another peer.
+        if !is_empty {
+            self.state.sink.flush().await?;
+        }
+
+        Ok(())
+    }
+
+    /// Request available metadata pieces.
+    pub async fn request_metadata(&mut self) -> Result<(), Error> {
         let Some(ut_metadata) = self
             .state
             .ext_states
@@ -480,39 +447,79 @@ impl Peer<Connected> {
             return Ok(());
         };
 
-        let Some(meta_size) = self
+        let qnt = self.state.req_man_meta.get_available_request_len();
+
+        if qnt == 0 {
+            return Ok(());
+        };
+
+        let (otx, orx) = oneshot::channel();
+
+        self.state
+            .ctx
+            .torrent_ctx
+            .disk_tx
+            .send(DiskMsg::RequestMetadata {
+                recipient: otx,
+                qnt,
+                info_hash: self.state.ctx.torrent_ctx.info_hash.clone(),
+            })
+            .await?;
+
+        let pieces: Vec<MetadataPiece> = orx.await?;
+
+        for piece in &pieces {
+            let msg = Metadata::request(piece.0 as u64);
+            let buf = msg.to_bencode()?;
+            self.state
+                .sink
+                .feed(Core::Extended(ExtendedMessage(ut_metadata, buf)))
+                .await?;
+        }
+
+        if !pieces.is_empty() {
+            self.state.sink.flush().await?;
+        }
+
+        Ok(())
+    }
+
+    /// Check for timedout metadata requests and request them again.
+    pub async fn rerequest_metadata(&mut self) -> Result<(), Error> {
+        let Some(ut_metadata) = self
             .state
             .ext_states
             .extension
             .as_ref()
-            .and_then(|v| v.metadata_size)
+            .and_then(|v| v.m.ut_metadata)
         else {
             return Ok(());
         };
 
-        let total_pieces = meta_size.div_ceil(BLOCK_LEN as u64);
-        debug!("total_pieces {total_pieces}");
+        let pieces = self.state.req_man_meta.get_timeout_blocks_and_update();
 
-        for piece in 0..total_pieces {
-            if self
-                .state
-                .req_man_meta
-                .add_request(MetadataPiece(piece as usize))
-            {
-                let msg = Metadata::request(piece);
-                let buf = msg.to_bencode()?;
-
-                debug!("requesting meta piece id: {piece}");
-
-                self.state
-                    .sink
-                    .feed(Core::Extended(ExtendedMessage(ut_metadata, buf)))
-                    .await?;
-            }
+        for piece in &pieces {
+            let msg = Metadata::request(piece.0 as u64);
+            let buf = msg.to_bencode()?;
+            self.state
+                .sink
+                .feed(Core::Extended(ExtendedMessage(ut_metadata, buf)))
+                .await?;
         }
 
-        self.state.sink.flush().await?;
+        if !pieces.is_empty() {
+            self.state.sink.flush().await?;
+        }
 
         Ok(())
+    }
+
+    /// Start endgame mode. This will take the few pending block infos
+    /// and request them to all downloading peers of the torrent. When the block
+    /// arrives, send Cancel messages to all other peers.
+    pub async fn start_endgame(&mut self) {
+        self.state.in_endgame = true;
+        let blocks = self.state.req_man_block.get_requests();
+        let _ = self.state.ctx.torrent_ctx.btx.send(PeerBrMsg::Request(blocks));
     }
 }

@@ -81,6 +81,14 @@ impl<T: Requestable> RequestManager<T> {
         self.limit.saturating_sub(self.index.len())
     }
 
+    pub fn get_avg(&self) -> Duration {
+        self.avg_response_time
+    }
+
+    pub fn last_response(&self) -> Option<&Duration> {
+        self.response_times.iter().last()
+    }
+
     pub fn get_timeout(&self) -> Duration {
         if self.avg_response_time == Duration::ZERO {
             return Duration::from_secs(3);
@@ -88,7 +96,7 @@ impl<T: Requestable> RequestManager<T> {
 
         let timeout = self.avg_response_time.mul_f32(self.timeout_multiplier);
 
-        timeout.clamp(timeout, Duration::from_secs(30))
+        timeout.clamp(Duration::from_millis(100), Duration::from_secs(30))
     }
 
     fn update_response_time(&mut self, response_time: Duration) {
@@ -280,7 +288,7 @@ impl<T: Requestable> RequestManager<T> {
     }
 
     pub fn len(&self) -> usize {
-        self.timeouts.len()
+        self.index.len()
     }
 
     pub fn len_pieces(&self) -> usize {
@@ -288,7 +296,7 @@ impl<T: Requestable> RequestManager<T> {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.requests.is_empty()
+        self.index.is_empty()
     }
 }
 

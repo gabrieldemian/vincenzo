@@ -27,7 +27,7 @@ use crate::{
     bitfield::Reserved,
     counter::Counter,
     daemon::{DaemonCtx, DaemonMsg},
-    disk::{DiskMsg, ReturnBlockInfos},
+    disk::{DiskMsg, ReturnToDisk},
     error::Error,
     extensions::{
         core::BlockInfo, Core, CoreCodec, Extension, Handshake, HandshakeCodec,
@@ -198,10 +198,6 @@ pub enum PeerMsg {
 
     /// Tell this peer that we are not interested,
     NotInterested,
-
-    /// Sends a Cancel message to cancel a block info that we
-    /// expect the peer to send us, because we requested it previously.
-    CancelBlock(BlockInfo),
 }
 
 /// Determines who initiated the connection.
@@ -406,6 +402,15 @@ impl peer::Peer<Idle> {
                 peer.state.ext_states.metadata = Some(MetadataData());
             }
 
+            if let Some(meta_size) = ext.metadata_size {
+                peer.state
+                    .ctx
+                    .torrent_ctx
+                    .tx
+                    .send(TorrentMsg::MetadataSize(meta_size))
+                    .await?;
+            }
+
             peer.state.ext_states.extension = Some(ext);
         }
 
@@ -581,7 +586,7 @@ pub struct Connected {
     pub reserved: Reserved,
     pub rx: Receiver<PeerMsg>,
 
-    pub free_tx: mpsc::UnboundedSender<ReturnBlockInfos>,
+    pub free_tx: mpsc::UnboundedSender<ReturnToDisk>,
 
     pub ext_states: ExtStates,
 
