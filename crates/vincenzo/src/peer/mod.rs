@@ -109,8 +109,14 @@ impl Peer<Connected> {
         // when running a new Peer, we might
         // already have the info downloaded.
         {
-            let info = self.state.ctx.torrent_ctx.info.read().await;
-            self.state.have_info = info.piece_length > 0;
+            let (otx, orx) = oneshot::channel();
+            self.state
+                .ctx
+                .torrent_ctx
+                .tx
+                .send(TorrentMsg::HaveInfo(otx))
+                .await?;
+            self.state.have_info = orx.await?;
         }
 
         let mut brx = self.state.ctx.torrent_ctx.btx.subscribe();
@@ -127,17 +133,17 @@ impl Peer<Connected> {
                 }
                 _ = interested_interval.tick(), if !self.state.seed_only && !self.state.is_paused => {
 
-                    // if !self.state.ctx.peer_choking.load(Ordering::Relaxed) {
-                    //     tracing::info!(
-                    //         "a {:?} b {:?} p {} tout {:?} avg {:?} l {:?}",
-                    //         self.state.req_man_block.get_available_request_len(),
-                    //         self.state.req_man_block.len(),
-                    //         self.state.req_man_block.len_pieces(),
-                    //         self.state.req_man_block.get_timeout(),
-                    //         self.state.req_man_block.get_avg(),
-                    //         self.state.req_man_block.last_response(),
-                    //     );
-                    // }
+                    if !self.state.ctx.peer_choking.load(Ordering::Relaxed) {
+                        tracing::info!(
+                            "a {:?} b {:?} p {} tout {:?} avg {:?} l {:?}",
+                            self.state.req_man_block.get_available_request_len(),
+                            self.state.req_man_block.len(),
+                            self.state.req_man_block.len_pieces(),
+                            self.state.req_man_block.get_timeout(),
+                            self.state.req_man_block.get_avg(),
+                            self.state.req_man_block.last_response(),
+                        );
+                    }
                     let (otx, orx) = oneshot::channel();
 
                     self.state.ctx.torrent_ctx.tx.send(
@@ -158,7 +164,10 @@ impl Peer<Connected> {
                     }
 
                     // sorry, you're not the problem, it's me.
-                    if should_be_interested.is_none() && self.state.ctx.am_interested.load(Ordering::Relaxed) {
+                    if should_be_interested.is_none()
+                        &&
+                        self.state.ctx.am_interested.load(Ordering::Relaxed)
+                    {
                         debug!("> not_interested");
                         self.state.ctx.am_interested.store(false, Ordering::Relaxed);
                         self.state_log[1] = '-';
@@ -170,6 +179,12 @@ impl Peer<Connected> {
                 }
                 Ok(msg) = brx.recv() => {
                     match msg {
+                        PeerBrMsg::NewPeer(ctx) => {
+                            if self.state.in_endgame {
+                                let blocks = self.state.req_man_block.get_requests();
+                                let _ = ctx.tx.send(PeerMsg::Blocks(blocks)).await;
+                            }
+                        }
                         PeerBrMsg::Endgame(blocks) => {
                             self.start_endgame().await;
                             for block in blocks.into_values().flatten() {
@@ -257,6 +272,9 @@ impl Peer<Connected> {
                 }
                 Some(msg) = self.state.rx.recv() => {
                     match msg {
+                        PeerMsg::Blocks(blocks) => {
+                            self.state.req_man_block.extend(blocks);
+                        }
                         PeerMsg::NotInterested => {
                             debug!("> not_interested");
                             self.state.ctx.am_interested.store(false, Ordering::Relaxed);

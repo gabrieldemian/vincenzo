@@ -96,7 +96,10 @@ impl<T: Requestable> RequestManager<T> {
 
         let timeout = self.avg_response_time.mul_f32(self.timeout_multiplier);
 
-        timeout.clamp(Duration::from_millis(100), Duration::from_secs(30))
+        // todo: if the timeout is higher than the maximum (10 seconds)
+        // what should the client do? choke the peer?
+
+        timeout.clamp(Duration::from_millis(100), Duration::from_secs(10))
     }
 
     fn update_response_time(&mut self, response_time: Duration) {
@@ -158,6 +161,12 @@ impl<T: Requestable> RequestManager<T> {
         self.index.clear();
         self.timeouts.clear();
         self.requests.clear();
+    }
+
+    pub fn extend(&mut self, blocks: BTreeMap<usize, Vec<T>>) {
+        for block in blocks.into_values().flatten().collect::<Vec<_>>() {
+            self.add_request(block);
+        }
     }
 
     /// Return true if the item was inserted, false if duplicate.

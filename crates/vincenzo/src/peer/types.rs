@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     fmt::Display,
     net::SocketAddr,
     ops::{Deref, DerefMut},
@@ -34,7 +35,7 @@ use crate::{
         HolepunchData, MetadataData, MetadataPiece,
     },
     peer::{self, Peer, RequestManager},
-    torrent::{InfoHash, TorrentCtx, TorrentMsg},
+    torrent::{InfoHash, PeerBrMsg, TorrentCtx, TorrentMsg},
 };
 
 #[derive(Clone, PartialEq, Eq, Hash, Default, Readable, Writable)]
@@ -198,6 +199,9 @@ pub enum PeerMsg {
 
     /// Tell this peer that we are not interested,
     NotInterested,
+
+    /// Send block infos to this peer.
+    Blocks(BTreeMap<usize, Vec<BlockInfo>>),
 }
 
 /// Determines who initiated the connection.
@@ -239,7 +243,7 @@ impl peer::Peer<Idle> {
         socket: TcpStream,
         daemon_ctx: Arc<DaemonCtx>,
         torrent_ctx: Arc<TorrentCtx>,
-        metadata_size: u64,
+        metadata_size: Option<usize>,
     ) -> Result<peer::Peer<Connected>, Error> {
         let remote = socket.peer_addr()?;
         let local = socket.local_addr()?;
@@ -253,7 +257,7 @@ impl peer::Peer<Idle> {
             Handshake::new(info_hash.clone(), daemon_ctx.local_peer_id.clone());
 
         if let Some(ext) = local_handshake.ext.as_mut() {
-            ext.metadata_size = Some(metadata_size);
+            ext.metadata_size = metadata_size;
         }
 
         socket.send(local_handshake.clone()).await?;
@@ -363,6 +367,7 @@ impl peer::Peer<Idle> {
 
         let _ =
             ctx.torrent_ctx.disk_tx.send(DiskMsg::NewPeer(ctx.clone())).await;
+        let _ = ctx.torrent_ctx.btx.send(PeerBrMsg::NewPeer(ctx.clone()));
 
         let (sink, stream) = socket.split();
 
@@ -444,33 +449,26 @@ impl peer::Peer<Idle> {
             }
         };
 
-        daemon_ctx
-            .tx
-            .send(DaemonMsg::GetTorrentCtx(
-                otx,
-                peer_handshake.info_hash.clone(),
-            ))
-            .await?;
-
-        let Some(torrent_ctx) = orx.await? else {
-            return Err(Error::TorrentDoesNotExist);
-        };
-
-        let info = torrent_ctx.info.read().await;
-
-        // if we have the metadata yet
-        let metadata_size = match info.metadata_size {
-            Some(size) => size,
-            None => torrent_ctx.magnet.length().unwrap_or(0),
-        };
-
         let mut our_handshake = Handshake::new(
             peer_handshake.info_hash.clone(),
             daemon_ctx.local_peer_id.clone(),
         );
 
+        // in an inbound connection, the client can only know which torrent the
+        // peer wants when the peer sends their first handshake, so we send a
+        // message to the daemon to get it.
+        daemon_ctx
+            .tx
+            .send(DaemonMsg::GetMetadataSize(
+                otx,
+                peer_handshake.info_hash.clone(),
+            ))
+            .await?;
+
+        let metadata_size = orx.await?;
+
         if let Some(ext) = &mut our_handshake.ext {
-            ext.metadata_size = Some(metadata_size);
+            ext.metadata_size = metadata_size;
         }
 
         socket.send(our_handshake).await?;

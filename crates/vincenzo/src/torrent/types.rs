@@ -26,9 +26,16 @@ pub enum PeerBrMsg {
     /// Send request blocks to all peers.
     Request(BTreeMap<usize, Vec<BlockInfo>>),
 
+    /// When a new peer is connected, other peers might want to send messages
+    /// to him to syncronize state.
+    NewPeer(Arc<PeerCtx>),
+
     /// When in endgame mode, the first peer that receives this info,
     /// sends this message to send Cancel's to all other peers.
-    Cancel { from: PeerId, block_info: BlockInfo },
+    Cancel {
+        from: PeerId,
+        block_info: BlockInfo,
+    },
 
     /// The download finished
     Seedonly,
@@ -48,13 +55,17 @@ pub enum TorrentMsg {
     DownloadedPiece(usize),
 
     /// Received when a peer sent a metadata size on extended handshake.
-    MetadataSize(u64),
+    MetadataSize(usize),
+
+    HaveInfo(oneshot::Sender<bool>),
+
+    GetMetadataSize(oneshot::Sender<Option<usize>>),
 
     /// When a peer downloads an info piece,
     /// we need to mutate `info_dict` and maybe
     /// generate the entire info.
     /// total, metadata.index, bytes
-    DownloadedInfoPiece(u64, u64, Vec<u8>),
+    DownloadedInfoPiece(usize, u64, Vec<u8>),
 
     ReadBitfield(oneshot::Sender<Bitfield>),
 
@@ -196,12 +207,11 @@ pub struct TorrentState {
     pub stats: Stats,
     pub status: TorrentStatus,
     pub downloaded: u64,
-    pub download_rate: u64,
+    pub download_rate: f64,
     pub uploaded: u64,
-    pub upload_rate: u64,
+    pub upload_rate: f64,
     pub size: u64,
     pub info_hash: InfoHash,
-    pub have_info: bool,
     pub bitfield: Vec<u8>,
     pub connected_peers: u8,
     pub downloading_from: u8,

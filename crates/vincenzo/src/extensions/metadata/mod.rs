@@ -23,7 +23,7 @@ use super::super::error;
 pub struct Metadata {
     pub msg_type: MetadataMsgType,
     pub piece: u64,
-    pub total_size: Option<u64>,
+    pub total_size: Option<usize>,
     pub payload: Vec<u8>,
 }
 
@@ -77,7 +77,7 @@ impl Metadata {
         let metadata = Self {
             msg_type: MetadataMsgType::Response,
             piece,
-            total_size: Some(info.len() as u64),
+            total_size: Some(info.len()),
             payload: info.to_vec(),
         };
 
@@ -140,7 +140,7 @@ impl FromBencode for Metadata {
                         u64::decode_bencode_object(value).context("piece")?;
                 }
                 (b"total_size", value) => {
-                    total_size = u64::decode_bencode_object(value)
+                    total_size = usize::decode_bencode_object(value)
                         .context("total_size")
                         .map(Some)?;
                 }
@@ -342,7 +342,7 @@ mod tests {
             ])
         );
         assert_eq!(info.file_length, Some(911629679));
-        assert_eq!(info.metadata_size, None);
+        assert_eq!(info.metadata_size(), None);
         assert_eq!(info.source, Some("nyaa.si".to_string()));
 
         println!("{info:?}");

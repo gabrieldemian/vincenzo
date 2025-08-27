@@ -5,7 +5,14 @@ pub fn to_human_readable(mut n: f64) -> String {
     let delimiter = 1000_f64;
 
     if n < delimiter {
-        return format!("{:.2} {}", n, "B");
+        // for bytes, format without trailing zeros
+        if n.fract() == 0.0 {
+            return format!("{:.0} {}", n, units[0]);
+        } else {
+            let formatted = format!("{:.2}", n);
+            let trimmed = formatted.trim_end_matches('0').trim_end_matches('.');
+            return format!("{} {}", trimmed, units[0]);
+        }
     }
 
     let mut u: i32 = 0;
@@ -16,7 +23,10 @@ pub fn to_human_readable(mut n: f64) -> String {
         u += 1;
     }
 
-    format!("{:.2} {}", n, units[u as usize])
+    // for larger units, format with 2 decimal places but remove trailing zeros
+    let formatted = format!("{:.2}", n);
+    let trimmed = formatted.trim_end_matches('0').trim_end_matches('.');
+    format!("{} {}", trimmed, units[u as usize])
 }
 
 /// Round to significant digits (rather than digits after the decimal).
@@ -26,7 +36,7 @@ pub fn to_human_readable(mut n: f64) -> String {
 /// floats, convert to `f64` for this function and back as needed.
 ///
 /// Examples:
-/// ```
+/// ```ignore
 ///   precision_f64(1.2300, 2)                      // 1.2<f64>
 ///   precision_f64(1.2300_f64, 2)                  // 1.2<f64>
 ///   precision_f64(1.2300_f32 as f64, 2)           // 1.2<f64>
@@ -50,6 +60,9 @@ mod tests {
     #[test]
     pub fn readable_size() {
         let n = 1.0;
+        assert_eq!(to_human_readable(n), "1 B");
+
+        let n = 1.000;
         assert_eq!(to_human_readable(n), "1 B");
 
         let n = 740.0;

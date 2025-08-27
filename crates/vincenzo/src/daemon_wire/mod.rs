@@ -306,7 +306,7 @@ mod tests {
             },
             status: TorrentStatus::Downloading,
             downloaded: 999,
-            download_rate: 111,
+            download_rate: 111.0,
             uploaded: 44,
             size: 9,
             info_hash: [0u8; 20].into(),

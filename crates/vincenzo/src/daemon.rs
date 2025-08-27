@@ -52,6 +52,7 @@ pub struct Daemon {
     pub disk_tx: mpsc::Sender<DiskMsg>,
     pub ctx: Arc<DaemonCtx>,
     pub torrent_ctxs: HashMap<InfoHash, Arc<TorrentCtx>>,
+    pub metadata_sizes: HashMap<InfoHash, Option<usize>>,
 
     /// Connected peers of all torrents
     connected_peers: u32,
@@ -80,6 +81,9 @@ pub enum DaemonMsg {
     NewTorrent(magnet_url::Magnet),
 
     GetConnectedPeers(oneshot::Sender<u32>),
+    GetMetadataSize(oneshot::Sender<Option<usize>>, InfoHash),
+    SetMetadataSize(usize, InfoHash),
+
     GetTorrentCtx(oneshot::Sender<Option<Arc<TorrentCtx>>>, InfoHash),
     IncrementConnectedPeers,
     DecrementConnectedPeers,
@@ -119,6 +123,7 @@ impl Daemon {
 
         Self {
             connected_peers: 0,
+            metadata_sizes: HashMap::default(),
             disk_tx,
             rx,
             local_peer_handle: None,
@@ -155,7 +160,10 @@ impl Daemon {
                         let daemon_ctx = daemon_ctx.clone();
 
                         spawn(async move {
-                            Torrent::start_and_run_inbound_peer(daemon_ctx, socket)
+                            Torrent::start_and_run_inbound_peer(
+                                daemon_ctx,
+                                socket,
+                            )
                             .await?;
 
                             Ok::<(), Error>(())
@@ -304,9 +312,21 @@ impl Daemon {
                 // Listen to internal mpsc messages
                 Some(msg) = self.rx.recv() => {
                     match msg {
-                        DaemonMsg::GetTorrentCtx(tx, info) => {
-                            let ctx = self.torrent_ctxs.get(&info).cloned();
+                        DaemonMsg::GetTorrentCtx(tx, info_hash) => {
+                            let ctx = self.torrent_ctxs.get(&info_hash).cloned();
                             let _ = tx.send(ctx);
+                        }
+                        DaemonMsg::GetMetadataSize(tx, info_hash) => {
+                            let Some(metadata_size) =
+                                self.metadata_sizes.get(&info_hash).cloned()
+                            else { continue } ;
+                            let _ = tx.send(metadata_size);
+                        }
+                        DaemonMsg::SetMetadataSize(metadata, info_hash) => {
+                            let Some(metadata_size) =
+                                self.metadata_sizes.get_mut(&info_hash)
+                            else { continue };
+                            *metadata_size = Some(metadata);
                         }
                         DaemonMsg::GetConnectedPeers(tx) => {
                             let _ = tx.send(self.connected_peers);
@@ -364,7 +384,7 @@ impl Daemon {
                                         format!(
                                             "{} - {}",
                                             to_human_readable(state.downloaded as f64),
-                                            to_human_readable(state.download_rate as f64),
+                                            state.download_rate,
                                         )
                                     }
                                     _ => state.status.into()

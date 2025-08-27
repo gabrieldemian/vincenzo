@@ -176,8 +176,7 @@ impl<'a> Page for TorrentList<'a> {
         let mut torrent_rows: Vec<ListItem> = Vec::new();
 
         for (i, state) in self.torrent_infos.iter().enumerate() {
-            let mut download_rate =
-                to_human_readable(state.download_rate as f64);
+            let mut download_rate = to_human_readable(state.download_rate);
             download_rate.push_str("/s");
 
             let name = Span::from(state.name.clone()).bold();
@@ -349,10 +348,7 @@ impl<'a> Page for TorrentList<'a> {
                         self.new_network_chart(s.info_hash.clone());
                     }
                     if let Some(chart) = self.network_charts.get_mut(i) {
-                        chart.on_tick(
-                            s.download_rate as f64,
-                            s.upload_rate as f64,
-                        );
+                        chart.on_tick(s.download_rate, s.upload_rate);
                     }
                 }
 

@@ -12,6 +12,7 @@ use std::{fmt::Debug, ops::Deref};
 use bendy::{decoding::FromBencode, encoding::ToBencode};
 use bytes::BytesMut;
 use futures::SinkExt;
+use tokio::sync::oneshot;
 use tracing::{debug, trace};
 use vincenzo_macros::Message;
 
@@ -103,15 +104,18 @@ impl ExtMsgHandler<Extended, Extension> for MsgHandler {
 
         // send ours extended msg if outbound
         if peer.state.ctx.direction == Direction::Outbound {
-            let magnet = &peer.state.ctx.torrent_ctx.magnet;
-
-            let info = peer.state.ctx.torrent_ctx.info.read().await;
-            let metadata_size = match info.metadata_size {
-                Some(size) => size,
-                None => magnet.length().unwrap_or(0),
+            let metadata_size = {
+                let (otx, orx) = oneshot::channel();
+                peer.state
+                    .ctx
+                    .torrent_ctx
+                    .tx
+                    .send(TorrentMsg::GetMetadataSize(otx))
+                    .await?;
+                orx.await?
             };
 
-            let ext = Extension::supported(Some(metadata_size)).to_bencode()?;
+            let ext = Extension::supported(metadata_size).to_bencode()?;
 
             trace!("sending my extended handshake {:?}", ext);
             let core: Core = ExtendedMessage(Extended::ID, ext).into();

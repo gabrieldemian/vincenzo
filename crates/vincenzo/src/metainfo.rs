@@ -55,15 +55,12 @@ pub struct Info {
 
     /// The torrent's source, usually the tracker's website.
     pub source: Option<String>,
-
-    // internal
-    pub metadata_size: Option<u64>,
 }
 
 impl Info {
     /// Size of the entire Info file.
-    pub fn metadata_size(&self) -> Result<u64, Error> {
-        self.to_bencode().map(|v| v.len() as u64)
+    pub fn metadata_size(&self) -> Option<usize> {
+        self.to_bencode().map(|v| v.len()).ok()
     }
 
     pub fn name(mut self, name: String) -> Self {
@@ -423,7 +420,6 @@ impl FromBencode for Info {
             name,
             piece_length,
             pieces,
-            metadata_size: None,
             source,
         })
     }
@@ -741,7 +737,6 @@ mod tests {
                     source: None,
                     cross_seed_entry: None,
                     piece_length: 16_384,
-                    metadata_size: None,
                     pieces: torrent.info.pieces.clone(),
                     name: "book".to_owned(),
                     files: Some(vec![File {
@@ -776,7 +771,6 @@ mod tests {
                 info: Info {
                     source: None,
                     cross_seed_entry: None,
-                    metadata_size: None,
                     piece_length: 262_144,
                     pieces: include_bytes!("../../../test-files/pieces.iso").to_vec(),
                     name: "debian-9.4.0-amd64-netinst.iso".to_owned(),
@@ -807,7 +801,6 @@ mod tests {
             info: Info {
                 source: None,
                 cross_seed_entry: None,
-                metadata_size: None,
                 piece_length: 262_144,
                 pieces: include_bytes!("../../../test-files/pieces.iso").to_vec(),
                 name: "debian-9.4.0-amd64-netinst.iso".to_owned(),

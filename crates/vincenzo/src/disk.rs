@@ -44,9 +44,9 @@ pub enum DiskMsg {
     /// After the client downloaded the Info from peers, this message will be
     /// sent, to create the skeleton of the torrent on disk (empty files
     /// and folders), and to add the torrent ctx.
-    NewTorrent(Arc<TorrentCtx>),
+    NewTorrent(Arc<TorrentCtx>, Info),
 
-    MetadataSize(InfoHash, u64),
+    MetadataSize(InfoHash, usize),
 
     /// The Peer does not have an ID until the handshake, when that happens,
     /// this message will be sent immediately to add the peer context.
@@ -305,7 +305,7 @@ impl Disk {
                                 &info_hash,
                             ) { continue };
 
-                            let pieces = size.div_ceil(BLOCK_LEN as u64) as usize;
+                            let pieces = size.div_ceil(BLOCK_LEN as usize);
                             info!("meta pieces {pieces}");
 
                             let pieces =
@@ -324,8 +324,8 @@ impl Disk {
                             trace!("delete_peer {addr:?}");
                             self.delete_peer(addr);
                         }
-                        DiskMsg::NewTorrent(torrent) => {
-                            let _ = self.new_torrent(torrent).await;
+                        DiskMsg::NewTorrent(torrent, info) => {
+                            let _ = self.new_torrent(torrent, info).await;
                         }
                         DiskMsg::ReadBlock { block_info, recipient, info_hash } => {
                             trace!("read_block");
@@ -447,14 +447,13 @@ impl Disk {
     }
 
     /// Initialize necessary data.
+    /// Should be called after torrent has the info downloaded.
     pub async fn new_torrent(
         &mut self,
         torrent_ctx: Arc<TorrentCtx>,
+        info: Info,
     ) -> Result<(), Error> {
         let info_hash = &torrent_ctx.info_hash;
-        let info_ = torrent_ctx.info.read().await;
-        let info = info_.clone();
-        drop(info_);
 
         let total_size = info.get_size();
         let piece_length = info.piece_length as u64;
@@ -936,16 +935,12 @@ impl Disk {
         let b = index * 20;
         let e = b + 20;
 
-        let pieces = &self
-            .torrent_ctxs
+        let info = self
+            .torrent_info
             .get(info_hash)
-            .ok_or(Error::TorrentDoesNotExist)?
-            .info
-            .read()
-            .await
-            .pieces;
+            .ok_or(Error::TorrentDoesNotExist)?;
 
-        let hash_from_info = pieces[b..e].to_owned();
+        let hash_from_info = info.pieces[b..e].to_owned();
 
         let blocks = self
             .block_cache
@@ -1127,7 +1122,7 @@ mod tests {
     use rand::{distr::Alphanumeric, Rng};
     use std::net::{Ipv4Addr, SocketAddrV4};
     use tokio::{
-        sync::{broadcast, Mutex, RwLock},
+        sync::{broadcast, Mutex},
         time::Instant,
     };
     use tokio_util::codec::Framed;
@@ -1233,7 +1228,7 @@ mod tests {
             pieces.extend(hash);
         }
 
-        let mut info = Info {
+        let info = Info {
             source: None,
             cross_seed_entry: None,
             piece_length: BLOCK_LEN,
@@ -1241,17 +1236,14 @@ mod tests {
             name: torrent_dir.clone(),
             file_length: None,
             files: Some(files.clone()),
-            metadata_size: None,
         };
 
         let pieces_len = info.pieces();
 
         let info_hash = magnet.parse_xt_infohash();
 
-        let metadata_size = info.metadata_size()?;
-        info.metadata_size = Some(metadata_size);
+        let metadata_size = info.metadata_size();
 
-        let info = RwLock::new(info);
         let (btx, _brx) = broadcast::channel::<PeerBrMsg>(500);
 
         let torrent_ctx = Arc::new(TorrentCtx {
@@ -1261,7 +1253,6 @@ mod tests {
             tx: torrent_tx,
             magnet: magnet.clone(),
             info_hash: info_hash.clone(),
-            info,
         });
 
         let (peer_tx, peer_rx) = mpsc::channel::<PeerMsg>(100);
@@ -1303,6 +1294,7 @@ mod tests {
 
         let mut torrent = Torrent {
             state: Connected {
+                info: Some(info.clone()),
                 peer_pieces: HashMap::from([(peer_ctx_.id.clone(), pieces)]),
                 size: 0,
                 counter: Counter::new(),
@@ -1322,7 +1314,6 @@ mod tests {
                 }),
                 metadata_size,
                 connected_peers: vec![peer_ctx.clone()],
-                have_info: true,
                 info_pieces: BTreeMap::new(),
             },
             ctx: torrent_ctx.clone(),
@@ -1333,7 +1324,7 @@ mod tests {
         };
 
         disk.new_peer(peer_ctx.clone());
-        disk.new_torrent(torrent_ctx).await?;
+        disk.new_torrent(torrent_ctx, info.clone()).await?;
 
         spawn(async move {
             let _ = disk.run().await;

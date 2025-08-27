@@ -40,7 +40,7 @@ pub struct Extension {
     /// added by Metadata protocol, BEP 0009
     /// the size of the metadata file, which is the
     /// info-dictionary part of the metainfo(.torrent) file
-    pub metadata_size: Option<u64>,
+    pub metadata_size: Option<usize>,
     // todo: implement these
     // pub upload_only: Option<u8>,
     // pub yourip: Option<u8>,
@@ -88,7 +88,7 @@ impl TryInto<Vec<u8>> for Extension {
 
 impl Extension {
     /// Extensions that the client supports
-    pub fn supported(metadata_size: Option<u64>) -> Self {
+    pub fn supported(metadata_size: Option<usize>) -> Self {
         let m = M {
             ut_metadata: Some(Metadata::ID),
             // ut_pex: None,
@@ -262,7 +262,7 @@ impl FromBencode for Extension {
                     m = M::decode_bencode_object(value).context("m")?
                 }
                 (b"metadata_size", value) => {
-                    metadata_size = u64::decode_bencode_object(value)
+                    metadata_size = usize::decode_bencode_object(value)
                         .context("metadata_size")
                         .map(Some)?;
                 }

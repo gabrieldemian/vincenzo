@@ -1,28 +1,29 @@
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::{
+    sync::atomic::{AtomicU64, Ordering},
+    time::{SystemTime, UNIX_EPOCH},
+};
 
-use tokio::{sync::Mutex, time::Instant};
+use crate::utils::to_human_readable;
 
 /// Exponential Moving Average (EMA) smoothing factor
 /// Higher values = more responsive to changes, lower values = smoother
 static EMA_ALPHA: f64 = 0.3;
 
+static EMA_ALPHA_COMPLIMENT: f64 = 0.7; // 1.0 - 0.3
+
 /// Counter of rates, used in downloaded and uploaded.
 #[derive(Debug)]
 pub struct Counter {
-    // -- cumulative counters --
-    pub total_downloaded: AtomicU64,
-    pub total_uploaded: AtomicU64,
+    total_downloaded: AtomicU64,
+    total_uploaded: AtomicU64,
 
-    // -- rate calculation --
-    pub download_rate: AtomicU64,
-    pub upload_rate: AtomicU64,
-
-    // -- internal state --
     window_downloaded: AtomicU64,
     window_uploaded: AtomicU64,
-    last_update: Mutex<Instant>,
-    ema_download: Mutex<f64>,
-    ema_upload: Mutex<f64>,
+
+    ema_download: AtomicU64,
+    ema_upload: AtomicU64,
+
+    last_update: AtomicU64,
 }
 
 impl Default for Counter {
@@ -30,13 +31,16 @@ impl Default for Counter {
         Self {
             total_downloaded: AtomicU64::new(0),
             total_uploaded: AtomicU64::new(0),
-            download_rate: AtomicU64::new(0),
-            upload_rate: AtomicU64::new(0),
             window_downloaded: AtomicU64::new(0),
             window_uploaded: AtomicU64::new(0),
-            last_update: Mutex::new(Instant::now()),
-            ema_download: Mutex::new(0.0),
-            ema_upload: Mutex::new(0.0),
+            last_update: AtomicU64::new(
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as u64,
+            ),
+            ema_download: AtomicU64::new(0.0f64.to_bits()),
+            ema_upload: AtomicU64::new(0.0f64.to_bits()),
         }
     }
 }
@@ -58,95 +62,143 @@ impl Counter {
         self.window_uploaded.fetch_add(bytes, Ordering::Relaxed);
     }
 
-    /// Update rates with EMA smoothing
-    pub async fn update_rates(&self) {
-        let now = Instant::now();
-        let mut last_update = self.last_update.lock().await;
-        let elapsed = now.duration_since(*last_update).as_secs_f64();
+    pub fn download_rate_f64(&self) -> f64 {
+        let bits = self.ema_download.load(Ordering::Relaxed);
+        f64::from_bits(bits)
+    }
 
-        if elapsed < 0.001 {
-            // Minimum 1ms elapsed
+    pub fn upload_rate_f64(&self) -> f64 {
+        let bits = self.ema_upload.load(Ordering::Relaxed);
+        f64::from_bits(bits)
+    }
+
+    pub fn download_rate_u64(&self) -> u64 {
+        self.ema_download.load(Ordering::Relaxed)
+    }
+
+    pub fn total_download(&self) -> u64 {
+        self.ema_download.load(Ordering::Relaxed)
+    }
+
+    pub fn total_upload(&self) -> u64 {
+        self.ema_upload.load(Ordering::Relaxed)
+    }
+
+    pub fn upload_rate_u64(&self) -> u64 {
+        self.ema_upload.load(Ordering::Relaxed)
+    }
+
+    pub fn download_rate(&self) -> String {
+        let mut v = to_human_readable(self.download_rate_f64());
+        v.push_str("/s");
+        v
+    }
+
+    pub fn upload_rate(&self) -> String {
+        let mut v = to_human_readable(self.upload_rate_f64());
+        v.push_str("/s");
+        v
+    }
+
+    /// Update rates with EMA smoothing
+    pub fn update_rates(&self) {
+        let now =
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis()
+                as u64;
+
+        let last = self.last_update.load(Ordering::Acquire);
+        let elapsed_ms = now - last;
+
+        if elapsed_ms < 1 {
             return;
         }
 
-        // Get and reset window counters
+        let elapsed = elapsed_ms as f64 / 1000.0;
+        self.last_update.store(now, Ordering::Release);
+
         let downloaded = self.window_downloaded.swap(0, Ordering::Relaxed);
         let uploaded = self.window_uploaded.swap(0, Ordering::Relaxed);
 
-        // Calculate instantaneous rates
         let dl_rate = downloaded as f64 / elapsed;
         let ul_rate = uploaded as f64 / elapsed;
 
-        // Apply EMA smoothing
-        let mut ema_dl = self.ema_download.lock().await;
-        let mut ema_ul = self.ema_upload.lock().await;
+        let ema_dl_bits = self.ema_download.load(Ordering::Relaxed);
+        let current_ema_dl = f64::from_bits(ema_dl_bits);
 
-        *ema_dl = if *ema_dl == 0.0 {
+        let new_ema_dl = if current_ema_dl == 0.0 {
             dl_rate
         } else {
-            EMA_ALPHA * dl_rate + (1.0 - EMA_ALPHA) * *ema_dl
+            EMA_ALPHA * dl_rate + EMA_ALPHA_COMPLIMENT * current_ema_dl
         };
 
-        *ema_ul = if *ema_ul == 0.0 {
+        self.ema_download.store(new_ema_dl.to_bits(), Ordering::Release);
+
+        let ema_ul_bits = self.ema_upload.load(Ordering::Relaxed);
+        let current_ema_ul = f64::from_bits(ema_ul_bits);
+
+        let new_ema_ul = if current_ema_ul == 0.0 {
             ul_rate
         } else {
-            EMA_ALPHA * ul_rate + (1.0 - EMA_ALPHA) * *ema_ul
+            EMA_ALPHA * ul_rate + EMA_ALPHA_COMPLIMENT * current_ema_ul
         };
 
-        // Store rates as integers (bytes/sec)
-        self.download_rate.store(*ema_dl as u64, Ordering::Relaxed);
-        self.upload_rate.store(*ema_ul as u64, Ordering::Relaxed);
-
-        *last_update = now;
+        self.ema_upload.store(new_ema_ul.to_bits(), Ordering::Release);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
-    use tokio::time;
 
-    #[tokio::test]
-    async fn test_counter_rates() {
+    #[test]
+    fn get_download_rate_f64() {
+        let counter = Counter::default();
+
+        counter.ema_download.store(1234.56f64.to_bits(), Ordering::Relaxed);
+        assert!((counter.download_rate_f64() - 1234.56).abs() < f64::EPSILON);
+
+        counter.ema_download.store(0.0f64.to_bits(), Ordering::Relaxed);
+        assert_eq!(counter.download_rate_f64(), 0.0);
+    }
+
+    #[test]
+    fn total_counters() {
         let counter = Counter::new();
 
-        // Record initial downloads/uploads
         counter.record_download(1000);
         counter.record_upload(500);
-
-        // First update: should set EMA to first instantaneous rate
-        time::sleep(Duration::from_millis(100)).await;
-        counter.update_rates().await;
-
-        // Verify first EMA rates (≈10,000 DL, ≈5,000 UL)
-        let dl1 = counter.download_rate.load(Ordering::Relaxed);
-        let ul1 = counter.upload_rate.load(Ordering::Relaxed);
-        assert!((9000..=11000).contains(&dl1)); // ≈10,000 ±10%
-        assert!((4500..=5500).contains(&ul1)); // ≈5,000 ±10%
-
-        // Second window: same data as first
-        counter.record_download(1000);
-        counter.record_upload(500);
-        time::sleep(Duration::from_millis(100)).await;
-        counter.update_rates().await;
-
-        // EMA should stabilize near initial rate
-        let dl2 = counter.download_rate.load(Ordering::Relaxed);
-        let ul2 = counter.upload_rate.load(Ordering::Relaxed);
-        assert!((dl2 as i64 - dl1 as i64).abs() < 1000); // <10% change
-        assert!((ul2 as i64 - ul1 as i64).abs() < 500); // <10% change
-
-        // Third window: double the data
         counter.record_download(2000);
         counter.record_upload(1000);
-        time::sleep(Duration::from_millis(100)).await;
-        counter.update_rates().await;
 
-        // Verify EMA reacts to change (DL≈13,000, UL≈6,500)
-        let dl3 = counter.download_rate.load(Ordering::Relaxed);
-        let ul3 = counter.upload_rate.load(Ordering::Relaxed);
-        assert!((11700..=14300).contains(&dl3)); // ≈13,000 ±10%
-        assert!((5850..=7150).contains(&ul3)); // ≈6,500 ±10%
+        assert_eq!(counter.total_downloaded.load(Ordering::Relaxed), 3000);
+        assert_eq!(counter.total_uploaded.load(Ordering::Relaxed), 1500);
+    }
+
+    #[test]
+    fn format_rate() {
+        let counter = Counter::default();
+
+        counter.ema_download.store(500.000f64.to_bits(), Ordering::Relaxed);
+        assert_eq!(counter.download_rate(), "500 B/s");
+
+        counter.ema_download.store(1500.0f64.to_bits(), Ordering::Relaxed);
+        assert_eq!(counter.download_rate(), "1.5 KB/s");
+
+        counter.ema_download.store(2_380_000.0f64.to_bits(), Ordering::Relaxed);
+        assert_eq!(counter.download_rate(), "2.38 MB/s");
+
+        counter
+            .ema_download
+            .store(2_330_000_000.0f64.to_bits(), Ordering::Relaxed);
+        assert_eq!(counter.download_rate(), "2.33 GB/s");
+
+        counter.ema_download.store(1000.0f64.to_bits(), Ordering::Relaxed);
+        assert_eq!(counter.download_rate(), "1 KB/s");
+
+        counter.ema_download.store(0.0f64.to_bits(), Ordering::Relaxed);
+        assert_eq!(counter.download_rate(), "0 B/s");
+
+        counter.ema_download.store(0.9f64.to_bits(), Ordering::Relaxed);
+        assert_eq!(counter.download_rate(), "0.9 B/s");
     }
 }
