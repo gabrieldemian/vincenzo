@@ -545,15 +545,6 @@ impl Torrent<Connected> {
                             let bytes = self.state.info_pieces.get(&index).cloned();
                             let _ = recipient.send(bytes);
                         }
-                        TorrentMsg::IncrementDownloaded(downloaded) => {
-                            if self.status == TorrentStatus::Seeding {
-                                continue;
-                            };
-                            self.state.counter.record_download(downloaded);
-                        }
-                        TorrentMsg::IncrementUploaded(uploaded) => {
-                            self.state.counter.record_upload(uploaded);
-                        }
                         TorrentMsg::TogglePause => {
                             if self.status != TorrentStatus::Downloading
                                ||
@@ -613,14 +604,18 @@ impl Torrent<Connected> {
                 }
                 _ = heartbeat_interval.tick(), if self.have_info() => {
                     for peer in &self.state.connected_peers {
-                        peer.counter.update_rates();
-                    }
+                        let uploaded = peer.counter.window_uploaded_u64();
+                        let downloaded = peer.counter.window_downloaded_u64();
 
+                        peer.counter.update_rates();
+
+                        self.state.counter.record_upload(uploaded);
+                        self.state.counter.record_download(downloaded);
+                    }
                     self.state.counter.update_rates();
 
                     let downloaded =
-                        self.state.counter.total_download()
-                        .min(self.state.size);
+                        self.state.counter.total_download() .min(self.state.size);
                     let uploaded = self.state.counter.total_upload();
                     let download_rate = self.state.counter.download_rate_f64();
                     let upload_rate = self.state.counter.upload_rate_f64();
@@ -687,20 +682,21 @@ impl Torrent<Connected> {
                     }
                 }
                 // for the unchoke interval, the local client is interested in the best
-                // uploaders (from our perspctive) (tit-for-tat) which gives us the most bytes out of the other
+                // uploaders (from our perspctive) (tit-for-tat)
+                // which gives us the most bytes out of the other
                 _ = unchoke_interval.tick() => {
                     trace!("unchoke_interval");
-                    let best_uploaders = self.get_best_interested_uploaders(3);
+                    let best = self.get_best_interested_downloaders(3);
 
                     // choke peers no longer in top 3
                     for peer in &self.state.unchoked_peers {
-                        if !best_uploaders.iter().any(|p| p.id == peer.id) {
+                        if !best.iter().any(|p| p.id == peer.id) {
                             trace!("choking peer {:?}", peer.id);
                             let _ = peer.tx.send(PeerMsg::Choke).await;
                         }
                     }
 
-                    for uploader in &best_uploaders {
+                    for uploader in &best {
                         if !self.state.unchoked_peers.iter().any(|p| p.id == uploader.id) {
                             trace!("unchoking peer {:?}", uploader.id);
 
@@ -782,6 +778,7 @@ impl Torrent<Connected> {
         );
 
         let metadata_size = self.state.metadata_size;
+        let have_info = self.state.info.is_some();
 
         for peer in self.state.idle_peers.iter().take(to_request).cloned() {
             let ctx = ctx.clone();
@@ -794,15 +791,25 @@ impl Torrent<Connected> {
                     .await
                 {
                     Ok(Ok(socket)) => {
-                        if let Err(e) = Self::start_and_run_outbound_peer(
-                            daemon_ctx.clone(),
-                            socket,
-                            torrent_ctx.clone(),
-                            metadata_size,
-                        )
-                        .await
-                        {
-                            warn!("error with peer: {:?} {e:?}", peer);
+                        let idle_peer = Peer::<peer::Idle>::new();
+
+                        let mut connected_peer = idle_peer
+                            .outbound_handshake(
+                                socket,
+                                daemon_ctx,
+                                torrent_ctx,
+                                metadata_size,
+                            )
+                            .await?;
+
+                        connected_peer.state.have_info = have_info;
+
+                        if let Err(r) = connected_peer.run().await {
+                            warn!(
+                                "{} peer loop stopped due to an error: {r:?}",
+                                connected_peer.state.ctx.remote_addr
+                            );
+                            connected_peer.free_pending_blocks();
                             ctx.tx.send(TorrentMsg::PeerError(peer)).await?;
                             // match e {
                             // Error::PeerClosedSocket
@@ -813,7 +820,8 @@ impl Torrent<Connected> {
                             // }
                             // _ => {}
                             // }
-                        };
+                            return Err(r);
+                        }
                     }
                     Ok(Err(e)) => {
                         warn!("connection fin with peer: {} {e}", peer);
@@ -828,49 +836,6 @@ impl Torrent<Connected> {
         }
 
         Ok(())
-    }
-
-    pub async fn start_and_run_outbound_peer(
-        daemon_ctx: Arc<DaemonCtx>,
-        socket: TcpStream,
-        torrent_ctx: Arc<TorrentCtx>,
-        metadata_size: Option<usize>,
-    ) -> Result<Peer<peer::Connected>, Error> {
-        let idle_peer = Peer::<peer::Idle>::new();
-
-        let mut connected_peer = idle_peer
-            .outbound_handshake(socket, daemon_ctx, torrent_ctx, metadata_size)
-            .await?;
-
-        if let Err(r) = connected_peer.run().await {
-            warn!(
-                "{} peer loop stopped due to an error: {r:?}",
-                connected_peer.state.ctx.remote_addr
-            );
-            connected_peer.free_pending_blocks();
-            return Err(r);
-        }
-        Ok(connected_peer)
-    }
-
-    pub async fn start_and_run_inbound_peer(
-        daemon_ctx: Arc<DaemonCtx>,
-        socket: TcpStream,
-    ) -> Result<Peer<peer::Connected>, Error> {
-        let idle_peer = Peer::<peer::Idle>::new();
-
-        let mut connected_peer =
-            idle_peer.inbound_handshake(socket, daemon_ctx).await?;
-
-        if let Err(r) = connected_peer.run().await {
-            warn!(
-                "{} peer loop stopped due to an error: {r:?}",
-                connected_peer.state.ctx.remote_addr
-            );
-            connected_peer.free_pending_blocks();
-            return Err(r);
-        }
-        Ok(connected_peer)
     }
 
     /// Get the best n downloaders.

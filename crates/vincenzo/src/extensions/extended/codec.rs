@@ -3,7 +3,7 @@
 
 use crate::{
     error::Error,
-    extensions::{Core, ExtMsg, ExtMsgHandler, ExtendedMessage, MetadataData},
+    extensions::{ExtMsg, ExtMsgHandler, ExtendedMessage, MetadataData},
     peer::{self, Direction, MsgHandler, DEFAULT_REQUEST_QUEUE_LEN},
     torrent::TorrentMsg,
 };
@@ -11,7 +11,6 @@ use std::{fmt::Debug, ops::Deref};
 
 use bendy::{decoding::FromBencode, encoding::ToBencode};
 use bytes::BytesMut;
-use futures::SinkExt;
 use tokio::sync::oneshot;
 use tracing::{debug, trace};
 use vincenzo_macros::Message;
@@ -118,9 +117,7 @@ impl ExtMsgHandler<Extended, Extension> for MsgHandler {
             let ext = Extension::supported(metadata_size).to_bencode()?;
 
             trace!("sending my extended handshake {:?}", ext);
-            let core: Core = ExtendedMessage(Extended::ID, ext).into();
-
-            peer.state.sink.send(core).await?;
+            peer.feed(ExtendedMessage(Extended::ID, ext).into()).await?;
         }
 
         // the max number of block_infos to request

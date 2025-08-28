@@ -29,7 +29,7 @@ use crate::{
     disk::{DiskMsg, ReturnToDisk},
     error::Error,
     magnet::Magnet,
-    peer::PeerId,
+    peer::{self, Peer, PeerId},
     torrent::{
         InfoHash, Torrent, TorrentCtx, TorrentMsg, TorrentState, TorrentStatus,
     },
@@ -160,11 +160,19 @@ impl Daemon {
                         let daemon_ctx = daemon_ctx.clone();
 
                         spawn(async move {
-                            Torrent::start_and_run_inbound_peer(
-                                daemon_ctx,
-                                socket,
-                            )
-                            .await?;
+                            let idle_peer = Peer::<peer::Idle>::new();
+
+                            let mut connected_peer =
+                                idle_peer.inbound_handshake(socket, daemon_ctx).await?;
+
+                            if let Err(r) = connected_peer.run().await {
+                                warn!(
+                                    "{} peer loop stopped due to an error: {r:?}",
+                                    connected_peer.state.ctx.remote_addr
+                                );
+                                connected_peer.free_pending_blocks();
+                                return Err(r);
+                            }
 
                             Ok::<(), Error>(())
                         });

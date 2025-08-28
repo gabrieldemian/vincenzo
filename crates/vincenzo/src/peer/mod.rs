@@ -102,7 +102,7 @@ impl Peer<Connected> {
                     bitfield.count_ones()
                 );
 
-                self.state.sink.send(Core::Bitfield(bitfield)).await?;
+                self.feed(Core::Bitfield(bitfield)).await?;
             }
         }
 
@@ -128,20 +128,20 @@ impl Peer<Connected> {
                     self.rerequest_metadata().await?;
                 }
                 _ = block_interval.tick(), if self.can_request() => {
-                    self.request_blocks().await?;
+                    if !self.state.in_endgame {
+                        self.request_blocks().await?;
+                    }
                     self.rerequest_blocks().await?;
                 }
                 _ = interested_interval.tick(), if !self.state.seed_only && !self.state.is_paused => {
 
                     if !self.state.ctx.peer_choking.load(Ordering::Relaxed) {
                         tracing::info!(
-                            "a {:?} b {:?} p {} tout {:?} avg {:?} l {:?}",
-                            self.state.req_man_block.get_available_request_len(),
+                            "b {:?} p {} tout {:?} avg {:?}",
                             self.state.req_man_block.len(),
                             self.state.req_man_block.len_pieces(),
                             self.state.req_man_block.get_timeout(),
                             self.state.req_man_block.get_avg(),
-                            self.state.req_man_block.last_response(),
                         );
                     }
                     let (otx, orx) = oneshot::channel();
@@ -160,7 +160,7 @@ impl Peer<Connected> {
                         debug!("> interested");
                         self.state.ctx.am_interested.store(true, Ordering::Relaxed);
                         self.state_log[1] = 'i';
-                        self.state.sink.send(Core::Interested).await?;
+                        self.send(Core::Interested).await?;
                     }
 
                     // sorry, you're not the problem, it's me.
@@ -171,72 +171,11 @@ impl Peer<Connected> {
                         debug!("> not_interested");
                         self.state.ctx.am_interested.store(false, Ordering::Relaxed);
                         self.state_log[1] = '-';
-                        self.state.sink.send(Core::NotInterested).await?;
+                        self.send(Core::NotInterested).await?;
                     }
                 }
                 _ = keep_alive_interval.tick() => {
-                    self.state.sink.send(Core::KeepAlive).await?;
-                }
-                Ok(msg) = brx.recv() => {
-                    match msg {
-                        PeerBrMsg::NewPeer(ctx) => {
-                            if self.state.in_endgame {
-                                let blocks = self.state.req_man_block.get_requests();
-                                let _ = ctx.tx.send(PeerMsg::Blocks(blocks)).await;
-                            }
-                        }
-                        PeerBrMsg::Endgame(blocks) => {
-                            self.start_endgame().await;
-                            for block in blocks.into_values().flatten() {
-                                self
-                                    .state
-                                    .req_man_block
-                                    .add_request(block.clone());
-                            }
-                        }
-                        PeerBrMsg::Request(blocks) => {
-                            for block in blocks.into_values().flatten() {
-                                self
-                                    .state
-                                    .req_man_block
-                                    .add_request(block.clone());
-                            }
-                        }
-                        PeerBrMsg::Cancel { block_info, ..} => {
-                            if self.state.req_man_block.remove_request(&block_info) {
-                                self.state.sink.send(Core::Cancel(block_info)).await?;
-                            }
-                        }
-                        PeerBrMsg::HavePiece(piece) => {
-                            self.state.sink.send(Core::Have(piece)).await?;
-                        }
-                        PeerBrMsg::Pause => {
-                            debug!("pause");
-                            self.state.is_paused = true;
-                            self.state.ctx.tx.send(PeerMsg::Choke).await?;
-                            self.state.ctx.tx.send(PeerMsg::NotInterested).await?;
-                        }
-                        PeerBrMsg::Resume => {
-                            debug!("resume");
-                            self.state.is_paused = false;
-                        }
-                        PeerBrMsg::Seedonly => {
-                            debug!("seed_only");
-                            self.state.seed_only = true;
-                            self.state.ctx.tx.send(PeerMsg::Unchoke).await?;
-                            self.state.req_man_meta.clear();
-                            self.state.req_man_block.clear();
-                        }
-                        PeerBrMsg::Quit => {
-                            debug!("quit");
-                            return Ok(());
-                        }
-                        PeerBrMsg::HaveInfo => {
-                            debug!("have_info");
-                            self.state.have_info = true;
-                            self.state.req_man_meta.clear();
-                        }
-                    }
+                    self.send(Core::KeepAlive).await?;
                 }
                 Some(Ok(msg)) = self.state.stream.next() => {
                     match msg {
@@ -270,6 +209,61 @@ impl Peer<Connected> {
                         }
                     }
                 }
+                Ok(msg) = brx.recv() => {
+                    match msg {
+                        PeerBrMsg::NewPeer(ctx) => {
+                            if self.state.in_endgame {
+                                let blocks = self.state.req_man_block.get_requests();
+                                let _ = ctx.tx.send(PeerMsg::Blocks(blocks)).await;
+                            }
+                        }
+                        PeerBrMsg::Endgame(blocks) => {
+                            self.start_endgame().await;
+                            self.state
+                                .req_man_block
+                                .extend(blocks);
+                        }
+                        PeerBrMsg::Request(blocks) => {
+                            self.state
+                                .req_man_block
+                                .extend(blocks);
+                        }
+                        PeerBrMsg::Cancel(block_info) => {
+                            if self.state.req_man_block.remove_request(&block_info) {
+                                self.send(Core::Cancel(block_info)).await?;
+                            }
+                        }
+                        PeerBrMsg::HavePiece(piece) => {
+                            self.send(Core::Have(piece)).await?;
+                        }
+                        PeerBrMsg::Pause => {
+                            debug!("pause");
+                            self.state.is_paused = true;
+                            self.state.ctx.tx.send(PeerMsg::Choke).await?;
+                            self.state.ctx.tx.send(PeerMsg::NotInterested).await?;
+                        }
+                        PeerBrMsg::Resume => {
+                            debug!("resume");
+                            self.state.is_paused = false;
+                        }
+                        PeerBrMsg::Seedonly => {
+                            debug!("seed_only");
+                            self.state.seed_only = true;
+                            self.state.ctx.tx.send(PeerMsg::Unchoke).await?;
+                            self.state.req_man_meta.clear();
+                            self.state.req_man_block.clear();
+                        }
+                        PeerBrMsg::Quit => {
+                            debug!("quit");
+                            return Ok(());
+                        }
+                        PeerBrMsg::HaveInfo => {
+                            debug!("have_info");
+                            self.state.have_info = true;
+                            self.state.req_man_meta.clear();
+                        }
+                    }
+                }
                 Some(msg) = self.state.rx.recv() => {
                     match msg {
                         PeerMsg::Blocks(blocks) => {
@@ -279,25 +273,25 @@ impl Peer<Connected> {
                             debug!("> not_interested");
                             self.state.ctx.am_interested.store(false, Ordering::Relaxed);
                             self.state_log[1] = '-';
-                            self.state.sink.send(Core::NotInterested).await?;
+                            self.send(Core::NotInterested).await?;
                         }
                         PeerMsg::Interested => {
                             debug!("> interested");
                             self.state.ctx.am_interested.store(true, Ordering::Relaxed);
                             self.state_log[1] = 'i';
-                            self.state.sink.send(Core::Interested).await?;
+                            self.send(Core::Interested).await?;
                         }
                         PeerMsg::Choke => {
                             debug!("> choke");
                             self.state.ctx.am_choking.store(true, Ordering::Relaxed);
                             self.state_log[0] = '-';
-                            self.state.sink.send(Core::Choke).await?;
+                            self.send(Core::Choke).await?;
                         }
                         PeerMsg::Unchoke => {
                             debug!("> unchoke");
                             self.state.ctx.am_choking.store(false, Ordering::Relaxed);
                             self.state_log[0] = 'u';
-                            self.state.sink.send(Core::Unchoke).await?;
+                            self.send(Core::Unchoke).await?;
                         }
                     }
                 }
@@ -320,7 +314,6 @@ impl Peer<Connected> {
 
         am_interested
             && !peer_choking
-            && !self.state.in_endgame
             && self.state.have_info
             && have_capacity
             && !self.state.seed_only
@@ -343,6 +336,16 @@ impl Peer<Connected> {
 
         self.state.ctx.counter.record_download(block_info.len as u64);
 
+        // if in endgame, send cancels to all other peers
+        if self.state.in_endgame {
+            let _ = self
+                .state
+                .ctx
+                .torrent_ctx
+                .btx
+                .send(PeerBrMsg::Cancel(block_info));
+        }
+
         self.state
             .ctx
             .torrent_ctx
@@ -352,14 +355,6 @@ impl Peer<Connected> {
                 info_hash: self.state.ctx.torrent_ctx.info_hash.clone(),
             })
             .await?;
-
-        // if in endgame, send cancels to all other peers
-        if self.state.in_endgame {
-            let _ = self.state.ctx.torrent_ctx.btx.send(PeerBrMsg::Cancel {
-                from: self.state.ctx.id.clone(),
-                block_info,
-            });
-        }
 
         Ok(())
     }
@@ -422,7 +417,7 @@ impl Peer<Connected> {
 
         for block in blocks {
             if self.state.req_man_block.add_request(block.clone()) {
-                self.state.sink.feed(Core::Request(block)).await?;
+                self.feed(Core::Request(block)).await?;
             }
         }
 
@@ -440,7 +435,7 @@ impl Peer<Connected> {
 
         let is_empty = blocks.is_empty();
         for block in blocks {
-            self.state.sink.feed(Core::Request(block)).await?;
+            self.feed(Core::Request(block)).await?;
         }
 
         // todo: some peers dont resend the blocks no matter how many times we
@@ -489,9 +484,7 @@ impl Peer<Connected> {
         for piece in &pieces {
             let msg = Metadata::request(piece.0 as u64);
             let buf = msg.to_bencode()?;
-            self.state
-                .sink
-                .feed(Core::Extended(ExtendedMessage(ut_metadata, buf)))
+            self.feed(Core::Extended(ExtendedMessage(ut_metadata, buf)))
                 .await?;
         }
 
@@ -519,9 +512,7 @@ impl Peer<Connected> {
         for piece in &pieces {
             let msg = Metadata::request(piece.0 as u64);
             let buf = msg.to_bencode()?;
-            self.state
-                .sink
-                .feed(Core::Extended(ExtendedMessage(ut_metadata, buf)))
+            self.feed(Core::Extended(ExtendedMessage(ut_metadata, buf)))
                 .await?;
         }
 
@@ -537,7 +528,22 @@ impl Peer<Connected> {
     /// arrives, send Cancel messages to all other peers.
     pub async fn start_endgame(&mut self) {
         self.state.in_endgame = true;
-        let blocks = self.state.req_man_block.get_requests();
+        let blocks = self.state.req_man_block.drain();
         let _ = self.state.ctx.torrent_ctx.btx.send(PeerBrMsg::Request(blocks));
+    }
+
+    /// Send a message to sink and record upload rate, but the sink is not
+    /// flushed.
+    pub async fn feed(&mut self, core: Core) -> Result<(), Error> {
+        self.state.ctx.counter.record_upload(core.len() as u64);
+        self.state.sink.feed(core).await?;
+        Ok(())
+    }
+
+    /// Send a message to sink and record upload rate and flush.
+    pub async fn send(&mut self, core: Core) -> Result<(), Error> {
+        self.state.ctx.counter.record_upload(core.len() as u64);
+        self.state.sink.send(core).await?;
+        Ok(())
     }
 }

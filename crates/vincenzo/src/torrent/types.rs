@@ -32,10 +32,7 @@ pub enum PeerBrMsg {
 
     /// When in endgame mode, the first peer that receives this info,
     /// sends this message to send Cancel's to all other peers.
-    Cancel {
-        from: PeerId,
-        block_info: BlockInfo,
-    },
+    Cancel(BlockInfo),
 
     /// The download finished
     Seedonly,
@@ -106,9 +103,6 @@ pub enum TorrentMsg {
     /// When a peer request a piece of the info
     /// index, recipient
     RequestInfoPiece(u64, oneshot::Sender<Option<Vec<u8>>>),
-
-    IncrementDownloaded(u64),
-    IncrementUploaded(u64),
 
     /// Toggle pause torrent and send Pause/Resume message to all Peers
     TogglePause,

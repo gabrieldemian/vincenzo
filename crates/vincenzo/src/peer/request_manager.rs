@@ -24,12 +24,14 @@ pub trait Requestable =
 /// average) and a dynamic multiplier.
 pub struct RequestManager<T: Requestable> {
     timeouts: BinaryHeap<(Reverse<Instant>, T)>,
+
+    // todo: make the requests data structure generic.
     requests: BTreeMap<usize, Vec<T>>,
 
     /// Inverse index for requests
     index: HashMap<T, usize>,
 
-    /// Max amount of pending requests
+    /// Max amount of inflight pending requests
     limit: usize,
 
     /// Last 10 response times
@@ -182,8 +184,8 @@ impl<T: Requestable> RequestManager<T> {
         self.request_start_times.insert(block.clone(), Instant::now());
 
         let req_entry = self.requests.entry(i).or_default();
-        let pos = req_entry.len();
 
+        let pos = req_entry.len();
         req_entry.push(block.clone());
         self.index.insert(block.clone(), pos);
         self.timeouts.push((Reverse(timeout), block));
@@ -241,11 +243,11 @@ impl<T: Requestable> RequestManager<T> {
 
     /// Get timed out blocks without mutating the timeout.
     pub fn get_timeout_blocks(&self) -> Vec<&T> {
-        let now = Instant::now();
-
         // assume around 25% of blocks are timed out
         let mut timed_out_blocks: Vec<&T> =
             Vec::with_capacity(self.timeouts.len() / 4);
+
+        let now = Instant::now();
 
         for (timeout, block) in self.timeouts.iter().peekable() {
             if timeout.0 <= now {
@@ -391,7 +393,10 @@ mod tests {
         let mut manager = RequestManager::<BlockInfo>::new();
         let block = BlockInfo::new(0, 0, 16384);
 
-        manager.add_request(block.clone());
+        assert!(manager.add_request(block.clone()));
+        // never add duplicates
+        assert!(!manager.add_request(block.clone()));
+        assert!(!manager.add_request(block.clone()));
 
         assert_eq!(manager.requests.len(), 1);
         assert_eq!(manager.timeouts.len(), 1);
@@ -443,17 +448,30 @@ mod tests {
     }
 
     #[test]
-    fn remove_request() {
+    fn banana() {
         let mut manager = RequestManager::new();
         let block = BlockInfo::new(0, 0, 16384);
+        let block2 = BlockInfo::new(1, 0, 16384);
 
-        manager.add_request(block.clone());
+        assert!(manager.add_request(block.clone()));
+        assert!(manager.add_request(block2.clone()));
+
+        assert_eq!(manager.requests.len(), 2);
+        assert_eq!(manager.timeouts.len(), 2);
+        assert_eq!(manager.index.len(), 2);
+
+        assert!(manager.remove_request(&block));
+        assert!(!manager.remove_request(&block));
+        assert!(!manager.remove_request(&block));
 
         assert_eq!(manager.requests.len(), 1);
         assert_eq!(manager.timeouts.len(), 1);
         assert_eq!(manager.index.len(), 1);
 
-        manager.remove_request(&block);
+        assert!(manager.remove_request(&block2));
+        assert!(!manager.remove_request(&block2));
+        assert!(!manager.remove_request(&block2));
+
         assert!(manager.requests.is_empty());
         assert!(manager.timeouts.is_empty());
         assert!(manager.index.is_empty());
@@ -465,13 +483,13 @@ mod tests {
         let block1 = BlockInfo::new(0, 0, 16384);
         let block2 = BlockInfo::new(0, 16384, 16384);
 
-        manager.add_request(block1.clone());
-        manager.add_request(block2.clone());
+        assert!(manager.add_request(block1.clone()));
+        assert!(manager.add_request(block2.clone()));
         assert_eq!(manager.requests[&0].len(), 2);
         assert_eq!(manager.timeouts.len(), 2);
         assert_eq!(manager.index.len(), 2);
 
-        manager.remove_request(&block1);
+        assert!(manager.remove_request(&block1));
         assert_eq!(manager.requests[&0].len(), 1);
         assert_eq!(manager.timeouts.len(), 1);
         assert_eq!(manager.index.len(), 1);

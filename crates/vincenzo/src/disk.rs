@@ -783,19 +783,6 @@ impl Disk {
         file.seek(SeekFrom::Start(file_offset)).await?;
         file.read_exact(&mut buf).await?;
 
-        let torrent_ctx = self
-            .torrent_ctxs
-            .get(info_hash)
-            .ok_or(Error::TorrentDoesNotExist)?
-            .clone();
-
-        // we change perspectives here because those values are
-        // going to be sent to the tracker in our perspective.
-        let _ = torrent_ctx
-            .tx
-            .send(TorrentMsg::IncrementUploaded(block_info.len as u64))
-            .await;
-
         Ok(Block {
             index: block_info.index as usize,
             begin: block_info.begin,
@@ -838,11 +825,6 @@ impl Disk {
         }
 
         cache.push(block);
-
-        let _ = torrent_ctx
-            .tx
-            .send(TorrentMsg::IncrementDownloaded(len as u64))
-            .await;
 
         // continue function if the piece was fully downloaded
         if self

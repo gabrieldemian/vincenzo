@@ -1,5 +1,4 @@
 use bytes::{Buf, BufMut, BytesMut};
-use futures::SinkExt;
 use int_enum::IntEnum;
 use std::sync::atomic::Ordering;
 use tokio::{io, sync::oneshot};
@@ -51,6 +50,22 @@ impl Default for CoreState {
             am_interested: false,
             peer_choking: true,
             peer_interested: false,
+        }
+    }
+}
+
+impl Core {
+    #[allow(clippy::len_without_is_empty)]
+    pub fn len(&self) -> usize {
+        use Core::*;
+        match self {
+            KeepAlive => 4,
+            Choke | Unchoke | Interested | NotInterested => 4 + 1,
+            Cancel(_) | Request(_) => 4 + 4 + 4,
+            Have(_) => 4 + 1 + 4,
+            Bitfield(b) => 4 + 1 + b.to_bitvec().len(),
+            Piece(b) => 4 + 1 + 4 + 4 + b.block.len(),
+            Extended(m) => 4 + 1 + 1 + m.1.len(),
         }
     }
 }
@@ -227,11 +242,7 @@ impl ExtMsgHandler<Core, CoreState> for MsgHandler {
                     })
                     .await?;
 
-                let block = rx.await?;
-
-                peer.state.ctx.counter.record_upload(block.block.len() as u64);
-
-                let _ = peer.state.sink.send(Core::Piece(block)).await;
+                peer.send(Core::Piece(rx.await?)).await?;
             }
         }
 
@@ -325,6 +336,7 @@ impl Encoder<Core> for CoreCodec {
         Ok(())
     }
 }
+
 impl Decoder for CoreCodec {
     type Item = Core;
     type Error = Error;

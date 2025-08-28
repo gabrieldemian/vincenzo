@@ -72,6 +72,14 @@ impl Counter {
         f64::from_bits(bits)
     }
 
+    pub fn window_uploaded_u64(&self) -> u64 {
+        self.window_uploaded.load(Ordering::Relaxed)
+    }
+
+    pub fn window_downloaded_u64(&self) -> u64 {
+        self.window_downloaded.load(Ordering::Relaxed)
+    }
+
     pub fn download_rate_u64(&self) -> u64 {
         self.ema_download.load(Ordering::Relaxed)
     }
