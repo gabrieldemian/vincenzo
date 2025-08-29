@@ -20,8 +20,8 @@ use tracing::{debug, trace};
 use crate::{
     disk::ReturnToDisk,
     extensions::{
-        ExtMsg, ExtMsgHandler, Extended, ExtendedMessage, Metadata,
-        MetadataPiece,
+        ExtMsg, ExtMsgHandler, Extended, ExtendedMessage, Extension, Metadata,
+        MetadataData, MetadataPiece,
     },
     torrent::PeerBrMsg,
 };
@@ -544,6 +544,34 @@ impl Peer<Connected> {
     pub async fn send(&mut self, core: Core) -> Result<(), Error> {
         self.state.ctx.counter.record_upload(core.len() as u64);
         self.state.sink.send(core).await?;
+        Ok(())
+    }
+
+    /// Mutate the peer based on his [`Extension`], should be called after an
+    /// extended handshake.
+    pub async fn handle_ext(&mut self, ext: Extension) -> Result<(), Error> {
+        let n = ext.reqq.unwrap_or(DEFAULT_REQUEST_QUEUE_LEN);
+
+        self.state.target_request_queue_len = n;
+        self.state.req_man_meta.set_limit(n as usize);
+        self.state.req_man_block.set_limit(n as usize);
+
+        // set the peer's extensions
+        if ext.m.ut_metadata.is_some() {
+            self.state.ext_states.metadata = Some(MetadataData());
+        }
+
+        if let Some(meta_size) = ext.metadata_size {
+            self.state
+                .ctx
+                .torrent_ctx
+                .tx
+                .send(TorrentMsg::MetadataSize(meta_size))
+                .await?;
+        }
+
+        self.state.ext_states.extension = Some(ext);
+
         Ok(())
     }
 }

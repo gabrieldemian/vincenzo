@@ -4,7 +4,6 @@
 #![feature(trait_alias)]
 
 pub mod args;
-pub mod avg;
 pub mod bitfield;
 pub mod config;
 pub mod counter;

@@ -394,29 +394,8 @@ impl peer::Peer<Idle> {
             },
         };
 
-        // todo: put this in a function
         if let Some(ext) = peer_handshake.ext {
-            let n = ext.reqq.unwrap_or(DEFAULT_REQUEST_QUEUE_LEN);
-
-            peer.state.target_request_queue_len = n;
-            peer.state.req_man_meta.set_limit(n as usize);
-            peer.state.req_man_block.set_limit(n as usize);
-
-            // set the peer's extensions
-            if ext.m.ut_metadata.is_some() {
-                peer.state.ext_states.metadata = Some(MetadataData());
-            }
-
-            if let Some(meta_size) = ext.metadata_size {
-                peer.state
-                    .ctx
-                    .torrent_ctx
-                    .tx
-                    .send(TorrentMsg::MetadataSize(meta_size))
-                    .await?;
-            }
-
-            peer.state.ext_states.extension = Some(ext);
+            peer.handle_ext(ext).await?;
         }
 
         Ok(peer)

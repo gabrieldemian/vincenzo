@@ -132,9 +132,6 @@ pub struct TorrentCache {
     pub is_single_file_torrent: bool,
 }
 
-// pub struct ReturnBlockInfos(pub InfoHash, pub BTreeMap<usize,
-// Vec<BlockInfo>>);
-
 /// When a peer is Choked, or receives an error and must close the
 /// connection, the outgoing/pending blocks of this peer must be
 /// appended back to the list of available block_infos.
@@ -431,14 +428,11 @@ impl Disk {
     ) -> Result<(), Error> {
         if let Some(cache) = self.torrent_cache.get(info_hash) {
             for meta in &cache.file_metadata {
-                let mut path = self.base_path(info_hash);
-                path.push(&meta.path);
-
-                if let Some(parent) = path.parent() {
+                if let Some(parent) = meta.path.parent() {
                     tokio::fs::create_dir_all(parent).await?;
                 }
 
-                if let Ok(file) = Self::open_file(&path).await {
+                if let Ok(file) = Self::open_file(&meta.path).await {
                     file.set_len(meta.length).await?;
                 }
             }
@@ -463,12 +457,14 @@ impl Disk {
 
         let mut file_metadata = Vec::new();
         let mut current_offset = 0;
+        let base = self.base_path(info_hash);
 
         if let Some(files) = &info.files {
             for file in files {
+                let mut path = base.clone();
+                path.extend(&file.path);
                 file_metadata.push(FileMetadata {
-                    // todo: just appened the base_path here
-                    path: PathBuf::from_iter(&file.path),
+                    path,
                     start_offset: current_offset,
                     length: file.length,
                 });
@@ -476,7 +472,7 @@ impl Disk {
             }
         } else {
             file_metadata.push(FileMetadata {
-                path: PathBuf::from(""),
+                path: base,
                 start_offset: 0,
                 length: info.file_length.unwrap_or(0),
             });
@@ -722,10 +718,7 @@ impl Disk {
         Ok(result)
     }
 
-    /// Open a file given a path, the path is absolute
-    /// and does not consider the base path of the torrent,
-    /// if this behaviour is wanted, you can get the base path
-    /// of the torrent using `base_path`.
+    /// Open a file given a path.
     pub async fn open_file(path: impl AsRef<Path>) -> Result<File, Error> {
         let path = path.as_ref().to_owned();
 
@@ -746,17 +739,17 @@ impl Disk {
         info_hash: &InfoHash,
         block_info: &BlockInfo,
     ) -> Result<Block, Error> {
-        // Get torrent metadata
+        // get torrent metadata
         let cache = self
             .torrent_cache
             .get(info_hash)
             .ok_or(Error::TorrentDoesNotExist)?;
 
-        // Calculate absolute offset
+        // calculate absolute offset
         let absolute_offset = block_info.index as u64 * cache.piece_length
             + block_info.begin as u64;
 
-        // Find containing file
+        // find containing file
         let file_meta = cache
             .file_metadata
             .iter()
@@ -766,18 +759,16 @@ impl Disk {
             })
             .ok_or(Error::TorrentDoesNotExist)?;
 
-        // Calculate file-relative offset
+        let path = &file_meta.path.clone();
+
+        // calculate file-relative offset
         let file_offset = absolute_offset - file_meta.start_offset;
 
-        // Build full path
-        let mut path = self.base_path(info_hash);
-        path.extend(&file_meta.path);
-
-        // Get cached file handle
-        let file = self.get_cached_file(&path).await?;
+        // get cached file handle
+        let file = self.get_cached_file(path).await?;
         let mut file = file.lock().await;
 
-        // Read data
+        // read data
         let mut buf = vec![0; block_info.len as usize];
 
         file.seek(SeekFrom::Start(file_offset)).await?;
@@ -984,11 +975,11 @@ impl Disk {
             let buffer_end = (overlap_end - piece_start) as usize;
             let file_offset = overlap_start - file_meta.start_offset;
 
-            // Build full path
-            let mut path = self.base_path(info_hash);
-            path.extend(&file_meta.path);
-
-            write_ops.push((path, file_offset, buffer_start..buffer_end));
+            write_ops.push((
+                file_meta.path.clone(),
+                file_offset,
+                buffer_start..buffer_end,
+            ));
         }
 
         Ok(write_ops)

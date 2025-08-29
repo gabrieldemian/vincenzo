@@ -3,8 +3,8 @@
 
 use crate::{
     error::Error,
-    extensions::{ExtMsg, ExtMsgHandler, ExtendedMessage, MetadataData},
-    peer::{self, Direction, MsgHandler, DEFAULT_REQUEST_QUEUE_LEN},
+    extensions::{ExtMsg, ExtMsgHandler, ExtendedMessage},
+    peer::{self, Direction, MsgHandler},
     torrent::TorrentMsg,
 };
 use std::{fmt::Debug, ops::Deref};
@@ -92,15 +92,6 @@ impl ExtMsgHandler<Extended, Extension> for MsgHandler {
         let ext: Extension = msg.into();
         debug!("{ext:?}");
 
-        if let Some(meta_size) = ext.metadata_size {
-            peer.state
-                .ctx
-                .torrent_ctx
-                .tx
-                .send(TorrentMsg::MetadataSize(meta_size))
-                .await?;
-        }
-
         // send ours extended msg if outbound
         if peer.state.ctx.direction == Direction::Outbound {
             let metadata_size = {
@@ -120,21 +111,7 @@ impl ExtMsgHandler<Extended, Extension> for MsgHandler {
             peer.feed(ExtendedMessage(Extended::ID, ext).into()).await?;
         }
 
-        // the max number of block_infos to request
-        let n = ext.reqq.unwrap_or(DEFAULT_REQUEST_QUEUE_LEN);
-
-        peer.state.target_request_queue_len = n;
-
-        // set the peer's extensions
-        if ext.m.ut_metadata.is_some() {
-            peer.state.ext_states.metadata = Some(MetadataData());
-        }
-
-        // if ext.m.ut_holepunch.is_some() {
-        //     peer.state.ext_states.holepunch = Some(HolepunchData());
-        // }
-
-        peer.state.ext_states.extension = Some(ext);
+        peer.handle_ext(ext).await?;
 
         Ok(())
     }
