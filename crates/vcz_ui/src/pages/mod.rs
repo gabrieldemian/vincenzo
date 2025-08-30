@@ -11,10 +11,12 @@ use crate::{action::Action, tui::Event};
 
 pub trait Page {
     /// Draw on the screen, can also call draw on it's components.
-    fn draw(&mut self, f: &mut Frame, e: Option<crossterm::event::Event>);
+    fn draw(&mut self, f: &mut Frame);
 
     /// Handle an action, for example, key presses, change to another page, etc.
     fn handle_action(&mut self, action: Action);
+
+    fn handle_event(&mut self, event: crossterm::event::Event);
 
     /// get an app event and transform into a page action
     fn get_action(&self, event: Event) -> Action;

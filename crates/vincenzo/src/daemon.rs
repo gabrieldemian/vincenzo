@@ -119,7 +119,7 @@ impl Daemon {
     ) -> Self {
         let (tx, rx) = mpsc::channel::<DaemonMsg>(100);
 
-        let local_peer_id = PeerId::gen();
+        let local_peer_id = PeerId::generate();
 
         Self {
             connected_peers: 0,

@@ -44,7 +44,7 @@ pub struct PeerId(pub [u8; 20]);
 pub const DEFAULT_REQUEST_QUEUE_LEN: u16 = 250;
 
 impl PeerId {
-    pub fn gen() -> Self {
+    pub fn generate() -> Self {
         let mut peer_id = [0; 20];
         peer_id[..3].copy_from_slice(b"vcz");
         peer_id[3] = b'-';

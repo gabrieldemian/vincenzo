@@ -271,7 +271,7 @@ impl<T: Requestable> RequestManager<T> {
         let now = Instant::now();
         let new_timeout = now + self.get_timeout();
 
-        for (mut timeout, block) in self
+        for &(mut timeout, ref block) in self
             .timeouts
             .iter()
             .peekable()

@@ -1245,7 +1245,7 @@ mod tests {
             info_hash: magnet.parse_xt_infohash(),
             tx: peer_tx.clone(),
             peer_interested: true.into(),
-            id: PeerId::gen(),
+            id: PeerId::generate(),
             am_interested: true.into(),
             am_choking: false.into(),
             peer_choking: false.into(),

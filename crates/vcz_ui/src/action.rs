@@ -13,10 +13,12 @@ pub enum Page {
 #[derive(Clone)]
 pub enum Action {
     Tick,
-    Key(KeyEvent),
+    Render,
     Quit,
-    Render(Option<crossterm::event::Event>),
+    Error,
     None,
+    TerminalEvent(crossterm::event::Event),
+    // Key(KeyEvent),
 
     /// Render another page on the UI
     ChangePage(Page),

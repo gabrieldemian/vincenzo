@@ -1,18 +1,16 @@
 use ratatui::{
-    crossterm,
+    Frame, crossterm,
     layout::Rect,
     style::{Color, Modifier, Style},
     widgets::{Block, Borders},
-    Frame,
 };
 use std::fmt;
 use tui_textarea::{CursorMove, Input, Key, Scrolling, TextArea};
-use vincenzo::error::Error;
 
 use crate::PALETTE;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Mode {
+pub enum Mode {
     Normal,
     #[default]
     Insert,
@@ -58,7 +56,7 @@ impl Mode {
 }
 
 // How the Vim emulation state transitions
-enum Transition {
+pub enum Transition {
     Nop,
     Mode(Mode),
     Pending(Input),
@@ -67,7 +65,7 @@ enum Transition {
 
 // State of Vim emulation
 #[derive(Clone)]
-pub(crate) struct VimInput<'a> {
+pub struct VimInput<'a> {
     pub mode: Mode,
     pub pending: Input,
     pub textarea: TextArea<'a>,
@@ -85,19 +83,13 @@ impl Default for VimInput<'_> {
 }
 
 impl<'a> VimInput<'a> {
-    /// Return ok(true) if should quit the input.
-    pub fn draw(
-        &mut self,
-        frame: &mut Frame,
-        area: Rect,
-        e: Option<crossterm::event::Event>,
-    ) -> Result<bool, Error> {
+    pub fn draw(&mut self, frame: &mut Frame, area: Rect) {
         self.chars_per_line = area.width as usize - 4;
-
         frame.render_widget(&self.textarea, area);
+    }
 
-        let Some(e) = e else { return Ok(false) };
-
+    /// Return true if should quit the input.
+    pub fn handle_event(&mut self, e: crossterm::event::Event) -> bool {
         match self.transition(e.into()) {
             Transition::Mode(mode) if self.mode != mode => {
                 self.textarea.set_block(mode.block());
@@ -105,14 +97,13 @@ impl<'a> VimInput<'a> {
                 self.mode = mode;
             }
             Transition::Pending(input) => self.pending = input,
-            Transition::Quit => return Ok(true),
+            Transition::Quit => return true,
             _ => {}
         };
-
-        Ok(false)
+        false
     }
 
-    fn transition(&mut self, input: Input) -> Transition {
+    pub fn transition(&mut self, input: Input) -> Transition {
         if input.key == Key::Null {
             return Transition::Nop;
         }

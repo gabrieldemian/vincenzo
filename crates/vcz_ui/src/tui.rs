@@ -10,10 +10,7 @@ use ratatui::{
     backend::CrosstermBackend as Backend,
     crossterm::{
         self, cursor,
-        event::{
-            self, EnableBracketedPaste, EnableMouseCapture,
-            Event as CrosstermEvent, KeyEvent, KeyEventKind, MouseEvent,
-        },
+        event::{EnableBracketedPaste, EnableMouseCapture},
         terminal::EnterAlternateScreen,
     },
 };
@@ -25,18 +22,11 @@ use tokio_util::sync::CancellationToken;
 
 #[derive(Clone, Debug)]
 pub enum Event {
-    Init,
+    TerminalEvent(ratatui::crossterm::event::Event),
+    Tick,
+    Render,
     Quit,
     Error,
-    Closed,
-    Tick,
-    Render(Option<ratatui::crossterm::event::Event>),
-    FocusGained,
-    FocusLost,
-    Paste(String),
-    Key(KeyEvent),
-    Mouse(MouseEvent),
-    Resize(u16, u16),
 }
 
 pub struct Tui {
@@ -95,46 +85,22 @@ impl Tui {
             let mut tick_interval = tokio::time::interval(tick_delay);
             let mut render_interval = tokio::time::interval(render_delay);
 
-            event_tx.send(Event::Init).await.unwrap();
-
             loop {
                 let tick_delay = tick_interval.tick();
                 let render_delay = render_interval.tick();
                 let mut reader = EventStream::default();
 
                 tokio::select! {
-                    crossterm_event = reader.next().fuse() => {
-                        if let Some(Ok(evt)) = crossterm_event {
-                            event_tx.send(Event::Render(Some(evt.clone()))).await?;
-                            match evt {
-                                CrosstermEvent::Key(key) => {
-                                    if key.kind == KeyEventKind::Press {
-                                        event_tx.send(Event::Key(key)).await?;
-                                    }
-                                },
-                                CrosstermEvent::Mouse(mouse) => {
-                                    event_tx.send(Event::Mouse(mouse)).await?;
-                                },
-                                CrosstermEvent::Resize(x, y) => {
-                                    event_tx.send(Event::Resize(x, y)).await?;
-                                },
-                                CrosstermEvent::FocusLost => {
-                                    event_tx.send(Event::FocusLost).await?;
-                                },
-                                CrosstermEvent::FocusGained => {
-                                    event_tx.send(Event::FocusGained).await?;
-                                },
-                                CrosstermEvent::Paste(s) => {
-                                    event_tx.send(Event::Paste(s)).await?;
-                                },
-                            }
+                    event = reader.next().fuse() => {
+                        if let Some(Ok(event)) = event {
+                            event_tx.send(Event::TerminalEvent(event)).await?;
                         }
                     },
                     _ = tick_delay => {
                         event_tx.send(Event::Tick).await?;
                     },
                     _ = render_delay => {
-                        event_tx.send(Event::Render(None)).await?;
+                        event_tx.send(Event::Render).await?;
                     },
                     _ = cancellation_token.cancelled() => {
                         break;

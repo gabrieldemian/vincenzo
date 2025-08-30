@@ -1,4 +1,4 @@
-use crossterm::event::{KeyCode, KeyEventKind};
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 use ratatui::{
     crossterm,
     prelude::*,
@@ -15,10 +15,14 @@ use vincenzo::{
 };
 
 use crate::{
-    action::Action,
-    tui::Event,
-    widgets::{network_chart::NetworkChart, vim_input::VimInput},
     PALETTE,
+    action::Action,
+    centered_rect,
+    tui::Event,
+    widgets::{
+        network_chart::NetworkChart,
+        vim_input::{Mode, VimInput},
+    },
 };
 
 use super::Page;
@@ -120,33 +124,6 @@ impl<'a> TorrentList<'a> {
         }
     }
 
-    /// Return a floating centered Rect
-    fn centered_rect(&self, percent_x: u16, percent_y: u16, r: Rect) -> Rect {
-        let popup_layout = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints(
-                [
-                    Constraint::Percentage((100 - percent_y) / 2),
-                    Constraint::Percentage(percent_y),
-                    Constraint::Percentage((100 - percent_y) / 2),
-                ]
-                .as_ref(),
-            )
-            .split(r);
-
-        Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints(
-                [
-                    Constraint::Percentage((100 - percent_x) / 2),
-                    Constraint::Percentage(percent_x),
-                    Constraint::Percentage((100 - percent_x) / 2),
-                ]
-                .as_ref(),
-            )
-            .split(popup_layout[1])[1]
-    }
-
     fn submit_magnet_link(&mut self, magnet: Magnet) {
         self.new_network_chart(magnet.parse_xt_infohash());
         let _ = self.tx.send(Action::NewTorrent(magnet.0));
@@ -172,11 +149,7 @@ impl<'a> TorrentList<'a> {
 }
 
 impl<'a> Page for TorrentList<'a> {
-    fn draw(
-        &mut self,
-        f: &mut ratatui::Frame,
-        e: Option<crossterm::event::Event>,
-    ) {
+    fn draw(&mut self, f: &mut ratatui::Frame) {
         let mut torrent_rows: Vec<ListItem> = Vec::new();
 
         for (i, state) in self.torrent_infos.iter().enumerate() {
@@ -281,58 +254,74 @@ impl<'a> Page for TorrentList<'a> {
             &mut self.scroll_state,
         );
 
-        let area = self.centered_rect(60, 30, f.area());
+        let block = Block::bordered().title(" Torrents ");
+        let has_active_torrent = self.active_torrent.is_some();
+
+        if self.torrent_infos.is_empty() {
+            f.render_widget(
+                Paragraph::new("Press [t] to add a new torrent.")
+                    .block(block.clone())
+                    .centered(),
+                f.area(),
+            );
+        }
+
+        let torrent_list = List::new(torrent_rows).block(block);
+
+        // Create two chunks, the body, and the footer
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints(if has_active_torrent {
+                [Constraint::Length(85), Constraint::Length(15)].as_ref()
+            } else {
+                [Constraint::Max(100)].as_ref()
+            })
+            .split(body_chunk);
+
+        f.render_stateful_widget(torrent_list, chunks[0], &mut self.state);
+
+        if has_active_torrent {
+            let selected = self.state.selected().unwrap();
+            if let Some(network_chart) = self.network_charts.get(selected) {
+                network_chart.draw(f, chunks[1]);
+            }
+        }
 
         if let Some(textarea) = self.textarea.as_mut() {
-            if textarea.draw(f, area, e).unwrap() {
-                self.textarea = None;
-            }
-        } else {
-            let block = Block::bordered().title(" Torrents ");
-            let has_active_torrent = self.active_torrent.is_some();
+            let area = centered_rect(60, 30, f.area());
+            f.render_widget(Clear, area);
+            textarea.draw(f, area);
+        }
+    }
 
-            if self.torrent_infos.is_empty() {
-                f.render_widget(
-                    Paragraph::new("Press [t] to add a new torrent.")
-                        .block(block)
-                        .centered(),
-                    f.area(),
-                );
+    fn handle_event(&mut self, event: crossterm::event::Event) {
+        // if the child component is some, let it handle the event.
+        if let Some(textarea) = &mut self.textarea {
+            if textarea.handle_event(event.clone()) {
+                self.textarea = None;
                 return;
             }
-
-            let torrent_list = List::new(torrent_rows).block(block);
-
-            // Create two chunks, the body, and the footer
-            let chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints(if has_active_torrent {
-                    [Constraint::Length(85), Constraint::Length(15)].as_ref()
-                } else {
-                    [Constraint::Max(100)].as_ref()
-                })
-                .split(body_chunk);
-
-            f.render_stateful_widget(torrent_list, chunks[0], &mut self.state);
-
-            if has_active_torrent {
-                let selected = self.state.selected().unwrap();
-                if let Some(network_chart) = self.network_charts.get(selected) {
-                    network_chart.draw(f, chunks[1]);
-                }
+            if let crossterm::event::Event::Key(key) = event
+                && key.kind == KeyEventKind::Press
+                && key.code == KeyCode::Enter
+                && let Some(magnet) = self.validate()
+            {
+                self.submit_magnet_link(magnet);
             }
         }
+        self.handle_action(Action::TerminalEvent(event));
     }
+
     fn get_action(&self, event: crate::tui::Event) -> crate::action::Action {
         match event {
-            Event::Error => Action::None,
             Event::Tick => Action::Tick,
-            Event::Render(v) => Action::Render(v),
-            Event::Key(key) => Action::Key(key),
+            Event::Render => Action::Render,
             Event::Quit => Action::Quit,
-            _ => Action::None,
+            Event::Error => Action::Error,
+            Event::TerminalEvent(e) => Action::TerminalEvent(e),
         }
     }
+
     fn handle_action(&mut self, action: Action) {
         match action {
             Action::TorrentStates(torrent_states) => {
@@ -352,22 +341,11 @@ impl<'a> Page for TorrentList<'a> {
                 self.torrent_infos = torrent_states;
             }
 
-            Action::Key(k)
-                if k.code == KeyCode::Enter
-                    && let Some(_textarea) = &self.textarea =>
-            {
-                if k.code == KeyCode::Enter {
-                    if let Some(magnet) = self.validate() {
-                        self.submit_magnet_link(magnet)
-                    }
-                }
-            }
-
-            Action::Key(k)
-                if k.kind == KeyEventKind::Press && self.textarea.is_none() =>
+            Action::TerminalEvent(crossterm::event::Event::Key(k))
+                if k.kind == KeyEventKind::Press =>
             {
                 match k.code {
-                    KeyCode::Char('q') => {
+                    KeyCode::Char('q') if self.textarea.is_none() => {
                         self.quit();
                     }
                     KeyCode::Char('d') => {
@@ -398,6 +376,7 @@ impl<'a> Page for TorrentList<'a> {
                     _ => {}
                 }
             }
+
             _ => {}
         }
     }

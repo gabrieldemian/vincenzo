@@ -60,45 +60,39 @@ impl App {
         });
 
         loop {
-            // block until the next event
             let e = tui.next().await?;
             let a = self.page.get_action(e);
             let _ = tx.send(a);
 
             while let Ok(action) = rx.try_recv() {
-                if let Action::Render(v) = action {
-                    let _ = tui.draw(|f| {
-                        self.page.draw(f, v);
-                    });
-                    continue;
-                }
-
-                if let Action::Quit = action {
-                    if !self.is_detached {
-                        let _ = sink.send(Message::Quit).await;
+                match action {
+                    Action::TerminalEvent(e) => {
+                        self.page.handle_event(e);
                     }
-                    handle.abort();
-                    tui.cancel();
-                    self.should_quit = true;
-                    continue;
+                    Action::Render => {
+                        let _ = tui.draw(|f| {
+                            self.page.draw(f);
+                        });
+                    }
+                    Action::Quit => {
+                        if !self.is_detached {
+                            let _ = sink.send(Message::Quit).await;
+                        }
+                        handle.abort();
+                        tui.cancel();
+                        self.should_quit = true;
+                    }
+                    Action::ChangePage(page) => {
+                        self.handle_change_component(page)?
+                    }
+                    Action::NewTorrent(magnet) => {
+                        sink.send(Message::NewTorrent(magnet.clone())).await?;
+                    }
+                    Action::DeleteTorrent(info_hash) => {
+                        sink.send(Message::DeleteTorrent(info_hash)).await?;
+                    }
+                    _ => self.page.handle_action(action),
                 }
-
-                if let Action::ChangePage(component) = action {
-                    self.handle_change_component(component)?
-                }
-
-                if let Action::NewTorrent(magnet) = &action {
-                    sink.send(Message::NewTorrent(magnet.clone())).await?;
-                    continue;
-                }
-
-                if let Action::DeleteTorrent(info_hash) = &action {
-                    sink.send(Message::DeleteTorrent(info_hash.clone()))
-                        .await?;
-                    continue;
-                }
-
-                self.page.handle_action(action);
             }
 
             if self.should_quit {
