@@ -1,4 +1,3 @@
-use crossterm::event::KeyEvent;
 use vincenzo::torrent::{InfoHash, TorrentState};
 
 /// A new component to be rendered on the UI.
@@ -18,8 +17,6 @@ pub enum Action {
     Error,
     None,
     TerminalEvent(crossterm::event::Event),
-    // Key(KeyEvent),
-
     /// Render another page on the UI
     ChangePage(Page),
 

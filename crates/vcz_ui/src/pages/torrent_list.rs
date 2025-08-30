@@ -1,4 +1,4 @@
-use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
+use crossterm::event::{KeyCode, KeyEventKind};
 use ratatui::{
     crossterm,
     prelude::*,
@@ -19,10 +19,7 @@ use crate::{
     action::Action,
     centered_rect,
     tui::Event,
-    widgets::{
-        network_chart::NetworkChart,
-        vim_input::{Mode, VimInput},
-    },
+    widgets::{network_chart::NetworkChart, vim_input::VimInput},
 };
 
 use super::Page;
@@ -266,7 +263,10 @@ impl<'a> Page for TorrentList<'a> {
             );
         }
 
-        let torrent_list = List::new(torrent_rows).block(block);
+        let mut torrent_list = List::new(torrent_rows).block(block);
+        if self.textarea.is_some() {
+            torrent_list = torrent_list.dim();
+        }
 
         // Create two chunks, the body, and the footer
         let chunks = Layout::default()
@@ -283,7 +283,7 @@ impl<'a> Page for TorrentList<'a> {
         if has_active_torrent {
             let selected = self.state.selected().unwrap();
             if let Some(network_chart) = self.network_charts.get(selected) {
-                network_chart.draw(f, chunks[1]);
+                network_chart.draw(f, chunks[1], self.textarea.is_some());
             }
         }
 

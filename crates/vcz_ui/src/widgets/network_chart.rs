@@ -1,9 +1,9 @@
 use ratatui::{
+    Frame,
     prelude::*,
     widgets::{
         Axis, Block, Borders, Chart, Dataset, GraphType, LegendPosition,
     },
-    Frame,
 };
 use tokio::time::Instant;
 use vincenzo::{torrent::InfoHash, utils::to_human_readable};
@@ -72,7 +72,7 @@ impl NetworkChart {
         self.max_rate = self.max_rate.max(0.1);
     }
 
-    pub fn draw(&self, frame: &mut Frame, area: Rect) {
+    pub fn draw(&self, frame: &mut Frame, area: Rect, dim: bool) {
         if self.download_data.is_empty() || self.upload_data.is_empty() {
             return;
         }
@@ -146,7 +146,7 @@ impl NetworkChart {
             Span::raw(" "),
         ];
 
-        let chart = Chart::new(vec![download_dataset, upload_dataset])
+        let mut chart = Chart::new(vec![download_dataset, upload_dataset])
             .legend_position(Some(LegendPosition::TopRight))
             .hidden_legend_constraints((
                 Constraint::Ratio(1, 2),
@@ -170,6 +170,10 @@ impl NetworkChart {
                     .bounds([0.0, self.max_rate])
                     .labels(y_labels),
             );
+
+        if dim {
+            chart = chart.dim();
+        }
 
         frame.render_widget(chart, area);
     }
