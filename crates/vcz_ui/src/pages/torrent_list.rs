@@ -1,5 +1,6 @@
-use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers, ModifierKeyCode};
+use crossterm::event::{KeyCode, KeyEventKind};
 use ratatui::{
+    crossterm,
     prelude::*,
     widgets::{
         Block, Borders, Clear, List, ListItem, ListState, Paragraph, Scrollbar,
@@ -7,7 +8,6 @@ use ratatui::{
     },
 };
 use tokio::sync::mpsc;
-use tui_textarea::{CursorMove, TextArea};
 use vincenzo::{
     magnet::Magnet,
     torrent::{InfoHash, TorrentState, TorrentStatus},
@@ -15,7 +15,10 @@ use vincenzo::{
 };
 
 use crate::{
-    action::Action, tui::Event, widgets::network_chart::NetworkChart, PALETTE,
+    action::Action,
+    tui::Event,
+    widgets::{network_chart::NetworkChart, vim_input::VimInput},
+    PALETTE,
 };
 
 use super::Page;
@@ -23,8 +26,7 @@ use super::Page;
 #[derive(Clone)]
 pub struct TorrentList<'a> {
     active_torrent: Option<InfoHash>,
-    textarea: Option<TextArea<'a>>,
-    chars_per_line: u16,
+    textarea: Option<VimInput<'a>>,
     pub focused: bool,
     pub scroll_state: ScrollbarState,
     pub scroll: usize,
@@ -42,7 +44,6 @@ impl<'a> TorrentList<'a> {
             state: ListState::default(),
             scroll_state: ScrollbarState::default(),
             scroll: 0,
-            chars_per_line: 50,
             textarea: None,
             focused: true,
             active_torrent: None,
@@ -56,30 +57,36 @@ impl<'a> TorrentList<'a> {
     }
 
     /// Validate that the user's magnet link is valid
-    fn validate(&mut self) -> bool {
-        let Some(textarea) = &mut self.textarea else { return false };
+    fn validate(&mut self) -> Option<Magnet> {
+        let Some(textarea) = &mut self.textarea else { return None };
 
-        let magnet_str = textarea.lines().join("");
-        let magnet = magnet_url::Magnet::new(&magnet_str);
+        let magnet_str = textarea.textarea.lines().join("");
+        let magnet_str = magnet_str.trim();
+        let magnet = magnet_url::Magnet::new(magnet_str);
 
-        if let Err(err) = magnet {
-            textarea.set_style(PALETTE.error.into());
-            textarea.set_block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(PALETTE.error)
-                    .title(format!(" Err: {err} ")),
-            );
-            false
-        } else {
-            textarea.set_style(Style::default().fg(PALETTE.success));
-            textarea.set_block(
-                Block::default()
-                    .border_style(PALETTE.success)
-                    .borders(Borders::ALL)
-                    .title(" Ok (Press Enter) "),
-            );
-            true
+        match magnet {
+            Ok(magnet) => {
+                textarea
+                    .textarea
+                    .set_style(Style::default().fg(PALETTE.success));
+                textarea.textarea.set_block(
+                    Block::default()
+                        .border_style(PALETTE.success)
+                        .borders(Borders::ALL)
+                        .title(" Ok (Press Enter) "),
+                );
+                Some(Magnet(magnet))
+            }
+            Err(err) => {
+                textarea.textarea.set_style(PALETTE.error.into());
+                textarea.textarea.set_block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(PALETTE.error)
+                        .title(format!(" Err: {err} ")),
+                );
+                None
+            }
         }
     }
 
@@ -140,14 +147,7 @@ impl<'a> TorrentList<'a> {
             .split(popup_layout[1])[1]
     }
 
-    fn submit_magnet_link(&mut self) {
-        let Some(textarea) = &self.textarea else { return };
-        let magnet_str = textarea.lines().join("").to_string();
-
-        let Ok(magnet) = Magnet::new(&magnet_str) else {
-            return;
-        };
-
+    fn submit_magnet_link(&mut self, magnet: Magnet) {
         self.new_network_chart(magnet.parse_xt_infohash());
         let _ = self.tx.send(Action::NewTorrent(magnet.0));
         self.quit();
@@ -172,7 +172,11 @@ impl<'a> TorrentList<'a> {
 }
 
 impl<'a> Page for TorrentList<'a> {
-    fn draw(&mut self, f: &mut ratatui::Frame) {
+    fn draw(
+        &mut self,
+        f: &mut ratatui::Frame,
+        e: Option<crossterm::event::Event>,
+    ) {
         let mut torrent_rows: Vec<ListItem> = Vec::new();
 
         for (i, state) in self.torrent_infos.iter().enumerate() {
@@ -277,21 +281,14 @@ impl<'a> Page for TorrentList<'a> {
             &mut self.scroll_state,
         );
 
-        let block = Block::bordered().title(" Torrents ");
+        let area = self.centered_rect(60, 30, f.area());
 
-        if let Some(textarea) = &self.textarea {
-            let area = self.centered_rect(60, 30, f.area());
-            self.chars_per_line = area.width - 4;
-
-            let chunks = Layout::vertical(
-                [Constraint::Min(0), Constraint::Length(1)].as_ref(),
-            )
-            .split(area);
-
-            f.render_widget(Clear, area);
-            f.render_widget(textarea, chunks[0]);
-            f.render_widget(Paragraph::new("Shift + [C]lear"), chunks[1]);
+        if let Some(textarea) = self.textarea.as_mut() {
+            if textarea.draw(f, area, e).unwrap() {
+                self.textarea = None;
+            }
         } else {
+            let block = Block::bordered().title(" Torrents ");
             let has_active_torrent = self.active_torrent.is_some();
 
             if self.torrent_infos.is_empty() {
@@ -330,7 +327,7 @@ impl<'a> Page for TorrentList<'a> {
         match event {
             Event::Error => Action::None,
             Event::Tick => Action::Tick,
-            Event::Render => Action::Render,
+            Event::Render(v) => Action::Render(v),
             Event::Key(key) => Action::Key(key),
             Event::Quit => Action::Quit,
             _ => Action::None,
@@ -354,93 +351,53 @@ impl<'a> Page for TorrentList<'a> {
 
                 self.torrent_infos = torrent_states;
             }
+
             Action::Key(k)
-                if let Some(textarea) = &mut self.textarea
-                    && k.kind == KeyEventKind::Press =>
+                if k.code == KeyCode::Enter
+                    && let Some(_textarea) = &self.textarea =>
+            {
+                if k.code == KeyCode::Enter {
+                    if let Some(magnet) = self.validate() {
+                        self.submit_magnet_link(magnet)
+                    }
+                }
+            }
+
+            Action::Key(k)
+                if k.kind == KeyEventKind::Press && self.textarea.is_none() =>
             {
                 match k.code {
-                    KeyCode::Enter => {
-                        if self.validate() {
-                            self.submit_magnet_link()
+                    KeyCode::Char('q') => {
+                        self.quit();
+                    }
+                    KeyCode::Char('d') => {
+                        self.delete_torrent();
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        self.next();
+                    }
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        self.previous();
+                    }
+                    KeyCode::Char('t') => {
+                        let mut textarea = VimInput::default();
+
+                        textarea
+                            .textarea
+                            .set_placeholder_text("Paste magnet link here...");
+
+                        self.textarea = Some(textarea);
+                    }
+                    KeyCode::Char('p') => {
+                        if let Some(active_torrent) = &self.active_torrent {
+                            let _ = self.tx.send(Action::TogglePause(
+                                active_torrent.clone(),
+                            ));
                         }
-                    }
-                    KeyCode::Esc => {
-                        self.textarea = None;
-                    }
-                    KeyCode::Modifier(ModifierKeyCode::LeftShift) => {}
-                    KeyCode::Char(char) => {
-                        if k.modifiers.intersects(KeyModifiers::SHIFT)
-                            && char == 'C'
-                        {
-                            for _ in 0..textarea
-                                .lines()
-                                .iter()
-                                .fold(0, |acc, v| acc + v.chars().count())
-                            {
-                                textarea.delete_word();
-                            }
-                        } else {
-                            if textarea.cursor().1
-                                >= self.chars_per_line as usize
-                            {
-                                textarea.insert_newline();
-                            }
-                            textarea.insert_char(char);
-                        }
-                        self.validate();
-                    }
-                    KeyCode::Backspace => {
-                        textarea.delete_char();
-                        self.validate();
-                    }
-                    KeyCode::Up => {
-                        textarea.move_cursor(CursorMove::Up);
-                    }
-                    KeyCode::Down => {
-                        textarea.move_cursor(CursorMove::Down);
-                    }
-                    KeyCode::Left => {
-                        textarea.move_cursor(CursorMove::Back);
-                    }
-                    KeyCode::Right => {
-                        textarea.move_cursor(CursorMove::Forward);
                     }
                     _ => {}
                 }
             }
-            Action::Key(k) if k.kind == KeyEventKind::Press => match k.code {
-                KeyCode::Char('q') | KeyCode::Esc => {
-                    self.quit();
-                }
-                KeyCode::Char('d') => {
-                    self.delete_torrent();
-                }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    self.next();
-                }
-                KeyCode::Up | KeyCode::Char('k') => {
-                    self.previous();
-                }
-                KeyCode::Char('t') => {
-                    let mut textarea = TextArea::default();
-
-                    textarea.set_placeholder_text("Paste magnet link here...");
-                    textarea.set_block(
-                        Block::default()
-                            .borders(Borders::ALL)
-                            .title("Add Torrent (Press Enter or Esc)"),
-                    );
-                    self.textarea = Some(textarea);
-                }
-                KeyCode::Char('p') => {
-                    if let Some(active_torrent) = &self.active_torrent {
-                        let _ = self
-                            .tx
-                            .send(Action::TogglePause(active_torrent.clone()));
-                    }
-                }
-                _ => {}
-            },
             _ => {}
         }
     }

@@ -22,24 +22,20 @@ resolver = "2"
 [workspace.dependencies]
 int-enum = "1.2.0"
 bincode = { version = "=2.0.1" }
-flate2 = { version = "1.0.17", features = ["zlib-rs"], default-features = false }
 quote = "1.0.36"
 lru = "0.16.0"
 syn = "2.0.74"
-derive_builder = "0.20.0"
 bendy = { version = "0.3.3", features = ["std", "serde"] }
 bitvec = "1.0.1"
 bytes = "1.4.0"
 clap = { version = "4.3.4", features = ["derive"] }
 config = "0.15.13"
-crossterm = { version = "0.29.0", features = ["event-stream", "serde"] }
-directories = "6.0.0"
 futures = "0.3.28"
 hashbrown = "0.15.4"
 hex = "0.4.3"
 magnet-url = "3.0.0"
 rand = "0.9.1"
-ratatui = { version = "0.29.0", features = ["all-widgets"] }
+ratatui = { version = "0.29.0" }
 serde = { version = "1.0.185", features = ["derive"] }
 signal-hook = { version = "0.3.18" }
 signal-hook-tokio = { version = "0.3.1", features = ["futures-v0_3"] }
@@ -47,13 +43,13 @@ sha1_smol = { version = "1.0.0", features = ["serde"] }
 speedy = "0.8.6"
 thiserror = "2.0.12"
 time = "0.3.36"
-tokio = { version = "1.46.1", features = [
+tokio = { version = "1.47.1", features = [
   "rt",
   "fs",
   "tracing",
   "time",
   "macros",
-  # "rt-multi-thread",
+  "rt-multi-thread",
   "sync",
   "io-std",
   "io-util",

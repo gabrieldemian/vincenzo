@@ -26,4 +26,3 @@ trybuild = { version = "1.0.49", features = ["diff"] }
 # vincenzo = { workspace = true }
 quote = { workspace = true }
 syn = { workspace = true, features = ["extra-traits"] }
-tokio-util = { workspace = true }

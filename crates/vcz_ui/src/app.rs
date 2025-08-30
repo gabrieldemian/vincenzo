@@ -66,10 +66,11 @@ impl App {
             let _ = tx.send(a);
 
             while let Ok(action) = rx.try_recv() {
-                if let Action::Render = action {
+                if let Action::Render(v) = action {
                     let _ = tui.draw(|f| {
-                        self.page.draw(f);
+                        self.page.draw(f, v);
                     });
+                    continue;
                 }
 
                 if let Action::Quit = action {
@@ -79,6 +80,7 @@ impl App {
                     handle.abort();
                     tui.cancel();
                     self.should_quit = true;
+                    continue;
                 }
 
                 if let Action::ChangePage(component) = action {
@@ -87,11 +89,13 @@ impl App {
 
                 if let Action::NewTorrent(magnet) = &action {
                     sink.send(Message::NewTorrent(magnet.clone())).await?;
+                    continue;
                 }
 
                 if let Action::DeleteTorrent(info_hash) = &action {
                     sink.send(Message::DeleteTorrent(info_hash.clone()))
                         .await?;
+                    continue;
                 }
 
                 self.page.handle_action(action);

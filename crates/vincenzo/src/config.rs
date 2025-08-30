@@ -1,11 +1,11 @@
 //! Config file
 use std::{net::SocketAddr, sync::LazyLock};
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 use crate::{daemon::Daemon, error::Error};
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Deserialize, Debug, Clone)]
 pub struct Config {
     /// Root folder to place the torrents files
     pub download_dir: String,

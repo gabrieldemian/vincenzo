@@ -15,15 +15,12 @@ exclude = ["tests/*", "*.log"]
 [dependencies]
 int-enum = "1.2.0"
 bincode = { workspace = true }
-flate2 = { workspace = true }
 lru = { workspace = true }
 bendy = { workspace = true }
 bitvec = { workspace = true }
 bytes = { workspace = true }
 clap = { workspace = true }
 config = { workspace = true }
-derive_builder = { workspace = true }
-directories = { workspace = true }
 futures = { workspace = true }
 hashbrown = { workspace = true }
 hex = { workspace = true }

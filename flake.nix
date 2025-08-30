@@ -34,6 +34,7 @@
             rustup
             cargo-bloat
             cargo-unused-features
+            cargo-udeps
             taplo
             trippy
             netscanner

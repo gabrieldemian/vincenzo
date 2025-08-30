@@ -15,7 +15,7 @@ pub enum Action {
     Tick,
     Key(KeyEvent),
     Quit,
-    Render,
+    Render(Option<crossterm::event::Event>),
     None,
 
     /// Render another page on the UI

@@ -63,10 +63,10 @@ impl Peer<Connected> {
             .send(TorrentMsg::PeerConnected(self.state.ctx.clone()))
             .await?;
 
-        // request info
+        // request metadata pieces
         let mut metadata_interval = interval(Duration::from_millis(100));
 
-        // request block infos
+        // request blocks
         let mut block_interval = interval(Duration::from_millis(100));
 
         // send interested or uninterested.

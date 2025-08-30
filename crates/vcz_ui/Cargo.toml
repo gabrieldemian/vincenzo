@@ -6,8 +6,8 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+crossterm = { version = "0.28.1", features = ["event-stream"] }
 clap = { workspace = true }
-crossterm = { workspace = true }
 futures = { workspace = true }
 hashbrown = { workspace = true }
 magnet-url = { workspace = true }
