@@ -12,7 +12,7 @@ use std::{sync::atomic::Ordering, time::Duration};
 use tokio::{
     select,
     sync::oneshot,
-    time::{interval, interval_at, Instant},
+    time::{Instant, interval, interval_at},
 };
 
 use tracing::{debug, trace};

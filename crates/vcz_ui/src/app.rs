@@ -14,7 +14,7 @@ use vincenzo::{
 use crate::{
     action::{self, Action},
     error::Error,
-    pages::{torrent_list::TorrentList, Page},
+    pages::{Page, torrent_list::TorrentList},
     tui::Tui,
 };
 

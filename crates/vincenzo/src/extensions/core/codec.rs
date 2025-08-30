@@ -481,7 +481,7 @@ impl Decoder for CoreCodec {
 
 #[cfg(test)]
 mod tests {
-    use crate::extensions::{core::BLOCK_LEN, Metadata, MetadataMsgType};
+    use crate::extensions::{Metadata, MetadataMsgType, core::BLOCK_LEN};
 
     use super::*;
     use bitvec::{bitvec, prelude::Msb0};

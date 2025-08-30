@@ -6,7 +6,6 @@ use std::{
     net::SocketAddr,
     path::{Path, PathBuf},
     sync::Arc,
-    time::Duration,
 };
 
 use futures::future::join_all;
@@ -19,11 +18,10 @@ use tokio::{
     io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
     select,
     sync::{
+        Mutex,
         mpsc::{self, Receiver},
         oneshot::{self, Sender},
-        Mutex,
     },
-    time::interval,
 };
 use tracing::{debug, info, trace, warn};
 
@@ -31,8 +29,8 @@ use crate::{
     bitfield::{Bitfield, VczBitfield},
     error::Error,
     extensions::{
+        BLOCK_LEN, MetadataPiece,
         core::{Block, BlockInfo},
-        MetadataPiece, BLOCK_LEN,
     },
     metainfo::Info,
     peer::{PeerCtx, PeerId},
@@ -581,10 +579,8 @@ impl Disk {
 
             for (i, item) in pieces.iter().enumerate() {
                 // increment each occurence of a piece
-                if *item {
-                    if let Some(item) = score.get_mut(i) {
-                        *item += 1;
-                    }
+                if *item && let Some(item) = score.get_mut(i) {
+                    *item += 1;
                 }
             }
         }
@@ -1068,11 +1064,7 @@ impl Disk {
 
         Ok(if piece_index == info.pieces() as usize - 1 {
             let remainder = info.get_size() % info.piece_length as u64;
-            if remainder == 0 {
-                info.piece_length
-            } else {
-                remainder as u32
-            }
+            if remainder == 0 { info.piece_length } else { remainder as u32 }
         } else {
             info.piece_length
         })
@@ -1092,10 +1084,10 @@ mod tests {
     use super::*;
 
     use futures::StreamExt;
-    use rand::{distr::Alphanumeric, Rng};
+    use rand::{Rng, distr::Alphanumeric};
     use std::net::{Ipv4Addr, SocketAddrV4};
     use tokio::{
-        sync::{broadcast, Mutex},
+        sync::{Mutex, broadcast},
         time::Instant,
     };
     use tokio_util::codec::Framed;
@@ -1104,12 +1096,12 @@ mod tests {
         bitfield::Reserved,
         counter::Counter,
         daemon::Daemon,
-        extensions::{core::BLOCK_LEN, CoreCodec},
+        extensions::{CoreCodec, core::BLOCK_LEN},
         magnet::Magnet,
         metainfo::{self, Info},
         peer::{
-            self, Peer, PeerMsg, RequestManager, StateLog,
-            DEFAULT_REQUEST_QUEUE_LEN,
+            self, DEFAULT_REQUEST_QUEUE_LEN, Peer, PeerMsg, RequestManager,
+            StateLog,
         },
         torrent::{Connected, PeerBrMsg, Stats, Torrent},
         tracker::{TrackerCtx, TrackerMsg},

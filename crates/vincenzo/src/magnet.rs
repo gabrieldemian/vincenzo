@@ -37,11 +37,10 @@ impl Magnet {
 
     /// The name will come URL encoded, and it is also optional.
     pub fn parse_dn(&self) -> String {
-        if let Some(dn) = self.0.display_name() {
-            if let Ok(dn) = urlencoding::decode(dn) {
+        if let Some(dn) = self.0.display_name()
+            && let Ok(dn) = urlencoding::decode(dn) {
                 return dn.to_string();
             }
-        }
         "Unknown".to_owned()
     }
 

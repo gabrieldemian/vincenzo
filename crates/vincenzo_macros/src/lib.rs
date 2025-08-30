@@ -3,11 +3,11 @@ mod utils;
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::{
+    DeriveInput, Ident, Token,
     parse::{Parse, ParseStream},
     parse_macro_input,
     punctuated::Punctuated,
     token::Comma,
-    DeriveInput, Ident, Token,
 };
 
 #[proc_macro_derive(Message)]

@@ -15,7 +15,7 @@ use tokio_util::codec::{Decoder, Encoder};
 
 use crate::{
     bitfield::Reserved,
-    extensions::{core::PSTR, CoreId, ExtMsg, Extended, Extension, PSTR_LEN},
+    extensions::{CoreId, ExtMsg, Extended, Extension, PSTR_LEN, core::PSTR},
     peer::PeerId,
     torrent::InfoHash,
 };

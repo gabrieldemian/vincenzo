@@ -7,8 +7,8 @@ mod r#trait;
 
 // re-exports
 pub use codec::*;
-pub use r#trait::*;
 use speedy::{Context, Readable, Writable, Writer};
+pub use r#trait::*;
 
 use bendy::{
     decoding::{FromBencode, Object, ResultExt},

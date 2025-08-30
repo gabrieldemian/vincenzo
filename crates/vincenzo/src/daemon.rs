@@ -1,8 +1,8 @@
 //! A daemon that runs on the background and handles everything
 //! that is not the UI.
 use futures::{
-    stream::{SplitSink, StreamExt},
     SinkExt,
+    stream::{SplitSink, StreamExt},
 };
 use hashbrown::HashMap;
 use signal_hook::consts::signal::*;

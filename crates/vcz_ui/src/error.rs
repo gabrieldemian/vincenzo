@@ -5,6 +5,12 @@ use tokio::sync::mpsc;
 
 use crate::{action::Action, tui::Event};
 
+impl From<mpsc::error::SendError<Action>> for Error {
+    fn from(_value: mpsc::error::SendError<Action>) -> Self {
+        Self::SendErrorAction
+    }
+}
+
 #[derive(Error, Debug)]
 pub enum Error {
     #[error("Could not send message to UI")]
@@ -23,7 +29,7 @@ pub enum Error {
     SendError(#[from] mpsc::error::SendError<Event>),
 
     #[error("Could not send action")]
-    SendErrorAction(#[from] mpsc::error::SendError<Action>),
+    SendErrorAction,
 
     #[error("Could not receive message")]
     RecvError,

@@ -3,23 +3,24 @@ use std::{
     fmt::Display,
     net::SocketAddr,
     ops::{Deref, DerefMut},
-    sync::{atomic::AtomicBool, Arc},
+    sync::{Arc, atomic::AtomicBool},
     time::Duration,
 };
 
 use futures::{
-    stream::{SplitSink, SplitStream, StreamExt},
     SinkExt,
+    stream::{SplitSink, SplitStream, StreamExt},
 };
-use rand::{distr::Alphanumeric, Rng};
+use rand::{Rng, distr::Alphanumeric};
 use speedy::{Readable, Writable};
 use tokio::{
     net::TcpStream,
     sync::{
+        Mutex,
         mpsc::{self, Receiver},
-        oneshot, Mutex,
+        oneshot,
     },
-    time::{sleep, timeout, Instant},
+    time::{Instant, sleep, timeout},
 };
 use tokio_util::codec::{Framed, FramedParts};
 use tracing::{debug, warn};
@@ -31,8 +32,8 @@ use crate::{
     disk::{DiskMsg, ReturnToDisk},
     error::Error,
     extensions::{
-        core::BlockInfo, Core, CoreCodec, Extension, Handshake, HandshakeCodec,
-        HolepunchData, MetadataData, MetadataPiece,
+        Core, CoreCodec, Extension, Handshake, HandshakeCodec, HolepunchData,
+        MetadataData, MetadataPiece, core::BlockInfo,
     },
     peer::{self, Peer, RequestManager},
     torrent::{InfoHash, PeerBrMsg, TorrentCtx, TorrentMsg},

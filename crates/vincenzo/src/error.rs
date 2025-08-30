@@ -30,6 +30,12 @@ impl From<mpsc::error::SendError<DaemonMsg>> for Error {
     }
 }
 
+impl From<mpsc::error::SendError<DiskMsg>> for Error {
+    fn from(_value: mpsc::error::SendError<DiskMsg>) -> Self {
+        Self::SendErrorDisk
+    }
+}
+
 impl From<Option<BTreeMap<u32, Block>>> for Error {
     fn from(_value: Option<BTreeMap<u32, Block>>) -> Self {
         Self::TorrentDoesNotExist
@@ -182,7 +188,7 @@ pub enum Error {
     MagnetNoInfoHash,
 
     #[error("Could not send message to Disk")]
-    SendErrorDisk(#[from] mpsc::error::SendError<DiskMsg>),
+    SendErrorDisk,
 
     #[error("Could not send message to Daemon: {0}")]
     SendDaemonError(String),

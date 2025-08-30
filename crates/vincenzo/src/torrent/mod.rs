@@ -22,20 +22,20 @@ use crate::{
     magnet::Magnet,
     metainfo::Info,
     peer::{self, Peer, PeerCtx, PeerId, PeerMsg},
-    tracker::{event::Event, Tracker, TrackerCtx, TrackerMsg, TrackerTrait},
+    tracker::{Tracker, TrackerCtx, TrackerMsg, TrackerTrait, event::Event},
     utils::to_human_readable,
 };
 use std::{
     collections::BTreeMap,
     net::SocketAddr,
-    sync::{atomic::Ordering, Arc},
+    sync::{Arc, atomic::Ordering},
     time::Duration,
 };
 use tokio::{
     net::TcpStream,
     select, spawn,
     sync::{broadcast, mpsc, oneshot},
-    time::{interval, interval_at, timeout, Instant},
+    time::{Instant, interval, interval_at, timeout},
 };
 use tracing::{debug, info, trace, warn};
 
@@ -426,11 +426,9 @@ impl Torrent<Connected> {
 
                             if let Some(opt_addr) =
                                 self.state.opt_unchoked_peer.as_ref().map(|v| v.remote_addr)
-                            {
-                                if opt_addr == addr {
+                                && opt_addr == addr {
                                     self.state.opt_unchoked_peer = None;
                                 }
-                            }
                             self.state.idle_peers.retain(|v| *v != addr);
 
                             let _ = self
@@ -1042,8 +1040,8 @@ impl Torrent<Connected> {
 #[cfg(test)]
 mod tests {
     use std::sync::{
-        atomic::{AtomicU64, Ordering},
         Arc,
+        atomic::{AtomicU64, Ordering},
     };
 
     #[test]

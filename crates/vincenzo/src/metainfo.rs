@@ -9,7 +9,7 @@ use bendy::{
 
 use crate::{
     error,
-    extensions::core::{BlockInfo, BLOCK_LEN},
+    extensions::core::{BLOCK_LEN, BlockInfo},
 };
 
 /// Metainfo is a .torrent file with information about the Torrent.
@@ -148,11 +148,7 @@ impl Info {
         let total_size = self.get_size() as u32;
         if piece_index == self.pieces() as usize - 1 {
             let remainder = total_size % self.piece_length;
-            if remainder == 0 {
-                self.piece_length
-            } else {
-                remainder
-            }
+            if remainder == 0 { self.piece_length } else { remainder }
         } else {
             self.piece_length
         }
@@ -173,11 +169,7 @@ impl File {
     /// Get the len of the given piece in the file, in bytes..
     pub fn get_piece_len(&self, piece: u32, piece_length: u64) -> u64 {
         let b = (piece as u64 * piece_length) + piece_length;
-        if b <= self.length {
-            piece_length
-        } else {
-            self.length % piece_length
-        }
+        if b <= self.length { piece_length } else { self.length % piece_length }
     }
     /// Return the number of pieces in the file, rounded up.
     pub fn pieces(&self, piece_length: u64) -> u64 {
@@ -644,7 +636,7 @@ mod tests {
 
         let info = create_test_info(100_000, 10_000);
         assert_eq!(info.blocks_per_piece(), 1); // 10,000 / 16,384 = 0.61 → ceil
-                                                // to 1
+        // to 1
     }
 
     #[test]
@@ -687,24 +679,30 @@ mod tests {
                 announce: "udp://tracker.leechers-paradise.org:6969/announce"
                     .to_owned(),
                 announce_list: Some(vec![
-                    vec!["udp://tracker.leechers-paradise.org:6969/announce"
-                        .to_owned()],
-                    vec!["udp://tracker.internetwarriors.net:1337/announce"
-                        .to_owned()],
                     vec![
-                        "udp://tracker.opentrackr.org:1337/announce".to_owned()
+                        "udp://tracker.leechers-paradise.org:6969/announce"
+                            .to_owned(),
                     ],
-                    vec!["udp://tracker.coppersurfer.tk:6969/announce"
-                        .to_owned()],
                     vec![
-                        "udp://tracker.pirateparty.gr:6969/announce".to_owned()
+                        "udp://tracker.internetwarriors.net:1337/announce"
+                            .to_owned(),
+                    ],
+                    vec![
+                        "udp://tracker.opentrackr.org:1337/announce".to_owned(),
+                    ],
+                    vec![
+                        "udp://tracker.coppersurfer.tk:6969/announce"
+                            .to_owned(),
+                    ],
+                    vec![
+                        "udp://tracker.pirateparty.gr:6969/announce".to_owned(),
                     ],
                     vec!["udp://9.rarbg.to:2730/announce".to_owned()],
                     vec!["udp://9.rarbg.to:2710/announce".to_owned()],
                     vec!["udp://bt.xxx-tracker.com:2710/announce".to_owned()],
                     vec!["udp://tracker.cyberia.is:6969/announce".to_owned()],
                     vec![
-                        "udp://retracker.lanta-net.ru:2710/announce".to_owned()
+                        "udp://retracker.lanta-net.ru:2710/announce".to_owned(),
                     ],
                     vec!["udp://9.rarbg.to:2770/announce".to_owned()],
                     vec!["udp://9.rarbg.me:2730/announce".to_owned()],
@@ -717,7 +715,7 @@ mod tests {
                     vec!["udp://9.rarbg.me:2740/announce".to_owned()],
                     vec!["udp://9.rarbg.me:2770/announce".to_owned()],
                     vec![
-                        "udp://denis.stalker.upeer.me:6969/announce".to_owned()
+                        "udp://denis.stalker.upeer.me:6969/announce".to_owned(),
                     ],
                     vec!["udp://tracker.port443.xyz:6969/announce".to_owned()],
                     vec!["udp://tracker.moeking.me:6969/announce".to_owned()],
@@ -725,10 +723,14 @@ mod tests {
                     vec!["udp://9.rarbg.to:2740/announce".to_owned()],
                     vec!["udp://9.rarbg.to:2720/announce".to_owned()],
                     vec!["udp://tracker.justseed.it:1337/announce".to_owned()],
-                    vec!["udp://tracker.torrent.eu.org:451/announce".to_owned()],
+                    vec![
+                        "udp://tracker.torrent.eu.org:451/announce".to_owned(),
+                    ],
                     vec!["udp://ipv4.tracker.harry.lu:80/announce".to_owned()],
-                    vec!["udp://tracker.open-internet.nl:6969/announce"
-                        .to_owned()],
+                    vec![
+                        "udp://tracker.open-internet.nl:6969/announce"
+                            .to_owned(),
+                    ],
                     vec!["udp://torrentclub.tech:6969/announce".to_owned()],
                     vec!["udp://open.stealth.si:80/announce".to_owned()],
                     vec!["http://tracker.tfile.co:80/announce".to_owned()],
