@@ -1,15 +1,14 @@
 use ratatui::{
-    Frame, crossterm,
+    Frame,
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List},
 };
 use std::fmt;
-use tui_textarea::{Input, Key};
 use unicode_width::UnicodeWidthStr;
 
-use crate::PALETTE;
+use crate::{Input, Key, PALETTE};
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -65,8 +64,8 @@ pub enum Transition {
 /// Vim-like input with modes.
 pub struct VimInput<'a> {
     pub mode: Mode,
-    pub pending: Input,
-    pub chars_per_line: usize,
+    pending: Input,
+    chars_per_line: usize,
     lines: Vec<String>,
     cursor: (usize, usize), // (row, col)
     block: Block<'a>,
@@ -78,28 +77,43 @@ pub struct VimInput<'a> {
 
 impl Default for VimInput<'_> {
     fn default() -> Self {
-        let mode = Mode::default();
+        let m = Mode::default();
         Self {
-            area: Rect::default(),
-            block: mode.block(),
-            scroll_offset: 0,
-            style: Style::default(),
-            cursor_style: Style::default(),
-            mode,
-            lines: vec![],
-            cursor: (0, 0),
+            mode: m,
             pending: Input::default(),
             chars_per_line: 50,
+            lines: Vec::default(),
+            cursor: (0, 0),
+            block: m.block(),
+            style: Style::default(),
+            area: Rect::default(),
+            cursor_style: m.cursor_style(),
+            scroll_offset: 0,
         }
     }
 }
 
 impl<'a> VimInput<'a> {
+    /// Return true if should quit the input.
+    pub fn handle_event(&mut self, e: &Input) -> bool {
+        match self.transition(e) {
+            Transition::Mode(mode) if self.mode != mode => {
+                self.set_block(mode.block());
+                self.set_cursor_style(mode.cursor_style());
+                self.mode = mode;
+            }
+            Transition::Pending(input) => self.pending = input,
+            Transition::Quit => return true,
+            _ => {}
+        };
+        false
+    }
+
     pub fn draw(&mut self, frame: &mut Frame, area: Rect) {
         let block_inner = self.block.inner(area);
         let lines_count = block_inner.height as usize;
-        self.chars_per_line = block_inner.width as usize;
 
+        self.chars_per_line = block_inner.width as usize;
         self.area = block_inner;
         self.chars_per_line = area.width as usize;
 
@@ -175,10 +189,8 @@ impl<'a> VimInput<'a> {
             self.scroll_offset = self.cursor.0 - visible_height + 1;
         }
 
-        // Ensure scroll_offset doesn't go beyond bounds
         let max_scroll = self.lines.len().saturating_sub(visible_height);
-        self.scroll_offset = self.scroll_offset.min(max_scroll);
-        self.scroll_offset = self.scroll_offset.max(0);
+        self.scroll_offset = self.scroll_offset.min(max_scroll).max(0);
     }
 
     pub fn set_block(&mut self, block: Block<'a>) {
@@ -195,8 +207,8 @@ impl<'a> VimInput<'a> {
 
     pub fn set_placeholder_text(&mut self, _text: &'a str) {}
 
-    pub fn lines(&self) -> Vec<String> {
-        self.lines.clone()
+    pub fn lines(&self) -> &Vec<String> {
+        &self.lines
     }
 
     fn ensure_cursor_in_bounds(&mut self) {
@@ -240,9 +252,12 @@ impl<'a> VimInput<'a> {
         }
 
         self.cursor.1 += 1;
+
+        // only check for line breaking if the line might be too long
         if line.len() >= self.chars_per_line {
             self.break_lines_from(row);
         }
+
         self.ensure_cursor_in_bounds();
         self.adjust_scroll_offset();
     }
@@ -274,8 +289,7 @@ impl<'a> VimInput<'a> {
 
             // split the line
             let remainder = line[break_pos..].to_string();
-            let line_clone = line.clone();
-            self.lines[current_row] = line_clone[..break_pos].to_string();
+            self.lines[current_row] = line[..break_pos].to_string();
 
             // insert the remainder
             if current_row + 1 < self.lines.len() {
@@ -300,7 +314,6 @@ impl<'a> VimInput<'a> {
         let (row, col) = self.cursor;
         let line = &self.lines[row];
 
-        // split the line at the cursor position
         let remainder = line[col..].to_string();
         self.lines[row] = line[..col].to_string();
 
@@ -370,25 +383,9 @@ impl<'a> VimInput<'a> {
         self.adjust_scroll_offset();
     }
 
-    /// Return true if should quit the input.
-    pub fn handle_event(&mut self, e: crossterm::event::Event) -> bool {
-        match self.transition(e.into()) {
-            Transition::Mode(mode) if self.mode != mode => {
-                self.set_block(mode.block());
-                self.set_cursor_style(mode.cursor_style());
-                self.mode = mode;
-            }
-            Transition::Pending(input) => self.pending = input,
-            Transition::Quit => return true,
-            _ => {}
-        };
-        false
-    }
-
     // Scroll up by X lines
     fn scroll_up(&mut self, lines: usize) {
         let new_scroll = self.scroll_offset.saturating_sub(lines);
-
         let scroll_amount = self.scroll_offset - new_scroll;
 
         self.scroll_offset = new_scroll;
@@ -406,7 +403,6 @@ impl<'a> VimInput<'a> {
         let max_scroll =
             self.lines.len().saturating_sub(self.area.height as usize);
         let new_scroll = (self.scroll_offset + lines).min(max_scroll);
-
         let scroll_amount = new_scroll - self.scroll_offset;
 
         self.scroll_offset = new_scroll;
@@ -420,7 +416,91 @@ impl<'a> VimInput<'a> {
         self.ensure_cursor_in_bounds();
     }
 
-    pub fn transition(&mut self, input: Input) -> Transition {
+    fn handle_normal_mode(&mut self, input: &Input) -> Transition {
+        match input {
+            Input { key: Key::Char('i'), .. } => Transition::Mode(Mode::Insert),
+            Input { key: Key::Char('h'), .. } => {
+                self.move_cursor_left();
+                Transition::Mode(Mode::Normal)
+            }
+            Input { key: Key::Char('j'), .. } => {
+                self.move_cursor_down();
+                Transition::Mode(Mode::Normal)
+            }
+            Input { key: Key::Char('k'), .. } => {
+                self.move_cursor_up();
+                Transition::Mode(Mode::Normal)
+            }
+            Input { key: Key::Char('l'), .. } => {
+                self.move_cursor_right();
+                Transition::Mode(Mode::Normal)
+            }
+            Input { key: Key::Char('e'), ctrl: true, .. } => {
+                self.scroll_down(1);
+                Transition::Nop
+            }
+            Input { key: Key::Char('y'), ctrl: true, .. } => {
+                self.scroll_up(1);
+                Transition::Nop
+            }
+            Input { key: Key::Char('d'), ctrl: true, .. } => {
+                self.scroll_down(self.area.height.div_ceil(2) as usize);
+                Transition::Nop
+            }
+            Input { key: Key::Char('u'), ctrl: true, .. } => {
+                self.scroll_up(self.area.height.div_ceil(2) as usize);
+                Transition::Nop
+            }
+            Input { key: Key::Char('f'), ctrl: true, .. } => {
+                self.scroll_down(self.area.height as usize);
+                Transition::Nop
+            }
+            Input { key: Key::Char('b'), ctrl: true, .. } => {
+                self.scroll_up(self.area.height as usize);
+                Transition::Nop
+            }
+            Input { key: Key::Char('G'), shift: true, .. } => {
+                let last_line = self.lines.len().saturating_sub(1);
+                let last_col = self.lines[last_line].len();
+                self.cursor = (last_line, last_col);
+                self.adjust_scroll_offset();
+                Transition::Mode(Mode::Normal)
+            }
+            Input { key: Key::Char('g'), .. }
+                if self.pending.key == Key::Char('g') =>
+            {
+                self.cursor = (0, 0);
+                self.scroll_offset = 0;
+                self.pending = Input::default();
+                Transition::Mode(Mode::Normal)
+            }
+            i @ Input { key: Key::Char('g'), .. } => {
+                Transition::Pending(i.clone())
+            }
+            _ => Transition::Nop,
+        }
+    }
+
+    fn handle_insert_mode(&mut self, input: &Input) -> Transition {
+        match input {
+            Input { key: Key::Esc, .. } => Transition::Mode(Mode::Normal),
+            Input { key: Key::Enter, shift: true, .. } => {
+                self.insert_newline();
+                Transition::Nop
+            }
+            Input { key: Key::Backspace, .. } => {
+                self.backspace();
+                Transition::Nop
+            }
+            Input { key: Key::Char(c), .. } => {
+                self.insert_char(*c);
+                Transition::Mode(Mode::Insert)
+            }
+            _ => Transition::Nop,
+        }
+    }
+
+    pub fn transition(&mut self, input: &Input) -> Transition {
         if input.key == Key::Null {
             return Transition::Nop;
         }
@@ -430,117 +510,9 @@ impl<'a> VimInput<'a> {
         }
 
         match self.mode {
-            m @ (Mode::Normal | Mode::Insert | Mode::Operator(_)) => {
-                match input {
-                    Input { key: Key::Esc, .. } if m == Mode::Insert => {
-                        Transition::Mode(Mode::Normal)
-                    }
-                    Input { key: Key::Enter, shift: true, .. }
-                        if m == Mode::Insert =>
-                    {
-                        self.insert_newline();
-                        Transition::Nop
-                    }
-                    Input { key: Key::Char('i'), .. } if m == Mode::Normal => {
-                        Transition::Mode(Mode::Insert)
-                    }
-                    Input { key: Key::Char('h'), .. } if m == Mode::Normal => {
-                        self.move_cursor_left();
-                        Transition::Mode(Mode::Normal)
-                    }
-                    Input { key: Key::Char('j'), .. } if m == Mode::Normal => {
-                        self.move_cursor_down();
-                        Transition::Mode(Mode::Normal)
-                    }
-                    Input { key: Key::Char('k'), .. } if m == Mode::Normal => {
-                        self.move_cursor_up();
-                        Transition::Mode(Mode::Normal)
-                    }
-                    Input { key: Key::Char('l'), .. } if m == Mode::Normal => {
-                        self.move_cursor_right();
-                        Transition::Mode(Mode::Normal)
-                    }
-                    Input { key: Key::Backspace, .. } => {
-                        self.backspace();
-                        Transition::Nop
-                    }
-                    Input { key: Key::Char(c), .. } if m == Mode::Insert => {
-                        self.insert_char(c);
-                        Transition::Mode(Mode::Insert)
-                    }
-                    Input { key: Key::Char('e'), ctrl: true, .. }
-                        if m == Mode::Normal =>
-                    {
-                        self.scroll_down(1);
-                        Transition::Nop
-                    }
-                    Input { key: Key::Char('y'), ctrl: true, .. }
-                        if m == Mode::Normal =>
-                    {
-                        self.scroll_up(1);
-                        Transition::Nop
-                    }
-                    Input { key: Key::Char('d'), ctrl: true, .. }
-                        if m == Mode::Normal =>
-                    {
-                        self.scroll_down(self.area.height.div_ceil(2) as usize);
-                        Transition::Nop
-                    }
-                    Input { key: Key::Char('u'), ctrl: true, .. }
-                        if m == Mode::Normal =>
-                    {
-                        self.scroll_up(self.area.height.div_ceil(2) as usize);
-                        Transition::Nop
-                    }
-                    Input { key: Key::Char('f'), ctrl: true, .. }
-                        if m == Mode::Normal =>
-                    {
-                        self.scroll_down(self.area.height as usize);
-                        Transition::Nop
-                    }
-                    Input { key: Key::Char('b'), ctrl: true, .. }
-                        if m == Mode::Normal =>
-                    {
-                        self.scroll_up(self.area.height as usize);
-                        Transition::Nop
-                    }
-
-                    Input { key: Key::Char('G'), shift: true, .. }
-                        if m == Mode::Normal =>
-                    {
-                        let last_line = self.lines.len().saturating_sub(1);
-                        let last_col = if last_line < self.lines.len() {
-                            self.lines[last_line].len()
-                        } else {
-                            0
-                        };
-                        self.cursor = (last_line, last_col);
-                        self.adjust_scroll_offset();
-                        Transition::Mode(Mode::Normal)
-                    }
-
-                    // --------
-                    // operators
-                    // --------
-                    Input { key: Key::Char('g'), .. }
-                        if self.pending.key == Key::Char('g')
-                            && m == Mode::Normal =>
-                    {
-                        self.cursor = (0, 0);
-                        self.scroll_offset = 0;
-                        self.pending = Input::default();
-                        Transition::Mode(Mode::Normal)
-                    }
-
-                    // First 'g' of 'gg' command
-                    i @ Input { key: Key::Char('g'), .. }
-                        if m == Mode::Normal =>
-                    {
-                        Transition::Pending(i)
-                    }
-                    _ => Transition::Nop,
-                }
-            }
+            Mode::Normal => self.handle_normal_mode(input),
+            Mode::Insert => self.handle_insert_mode(input),
+            Mode::Operator(_) => Transition::Nop,
         }
     }
 }

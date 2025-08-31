@@ -1,5 +1,7 @@
 use vincenzo::torrent::{InfoHash, TorrentState};
 
+use crate::Input;
+
 /// A new component to be rendered on the UI.
 /// Used in conjunction with [`Action`]
 #[derive(Clone, Copy)]
@@ -16,7 +18,12 @@ pub enum Action {
     Quit,
     Error,
     None,
+
     TerminalEvent(crossterm::event::Event),
+
+    /// First the page will process TerminalEvent and transform it into Input.
+    Input(Input),
+
     /// Render another page on the UI
     ChangePage(Page),
 

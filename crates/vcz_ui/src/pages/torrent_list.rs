@@ -1,6 +1,4 @@
-use crossterm::event::{KeyCode, KeyEventKind};
 use ratatui::{
-    crossterm,
     prelude::*,
     widgets::{
         Block, Borders, Clear, List, ListItem, ListState, Paragraph, Scrollbar,
@@ -15,7 +13,7 @@ use vincenzo::{
 };
 
 use crate::{
-    PALETTE,
+    Input, Key, PALETTE,
     action::Action,
     centered_rect,
     tui::Event,
@@ -285,28 +283,10 @@ impl<'a> Page for TorrentList<'a> {
         }
 
         if let Some(textarea) = self.textarea.as_mut() {
-            let area = centered_rect(60, 10, f.area());
+            let area = centered_rect(60, 20, f.area());
             f.render_widget(Clear, area);
             textarea.draw(f, area);
         }
-    }
-
-    fn handle_event(&mut self, event: crossterm::event::Event) {
-        // if the child component is some, let it handle the event.
-        if let Some(textarea) = &mut self.textarea {
-            if textarea.handle_event(event.clone()) {
-                self.textarea = None;
-                return;
-            }
-            if let crossterm::event::Event::Key(key) = event
-                && key.kind == KeyEventKind::Press
-                && key.code == KeyCode::Enter
-                && let Some(magnet) = self.validate()
-            {
-                self.submit_magnet_link(magnet);
-            }
-        }
-        self.handle_action(Action::TerminalEvent(event));
     }
 
     fn get_action(&self, event: crate::tui::Event) -> crate::action::Action {
@@ -317,6 +297,22 @@ impl<'a> Page for TorrentList<'a> {
             Event::Error => Action::Error,
             Event::TerminalEvent(e) => Action::TerminalEvent(e),
         }
+    }
+
+    fn handle_event(&mut self, event: crate::tui::Event) -> Action {
+        let crate::tui::Event::TerminalEvent(event) = event else {
+            return self.get_action(event);
+        };
+        let i = event.into();
+
+        // if the child component is some, let it handle the event.
+        if let Some(textarea) = &mut self.textarea
+            && textarea.handle_event(&i)
+        {
+            self.textarea = None;
+            return Action::None;
+        }
+        Action::Input(i)
     }
 
     fn handle_action(&mut self, action: Action) {
@@ -338,41 +334,43 @@ impl<'a> Page for TorrentList<'a> {
                 self.torrent_infos = torrent_states;
             }
 
-            Action::TerminalEvent(crossterm::event::Event::Key(k))
-                if k.kind == KeyEventKind::Press =>
-            {
-                match k.code {
-                    KeyCode::Char('q') if self.textarea.is_none() => {
-                        self.quit();
-                    }
-                    KeyCode::Char('d') => {
-                        self.delete_torrent();
-                    }
-                    KeyCode::Down | KeyCode::Char('j') => {
-                        self.next();
-                    }
-                    KeyCode::Up | KeyCode::Char('k') => {
-                        self.previous();
-                    }
-                    KeyCode::Char('t') if self.textarea.is_none() => {
-                        let mut textarea = VimInput::default();
-
-                        textarea
-                            .set_placeholder_text("Paste magnet link here...");
-
-                        self.textarea = Some(textarea);
-                    }
-                    KeyCode::Char('p') => {
-                        if let Some(active_torrent) = &self.active_torrent {
-                            let _ = self.tx.send(Action::TogglePause(
-                                active_torrent.clone(),
-                            ));
-                        }
-                    }
-                    _ => {}
+            Action::Input(input) if self.textarea.is_some() => {
+                if let Input { key: Key::Enter, .. } = input
+                    && let Some(magnet) = self.validate()
+                {
+                    self.submit_magnet_link(magnet);
                 }
             }
 
+            Action::Input(input) if self.textarea.is_none() => match input {
+                Input { key: Key::Char('q'), .. } => {
+                    self.quit();
+                }
+                Input { key: Key::Char('d'), .. } => {
+                    self.delete_torrent();
+                }
+                Input { key: Key::Char('j'), .. } => {
+                    self.next();
+                }
+                Input { key: Key::Char('k'), .. } => {
+                    self.previous();
+                }
+                Input { key: Key::Char('t'), .. } => {
+                    let mut textarea = VimInput::default();
+
+                    textarea.set_placeholder_text("Paste magnet link here...");
+
+                    self.textarea = Some(textarea);
+                }
+                Input { key: Key::Char('p'), .. }
+                    if let Some(active_torrent) = &self.active_torrent =>
+                {
+                    let _ = self
+                        .tx
+                        .send(Action::TogglePause(active_torrent.clone()));
+                }
+                _ => {}
+            },
             _ => {}
         }
     }

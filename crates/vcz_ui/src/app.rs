@@ -61,14 +61,11 @@ impl App {
 
         loop {
             let e = tui.next().await?;
-            let a = self.page.get_action(e);
+            let a = self.page.handle_event(e);
             let _ = tx.send(a);
 
             while let Ok(action) = rx.try_recv() {
                 match action {
-                    Action::TerminalEvent(e) => {
-                        self.page.handle_event(e);
-                    }
                     Action::Render => {
                         let _ = tui.draw(|f| {
                             self.page.draw(f);

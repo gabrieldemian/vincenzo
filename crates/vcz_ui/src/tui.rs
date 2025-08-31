@@ -82,13 +82,13 @@ impl Tui {
         let event_tx = self.event_tx.clone();
 
         tokio::spawn(async move {
+            let mut reader = EventStream::default();
             let mut tick_interval = tokio::time::interval(tick_delay);
             let mut render_interval = tokio::time::interval(render_delay);
 
             loop {
                 let tick_delay = tick_interval.tick();
                 let render_delay = render_interval.tick();
-                let mut reader = EventStream::default();
 
                 tokio::select! {
                     event = reader.next().fuse() => {

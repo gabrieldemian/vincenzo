@@ -543,8 +543,7 @@ impl Daemon {
                 stats: Stats { leechers: 4, seeders: 35, interval: 1000 },
                 connected_peers: 25,
                 downloading_from: 5,
-                have_info: true,
-                download_rate: 15_000,
+                download_rate: 15_000.0,
                 downloaded: 0,
                 size: 150_000_000_000,
                 info_hash: InfoHash::random(),
@@ -556,8 +555,7 @@ impl Daemon {
                 stats: Stats { leechers: 4, seeders: 35, interval: 1000 },
                 connected_peers: 30,
                 downloading_from: 3,
-                have_info: true,
-                download_rate: 0,
+                download_rate: 0.0,
                 downloaded: 150_000_000,
                 size: 150_000_000,
                 info_hash: InfoHash::random(),
@@ -569,8 +567,7 @@ impl Daemon {
                 stats: Stats { leechers: 1, seeders: 9, interval: 1000 },
                 connected_peers: 25,
                 downloading_from: 3,
-                have_info: true,
-                download_rate: 12_000,
+                download_rate: 12_000.0,
                 downloaded: 100,
                 size: 180_327_100_000,
                 info_hash: InfoHash::random(),
@@ -582,8 +579,7 @@ impl Daemon {
                 stats: Stats { leechers: 1, seeders: 9, interval: 1000 },
                 connected_peers: 25,
                 downloading_from: 3,
-                have_info: true,
-                download_rate: 12_000,
+                download_rate: 12_000.0,
                 downloaded: 100,
                 size: 180_327_100_000,
                 info_hash: InfoHash::random(),
@@ -595,8 +591,7 @@ impl Daemon {
                 stats: Stats { leechers: 1, seeders: 9, interval: 1000 },
                 connected_peers: 25,
                 downloading_from: 3,
-                have_info: true,
-                download_rate: 12_000,
+                download_rate: 12_000.0,
                 downloaded: 100,
                 size: 180_327_100_000,
                 info_hash: InfoHash::random(),
@@ -608,8 +603,7 @@ impl Daemon {
                 stats: Stats { leechers: 1, seeders: 9, interval: 1000 },
                 connected_peers: 25,
                 downloading_from: 3,
-                have_info: true,
-                download_rate: 12_000,
+                download_rate: 12_000.0,
                 downloaded: 100,
                 size: 180_327_100_000,
                 info_hash: InfoHash::random(),
@@ -627,10 +621,10 @@ impl Daemon {
             downloaded,
             ..
         } = &mut self.torrent_states[0];
-        *download_rate = rand::random_range(30_000..100_000);
-        *upload_rate = rand::random_range(20_000..45_000);
-        *uploaded += *upload_rate;
-        *downloaded += *download_rate;
+        *download_rate = rand::random_range(30_000.0..100_000.0);
+        *upload_rate = rand::random_range(20_000.0..45_000.0);
+        *uploaded += *upload_rate as u64;
+        *downloaded += *download_rate as u64;
 
         let TorrentState {
             download_rate,
@@ -639,10 +633,10 @@ impl Daemon {
             downloaded,
             ..
         } = &mut self.torrent_states[1];
-        *upload_rate = rand::random_range(70_000..100_000);
-        *download_rate = rand::random_range(0..1_000);
-        *uploaded += *upload_rate;
-        *downloaded += *download_rate;
+        *upload_rate = rand::random_range(70_000.0..100_000.0);
+        *download_rate = rand::random_range(0.0..1_000.0);
+        *uploaded += *upload_rate as u64;
+        *downloaded += *download_rate as u64;
 
         let TorrentState {
             download_rate,
@@ -651,9 +645,9 @@ impl Daemon {
             uploaded,
             ..
         } = &mut self.torrent_states[2];
-        *download_rate = rand::random_range(30_000..100_000);
-        *downloaded += *download_rate;
-        *uploaded += *upload_rate;
+        *download_rate = rand::random_range(30_000.0..100_000.0);
+        *downloaded += *download_rate as u64;
+        *uploaded += *upload_rate as u64;
 
         let TorrentState {
             download_rate,
@@ -663,9 +657,9 @@ impl Daemon {
             ..
         } = &mut self.torrent_states[3];
 
-        *download_rate = rand::random_range(30_000..100_000);
-        *downloaded += *download_rate;
-        *uploaded += *upload_rate;
+        *download_rate = rand::random_range(30_000.0..100_000.0);
+        *downloaded += *download_rate as u64;
+        *uploaded += *upload_rate as u64;
         let TorrentState {
             download_rate,
             downloaded,
@@ -674,9 +668,9 @@ impl Daemon {
             ..
         } = &mut self.torrent_states[4];
 
-        *download_rate = rand::random_range(30_000..100_000);
-        *downloaded += *download_rate;
-        *uploaded += *upload_rate;
+        *download_rate = rand::random_range(30_000.0..100_000.0);
+        *downloaded += *download_rate as u64;
+        *uploaded += *upload_rate as u64;
 
         let TorrentState {
             download_rate,
@@ -685,8 +679,8 @@ impl Daemon {
             uploaded,
             ..
         } = &mut self.torrent_states[5];
-        *download_rate = rand::random_range(30_000..100_000);
-        *downloaded += *download_rate;
-        *uploaded += *upload_rate;
+        *download_rate = rand::random_range(30_000.0..100_000.0);
+        *downloaded += *download_rate as u64;
+        *uploaded += *upload_rate as u64;
     }
 }

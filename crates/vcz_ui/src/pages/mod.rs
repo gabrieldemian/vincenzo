@@ -13,10 +13,10 @@ pub trait Page {
     /// Draw on the screen, can also call draw on it's components.
     fn draw(&mut self, f: &mut Frame);
 
+    fn handle_event(&mut self, event: Event) -> Action;
+
     /// Handle an action, for example, key presses, change to another page, etc.
     fn handle_action(&mut self, action: Action);
-
-    fn handle_event(&mut self, event: crossterm::event::Event);
 
     /// get an app event and transform into a page action
     fn get_action(&self, event: Event) -> Action;
