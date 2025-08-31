@@ -71,14 +71,18 @@ pub struct VimInput<'a> {
     cursor: (usize, usize), // (row, col)
     block: Block<'a>,
     style: Style,
+    area: Rect,
     cursor_style: Style,
+    scroll_offset: usize,
 }
 
 impl Default for VimInput<'_> {
     fn default() -> Self {
         let mode = Mode::default();
         Self {
+            area: Rect::default(),
             block: mode.block(),
+            scroll_offset: 0,
             style: Style::default(),
             cursor_style: Style::default(),
             mode,
@@ -92,13 +96,22 @@ impl Default for VimInput<'_> {
 
 impl<'a> VimInput<'a> {
     pub fn draw(&mut self, frame: &mut Frame, area: Rect) {
-        self.chars_per_line = area.width as usize - 4;
-        let mut lines = Vec::new();
+        let block_inner = self.block.inner(area);
+        let lines_count = block_inner.height as usize;
+        self.chars_per_line = block_inner.width as usize;
+
+        self.area = block_inner;
+        self.chars_per_line = area.width as usize;
 
         self.ensure_cursor_in_bounds();
-        // self.adjust_scroll_offset(area.height as usize);
 
-        for (i, line) in self.lines.iter().enumerate() {
+        // render only visible lines
+        let mut lines = Vec::new();
+        let start_line = self.scroll_offset;
+        let end_line = (self.scroll_offset + lines_count).min(self.lines.len());
+
+        for i in start_line..end_line {
+            let line = &self.lines[i];
             let mut spans = Vec::new();
 
             if i == self.cursor.0 {
@@ -116,29 +129,56 @@ impl<'a> VimInput<'a> {
                         }
                     }
 
-                    // if cursor is at the end of the line, show cursor
-                    // indicator
                     if self.cursor.1 >= line.len() {
                         spans.push(Span::styled(" ", self.mode.cursor_style()));
                     }
                 }
             } else {
-                // For non-cursor lines, just show the text
                 spans.push(Span::raw(line.clone()));
             }
 
-            lines.push(Line::from(spans));
+            // add scroll indicators if needed
+            if i == start_line && self.scroll_offset > 0 {
+                let mut indicator_spans =
+                    vec![Span::styled("↑", PALETTE.purple), Span::raw(" ")];
+                indicator_spans.extend(spans);
+                lines.push(Line::from(indicator_spans));
+            } else if i == end_line - 1 && end_line < self.lines.len() {
+                let mut indicator_spans =
+                    vec![Span::styled("↓", PALETTE.purple), Span::raw(" ")];
+                indicator_spans.extend(spans);
+                lines.push(Line::from(indicator_spans));
+            } else {
+                lines.push(Line::from(spans));
+            }
         }
 
-        // If we're on a line that doesn't exist yet (shouldn't happen, but just
-        // in case)
-        if self.cursor.0 >= lines.len() {
-            let spans = vec![Span::styled(" ", self.mode.cursor_style())];
-            lines.push(Line::from(spans));
+        while lines.len() < lines_count {
+            lines.push(Line::from(""));
         }
 
         let list = List::new(lines).block(self.block.clone());
         frame.render_widget(list, area);
+    }
+
+    fn adjust_scroll_offset(&mut self) {
+        let visible_height = self.area.height as usize;
+
+        // If cursor is above visible area, scroll up
+        if self.cursor.0 < self.scroll_offset {
+            self.scroll_offset = self.cursor.0;
+        }
+
+        // If cursor is below visible area, scroll down
+        let bottom_line = self.scroll_offset + visible_height - 1;
+        if self.cursor.0 > bottom_line {
+            self.scroll_offset = self.cursor.0 - visible_height + 1;
+        }
+
+        // Ensure scroll_offset doesn't go beyond bounds
+        let max_scroll = self.lines.len().saturating_sub(visible_height);
+        self.scroll_offset = self.scroll_offset.min(max_scroll);
+        self.scroll_offset = self.scroll_offset.max(0);
     }
 
     pub fn set_block(&mut self, block: Block<'a>) {
@@ -175,6 +215,10 @@ impl<'a> VimInput<'a> {
         if self.cursor.1 > max_col {
             self.cursor.1 = max_col;
         }
+
+        let max_scroll =
+            self.lines.len().saturating_sub(self.area.height as usize);
+        self.scroll_offset = self.scroll_offset.min(max_scroll);
     }
 
     fn insert_char(&mut self, c: char) {
@@ -200,6 +244,7 @@ impl<'a> VimInput<'a> {
             self.break_lines_from(row);
         }
         self.ensure_cursor_in_bounds();
+        self.adjust_scroll_offset();
     }
 
     fn break_lines_from(&mut self, start_row: usize) {
@@ -282,6 +327,7 @@ impl<'a> VimInput<'a> {
             self.cursor.0 -= 1;
             self.cursor.1 = prev_line_len;
         }
+        self.adjust_scroll_offset();
     }
 
     fn move_cursor_left(&mut self) {
@@ -292,6 +338,7 @@ impl<'a> VimInput<'a> {
             self.cursor.1 = self.lines[self.cursor.0].len();
         }
         self.ensure_cursor_in_bounds();
+        self.adjust_scroll_offset();
     }
 
     fn move_cursor_right(&mut self) {
@@ -302,6 +349,7 @@ impl<'a> VimInput<'a> {
             self.cursor.1 = 0;
         }
         self.ensure_cursor_in_bounds();
+        self.adjust_scroll_offset();
     }
 
     fn move_cursor_up(&mut self) {
@@ -310,6 +358,7 @@ impl<'a> VimInput<'a> {
             self.cursor.1 = self.cursor.1.min(self.lines[self.cursor.0].len());
         }
         self.ensure_cursor_in_bounds();
+        self.adjust_scroll_offset();
     }
 
     fn move_cursor_down(&mut self) {
@@ -318,6 +367,7 @@ impl<'a> VimInput<'a> {
             self.cursor.1 = self.cursor.1.min(self.lines[self.cursor.0].len());
         }
         self.ensure_cursor_in_bounds();
+        self.adjust_scroll_offset();
     }
 
     /// Return true if should quit the input.
@@ -333,6 +383,41 @@ impl<'a> VimInput<'a> {
             _ => {}
         };
         false
+    }
+
+    // Scroll up by X lines
+    fn scroll_up(&mut self, lines: usize) {
+        let new_scroll = self.scroll_offset.saturating_sub(lines);
+
+        let scroll_amount = self.scroll_offset - new_scroll;
+
+        self.scroll_offset = new_scroll;
+
+        if self.cursor.0 > 0 {
+            self.cursor.0 = self.cursor.0.saturating_sub(scroll_amount);
+            self.cursor.1 = self.cursor.1.min(self.lines[self.cursor.0].len());
+        }
+
+        self.ensure_cursor_in_bounds();
+    }
+
+    // Scroll down by X lines
+    fn scroll_down(&mut self, lines: usize) {
+        let max_scroll =
+            self.lines.len().saturating_sub(self.area.height as usize);
+        let new_scroll = (self.scroll_offset + lines).min(max_scroll);
+
+        let scroll_amount = new_scroll - self.scroll_offset;
+
+        self.scroll_offset = new_scroll;
+
+        if self.cursor.0 < self.lines.len() - 1 {
+            self.cursor.0 =
+                (self.cursor.0 + scroll_amount).min(self.lines.len() - 1);
+            self.cursor.1 = self.cursor.1.min(self.lines[self.cursor.0].len());
+        }
+
+        self.ensure_cursor_in_bounds();
     }
 
     pub fn transition(&mut self, input: Input) -> Transition {
@@ -383,37 +468,79 @@ impl<'a> VimInput<'a> {
                         self.insert_char(c);
                         Transition::Mode(Mode::Insert)
                     }
+                    Input { key: Key::Char('e'), ctrl: true, .. }
+                        if m == Mode::Normal =>
+                    {
+                        self.scroll_down(1);
+                        Transition::Nop
+                    }
+                    Input { key: Key::Char('y'), ctrl: true, .. }
+                        if m == Mode::Normal =>
+                    {
+                        self.scroll_up(1);
+                        Transition::Nop
+                    }
+                    Input { key: Key::Char('d'), ctrl: true, .. }
+                        if m == Mode::Normal =>
+                    {
+                        self.scroll_down(self.area.height.div_ceil(2) as usize);
+                        Transition::Nop
+                    }
+                    Input { key: Key::Char('u'), ctrl: true, .. }
+                        if m == Mode::Normal =>
+                    {
+                        self.scroll_up(self.area.height.div_ceil(2) as usize);
+                        Transition::Nop
+                    }
+                    Input { key: Key::Char('f'), ctrl: true, .. }
+                        if m == Mode::Normal =>
+                    {
+                        self.scroll_down(self.area.height as usize);
+                        Transition::Nop
+                    }
+                    Input { key: Key::Char('b'), ctrl: true, .. }
+                        if m == Mode::Normal =>
+                    {
+                        self.scroll_up(self.area.height as usize);
+                        Transition::Nop
+                    }
+
+                    Input { key: Key::Char('G'), shift: true, .. }
+                        if m == Mode::Normal =>
+                    {
+                        let last_line = self.lines.len().saturating_sub(1);
+                        let last_col = if last_line < self.lines.len() {
+                            self.lines[last_line].len()
+                        } else {
+                            0
+                        };
+                        self.cursor = (last_line, last_col);
+                        self.adjust_scroll_offset();
+                        Transition::Mode(Mode::Normal)
+                    }
+
+                    // --------
+                    // operators
+                    // --------
+                    Input { key: Key::Char('g'), .. }
+                        if self.pending.key == Key::Char('g')
+                            && m == Mode::Normal =>
+                    {
+                        self.cursor = (0, 0);
+                        self.scroll_offset = 0;
+                        self.pending = Input::default();
+                        Transition::Mode(Mode::Normal)
+                    }
+
+                    // First 'g' of 'gg' command
+                    i @ Input { key: Key::Char('g'), .. }
+                        if m == Mode::Normal =>
+                    {
+                        Transition::Pending(i)
+                    }
                     _ => Transition::Nop,
                 }
-
-                // Handle the pending operator
-                // match self.mode {
-                //     Mode::Operator('y') => {
-                //         self.textarea.copy();
-                //         Transition::Mode(Mode::Normal)
-                //     }
-                //     Mode::Operator('d') => {
-                //         self.textarea.cut();
-                //         Transition::Mode(Mode::Normal)
-                //     }
-                //     Mode::Operator('c') => {
-                //         self.textarea.cut();
-                //         Transition::Mode(Mode::Insert)
-                //     }
-                //     _ => Transition::Nop,
-                // }
-            } /* Mode::Insert => match input {
-               *     Input { key: Key::Esc, .. }
-               *     | Input { key: Key::Char('c'), ctrl:
-               * true, .. } =>
-               * {
-               *         Transition::Mode(Mode::Normal)
-               *     }
-               *     input => {
-               *         self.insert_char(c);
-               *         Transition::Mode(Mode::Insert)
-               *     }
-               * }, */
+            }
         }
     }
 }

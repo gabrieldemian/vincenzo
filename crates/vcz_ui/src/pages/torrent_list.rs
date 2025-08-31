@@ -285,7 +285,7 @@ impl<'a> Page for TorrentList<'a> {
         }
 
         if let Some(textarea) = self.textarea.as_mut() {
-            let area = centered_rect(60, 30, f.area());
+            let area = centered_rect(60, 10, f.area());
             f.render_widget(Clear, area);
             textarea.draw(f, area);
         }
