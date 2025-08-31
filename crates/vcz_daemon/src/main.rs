@@ -1,4 +1,3 @@
-use clap::Parser;
 use futures::SinkExt;
 use magnet_url::Magnet;
 use tokio::{
@@ -9,7 +8,6 @@ use tokio_util::codec::Framed;
 use tracing::Level;
 use tracing_subscriber::FmtSubscriber;
 use vincenzo::{
-    args::Args,
     config::CONFIG,
     daemon::Daemon,
     daemon_wire::{DaemonCodec, Message},
@@ -28,8 +26,6 @@ async fn main() -> Result<(), Error> {
 
     tracing::subscriber::set_global_default(subscriber)
         .expect("setting default subscriber failed");
-
-    let args = Args::parse();
 
     tracing::info!("config: {:?}", *CONFIG);
 
@@ -77,20 +73,20 @@ async fn main() -> Result<(), Error> {
     // 2. Fire the corresponding message of a CLI flag.
     //
     // add a a new torrent to Daemon
-    if let Some(magnet) = args.magnet {
-        let magnet = Magnet::new(&magnet)?;
+    if let Some(magnet) = &CONFIG.magnet {
+        let magnet = Magnet::new(magnet)?;
         socket.send(Message::NewTorrent(magnet)).await?;
     }
 
-    if args.stats {
+    if CONFIG.stats {
         socket.send(Message::PrintTorrentStatus).await?;
     }
 
-    if args.quit {
+    if CONFIG.quit {
         socket.send(Message::Quit).await?;
     }
 
-    if let Some(id) = args.pause {
+    if let Some(id) = &CONFIG.pause {
         let id = hex::decode(id);
         if let Ok(id) = id {
             socket.send(Message::TogglePause(id.try_into().unwrap())).await?;

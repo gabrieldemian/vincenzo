@@ -1,12 +1,9 @@
-use clap::Parser;
 use magnet_url::Magnet;
 use tokio::{join, spawn, sync::mpsc};
 use tracing::Level;
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::FmtSubscriber;
-use vincenzo::{
-    args::Args, config::CONFIG, daemon::Daemon, disk::Disk, error::Error,
-};
+use vincenzo::{config::CONFIG, daemon::Daemon, disk::Disk, error::Error};
 
 use vcz_ui::{action::Action, app::App};
 
@@ -63,12 +60,10 @@ async fn main() -> Result<(), Error> {
     // Start and run the terminal UI
     let mut fr = App::new(fr_tx.clone());
 
-    let args = Args::parse();
-
     // If the user passed a magnet through the CLI,
     // start this torrent immediately
-    if let Some(magnet) = args.magnet {
-        let magnet = Magnet::new(&magnet)?;
+    if let Some(magnet) = &CONFIG.magnet {
+        let magnet = Magnet::new(magnet)?;
         let _ = fr_tx.send(Action::NewTorrent(magnet));
     }
 

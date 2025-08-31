@@ -1207,7 +1207,7 @@ mod tests {
 
         let info_hash = magnet.parse_xt_infohash();
 
-        let metadata_size = info.metadata_size();
+        let metadata_size = Some(1234);
 
         let (btx, _brx) = broadcast::channel::<PeerBrMsg>(500);
 

@@ -58,6 +58,7 @@ pub trait VczBitfield {
     fn from_piece(piece: usize) -> Bitfield {
         bitvec![u8, Msb0; 0; piece]
     }
+    /// Set vector to a new len, in bits.
     fn new_and_resize(vec: Vec<u8>, len: usize) -> Bitfield {
         let mut s = Bitfield::from_vec(vec);
         unsafe { s.set_len(len) };
@@ -69,13 +70,13 @@ pub trait VczBitfield {
 
 impl VczBitfield for Bitfield {
     fn safe_set(&mut self, index: usize) {
-        if index > self.len() {
+        if self.len() <= index {
             self.resize(index + 1, false);
         }
         unsafe { self.set_unchecked(index, true) };
     }
     fn safe_get(&mut self, index: usize) -> BitRef<'_, Const, u8, Msb0> {
-        if index > self.len() {
+        if self.len() <= index {
             self.resize(index + 1, false);
         }
         unsafe { self.get_unchecked(index) }
@@ -94,7 +95,10 @@ mod tests {
 
     #[test]
     fn safe_set() {
+        // 0, 1
         let mut bitfield = Bitfield::new_and_resize(vec![0], 2);
+        assert_eq!(bitfield.len(), 2);
+        // 0, 1, 2
         bitfield.safe_set(2);
         assert_eq!(bitfield.len(), 3);
         assert_eq!(bitfield.get(2).unwrap(), true);
@@ -102,6 +106,14 @@ mod tests {
         bitfield.safe_set(10);
         assert_eq!(bitfield.len(), 11);
         assert_eq!(bitfield.get(10).unwrap(), true);
+    }
+
+    #[test]
+    fn safe_get() {
+        let mut bitfield = Bitfield::new_and_resize(vec![0], 1);
+        assert_eq!(bitfield.safe_get(10), false);
+        assert_eq!(bitfield.len(), 11);
+        assert_eq!(bitfield.get(10).unwrap(), false);
     }
 
     #[test]

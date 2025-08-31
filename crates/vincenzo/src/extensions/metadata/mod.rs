@@ -342,7 +342,6 @@ mod tests {
             ])
         );
         assert_eq!(info.file_length, Some(911629679));
-        assert_eq!(info.metadata_size(), None);
         assert_eq!(info.source, Some("nyaa.si".to_string()));
 
         println!("{info:?}");

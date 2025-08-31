@@ -3,7 +3,6 @@
 #![feature(ip_as_octets)]
 #![feature(trait_alias)]
 
-pub mod args;
 pub mod bitfield;
 pub mod config;
 pub mod counter;
