@@ -24,7 +24,6 @@ use crate::{
 
 use super::Page;
 
-#[derive(Clone)]
 pub struct TorrentList<'a> {
     active_torrent: Option<InfoHash>,
     textarea: Option<VimInput<'a>>,
@@ -61,16 +60,14 @@ impl<'a> TorrentList<'a> {
     fn validate(&mut self) -> Option<Magnet> {
         let Some(textarea) = &mut self.textarea else { return None };
 
-        let magnet_str = textarea.textarea.lines().join("");
+        let magnet_str = textarea.lines().join("");
         let magnet_str = magnet_str.trim();
         let magnet = magnet_url::Magnet::new(magnet_str);
 
         match magnet {
             Ok(magnet) => {
-                textarea
-                    .textarea
-                    .set_style(Style::default().fg(PALETTE.success));
-                textarea.textarea.set_block(
+                textarea.set_style(Style::default().fg(PALETTE.success));
+                textarea.set_block(
                     Block::default()
                         .border_style(PALETTE.success)
                         .borders(Borders::ALL)
@@ -79,8 +76,8 @@ impl<'a> TorrentList<'a> {
                 Some(Magnet(magnet))
             }
             Err(err) => {
-                textarea.textarea.set_style(PALETTE.error.into());
-                textarea.textarea.set_block(
+                textarea.set_style(PALETTE.error.into());
+                textarea.set_block(
                     Block::default()
                         .borders(Borders::ALL)
                         .border_style(PALETTE.error)
@@ -257,18 +254,18 @@ impl<'a> Page for TorrentList<'a> {
         if self.torrent_infos.is_empty() {
             f.render_widget(
                 Paragraph::new("Press [t] to add a new torrent.")
-                    .block(block.clone())
+                    .block(block)
                     .centered(),
                 f.area(),
             );
         }
 
-        let mut torrent_list = List::new(torrent_rows).block(block);
+        let mut torrent_list = List::new(torrent_rows);
         if self.textarea.is_some() {
             torrent_list = torrent_list.dim();
         }
 
-        // Create two chunks, the body, and the footer
+        // one chunk for the torrent list, another for the network chart
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints(if has_active_torrent {
@@ -357,11 +354,10 @@ impl<'a> Page for TorrentList<'a> {
                     KeyCode::Up | KeyCode::Char('k') => {
                         self.previous();
                     }
-                    KeyCode::Char('t') => {
+                    KeyCode::Char('t') if self.textarea.is_none() => {
                         let mut textarea = VimInput::default();
 
                         textarea
-                            .textarea
                             .set_placeholder_text("Paste magnet link here...");
 
                         self.textarea = Some(textarea);

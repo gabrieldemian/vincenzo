@@ -98,7 +98,9 @@ pub mod tests {
 
     #[test]
     fn override_config() {
-        std::env::set_var("DOWNLOAD_DIR", "/new/download");
+        unsafe {
+            std::env::set_var("DOWNLOAD_DIR", "/new/download");
+        }
 
         assert_eq!(CONFIG.download_dir, "/new/download".to_owned());
     }
