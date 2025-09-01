@@ -8,6 +8,7 @@ use std::{
     sync::Arc,
 };
 
+use bendy::{decoding::FromBencode, encoding::ToBencode};
 use futures::future::join_all;
 use hashbrown::HashMap;
 use lru::LruCache;
@@ -27,12 +28,14 @@ use tracing::{debug, info, trace, warn};
 
 use crate::{
     bitfield::{Bitfield, VczBitfield},
+    config::CONFIG,
+    daemon::DaemonMsg,
     error::Error,
     extensions::{
         BLOCK_LEN, MetadataPiece,
         core::{Block, BlockInfo},
     },
-    metainfo::Info,
+    metainfo::{Info, MetaInfo},
     peer::{PeerCtx, PeerId},
     torrent::{InfoHash, TorrentCtx, TorrentMsg},
 };
@@ -146,31 +149,29 @@ pub enum ReturnToDisk {
 #[derive(Debug)]
 pub struct Disk {
     pub tx: mpsc::Sender<DiskMsg>,
+    daemon_tx: mpsc::Sender<DaemonMsg>,
     rx: Receiver<DiskMsg>,
 
-    pub free_tx: mpsc::UnboundedSender<ReturnToDisk>,
+    pub(crate) free_tx: mpsc::UnboundedSender<ReturnToDisk>,
     free_rx: mpsc::UnboundedReceiver<ReturnToDisk>,
 
-    pub torrent_ctxs: HashMap<InfoHash, Arc<TorrentCtx>>,
+    pub(crate) torrent_ctxs: HashMap<InfoHash, Arc<TorrentCtx>>,
 
-    pub peer_ctxs: Vec<Arc<PeerCtx>>,
+    pub(crate) peer_ctxs: Vec<Arc<PeerCtx>>,
 
     /// The sequence in which pieces will be downloaded,
     /// based on `PieceStrategy`.
-    pub piece_order: HashMap<InfoHash, Vec<usize>>,
+    pub(crate) piece_order: HashMap<InfoHash, Vec<usize>>,
 
     /// Pieces that were requested and will be used to skip `piece_order`.
-    pub pieces_requested: HashMap<InfoHash, Bitfield>,
+    pub(crate) pieces_requested: HashMap<InfoHash, Bitfield>,
 
-    pub piece_strategy: HashMap<InfoHash, PieceStrategy>,
+    pub(crate) piece_strategy: HashMap<InfoHash, PieceStrategy>,
 
     /// How many pieces were downloaded.
-    pub downloaded_pieces: HashMap<InfoHash, u64>,
+    pub(crate) downloaded_pieces: HashMap<InfoHash, u64>,
 
-    pub endgame: HashMap<InfoHash, bool>,
-
-    /// Where to put downloaded torrents.
-    pub download_dir: String,
+    pub(crate) endgame: HashMap<InfoHash, bool>,
 
     /// A cache of blocks, where the key is a piece.
     block_cache: HashMap<InfoHash, BTreeMap<usize, Vec<Block>>>,
@@ -195,16 +196,19 @@ pub struct Disk {
 static FILE_CACHE_CAPACITY: usize = 512;
 
 impl Disk {
-    pub fn new(download_dir: String) -> Self {
-        let (tx, rx) = mpsc::channel::<DiskMsg>(512);
-        let (free_tx, free_rx) = mpsc::unbounded_channel();
-
-        Self {
+    pub async fn new(
+        daemon_tx: mpsc::Sender<DaemonMsg>,
+        tx: mpsc::Sender<DiskMsg>,
+        rx: mpsc::Receiver<DiskMsg>,
+        free_tx: mpsc::UnboundedSender<ReturnToDisk>,
+        free_rx: mpsc::UnboundedReceiver<ReturnToDisk>,
+    ) -> Result<Self, Error> {
+        let s = Self {
+            daemon_tx,
             free_tx,
             free_rx,
             rx,
             tx,
-            download_dir,
             file_handle_cache: LruCache::new(
                 NonZeroUsize::new(FILE_CACHE_CAPACITY).unwrap(),
             ),
@@ -220,7 +224,13 @@ impl Disk {
             block_infos: HashMap::default(),
             torrent_info: HashMap::default(),
             piece_order: HashMap::default(),
-        }
+        };
+
+        // ensure the necessary folders are created.
+        tokio::fs::create_dir_all(s.incomplete_torrents_path()).await?;
+        tokio::fs::create_dir_all(s.complete_torrents_path()).await?;
+
+        Ok(s)
     }
 
     #[tracing::instrument(name = "disk", skip_all)]
@@ -438,18 +448,74 @@ impl Disk {
         Ok(())
     }
 
+    fn complete_torrents_path(&self) -> PathBuf {
+        let mut path = CONFIG.metadata_dir.clone();
+        path.push("complete");
+        path
+    }
+
+    fn incomplete_torrents_path(&self) -> PathBuf {
+        let mut path = CONFIG.metadata_dir.clone();
+        path.push("incomplete");
+        path
+    }
+
+    /// Write an incomplete torrent info to disk
+    async fn write_incomplete_torrent_metainfo(
+        &self,
+        info: &Info,
+    ) -> Result<(), Error> {
+        let mut path = self.incomplete_torrents_path();
+        path.push(&info.name);
+        let buff = info.to_bencode()?;
+        let mut file = Self::open_file(path).await?;
+        file.write_all(&buff).await?;
+
+        Ok(())
+    }
+
+    /// Read all .torrent files from incomplete torrents, and add them to the
+    /// client.
+    async fn read_incomplete_torrents(&mut self) -> Result<(), Error> {
+        // iterate over all .torrent files here
+        let path = self.incomplete_torrents_path();
+
+        let mut entries = tokio::fs::read_dir(path).await?;
+
+        while let Some(entry) = entries.next_entry().await? {
+            let path = entry.path();
+
+            // only read .torrent files
+            if path.extension().and_then(|s| s.to_str()) == Some("torrent") {
+                continue;
+            }
+
+            let bytes = tokio::fs::read(&path).await?;
+            let metainfo = MetaInfo::from_bencode(&bytes)?;
+
+            // skip duplicate
+            if self.torrent_ctxs.contains_key(&metainfo.info.info_hash) {
+                continue;
+            }
+
+            self.daemon_tx.send(DaemonMsg::NewTorrentInfo(metainfo)).await?;
+        }
+
+        Ok(())
+    }
+
     /// Initialize necessary data.
-    /// Should be called after torrent has the info downloaded.
+    /// Called after torrent has the info downloaded.
     pub async fn new_torrent(
         &mut self,
         torrent_ctx: Arc<TorrentCtx>,
         info: Info,
     ) -> Result<(), Error> {
         let info_hash = &torrent_ctx.info_hash;
-
         let total_size = info.get_size();
         let piece_length = info.piece_length as u64;
 
+        self.write_incomplete_torrent_metainfo(&info).await?;
         self.torrent_ctxs.insert(info_hash.clone(), torrent_ctx.clone());
         self.torrent_info.insert(info_hash.clone(), info.clone());
 
@@ -1073,7 +1139,7 @@ impl Disk {
     /// Which is always "download_dir/name_of_torrent".
     pub fn base_path(&self, info_hash: &InfoHash) -> PathBuf {
         let info = self.torrent_info.get(info_hash).unwrap();
-        let mut base = PathBuf::from(&self.download_dir);
+        let mut base = CONFIG.download_dir.clone();
         base.push(&info.name);
         base
     }
@@ -1103,7 +1169,7 @@ mod tests {
             self, DEFAULT_REQUEST_QUEUE_LEN, Peer, PeerMsg, RequestManager,
             StateLog,
         },
-        torrent::{Connected, PeerBrMsg, Stats, Torrent},
+        torrent::{Connected, FromMagnet, PeerBrMsg, Stats, Torrent},
         tracker::{TrackerCtx, TrackerMsg},
     };
 
@@ -1127,8 +1193,6 @@ mod tests {
             (0..32).map(|_| rng.sample(Alphanumeric) as char).collect();
 
         let torrent_dir = "bla".to_owned();
-        let root_dir = format!("/tmp/{download_dir}/{torrent_dir}");
-        println!("{root_dir}");
 
         let original_hook = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |panic| {
@@ -1173,13 +1237,28 @@ mod tests {
         // we will simulate a remote peer that is already connected, unchoked,
         // interested, ready to receive msgs like RequestBlocks etc.
 
+        let (disk_tx, disk_rx) = mpsc::channel::<DiskMsg>(512);
+        let (disk_free_tx, disk_free_rx) =
+            mpsc::unbounded_channel::<ReturnToDisk>();
+
+        let mut daemon = Daemon::new(disk_tx.clone(), disk_free_tx.clone());
         let magnet = Magnet::new(&magnet).unwrap();
-        let mut disk = Disk::new(format!("/tmp/{download_dir}"));
-        let disk_tx = disk.tx.clone();
-        let free_tx = disk.free_tx.clone();
-        let mut daemon = Daemon::new(disk_tx.clone(), disk.free_tx.clone());
+
         let daemon_ctx = daemon.ctx.clone();
         let _daemon_tx = daemon_ctx.tx.clone();
+
+        let mut disk = Disk::new(
+            _daemon_tx,
+            disk_tx.clone(),
+            disk_rx,
+            disk_free_tx,
+            disk_free_rx,
+        )
+        .await
+        .unwrap();
+
+        let disk_tx = disk.tx.clone();
+        let free_tx = disk.free_tx.clone();
 
         let (tracker_tx, _tracker_rx) = mpsc::channel::<TrackerMsg>(100);
         let (torrent_tx, torrent_rx) = mpsc::channel::<TorrentMsg>(100);
@@ -1201,6 +1280,8 @@ mod tests {
             name: torrent_dir.clone(),
             file_length: None,
             files: Some(files.clone()),
+            size: 0,
+            info_hash: InfoHash::default(),
         };
 
         let pieces_len = info.pieces();
@@ -1216,7 +1297,6 @@ mod tests {
             free_tx: disk.free_tx.clone(),
             disk_tx: disk_tx.clone(),
             tx: torrent_tx,
-            magnet: magnet.clone(),
             info_hash: info_hash.clone(),
         });
 
@@ -1258,6 +1338,7 @@ mod tests {
         let stream = TcpStream::connect(local_addr).await?;
 
         let mut torrent = Torrent {
+            source: FromMagnet { magnet },
             state: Connected {
                 info: Some(info.clone()),
                 peer_pieces: HashMap::from([(peer_ctx_.id.clone(), pieces)]),
@@ -1382,7 +1463,8 @@ mod tests {
         assert_eq!(block.begin, 0);
         assert_eq!(block.block.len(), blocks[0].len as usize);
 
-        let _ = tokio::fs::remove_dir_all(format!("/tmp/{download_dir}")).await;
+        // let _ = tokio::fs::remove_dir_all(format!("/tmp/{download_dir}")).
+        // await;
 
         Ok(())
     }

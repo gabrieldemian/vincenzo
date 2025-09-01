@@ -3,13 +3,15 @@
 use std::collections::BTreeMap;
 
 use bendy::{
-    decoding::{self, FromBencode, Object, ResultExt},
+    decoding::{self, Decoder, FromBencode, Object, ResultExt},
     encoding::{self, AsString, Error, SingleItemEncoder, ToBencode},
 };
+use hashbrown::HashMap;
 
 use crate::{
     error,
     extensions::core::{BLOCK_LEN, BlockInfo},
+    torrent::InfoHash,
 };
 
 /// Metainfo is a .torrent file with information about the Torrent.
@@ -22,6 +24,60 @@ pub struct MetaInfo {
     pub comment: Option<String>,
     pub creation_date: Option<u32>,
     pub http_seeds: Option<Vec<String>>,
+}
+
+impl MetaInfo {
+    pub fn organize_trackers(&self) -> HashMap<&str, Vec<String>> {
+        let mut hashmap = HashMap::from([
+            ("udp", vec![]),
+            ("http", vec![]),
+            ("https", vec![]),
+        ]);
+
+        let mut list = vec![self.announce.clone()];
+
+        if let Some(l) = self.announce_list.clone() {
+            list.extend(l.into_iter().flatten());
+        }
+
+        for x in list {
+            let x = x.clone();
+            let mut uri = urlencoding::decode(&x).unwrap().to_string();
+            let (protocol, _) = x.split_once("%3A").unwrap();
+
+            if protocol == "udp" {
+                uri = uri.replace("udp://", "");
+                // remove any /announce
+                if let Some(i) = uri.find("/announce") {
+                    uri = uri[..i].to_string();
+                };
+            }
+
+            let trackers = hashmap.get_mut(protocol).unwrap();
+
+            trackers.push(uri.to_string());
+        }
+
+        hashmap
+    }
+
+    pub fn get_info_from_slice(
+        buf: &[u8],
+    ) -> Result<Option<&[u8]>, bendy::decoding::Error> {
+        let mut dict_decoder = Decoder::new(buf);
+        let mut obj =
+            dict_decoder.next_object()?.unwrap().try_into_dictionary()?;
+
+        while let Some(pair) = obj.next_pair()? {
+            if let (b"info", value) = pair {
+                let dict = value.try_into_dictionary()?;
+                let b = dict.into_raw()?;
+                return Ok(Some(b));
+            }
+        }
+
+        Ok(None)
+    }
 }
 
 /// File related information (Single-file format)
@@ -55,6 +111,12 @@ pub struct Info {
 
     /// The torrent's source, usually the tracker's website.
     pub source: Option<String>,
+
+    // the following is internal computed data for better ergonomics, and
+    // not included in the real Info.
+    /// The size of the bencoded Info.
+    pub size: usize,
+    pub info_hash: InfoHash,
 }
 
 impl Info {
@@ -76,6 +138,13 @@ impl Info {
     /// Calculate how many blocks there are per piece
     pub fn blocks_per_piece(&self) -> u32 {
         self.piece_length.div_ceil(BLOCK_LEN)
+    }
+
+    pub fn info_hash(buf: &[u8]) -> InfoHash {
+        let mut hasher = sha1_smol::Sha1::new();
+        hasher.update(buf);
+        let hash = hasher.digest().bytes();
+        InfoHash(hash)
     }
 
     /// Only get block infos of a piece.
@@ -341,8 +410,14 @@ impl FromBencode for Info {
         let mut piece_length = None;
         let mut pieces = None;
 
-        let mut dict_dec = object.try_into_dictionary()?;
-        while let Some(pair) = dict_dec.next_pair()? {
+        let bytes = object.try_into_dictionary()?;
+        let bytes = bytes.into_raw()?;
+        let size = bytes.len();
+        let info_hash = Info::info_hash(bytes);
+        let mut decoder = Decoder::new(bytes);
+        let mut dict = decoder.next_object()?.unwrap().try_into_dictionary()?;
+
+        while let Some(pair) = dict.next_pair()? {
             match pair {
                 (b"cross_seed_entry", value) => {
                     cross_seed_entry = AsString::decode_bencode_object(value)
@@ -408,6 +483,8 @@ impl FromBencode for Info {
             piece_length,
             pieces,
             source,
+            size,
+            info_hash,
         })
     }
 }
@@ -741,6 +818,11 @@ mod tests {
                         path: vec!["book.pdf".to_owned()],
                     }]),
                     file_length: None,
+                    size: 5095,
+                    info_hash: InfoHash([
+                        154, 233, 176, 64, 118, 135, 255, 199, 183, 28, 17,
+                        243, 46, 47, 150, 17, 152, 204, 57, 64,
+                    ]),
                 },
             }
         });
@@ -773,6 +855,8 @@ mod tests {
                     name: "debian-9.4.0-amd64-netinst.iso".to_owned(),
                     files: None,
                     file_length: Some(305_135_616),
+                    size: 23377,
+                    info_hash: InfoHash([116, 49, 169, 105, 179, 71, 225, 75, 186, 100, 27, 53, 23, 192, 36, 247, 180, 13, 251, 127]),
                 },
             }
         });
@@ -803,6 +887,8 @@ mod tests {
                 name: "debian-9.4.0-amd64-netinst.iso".to_owned(),
                 files: None,
                 file_length: Some(305_135_616),
+                size: 0,
+                info_hash: InfoHash::default(),
             },
         };
 
@@ -848,6 +934,21 @@ mod tests {
                 length: 222,
             }
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn info_from_slice() -> Result<(), Error> {
+        let metainfo_bytes = include_bytes!("../../../test-files/book.torrent");
+        let slice =
+            MetaInfo::get_info_from_slice(metainfo_bytes).unwrap().unwrap();
+
+        let info_hash = Info::info_hash(slice);
+        println!("{info_hash:?}");
+
+        // let info = Info::from_bencode(slice).unwrap();
+        // println!("{:?}", info.name);
 
         Ok(())
     }

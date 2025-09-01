@@ -20,7 +20,7 @@ use crate::{
     disk::{DiskMsg, ReturnToDisk},
     error::Error,
     magnet::Magnet,
-    metainfo::Info,
+    metainfo::{Info, MetaInfo},
     peer::{self, Peer, PeerCtx, PeerId, PeerMsg},
     tracker::{Tracker, TrackerCtx, TrackerMsg, TrackerTrait, event::Event},
     utils::to_human_readable,
@@ -39,7 +39,45 @@ use tokio::{
 };
 use tracing::{debug, info, trace, warn};
 
-pub trait TorrentTrait {}
+pub trait State {}
+
+/// If the torrent came from a magnet or metainfo.
+pub trait TorrentSource {
+    fn organize_trackers(&self) -> HashMap<&str, Vec<String>>;
+    fn info_hash(&self) -> InfoHash;
+    fn size(&self) -> u64;
+}
+
+pub(crate) struct FromMagnet {
+    pub magnet: Magnet,
+}
+
+pub(crate) struct FromMetaInfo {
+    pub meta_info: MetaInfo,
+}
+
+impl TorrentSource for FromMagnet {
+    fn organize_trackers(&self) -> HashMap<&str, Vec<String>> {
+        self.magnet.organize_trackers()
+    }
+    fn info_hash(&self) -> InfoHash {
+        self.magnet.parse_xt_infohash()
+    }
+    fn size(&self) -> u64 {
+        self.magnet.length().unwrap_or(0)
+    }
+}
+impl TorrentSource for FromMetaInfo {
+    fn organize_trackers(&self) -> HashMap<&str, Vec<String>> {
+        self.meta_info.organize_trackers()
+    }
+    fn info_hash(&self) -> InfoHash {
+        self.meta_info.info.info_hash.clone()
+    }
+    fn size(&self) -> u64 {
+        self.meta_info.info.get_size()
+    }
+}
 
 // States of the torrent, idle is when the tracker is not connected and the
 // torrent is not being downloaded
@@ -97,18 +135,19 @@ pub struct Connected {
     pub tracker_ctx: Arc<TrackerCtx>,
 }
 
-impl TorrentTrait for Idle {}
-impl TorrentTrait for Connected {}
+impl State for Idle {}
+impl State for Connected {}
 
 /// This is the main entity responsible for the high-level management of
 /// a torrent download or upload.
-pub struct Torrent<S: TorrentTrait> {
+pub struct Torrent<S: State, M: TorrentSource> {
     pub ctx: Arc<TorrentCtx>,
     pub daemon_ctx: Arc<DaemonCtx>,
     pub name: String,
     pub rx: mpsc::Receiver<TorrentMsg>,
-    pub state: S,
     pub status: TorrentStatus,
+    pub(crate) state: S,
+    pub(crate) source: M,
 }
 
 /// Context of [`Torrent`] that can be shared between other types
@@ -118,19 +157,18 @@ pub struct TorrentCtx {
     pub free_tx: mpsc::UnboundedSender<ReturnToDisk>,
     pub tx: mpsc::Sender<TorrentMsg>,
     pub btx: broadcast::Sender<PeerBrMsg>,
-    pub magnet: Magnet,
     pub info_hash: InfoHash,
 }
 
-impl Torrent<Idle> {
-    pub fn new(
+impl Torrent<Idle, FromMetaInfo> {
+    pub fn new_metainfo(
         disk_tx: mpsc::Sender<DiskMsg>,
         free_tx: mpsc::UnboundedSender<ReturnToDisk>,
         daemon_ctx: Arc<DaemonCtx>,
-        magnet: Magnet,
-    ) -> Torrent<Idle> {
-        let name = magnet.parse_dn();
-        let metadata_size = magnet.length().map(|v| v as usize);
+        meta_info: MetaInfo,
+    ) -> Torrent<Idle, FromMetaInfo> {
+        let name = meta_info.info.name.clone();
+        let metadata_size = meta_info.info.size;
 
         let (tx, rx) = mpsc::channel::<TorrentMsg>(100);
         let (btx, _brx) = broadcast::channel::<PeerBrMsg>(500);
@@ -140,12 +178,12 @@ impl Torrent<Idle> {
             btx,
             tx: tx.clone(),
             disk_tx,
-            info_hash: magnet.parse_xt_infohash(),
-            magnet,
+            info_hash: meta_info.info.info_hash.clone(),
         });
 
         Self {
-            state: Idle { metadata_size },
+            source: FromMetaInfo { meta_info },
+            state: Idle { metadata_size: Some(metadata_size) },
             name,
             status: TorrentStatus::default(),
             daemon_ctx,
@@ -153,23 +191,44 @@ impl Torrent<Idle> {
             rx,
         }
     }
+}
 
-    /// Start the Torrent and immediately spawns all the event loops.
-    #[tracing::instrument(skip_all)]
-    pub async fn start_and_run(self) -> Result<(), Error> {
-        let mut torrent = self.start().await?;
+impl Torrent<Idle, FromMagnet> {
+    pub fn new_magnet(
+        disk_tx: mpsc::Sender<DiskMsg>,
+        free_tx: mpsc::UnboundedSender<ReturnToDisk>,
+        daemon_ctx: Arc<DaemonCtx>,
+        magnet: Magnet,
+    ) -> Torrent<Idle, FromMagnet> {
+        let (tx, rx) = mpsc::channel::<TorrentMsg>(100);
+        let (btx, _brx) = broadcast::channel::<PeerBrMsg>(500);
 
-        torrent.spawn_outbound_peers().await?;
-        torrent.run().await?;
+        let ctx = Arc::new(TorrentCtx {
+            free_tx,
+            btx,
+            tx: tx.clone(),
+            disk_tx,
+            info_hash: magnet.parse_xt_infohash(),
+        });
+        let metadata_size = None;
 
-        Ok(())
+        Self {
+            name: magnet.parse_dn(),
+            source: FromMagnet { magnet },
+            state: Idle { metadata_size },
+            status: TorrentStatus::default(),
+            daemon_ctx,
+            ctx,
+            rx,
+        }
     }
+}
 
+impl<M: TorrentSource> Torrent<Idle, M> {
     /// Start the Torrent, by sending `connect` and `announce_exchange`
     /// messages to one of the trackers, and returning a list of peers.
-    pub async fn start(self) -> Result<Torrent<Connected>, Error> {
-        let c = self.ctx.clone();
-        let org_trackers = c.magnet.organize_trackers();
+    pub async fn start(self) -> Result<Torrent<Connected, M>, Error> {
+        let org_trackers = self.source.organize_trackers();
 
         if let Some(metadata_size) = self.state.metadata_size {
             let _ = self
@@ -208,9 +267,8 @@ impl Torrent<Idle> {
             tracker.ctx.tracker_addr
         );
 
-        let (res, payload) = tracker
-            .announce(Event::Started, 0, 0, c.magnet.length().unwrap_or(0))
-            .await?;
+        let (res, payload) =
+            tracker.announce(Event::Started, 0, 0, self.source.size()).await?;
 
         debug!("{res:?}");
 
@@ -231,12 +289,14 @@ impl Torrent<Idle> {
             Ok::<(), Error>(())
         });
 
+        drop(org_trackers);
+
         Ok(Torrent {
             state: Connected {
                 info: None,
                 peer_pieces: HashMap::default(),
                 counter: Counter::default(),
-                size: self.ctx.magnet.length().unwrap_or(0),
+                size: self.source.size(),
                 unchoked_peers: Vec::with_capacity(3),
                 opt_unchoked_peer: None,
                 connecting_peers: Vec::with_capacity(
@@ -255,6 +315,7 @@ impl Torrent<Idle> {
                 ),
                 info_pieces: BTreeMap::new(),
             },
+            source: self.source,
             ctx: self.ctx,
             daemon_ctx: self.daemon_ctx,
             name: self.name,
@@ -264,11 +325,11 @@ impl Torrent<Idle> {
     }
 }
 
-impl Torrent<Connected> {
+impl<M: TorrentSource> Torrent<Connected, M> {
     /// Run the Torrent main event loop to listen to internal [`TorrentMsg`].
     #[tracing::instrument(name = "torrent", skip_all,
         fields(
-            info = ?self.ctx.magnet.parse_xt_infohash()
+            info = ?self.source.info_hash()
         )
     )]
     pub async fn run(&mut self) -> Result<(), Error> {
@@ -496,7 +557,8 @@ impl Torrent<Connected> {
                                 });
 
                             let downloaded_info = Info::from_bencode(&info_bytes)?;
-                            let magnet_hash = self.ctx.magnet.hash().unwrap();
+                            self.state.metadata_size = Some(downloaded_info.size);
+                            let magnet_hash = self.source.info_hash();
 
                             let mut hasher = sha1_smol::Sha1::new();
                             hasher.update(&info_bytes);
@@ -505,7 +567,7 @@ impl Torrent<Connected> {
 
                             // validate the hash of the downloaded info
                             // against the hash of the magnet link
-                            if hex::decode(magnet_hash)
+                            if hex::decode(*magnet_hash)
                                 .map_err(|_| Error::BencodeError)?
                                 != hash.to_vec()
                             {
@@ -625,7 +687,6 @@ impl Torrent<Connected> {
                         });
 
                     // send periodic updates to the TUI
-                    // todo: use bitcode crate end send encoded payload.
                     let torrent_state = TorrentState {
                         name: self.name.clone(),
                         size: self.state.size,

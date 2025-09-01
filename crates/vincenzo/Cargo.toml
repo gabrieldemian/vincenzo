@@ -21,6 +21,7 @@ bitvec = { workspace = true }
 bytes = { workspace = true }
 clap = { workspace = true }
 config = { workspace = true }
+dirs = { version = "6.0.0" }
 futures = { workspace = true }
 hashbrown = { workspace = true }
 hex = { workspace = true }

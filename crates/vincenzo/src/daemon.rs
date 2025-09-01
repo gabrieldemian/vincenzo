@@ -13,7 +13,7 @@ use std::{
     time::Duration,
 };
 use tokio_util::{codec::Framed, sync::CancellationToken};
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, info, warn};
 
 use tokio::{
     net::{TcpListener, TcpStream},
@@ -29,6 +29,7 @@ use crate::{
     disk::{DiskMsg, ReturnToDisk},
     error::Error,
     magnet::Magnet,
+    metainfo::MetaInfo,
     peer::{self, Peer, PeerId},
     torrent::{
         InfoHash, Torrent, TorrentCtx, TorrentMsg, TorrentState, TorrentStatus,
@@ -79,6 +80,7 @@ pub enum DaemonMsg {
     /// Tell Daemon to add a new torrent and it will immediately
     /// announce to a tracker, connect to the peers, and start the download.
     NewTorrent(magnet_url::Magnet),
+    NewTorrentInfo(MetaInfo),
 
     GetConnectedPeers(oneshot::Sender<u32>),
     GetMetadataSize(oneshot::Sender<Option<usize>>, InfoHash),
@@ -89,20 +91,21 @@ pub enum DaemonMsg {
     DecrementConnectedPeers,
     DeleteTorrent(InfoHash),
 
-    GetAllTorrentStates(oneshot::Sender<Vec<TorrentState>>),
+    GetAllTorrentState(oneshot::Sender<Vec<TorrentState>>),
 
     /// Message that the Daemon will send to all connectors when the state
     /// of a torrent updates (every 1 second).
     TorrentState(TorrentState),
 
-    /// Ask the Daemon to send a [`TorrentState`] of the torrent with the given
+    /// Ask the Daemon to send a [`TorrentStatetatetate`] of the torrent with
+    /// the given
     RequestTorrentState(InfoHash, oneshot::Sender<Option<TorrentState>>),
 
     /// Pause/Resume a torrent.
     TogglePause(InfoHash),
 
     /// Print the status of all Torrents to stdout
-    PrintTorrentStatus,
+    PrintTorrentState,
 
     /// Gracefully shutdown the Daemon
     Quit,
@@ -297,7 +300,7 @@ impl Daemon {
                                 _ = draw_interval.tick() => {
                                     let (otx, orx) = oneshot::channel();
 
-                                    ctx.tx.send(DaemonMsg::GetAllTorrentStates(otx)).await?;
+                                    ctx.tx.send(DaemonMsg::GetAllTorrentState(otx)).await?;
 
                                     if sink.send(Message::TorrentStates(orx.await?)).await
                                         .map_err(|_| Error::SendErrorTcp).is_err()
@@ -328,6 +331,7 @@ impl Daemon {
                             let Some(metadata_size) =
                                 self.metadata_sizes.get(&info_hash).cloned()
                             else { continue } ;
+
                             let _ = tx.send(metadata_size);
                         }
                         DaemonMsg::SetMetadataSize(metadata, info_hash) => {
@@ -349,7 +353,7 @@ impl Daemon {
                                 self.connected_peers -= 1;
                             }
                         },
-                        DaemonMsg::GetAllTorrentStates(tx) => {
+                        DaemonMsg::GetAllTorrentState(tx) => {
                             let _ = tx.send(self.torrent_states.clone());
                         }
                         DaemonMsg::TorrentState(torrent_state) => {
@@ -376,6 +380,9 @@ impl Daemon {
                         DaemonMsg::NewTorrent(magnet) => {
                             let _ = self.new_torrent(magnet).await;
                         }
+                        DaemonMsg::NewTorrentInfo(meta_info) => {
+                            let _ = self.new_torrent_info(meta_info).await;
+                        }
                         DaemonMsg::TogglePause(info_hash) => {
                             let _ = self.toggle_pause(&info_hash).await;
                         }
@@ -383,7 +390,7 @@ impl Daemon {
                             let torrent_state = self.torrent_states.iter().find(|v| v.info_hash == info_hash);
                             let _ = recipient.send(torrent_state.cloned());
                         }
-                        DaemonMsg::PrintTorrentStatus => {
+                        DaemonMsg::PrintTorrentState => {
                             println!("Showing stats of {} torrents.", self.torrent_states.len());
 
                             for state in &self.torrent_states {
@@ -448,8 +455,6 @@ impl Daemon {
                 let _ = tx.send(DaemonMsg::NewTorrent(magnet)).await;
             }
             Message::GetTorrentState(info_hash) => {
-                trace!("daemon RequestTorrentState {info_hash:?}");
-
                 let (otx, orx) = oneshot::channel();
 
                 let _ = tx
@@ -461,7 +466,6 @@ impl Daemon {
                 }
             }
             Message::TogglePause(id) => {
-                trace!("daemon received TogglePause {id:?}");
                 let _ = tx.send(DaemonMsg::TogglePause(id)).await;
             }
             Message::Quit => {
@@ -469,8 +473,7 @@ impl Daemon {
                 let _ = tx.send(DaemonMsg::Quit).await;
             }
             Message::PrintTorrentStatus => {
-                trace!("daemon received PrintTorrentStatus");
-                let _ = tx.send(DaemonMsg::PrintTorrentStatus).await;
+                let _ = tx.send(DaemonMsg::PrintTorrentState).await;
             }
             _ => {}
         };
@@ -515,7 +518,7 @@ impl Daemon {
 
         self.torrent_states.push(torrent_state);
 
-        let torrent = Torrent::new(
+        let torrent = Torrent::new_magnet(
             self.disk_tx.clone(),
             self.ctx.free_tx.clone(),
             self.ctx.clone(),
@@ -523,6 +526,46 @@ impl Daemon {
         );
 
         self.torrent_ctxs.insert(info_hash, torrent.ctx.clone());
+
+        spawn(async move {
+            let mut torrent = torrent.start().await?;
+            torrent.run().await?;
+            Ok::<(), Error>(())
+        });
+
+        Ok(())
+    }
+
+    pub async fn new_torrent_info(
+        &mut self,
+        meta_info: MetaInfo,
+    ) -> Result<(), Error> {
+        if self
+            .torrent_states
+            .iter()
+            .any(|v| v.info_hash == meta_info.info.info_hash)
+        {
+            warn!("this torrent is already present");
+            return Err(Error::NoDuplicateTorrent);
+        }
+
+        let torrent_state = TorrentState {
+            name: meta_info.info.name.clone(),
+            info_hash: meta_info.info.info_hash.clone(),
+            ..Default::default()
+        };
+
+        self.torrent_states.push(torrent_state);
+        let _info_hash = meta_info.info.info_hash.clone();
+
+        let torrent = Torrent::new_metainfo(
+            self.disk_tx.clone(),
+            self.ctx.free_tx.clone(),
+            self.ctx.clone(),
+            meta_info,
+        );
+
+        self.torrent_ctxs.insert(_info_hash, torrent.ctx.clone());
 
         spawn(async move {
             let mut torrent = torrent.start().await?;

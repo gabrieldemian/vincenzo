@@ -3,6 +3,7 @@ use magnet_url::Magnet;
 use tokio::{
     net::{TcpListener, TcpStream},
     spawn,
+    sync::mpsc,
 };
 use tokio_util::codec::Framed;
 use tracing::Level;
@@ -11,7 +12,7 @@ use vincenzo::{
     config::CONFIG,
     daemon::Daemon,
     daemon_wire::{DaemonCodec, Message},
-    disk::Disk,
+    disk::{Disk, DiskMsg, ReturnToDisk},
     error::Error,
 };
 
@@ -46,9 +47,19 @@ async fn main() -> Result<(), Error> {
 
     // if the daemon is not running, run it
     if !is_daemon_running {
-        let mut disk = Disk::new(CONFIG.download_dir.clone());
-        let disk_tx = disk.tx.clone();
-        let free_tx = disk.free_tx.clone();
+        let (disk_tx, disk_rx) = mpsc::channel::<DiskMsg>(512);
+        let (free_tx, free_rx) = mpsc::unbounded_channel::<ReturnToDisk>();
+
+        let daemon = Daemon::new(disk_tx.clone(), free_tx.clone());
+
+        let mut disk = Disk::new(
+            daemon.ctx.tx.clone(),
+            disk_tx.clone(),
+            disk_rx,
+            free_tx.clone(),
+            free_rx,
+        )
+        .await?;
 
         spawn(async move {
             let _ = disk.run().await;

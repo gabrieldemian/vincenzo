@@ -3,7 +3,12 @@ use tokio::{join, spawn, sync::mpsc};
 use tracing::Level;
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::FmtSubscriber;
-use vincenzo::{config::CONFIG, daemon::Daemon, disk::Disk, error::Error};
+use vincenzo::{
+    config::CONFIG,
+    daemon::Daemon,
+    disk::{Disk, DiskMsg, ReturnToDisk},
+    error::Error,
+};
 
 use vcz_ui::{action::Action, app::App};
 
@@ -46,10 +51,14 @@ async fn main() -> Result<(), Error> {
         ));
     }
 
-    let mut disk = Disk::new(CONFIG.download_dir.clone());
-    let disk_tx = disk.tx.clone();
+    let (disk_tx, disk_rx) = mpsc::channel::<DiskMsg>(512);
+    let (free_tx, free_rx) = mpsc::unbounded_channel::<ReturnToDisk>();
 
-    let mut daemon = Daemon::new(disk_tx, disk.free_tx.clone());
+    let mut daemon = Daemon::new(disk_tx.clone(), free_tx.clone());
+
+    let mut disk =
+        Disk::new(daemon.ctx.tx.clone(), disk_tx, disk_rx, free_tx, free_rx)
+            .await?;
 
     spawn(async move {
         let _ = disk.run().await;

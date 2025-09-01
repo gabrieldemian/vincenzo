@@ -4,7 +4,7 @@
 //!
 //! Environment --overrides--> CLI Flags --overrides--> File
 
-use std::{net::SocketAddr, sync::LazyLock};
+use std::{net::SocketAddr, path::PathBuf, sync::LazyLock};
 
 use clap::Parser;
 use serde::Deserialize;
@@ -15,10 +15,17 @@ use crate::{daemon::Daemon, error::Error};
 #[clap(name = "Vincenzo", author = "Gabriel Lombardo")]
 #[command( author, version, about = None, long_about = None,)]
 pub struct Config {
-    /// Download directory to write the files of torrents.
+    /// Where to store files of torrents. Defaults the download dir of the
+    /// user's home.
     #[clap(long)]
     #[serde(default)]
-    pub download_dir: Option<String>,
+    pub download_dir: Option<PathBuf>,
+
+    /// Where to store .torrent files. Defaults to
+    /// `~/.config/vincenzo/torrents`.
+    #[clap(long)]
+    #[serde(default)]
+    pub metadata_dir: Option<PathBuf>,
 
     /// Where the daemon listens for connections. Defaults to `0.0.0.0:0`.
     #[clap(long)]
@@ -82,8 +89,9 @@ pub struct Config {
     pub quit: bool,
 }
 
-pub static CONFIG: LazyLock<ResolvedConfig> =
-    LazyLock::new(|| Config::load().unwrap());
+pub static CONFIG: LazyLock<ResolvedConfig> = LazyLock::new(|| {
+    if cfg!(test) { Config::load_test() } else { Config::load().unwrap() }
+});
 
 impl Config {
     /// Try to load the configuration. Environmental variables have priviledge
@@ -95,24 +103,43 @@ impl Config {
         Ok(Self::merge(file_config, cli_config).resolve())
     }
 
-    fn load_toml_config() -> Result<Self, Error> {
-        let home = std::env::var("HOME").expect(
-            "The $HOME env var is not set, therefore the program cant use \
-             default values, you should set them manually on the \
-             configuration file or through CLI flags. Use --help.",
-        );
+    // #[cfg(test)]
+    pub(crate) fn load_test() -> ResolvedConfig {
+        ResolvedConfig {
+            download_dir: "/tmp/downloads".into(),
+            metadata_dir: "/tmp/vincenzo".into(),
+            daemon_addr: Daemon::DEFAULT_LISTENER,
+            local_peer_port: 51413,
+            max_global_peers: 500,
+            max_torrent_peers: 50,
+            is_ipv6: false,
+            quit_after_complete: false,
+            key: 123,
+            magnet: None,
+            quit: false,
+            stats: false,
+            pause: None,
+        }
+    }
 
-        // config.toml, the .toml part is omitted.
-        // right now this default guess only works in linux and macos.
-        let config_file = std::env::var("XDG_CONFIG_HOME")
-            .map(|v| format!("{v}/vincenzo/config"))
-            .unwrap_or(format!("{home}/.config/vincenzo/config"));
+    // ~/.config/vincenzo
+    fn get_config_folder() -> PathBuf {
+        let mut config_file = dirs::config_dir().expect(
+            "Could not get the user's config directory. Have you configured \
+             $XDG_CONFIG_DIR ?",
+        );
+        config_file.push("vincenzo");
+        config_file
+    }
+
+    fn load_toml_config() -> Result<Self, Error> {
+        let mut config_file = Self::get_config_folder();
+        config_file.push("config");
 
         config::Config::builder()
             .add_source(
-                config::File::with_name(&config_file)
-                .required(false)
-                    // .format(config::FileFormat::Toml),
+                config::File::with_name(config_file.to_str().unwrap())
+                    .required(false), // .format(config::FileFormat::Toml),
             )
             .add_source(config::Environment::default())
             .build()
@@ -124,6 +151,7 @@ impl Config {
     fn merge(file_config: Self, cli_config: Self) -> Self {
         Self {
             download_dir: cli_config.download_dir.or(file_config.download_dir),
+            metadata_dir: cli_config.metadata_dir.or(file_config.metadata_dir),
             daemon_addr: cli_config.daemon_addr.or(file_config.daemon_addr),
             local_peer_port: cli_config
                 .local_peer_port
@@ -149,17 +177,15 @@ impl Config {
     }
 
     pub fn resolve(self) -> ResolvedConfig {
-        let home = std::env::var("HOME").expect(
-            "The $HOME env var is not set, therefore the program cant use \
-             default values, you should set them manually on the \
-             configuration file or through CLI flags. Use --help.",
-        );
+        let mut metadata_dir = Self::get_config_folder();
+        metadata_dir.push("torrents");
 
-        let download_dir = std::env::var("XDG_DOWNLOAD_DIR")
-            .unwrap_or(format!("{home}/Downloads"));
+        let download_dir = dirs::download_dir()
+            .expect("Could not read your download directory.");
 
         ResolvedConfig {
             download_dir: self.download_dir.unwrap_or(download_dir),
+            metadata_dir: self.metadata_dir.unwrap_or(metadata_dir),
             daemon_addr: self.daemon_addr.unwrap_or(Daemon::DEFAULT_LISTENER),
             local_peer_port: self.local_peer_port.unwrap_or(51413),
             max_global_peers: self.max_global_peers.unwrap_or(500),
@@ -179,7 +205,8 @@ impl Config {
 
 #[derive(Debug)]
 pub struct ResolvedConfig {
-    pub download_dir: String,
+    pub download_dir: PathBuf,
+    pub metadata_dir: PathBuf,
     pub daemon_addr: SocketAddr,
     pub local_peer_port: u16,
     pub max_global_peers: u32,
@@ -216,14 +243,15 @@ mod tests {
             std::env::set_var("DOWNLOAD_DIR", "/new/download");
         }
         let config = Config::load().unwrap();
-        assert_eq!(config.download_dir, "/new/download".to_owned());
+        assert_eq!(config.download_dir.to_str().unwrap(), "/new/download");
     }
 
     #[test]
     fn override_config() {
         // test that CLI values override file values
         let file_config = Config {
-            download_dir: Some("/file/path".to_string()),
+            download_dir: Some("/file/path".into()),
+            metadata_dir: Some("/file/path".into()),
             daemon_addr: Some("127.0.0.1:8080".parse().unwrap()),
             local_peer_port: Some(8080),
             max_global_peers: Some(100),
@@ -238,7 +266,8 @@ mod tests {
         };
 
         let cli_config = Config {
-            download_dir: Some("/cli/path".to_string()),
+            download_dir: Some("/cli/path".into()),
+            metadata_dir: Some("/cli/path".into()),
             daemon_addr: Some("127.0.0.1:9090".parse().unwrap()),
             local_peer_port: Some(9090),
             max_global_peers: None,
