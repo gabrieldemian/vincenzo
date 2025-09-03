@@ -1,19 +1,16 @@
 //! Disk is responsible for file I/O of all torrents.
 
-use futures::stream::StreamExt;
-use memmap2::Mmap;
+use memmap2::{Mmap, MmapMut};
 use rayon::iter::ParallelIterator;
 
 use std::{
     collections::BTreeMap,
-    io::SeekFrom,
     net::SocketAddr,
     path::{Path, PathBuf},
     sync::Arc,
 };
 
 use bendy::{decoding::FromBencode, encoding::ToBencode};
-use futures::{future::join_all, stream};
 use hashbrown::HashMap;
 use lru::LruCache;
 use rand::seq::SliceRandom;
@@ -22,9 +19,10 @@ use sha1_smol::Sha1;
 use std::num::NonZeroUsize;
 use tokio::{
     fs::{File, OpenOptions},
-    io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
+    io::AsyncWriteExt,
     select,
     sync::{
+        Mutex,
         mpsc::{self, Receiver},
         oneshot::{self, Sender},
     },
@@ -44,6 +42,9 @@ use crate::{
     peer::{PeerCtx, PeerId},
     torrent::{InfoHash, TorrentCtx, TorrentMsg},
 };
+
+// 64KB zero buffer
+static ZERO_BUF: [u8; 65536] = [0; 65536];
 
 #[derive(Debug)]
 pub enum DiskMsg {
@@ -194,8 +195,8 @@ pub struct Disk {
 
     /// A LRU cache of file handles to avoid doing a sys call each time the
     /// disk needs to read or write to a file.
-    // file_handle_cache: LruCache<PathBuf, Arc<Mutex<tokio::fs::File>>>,
-    file_handle_cache: LruCache<PathBuf, tokio::fs::File>,
+    read_mmap_cache: LruCache<PathBuf, Arc<Mmap>>,
+    write_mmap_cache: LruCache<PathBuf, Arc<Mutex<MmapMut>>>,
 }
 
 /// Cache capacity of files.
@@ -215,7 +216,10 @@ impl Disk {
             free_rx,
             rx,
             tx,
-            file_handle_cache: LruCache::new(
+            read_mmap_cache: LruCache::new(
+                NonZeroUsize::new(FILE_CACHE_CAPACITY).unwrap(),
+            ),
+            write_mmap_cache: LruCache::new(
                 NonZeroUsize::new(FILE_CACHE_CAPACITY).unwrap(),
             ),
             torrent_cache: HashMap::new(),
@@ -787,13 +791,13 @@ impl Disk {
         let file_offset = absolute_offset - file_meta.start_offset;
 
         // get cached file handle
-        let mut file = self.get_cached_file(path).await?;
+        let file = self.get_cached_read_mmap(path).await?;
+
+        let start = file_offset as usize;
+        let end = start + block_info.len as usize;
 
         // read data
-        let mut buf = vec![0; block_info.len as usize];
-
-        file.seek(SeekFrom::Start(file_offset)).await?;
-        file.read_exact(&mut buf).await?;
+        let buf = file[start..end].to_vec();
 
         Ok(Block {
             index: block_info.index as usize,
@@ -838,7 +842,7 @@ impl Disk {
 
         cache.push(block);
 
-        // continue function if the piece was fully downloaded
+        // Check if piece is fully downloaded
         if self
             .block_cache
             .get(info_hash)
@@ -852,9 +856,8 @@ impl Disk {
             return Ok(());
         }
 
-        // validate that the downloaded pieces hash
-        // matches the hash of the info.
-        if (self.validate_piece(info_hash, index).await).is_err() {
+        // validate the piece
+        if self.validate_piece(info_hash, index).await.is_err() {
             let info = self
                 .torrent_cache
                 .get(info_hash)
@@ -871,8 +874,6 @@ impl Disk {
                 info_blocks.len()
             );
 
-            // as the piece is corrupted, try to download it again and return
-            // the block infos so that another peer can get them.
             self.block_infos
                 .get_mut(info_hash)
                 .ok_or(Error::TorrentDoesNotExist)?
@@ -894,9 +895,7 @@ impl Disk {
 
         let _ = torrent_ctx.tx.send(TorrentMsg::DownloadedPiece(index)).await;
 
-        // at this point the piece is valid,
-        // get the file path of all the blocks,
-        // and then write all bytes into the files.
+        // write the piece to disk
         self.write_pieces(info_hash, index).await?;
 
         if *self
@@ -906,54 +905,10 @@ impl Disk {
             == PieceStrategy::Random
         {
             debug!(
-                "first piece downloaded, and piece order is random, switching
-                  to rarest-first"
+                "first piece downloaded, and piece order is random, switching \
+                 to rarest-first"
             );
             self.rarest_first(info_hash).await?;
-        }
-
-        Ok(())
-    }
-
-    /// Validate if the hash of a piece is valid.
-    ///
-    /// # Important
-    /// The function will get the blocks in cache,
-    /// if the cache was cleared, the function will not work.
-    #[tracing::instrument(skip(self, info_hash))]
-    pub async fn validate_piece(
-        &mut self,
-        info_hash: &InfoHash,
-        index: usize,
-    ) -> Result<(), Error> {
-        let b = index * 20;
-        let e = b + 20;
-
-        let info = self
-            .torrent_info
-            .get(info_hash)
-            .ok_or(Error::TorrentDoesNotExist)?;
-
-        let hash_from_info = info.pieces[b..e].to_owned();
-
-        let blocks = self
-            .block_cache
-            .get_mut(info_hash)
-            .ok_or(Error::TorrentDoesNotExist)?
-            .get_mut(&index)
-            .ok_or(Error::TorrentDoesNotExist)?;
-
-        blocks.sort();
-
-        let mut hasher = sha1_smol::Sha1::new();
-        for block in blocks {
-            hasher.update(&block.block);
-        }
-
-        let hash = hasher.digest().bytes();
-
-        if *hash_from_info != hash {
-            return Err(Error::PieceInvalid);
         }
 
         Ok(())
@@ -1013,7 +968,6 @@ impl Disk {
         info_hash: &InfoHash,
         piece_index: usize,
     ) -> Result<(), Error> {
-        // Get blocks from cache
         let blocks = self
             .block_cache
             .get_mut(info_hash)
@@ -1022,54 +976,49 @@ impl Disk {
 
         let total_length = blocks.iter().map(|b| b.block.len()).sum();
 
-        // Combine blocks into single contiguous buffer
+        // combine blocks into single contiguous buffer
         let mut piece_buffer = Vec::with_capacity(total_length);
 
         for mut block in blocks {
             piece_buffer.append(&mut block.block);
         }
 
-        // Calculate write operations
+        // calculate write operations
         let write_ops =
             self.calculate_write_ops(info_hash, piece_index, &piece_buffer)?;
 
-        // Group writes by file
-        let mut file_ops: HashMap<
-            PathBuf,
-            Vec<(u64, std::ops::Range<usize>, tokio::fs::File)>,
-        > = HashMap::new();
+        // group writes by file
+        let mut file_ops: HashMap<PathBuf, Vec<(u64, std::ops::Range<usize>)>> =
+            HashMap::new();
 
         for (path, file_offset, data_range) in write_ops {
-            file_ops.entry(path.clone()).or_default().push((
-                file_offset,
-                data_range,
-                self.get_cached_file(&path).await?,
-            ));
+            file_ops
+                .entry(path.clone())
+                .or_default()
+                .push((file_offset, data_range));
         }
 
-        let mut tasks = Vec::with_capacity(file_ops.len());
+        for (path, ops) in file_ops {
+            let mmap_arc = self.get_cached_write_mmap(&path).await?;
+            let mut mmap = mmap_arc.lock().await;
 
-        for (_path, ops) in file_ops {
-            let piece_buffer = piece_buffer.clone();
-            // let path_clone = path.clone();
+            // Sort ops by offset for sequential write
+            let mut ops = ops;
+            ops.sort_by_key(|(offset, _)| *offset);
 
-            tasks.push(tokio::spawn(async move {
-                // let mut file = Self::open_file(&path_clone).await?;
+            for (file_offset, data_range) in ops {
+                let start = file_offset as usize;
+                let end = start + data_range.len();
 
-                // Sort ops by offset for sequential write
-                let mut ops = ops;
-                ops.sort_by_key(|(offset, _, _)| *offset);
-
-                for (file_offset, data_range, mut file) in ops {
-                    file.seek(SeekFrom::Start(file_offset)).await?;
-                    file.write_all(&piece_buffer[data_range]).await?;
+                if end > mmap.len() {
+                    return Err(Error::NoPeers);
                 }
 
-                Ok::<(), Error>(())
-            }));
-        }
+                mmap[start..end].copy_from_slice(&piece_buffer[data_range]);
+            }
 
-        join_all(tasks).await;
+            mmap.flush()?;
+        }
 
         Ok(())
     }
@@ -1102,22 +1051,37 @@ impl Disk {
         base
     }
 
-    async fn get_cached_file(
+    async fn get_cached_read_mmap(
         &mut self,
         path: &Path,
-    ) -> Result<tokio::fs::File, Error> {
-        // check if file is in cache
-        if let Some(file) = self.file_handle_cache.get(path) {
-            return Ok(file.try_clone().await?);
+    ) -> Result<Arc<Mmap>, Error> {
+        if let Some(mmap) = self.read_mmap_cache.get(path) {
+            return Ok(mmap.clone());
         }
 
         // cache miss
         let file = Self::open_file(path).await?;
+        let mmap = unsafe { Mmap::map(&file)? };
+        let mmap_arc = Arc::new(mmap);
 
-        let file_clone = file.try_clone().await?;
-        self.file_handle_cache.put(path.into(), file_clone);
+        self.read_mmap_cache.put(path.into(), mmap_arc.clone());
+        Ok(mmap_arc)
+    }
 
-        Ok(file)
+    async fn get_cached_write_mmap(
+        &mut self,
+        path: &Path,
+    ) -> Result<Arc<Mutex<MmapMut>>, Error> {
+        if let Some(mmap) = self.write_mmap_cache.get(path) {
+            return Ok(mmap.clone());
+        }
+
+        // cache miss
+        let file = Self::open_file(path).await?;
+        let mmap = Arc::new(Mutex::new(unsafe { MmapMut::map_mut(&file)? }));
+
+        self.write_mmap_cache.put(path.into(), mmap.clone());
+        Ok(mmap)
     }
 
     async fn enter_endgame(
@@ -1249,24 +1213,52 @@ impl Disk {
         let mut hasher = Sha1::new();
         let mut bytes_remaining = piece_size;
 
-        // iterate over all memory-mapped files to find those that overlap with
-        // this piece
         for (file_meta, mmap) in mmaps {
             let file_start = file_meta.start_offset;
             let file_end = file_start + file_meta.length;
 
             // check if this file overlaps with the piece
             if piece_start < file_end && piece_end > file_start {
-                let read_start = std::cmp::max(piece_start, file_start);
-                let read_end = std::cmp::min(piece_end, file_end);
+                let read_start = piece_start.max(file_start);
+                let read_end = piece_end.min(file_end);
                 let read_length = (read_end - read_start) as usize;
 
-                // calculate file offset and access the memory map directly
+                // calculate file offset
                 let file_offset = (read_start - file_start) as usize;
 
-                // directly access the memory without any cloning or seeking
-                let data = &mmap[file_offset..file_offset + read_length];
-                hasher.update(data);
+                // handle out-of-bounds access
+                if file_offset >= mmap.len() {
+                    // entire segment is beyond the file - hash zeros
+                    let mut remaining_zeros = read_length;
+                    while remaining_zeros > 0 {
+                        let zero_chunk = remaining_zeros.min(ZERO_BUF.len());
+                        hasher.update(&ZERO_BUF[..zero_chunk]);
+                        remaining_zeros -= zero_chunk;
+                    }
+                    bytes_remaining -= read_length;
+                    continue;
+                }
+
+                // calculate how much we can read from the file
+                let available_bytes = read_length.min(mmap.len() - file_offset);
+
+                // read available bytes from memory map
+                if available_bytes > 0 {
+                    let data =
+                        &mmap[file_offset..file_offset + available_bytes];
+                    hasher.update(data);
+                }
+
+                // pad with zeros if needed
+                if available_bytes < read_length {
+                    let zero_bytes = read_length - available_bytes;
+                    let mut remaining_zeros = zero_bytes;
+                    while remaining_zeros > 0 {
+                        let zero_chunk = remaining_zeros.min(ZERO_BUF.len());
+                        hasher.update(&ZERO_BUF[..zero_chunk]);
+                        remaining_zeros -= zero_chunk;
+                    }
+                }
 
                 bytes_remaining -= read_length;
             }
@@ -1278,6 +1270,50 @@ impl Disk {
 
         let hash = hasher.digest().bytes();
         hash == expected_hash
+    }
+
+    /// Validate if the hash of a piece is valid.
+    ///
+    /// # Important
+    /// The function will get the blocks in cache,
+    /// if the cache was cleared, the function will not work.
+    #[tracing::instrument(skip(self, info_hash))]
+    pub async fn validate_piece(
+        &mut self,
+        info_hash: &InfoHash,
+        index: usize,
+    ) -> Result<(), Error> {
+        let b = index * 20;
+        let e = b + 20;
+
+        let info = self
+            .torrent_info
+            .get(info_hash)
+            .ok_or(Error::TorrentDoesNotExist)?;
+
+        let hash_from_info = info.pieces[b..e].to_owned();
+
+        let blocks = self
+            .block_cache
+            .get_mut(info_hash)
+            .ok_or(Error::TorrentDoesNotExist)?
+            .get_mut(&index)
+            .ok_or(Error::TorrentDoesNotExist)?;
+
+        blocks.sort();
+
+        let mut hasher = sha1_smol::Sha1::new();
+        for block in blocks {
+            hasher.update(&block.block);
+        }
+
+        let hash = hasher.digest().bytes();
+
+        if *hash_from_info != hash {
+            return Err(Error::PieceInvalid);
+        }
+
+        Ok(())
     }
 }
 
