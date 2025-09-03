@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, io};
+use std::{collections::BTreeMap, io, path::PathBuf};
 
 use thiserror::Error;
 use tokio::sync::{mpsc, oneshot};
@@ -46,6 +46,9 @@ impl From<Option<BTreeMap<u32, Block>>> for Error {
 pub enum Error {
     #[error("Failed to send a connect request to the tracker")]
     ConnectSendFailed,
+
+    #[error("File not found: {0}")]
+    FileNotFound(PathBuf),
 
     #[error("")]
     FrontendError,

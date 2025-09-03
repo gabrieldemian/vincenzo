@@ -17,6 +17,8 @@ int-enum = "1.2.0"
 bincode = { workspace = true }
 lru = { workspace = true }
 bendy = { workspace = true }
+rayon = { workspace = true }
+memmap2 = { workspace = true }
 bitvec = { workspace = true }
 bytes = { workspace = true }
 clap = { workspace = true }
@@ -39,6 +41,7 @@ urlencoding = { workspace = true }
 vincenzo_macros = { workspace = true }
 signal-hook = { workspace = true }
 signal-hook-tokio = { workspace = true }
+num_cpus = "1.17.0"
 
 [features]
 test = []

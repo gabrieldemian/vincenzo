@@ -18,7 +18,10 @@ use tracing::{debug, info, warn};
 use tokio::{
     net::{TcpListener, TcpStream},
     select, spawn,
-    sync::{mpsc, oneshot},
+    sync::{
+        mpsc,
+        oneshot::{self, Sender},
+    },
     task::JoinHandle,
     time::interval,
 };
@@ -29,7 +32,7 @@ use crate::{
     disk::{DiskMsg, ReturnToDisk},
     error::Error,
     magnet::Magnet,
-    metainfo::MetaInfo,
+    metainfo::{Info, MetaInfo},
     peer::{self, Peer, PeerId},
     torrent::{
         InfoHash, Torrent, TorrentCtx, TorrentMsg, TorrentState, TorrentStatus,
@@ -79,8 +82,8 @@ pub struct DaemonCtx {
 pub enum DaemonMsg {
     /// Tell Daemon to add a new torrent and it will immediately
     /// announce to a tracker, connect to the peers, and start the download.
-    NewTorrent(magnet_url::Magnet),
-    NewTorrentInfo(MetaInfo),
+    NewTorrentMagnet(magnet_url::Magnet),
+    NewTorrentMetaInfo(MetaInfo, Sender<(Info, Arc<TorrentCtx>)>),
 
     GetConnectedPeers(oneshot::Sender<u32>),
     GetMetadataSize(oneshot::Sender<Option<usize>>, InfoHash),
@@ -377,11 +380,11 @@ impl Daemon {
                                 let _ = ctx.tx.send(DaemonMsg::Quit).await;
                             }
                         }
-                        DaemonMsg::NewTorrent(magnet) => {
-                            let _ = self.new_torrent(magnet).await;
+                        DaemonMsg::NewTorrentMagnet(magnet) => {
+                            let _ = self.new_torrent_magnet(magnet).await;
                         }
-                        DaemonMsg::NewTorrentInfo(meta_info) => {
-                            let _ = self.new_torrent_info(meta_info).await;
+                        DaemonMsg::NewTorrentMetaInfo(meta_info, otx) => {
+                            let _ = self.new_torrent_meta_info(meta_info, otx).await;
                         }
                         DaemonMsg::TogglePause(info_hash) => {
                             let _ = self.toggle_pause(&info_hash).await;
@@ -452,7 +455,7 @@ impl Daemon {
             Message::NewTorrent(magnet) => {
                 info!("new_torrent: {:?}", magnet.hash());
 
-                let _ = tx.send(DaemonMsg::NewTorrent(magnet)).await;
+                let _ = tx.send(DaemonMsg::NewTorrentMagnet(magnet)).await;
             }
             Message::GetTorrentState(info_hash) => {
                 let (otx, orx) = oneshot::channel();
@@ -498,7 +501,7 @@ impl Daemon {
 
     /// Create a new [`Torrent`] given a magnet link URL
     /// and run the torrent's event loop.
-    pub async fn new_torrent(
+    pub async fn new_torrent_magnet(
         &mut self,
         magnet: magnet_url::Magnet,
     ) -> Result<(), Error> {
@@ -536,9 +539,10 @@ impl Daemon {
         Ok(())
     }
 
-    pub async fn new_torrent_info(
+    pub async fn new_torrent_meta_info(
         &mut self,
         meta_info: MetaInfo,
+        otx: Sender<(Info, Arc<TorrentCtx>)>,
     ) -> Result<(), Error> {
         if self
             .torrent_states
@@ -556,7 +560,12 @@ impl Daemon {
         };
 
         self.torrent_states.push(torrent_state);
-        let _info_hash = meta_info.info.info_hash.clone();
+
+        let info_hash = meta_info.info.info_hash.clone();
+        let info = meta_info.info.clone();
+
+        self.metadata_sizes
+            .insert(info_hash.clone(), Some(meta_info.info.size));
 
         let torrent = Torrent::new_metainfo(
             self.disk_tx.clone(),
@@ -565,13 +574,16 @@ impl Daemon {
             meta_info,
         );
 
-        self.torrent_ctxs.insert(_info_hash, torrent.ctx.clone());
+        let torrent_ctx = torrent.ctx.clone();
+        self.torrent_ctxs.insert(info_hash, torrent.ctx.clone());
 
         spawn(async move {
             let mut torrent = torrent.start().await?;
             torrent.run().await?;
             Ok::<(), Error>(())
         });
+
+        let _ = otx.send((info, torrent_ctx));
 
         Ok(())
     }

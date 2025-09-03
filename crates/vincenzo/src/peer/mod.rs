@@ -109,14 +109,16 @@ impl Peer<Connected> {
         // when running a new Peer, we might
         // already have the info downloaded.
         {
-            let (otx, orx) = oneshot::channel();
-            self.state
-                .ctx
-                .torrent_ctx
-                .tx
-                .send(TorrentMsg::HaveInfo(otx))
-                .await?;
-            self.state.have_info = orx.await?;
+            if !self.state.have_info {
+                let (otx, orx) = oneshot::channel();
+                self.state
+                    .ctx
+                    .torrent_ctx
+                    .tx
+                    .send(TorrentMsg::HaveInfo(otx))
+                    .await?;
+                self.state.have_info = orx.await?;
+            }
         }
 
         let mut brx = self.state.ctx.torrent_ctx.btx.subscribe();

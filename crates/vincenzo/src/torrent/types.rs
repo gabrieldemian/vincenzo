@@ -7,14 +7,19 @@ use std::{
 };
 
 use bincode::{Decode, Encode};
+use hashbrown::HashMap;
 use rand::Rng;
 use speedy::{Readable, Writable};
-use tokio::sync::oneshot;
+use tokio::{sync::oneshot, time::Interval};
 
 use crate::{
     bitfield::Bitfield,
+    counter::Counter,
     extensions::core::BlockInfo,
-    peer::{PeerCtx, PeerId},
+    magnet::Magnet,
+    metainfo::{Info, MetaInfo},
+    peer::{self, Peer, PeerCtx, PeerId},
+    tracker::TrackerCtx,
 };
 
 /// Broadcasted messages for all peers in a torrent.
@@ -263,3 +268,108 @@ impl From<&str> for TorrentStatus {
         }
     }
 }
+
+pub trait State {}
+
+/// If the torrent came from a magnet or metainfo.
+pub trait TorrentSource {
+    fn organize_trackers(&self) -> HashMap<&str, Vec<String>>;
+    fn info_hash(&self) -> InfoHash;
+    fn size(&self) -> u64;
+}
+
+pub(crate) struct FromMagnet {
+    pub magnet: Magnet,
+    pub info: Option<Info>,
+}
+
+pub(crate) struct FromMetaInfo {
+    pub meta_info: MetaInfo,
+}
+
+impl TorrentSource for FromMagnet {
+    fn organize_trackers(&self) -> HashMap<&str, Vec<String>> {
+        self.magnet.organize_trackers()
+    }
+    fn info_hash(&self) -> InfoHash {
+        self.magnet.parse_xt_infohash()
+    }
+    fn size(&self) -> u64 {
+        self.magnet.length().unwrap_or(0)
+    }
+}
+impl TorrentSource for FromMetaInfo {
+    fn organize_trackers(&self) -> HashMap<&str, Vec<String>> {
+        self.meta_info.organize_trackers()
+    }
+    fn info_hash(&self) -> InfoHash {
+        self.meta_info.info.info_hash.clone()
+    }
+    fn size(&self) -> u64 {
+        self.meta_info.info.get_size()
+    }
+}
+
+// States of the torrent, idle is when the tracker is not connected and the
+// torrent is not being downloaded
+pub struct Idle {
+    pub metadata_size: Option<usize>,
+}
+
+pub struct Connected {
+    /// Stats of the current Torrent, returned from tracker on announce
+    /// requests.
+    pub stats: Stats,
+
+    pub counter: Counter,
+
+    /// Bitfield representing the presence or absence of pieces for our local
+    /// peer, where each bit is a piece.
+    pub bitfield: Bitfield,
+
+    /// If using a Magnet link, the info will be downloaded in pieces
+    /// and those pieces may come in different order,
+    /// After it is complete, it will be encoded into [`Info`]
+    pub info_pieces: BTreeMap<u64, Vec<u8>>,
+
+    /// The size of the entire torrent in disk, in bytes.
+    pub size: u64,
+
+    /// Idle peers returned from an announce request to the tracker.
+    /// Will be removed from this vec as we connect with them, and added as we
+    /// request more peers to the tracker.
+    pub idle_peers: Vec<SocketAddr>,
+
+    /// Idle peers being handshaked and soon moved to `connected_peer`.
+    pub connecting_peers: Vec<SocketAddr>,
+
+    /// Connected peers, removed from `peers`.
+    pub connected_peers: Vec<Arc<PeerCtx>>,
+
+    /// Maximum of 3 unchoked peers as per the protocol + the optimistically
+    /// unchoked peer = 4. These come from `connected_peers`.
+    pub unchoked_peers: Vec<Arc<PeerCtx>>,
+
+    /// Only one optimistically unchoked peer for 30 seconds.
+    pub opt_unchoked_peer: Option<Arc<PeerCtx>>,
+
+    pub error_peers: Vec<Peer<peer::PeerError>>,
+
+    /// Size of the `info` bencoded string.
+    pub metadata_size: Option<usize>,
+
+    /// Pieces that all peers have.
+    pub peer_pieces: HashMap<PeerId, Bitfield>,
+
+    pub tracker_ctx: Arc<TrackerCtx>,
+
+    pub(crate) announce_interval: Interval,
+    pub(crate) reconnect_interval: Interval,
+    pub(crate) heartbeat_interval: Interval,
+    pub(crate) log_rates_interval: Interval,
+    pub(crate) optimistic_unchoke_interval: Interval,
+    pub(crate) unchoke_interval: Interval,
+}
+
+impl State for Idle {}
+impl State for Connected {}

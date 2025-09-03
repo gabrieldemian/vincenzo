@@ -1,5 +1,9 @@
 //! Disk is responsible for file I/O of all torrents.
 
+use futures::stream::StreamExt;
+use memmap2::Mmap;
+use rayon::iter::ParallelIterator;
+
 use std::{
     collections::BTreeMap,
     io::SeekFrom,
@@ -9,17 +13,18 @@ use std::{
 };
 
 use bendy::{decoding::FromBencode, encoding::ToBencode};
-use futures::future::join_all;
+use futures::{future::join_all, stream};
 use hashbrown::HashMap;
 use lru::LruCache;
 use rand::seq::SliceRandom;
+use rayon::iter::IntoParallelIterator;
+use sha1_smol::Sha1;
 use std::num::NonZeroUsize;
 use tokio::{
     fs::{File, OpenOptions},
     io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
     select,
     sync::{
-        Mutex,
         mpsc::{self, Receiver},
         oneshot::{self, Sender},
     },
@@ -189,7 +194,8 @@ pub struct Disk {
 
     /// A LRU cache of file handles to avoid doing a sys call each time the
     /// disk needs to read or write to a file.
-    file_handle_cache: LruCache<PathBuf, Arc<Mutex<tokio::fs::File>>>,
+    // file_handle_cache: LruCache<PathBuf, Arc<Mutex<tokio::fs::File>>>,
+    file_handle_cache: LruCache<PathBuf, tokio::fs::File>,
 }
 
 /// Cache capacity of files.
@@ -231,6 +237,93 @@ impl Disk {
         tokio::fs::create_dir_all(s.complete_torrents_path()).await?;
 
         Ok(s)
+    }
+
+    async fn preopen_files(
+        &self,
+        file_metadata: &[FileMetadata],
+    ) -> Result<Vec<(FileMetadata, Arc<Mmap>)>, Error> {
+        let mut mmaps = Vec::with_capacity(file_metadata.len());
+
+        for file_meta in file_metadata {
+            // Open the file and memory-map it
+            let file = File::open(&file_meta.path).await?;
+            let mmap = unsafe { Mmap::map(&file)? };
+
+            mmaps.push((file_meta.clone(), Arc::new(mmap)));
+        }
+
+        Ok(mmaps)
+    }
+
+    async fn handle_new_torrent_block_state(
+        &mut self,
+        info_hash: &InfoHash,
+    ) -> Result<(), Error> {
+        let torrent_cache = self
+            .torrent_cache
+            .get(info_hash)
+            .ok_or(Error::TorrentDoesNotExist)?
+            .clone();
+
+        let info = self
+            .torrent_info
+            .get(info_hash)
+            .ok_or(Error::TorrentDoesNotExist)?;
+
+        let expected_hashes: Vec<[u8; 20]> = info
+            .pieces
+            .chunks_exact(20)
+            .map(|chunk| chunk.try_into().unwrap())
+            .collect();
+
+        let total_pieces = info.pieces() as usize;
+        let piece_length = info.piece_length as u64;
+        let total_size = torrent_cache.total_size;
+
+        let file_handles =
+            self.preopen_files(&torrent_cache.file_metadata).await?;
+
+        // compute all pieces in parallel using rayon.
+        let piece_results: Vec<bool> = (0..total_pieces)
+            .into_par_iter()
+            .map(|piece_index| {
+                Self::verify_piece(
+                    piece_index,
+                    file_handles.as_slice(),
+                    piece_length,
+                    total_size,
+                    expected_hashes[piece_index],
+                )
+            })
+            .collect();
+
+        let mut downloaded_pieces = Bitfield::from_piece(total_pieces);
+        let mut pieces_requested = Bitfield::from_piece(total_pieces);
+
+        for (piece_index, result) in piece_results.into_iter().enumerate() {
+            if result {
+                downloaded_pieces.set(piece_index, true);
+                pieces_requested.set(piece_index, true);
+                // todo: generate block infos for the piece here
+            }
+        }
+
+        // Update state
+        let downloaded_count = downloaded_pieces.count_ones() as u64;
+        self.downloaded_pieces.insert(info_hash.clone(), downloaded_count);
+        self.pieces_requested.insert(info_hash.clone(), pieces_requested);
+
+        // Generate block infos
+        let block_infos = info.get_block_infos()?;
+        self.block_infos.insert(info_hash.clone(), block_infos);
+
+        info!(
+            "Verified {} downloaded pieces out of {} total pieces",
+            downloaded_count, total_pieces
+        );
+
+        Ok(())
     }
 
     #[tracing::instrument(name = "disk", skip_all)]
@@ -379,134 +472,12 @@ impl Disk {
         }
     }
 
-    async fn get_cached_file(
-        &mut self,
-        path: &Path,
-    ) -> Result<Arc<Mutex<tokio::fs::File>>, Error> {
-        // try to get from cache
-        if let Some(file) = self.file_handle_cache.get(path) {
-            return Ok(Arc::clone(file));
-        }
-
-        // cache miss
-
-        let file = Arc::new(Mutex::new(Self::open_file(path).await?));
-
-        self.file_handle_cache.put(path.into(), Arc::clone(&file));
-
-        Ok(file)
-    }
-
-    async fn enter_endgame(
-        &mut self,
-        info_hash: InfoHash,
-    ) -> Result<(), Error> {
-        let endgame = self
-            .endgame
-            .get_mut(&info_hash)
-            .ok_or(Error::TorrentDoesNotExist)?;
-
-        if *endgame {
-            return Ok(());
-        }
-
-        info!("endgame");
-
-        *endgame = true;
-
-        let torrent_ctx = self
-            .torrent_ctxs
-            .get(&info_hash)
-            .ok_or(Error::TorrentDoesNotExist)?;
-
-        let blocks = std::mem::take(
-            self.block_infos
-                .get_mut(&info_hash)
-                .ok_or(Error::TorrentDoesNotExist)?,
-        );
-
-        torrent_ctx.tx.send(TorrentMsg::Endgame(blocks)).await?;
-
-        Ok(())
-    }
-
-    async fn preallocate_files(
-        &mut self,
-        info_hash: &InfoHash,
-    ) -> Result<(), Error> {
-        if let Some(cache) = self.torrent_cache.get(info_hash) {
-            for meta in &cache.file_metadata {
-                if let Some(parent) = meta.path.parent() {
-                    tokio::fs::create_dir_all(parent).await?;
-                }
-
-                if let Ok(file) = Self::open_file(&meta.path).await {
-                    file.set_len(meta.length).await?;
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn complete_torrents_path(&self) -> PathBuf {
-        let mut path = CONFIG.metadata_dir.clone();
-        path.push("complete");
-        path
-    }
-
-    fn incomplete_torrents_path(&self) -> PathBuf {
-        let mut path = CONFIG.metadata_dir.clone();
-        path.push("incomplete");
-        path
-    }
-
-    /// Write an incomplete torrent info to disk
-    async fn write_incomplete_torrent_metainfo(
-        &self,
-        info: &Info,
-    ) -> Result<(), Error> {
-        let mut path = self.incomplete_torrents_path();
-        path.push(&info.name);
-        let buff = info.to_bencode()?;
-        let mut file = Self::open_file(path).await?;
-        file.write_all(&buff).await?;
-
-        Ok(())
-    }
-
-    /// Read all .torrent files from incomplete torrents, and add them to the
-    /// client.
-    async fn read_incomplete_torrents(&mut self) -> Result<(), Error> {
-        // iterate over all .torrent files here
-        let path = self.incomplete_torrents_path();
-
-        let mut entries = tokio::fs::read_dir(path).await?;
-
-        while let Some(entry) = entries.next_entry().await? {
-            let path = entry.path();
-
-            // only read .torrent files
-            if path.extension().and_then(|s| s.to_str()) == Some("torrent") {
-                continue;
-            }
-
-            let bytes = tokio::fs::read(&path).await?;
-            let metainfo = MetaInfo::from_bencode(&bytes)?;
-
-            // skip duplicate
-            if self.torrent_ctxs.contains_key(&metainfo.info.info_hash) {
-                continue;
-            }
-
-            self.daemon_tx.send(DaemonMsg::NewTorrentInfo(metainfo)).await?;
-        }
-
-        Ok(())
-    }
-
-    /// Initialize necessary data.
+    /// Initialize data for an incomplete torrent from a metainfo file. Data
+    /// such as: how many block infos are still missing to be downloaded,
+    /// downloaded pieces, etc.
+    /// Initialize necessary data for a magnet torrent.
     /// Called after torrent has the info downloaded.
-    pub async fn new_torrent(
+    async fn new_torrent(
         &mut self,
         torrent_ctx: Arc<TorrentCtx>,
         info: Info,
@@ -555,17 +526,6 @@ impl Disk {
         // create folders, files, and preallocate them.
         self.preallocate_files(info_hash).await?;
 
-        self.block_cache.insert(info_hash.clone(), BTreeMap::new());
-
-        let block_infos = info.get_block_infos()?;
-        info!(
-            "generated {} pieces with {} blocks",
-            block_infos.len(),
-            block_infos.values().fold(0, |acc, v| acc + v.len())
-        );
-
-        self.block_infos.insert(info_hash.clone(), block_infos);
-        self.downloaded_pieces.insert(info_hash.clone(), 0);
         self.endgame.insert(info_hash.clone(), false);
 
         let piece_strategy =
@@ -573,13 +533,13 @@ impl Disk {
 
         let mut piece_order: Vec<usize> = (0..info.pieces() as usize).collect();
 
-        if *piece_strategy == PieceStrategy::Rarest {
+        if *piece_strategy == PieceStrategy::Random {
             piece_order.shuffle(&mut rand::rng());
         }
 
-        let entry = self.pieces_requested.entry(info_hash.clone()).or_default();
-        entry.resize(piece_order.len(), false);
         self.piece_order.insert(info_hash.clone(), piece_order);
+
+        self.handle_new_torrent_block_state(info_hash).await?;
 
         Ok(())
     }
@@ -827,8 +787,7 @@ impl Disk {
         let file_offset = absolute_offset - file_meta.start_offset;
 
         // get cached file handle
-        let file = self.get_cached_file(path).await?;
-        let mut file = file.lock().await;
+        let mut file = self.get_cached_file(path).await?;
 
         // read data
         let mut buf = vec![0; block_info.len as usize];
@@ -1077,7 +1036,7 @@ impl Disk {
         // Group writes by file
         let mut file_ops: HashMap<
             PathBuf,
-            Vec<(u64, std::ops::Range<usize>, Arc<Mutex<tokio::fs::File>>)>,
+            Vec<(u64, std::ops::Range<usize>, tokio::fs::File)>,
         > = HashMap::new();
 
         for (path, file_offset, data_range) in write_ops {
@@ -1101,8 +1060,7 @@ impl Disk {
                 let mut ops = ops;
                 ops.sort_by_key(|(offset, _, _)| *offset);
 
-                for (file_offset, data_range, file) in ops {
-                    let mut file = file.lock().await;
+                for (file_offset, data_range, mut file) in ops {
                     file.seek(SeekFrom::Start(file_offset)).await?;
                     file.write_all(&piece_buffer[data_range]).await?;
                 }
@@ -1143,6 +1101,184 @@ impl Disk {
         base.push(&info.name);
         base
     }
+
+    async fn get_cached_file(
+        &mut self,
+        path: &Path,
+    ) -> Result<tokio::fs::File, Error> {
+        // check if file is in cache
+        if let Some(file) = self.file_handle_cache.get(path) {
+            return Ok(file.try_clone().await?);
+        }
+
+        // cache miss
+        let file = Self::open_file(path).await?;
+
+        let file_clone = file.try_clone().await?;
+        self.file_handle_cache.put(path.into(), file_clone);
+
+        Ok(file)
+    }
+
+    async fn enter_endgame(
+        &mut self,
+        info_hash: InfoHash,
+    ) -> Result<(), Error> {
+        let endgame = self
+            .endgame
+            .get_mut(&info_hash)
+            .ok_or(Error::TorrentDoesNotExist)?;
+
+        if *endgame {
+            return Ok(());
+        }
+
+        info!("endgame");
+
+        *endgame = true;
+
+        let torrent_ctx = self
+            .torrent_ctxs
+            .get(&info_hash)
+            .ok_or(Error::TorrentDoesNotExist)?;
+
+        let blocks = std::mem::take(
+            self.block_infos
+                .get_mut(&info_hash)
+                .ok_or(Error::TorrentDoesNotExist)?,
+        );
+
+        torrent_ctx.tx.send(TorrentMsg::Endgame(blocks)).await?;
+
+        Ok(())
+    }
+
+    async fn preallocate_files(
+        &mut self,
+        info_hash: &InfoHash,
+    ) -> Result<(), Error> {
+        if let Some(cache) = self.torrent_cache.get(info_hash) {
+            for meta in &cache.file_metadata {
+                if let Some(parent) = meta.path.parent() {
+                    tokio::fs::create_dir_all(parent).await?;
+                }
+
+                if let Ok(file) = Self::open_file(&meta.path).await {
+                    file.set_len(meta.length).await?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn complete_torrents_path(&self) -> PathBuf {
+        let mut path = CONFIG.metadata_dir.clone();
+        path.push("complete");
+        path
+    }
+
+    fn incomplete_torrents_path(&self) -> PathBuf {
+        let mut path = CONFIG.metadata_dir.clone();
+        path.push("incomplete");
+        path
+    }
+
+    /// Write an incomplete torrent info to disk
+    async fn write_incomplete_torrent_metainfo(
+        &self,
+        info: &Info,
+    ) -> Result<(), Error> {
+        let mut path = self.incomplete_torrents_path();
+        path.push(&info.name);
+        let buff = info.to_bencode()?;
+        let mut file = Self::open_file(path).await?;
+        file.write_all(&buff).await?;
+
+        Ok(())
+    }
+
+    /// Read all .torrent files from incomplete torrents, and add them to the
+    /// client.
+    async fn read_incomplete_torrents(&mut self) -> Result<(), Error> {
+        // iterate over all .torrent files here
+        let path = self.incomplete_torrents_path();
+
+        let mut entries = tokio::fs::read_dir(path).await?;
+
+        while let Some(entry) = entries.next_entry().await? {
+            let path = entry.path();
+
+            // only read .torrent files
+            if path.extension().and_then(|s| s.to_str()) == Some("torrent") {
+                continue;
+            }
+
+            let bytes = tokio::fs::read(&path).await?;
+            let metainfo = MetaInfo::from_bencode(&bytes)?;
+
+            // skip duplicate
+            if self.torrent_ctxs.contains_key(&metainfo.info.info_hash) {
+                continue;
+            }
+
+            let (otx, orx) = oneshot::channel();
+
+            self.daemon_tx
+                .send(DaemonMsg::NewTorrentMetaInfo(metainfo, otx))
+                .await?;
+
+            let (info, torrent_ctx) = orx.await?;
+
+            self.new_torrent(torrent_ctx, info).await?;
+        }
+
+        Ok(())
+    }
+
+    fn verify_piece(
+        piece_index: usize,
+        mmaps: &[(FileMetadata, Arc<Mmap>)],
+        piece_length: u64,
+        total_size: u64,
+        expected_hash: [u8; 20],
+    ) -> bool {
+        let piece_start = (piece_index as u64) * piece_length;
+        let piece_end = std::cmp::min(piece_start + piece_length, total_size);
+        let piece_size = (piece_end - piece_start) as usize;
+
+        let mut hasher = Sha1::new();
+        let mut bytes_remaining = piece_size;
+
+        // iterate over all memory-mapped files to find those that overlap with
+        // this piece
+        for (file_meta, mmap) in mmaps {
+            let file_start = file_meta.start_offset;
+            let file_end = file_start + file_meta.length;
+
+            // check if this file overlaps with the piece
+            if piece_start < file_end && piece_end > file_start {
+                let read_start = std::cmp::max(piece_start, file_start);
+                let read_end = std::cmp::min(piece_end, file_end);
+                let read_length = (read_end - read_start) as usize;
+
+                // calculate file offset and access the memory map directly
+                let file_offset = (read_start - file_start) as usize;
+
+                // directly access the memory without any cloning or seeking
+                let data = &mmap[file_offset..file_offset + read_length];
+                hasher.update(data);
+
+                bytes_remaining -= read_length;
+            }
+
+            if bytes_remaining == 0 {
+                break;
+            }
+        }
+
+        let hash = hasher.digest().bytes();
+        hash == expected_hash
+    }
 }
 
 #[cfg(test)]
@@ -1151,10 +1287,13 @@ mod tests {
 
     use futures::StreamExt;
     use rand::{Rng, distr::Alphanumeric};
-    use std::net::{Ipv4Addr, SocketAddrV4};
+    use std::{
+        net::{Ipv4Addr, SocketAddrV4},
+        time::Duration,
+    };
     use tokio::{
         sync::{Mutex, broadcast},
-        time::Instant,
+        time::{Instant, interval, interval_at},
     };
     use tokio_util::codec::Framed;
 
@@ -1337,10 +1476,38 @@ mod tests {
 
         let stream = TcpStream::connect(local_addr).await?;
 
+        // try to reconnect with errored peers
+        let reconnect_interval = interval(Duration::from_secs(5));
+
+        // send state to the frontend, if connected.
+        let heartbeat_interval = interval(Duration::from_secs(1));
+
+        let log_rates_interval = interval(Duration::from_secs(5));
+
+        // unchoke the slowest interested peer.
+        let optimistic_unchoke_interval = interval(Duration::from_secs(30));
+
+        // unchoke algorithm:
+        // - choose the best 3 interested uploaders and unchoke them.
+        let unchoke_interval = interval_at(
+            Instant::now() + Duration::from_secs(10),
+            Duration::from_secs(10),
+        );
+
+        let announce_interval = interval_at(
+            Instant::now() + Duration::from_secs(500),
+            Duration::from_secs(500),
+        );
+
         let mut torrent = Torrent {
-            source: FromMagnet { magnet },
+            source: FromMagnet { magnet, info: Some(info.clone()) },
             state: Connected {
-                info: Some(info.clone()),
+                reconnect_interval,
+                heartbeat_interval,
+                log_rates_interval,
+                optimistic_unchoke_interval,
+                unchoke_interval,
+                announce_interval,
                 peer_pieces: HashMap::from([(peer_ctx_.id.clone(), pieces)]),
                 size: 0,
                 counter: Counter::new(),
