@@ -52,14 +52,9 @@ async fn main() -> Result<(), Error> {
 
         let daemon = Daemon::new(disk_tx.clone(), free_tx.clone());
 
-        let mut disk = Disk::new(
-            daemon.ctx.tx.clone(),
-            disk_tx.clone(),
-            disk_rx,
-            free_tx.clone(),
-            free_rx,
-        )
-        .await?;
+        let mut disk =
+            Disk::new(daemon.ctx.tx.clone(), disk_tx.clone(), disk_rx, free_rx)
+                .await?;
 
         spawn(async move {
             let _ = disk.run().await;

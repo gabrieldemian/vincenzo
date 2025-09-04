@@ -1,31 +1,35 @@
 //! Disk is responsible for file I/O of all torrents.
 
+use bytes::Bytes;
 use memmap2::{Mmap, MmapMut};
 use rayon::iter::ParallelIterator;
+use sha1::Digest;
 
 use std::{
     collections::BTreeMap,
     net::SocketAddr,
     path::{Path, PathBuf},
     sync::Arc,
+    time::Duration,
 };
 
 use bendy::{decoding::FromBencode, encoding::ToBencode};
-use hashbrown::HashMap;
+use hashbrown::{HashMap, HashSet};
 use lru::LruCache;
 use rand::seq::SliceRandom;
 use rayon::iter::IntoParallelIterator;
-use sha1_smol::Sha1;
+use sha1::Sha1;
 use std::num::NonZeroUsize;
 use tokio::{
     fs::{File, OpenOptions},
-    io::AsyncWriteExt,
+    io::{AsyncSeekExt, AsyncWriteExt},
     select,
     sync::{
         Mutex,
         mpsc::{self, Receiver},
         oneshot::{self, Sender},
     },
+    time::interval,
 };
 use tracing::{debug, info, trace, warn};
 
@@ -125,7 +129,8 @@ pub enum PieceStrategy {
 // Precomputed file metadata for fast lookups
 #[derive(Debug, Clone)]
 pub struct FileMetadata {
-    pub path: PathBuf,
+    // pub path: PathBuf,
+    pub path: Arc<Path>,
     pub start_offset: u64,
     pub length: u64,
 }
@@ -152,13 +157,12 @@ pub enum ReturnToDisk {
 /// - Read/Write blocks to files
 /// - Store block infos of all torrents
 /// - Validate hash of pieces
-#[derive(Debug)]
 pub struct Disk {
     pub tx: mpsc::Sender<DiskMsg>,
     daemon_tx: mpsc::Sender<DaemonMsg>,
     rx: Receiver<DiskMsg>,
 
-    pub(crate) free_tx: mpsc::UnboundedSender<ReturnToDisk>,
+    // pub(crate) free_tx: mpsc::UnboundedSender<ReturnToDisk>,
     free_rx: mpsc::UnboundedReceiver<ReturnToDisk>,
 
     pub(crate) torrent_ctxs: HashMap<InfoHash, Arc<TorrentCtx>>,
@@ -197,6 +201,10 @@ pub struct Disk {
     /// disk needs to read or write to a file.
     read_mmap_cache: LruCache<PathBuf, Arc<Mmap>>,
     write_mmap_cache: LruCache<PathBuf, Arc<Mutex<MmapMut>>>,
+
+    /// Files that need to be flushed, the bitfield is relative to
+    /// `torrent_cache` files.
+    dirty_files: HashMap<InfoHash, Bitfield>,
 }
 
 /// Cache capacity of files.
@@ -207,12 +215,11 @@ impl Disk {
         daemon_tx: mpsc::Sender<DaemonMsg>,
         tx: mpsc::Sender<DiskMsg>,
         rx: mpsc::Receiver<DiskMsg>,
-        free_tx: mpsc::UnboundedSender<ReturnToDisk>,
         free_rx: mpsc::UnboundedReceiver<ReturnToDisk>,
     ) -> Result<Self, Error> {
         let s = Self {
+            dirty_files: HashMap::new(),
             daemon_tx,
-            free_tx,
             free_rx,
             rx,
             tx,
@@ -243,95 +250,11 @@ impl Disk {
         Ok(s)
     }
 
-    async fn preopen_files(
-        &self,
-        file_metadata: &[FileMetadata],
-    ) -> Result<Vec<(FileMetadata, Arc<Mmap>)>, Error> {
-        let mut mmaps = Vec::with_capacity(file_metadata.len());
-
-        for file_meta in file_metadata {
-            // Open the file and memory-map it
-            let file = File::open(&file_meta.path).await?;
-            let mmap = unsafe { Mmap::map(&file)? };
-
-            mmaps.push((file_meta.clone(), Arc::new(mmap)));
-        }
-
-        Ok(mmaps)
-    }
-
-    async fn handle_new_torrent_block_state(
-        &mut self,
-        info_hash: &InfoHash,
-    ) -> Result<(), Error> {
-        let torrent_cache = self
-            .torrent_cache
-            .get(info_hash)
-            .ok_or(Error::TorrentDoesNotExist)?
-            .clone();
-
-        let info = self
-            .torrent_info
-            .get(info_hash)
-            .ok_or(Error::TorrentDoesNotExist)?;
-
-        let expected_hashes: Vec<[u8; 20]> = info
-            .pieces
-            .chunks_exact(20)
-            .map(|chunk| chunk.try_into().unwrap())
-            .collect();
-
-        let total_pieces = info.pieces() as usize;
-        let piece_length = info.piece_length as u64;
-        let total_size = torrent_cache.total_size;
-
-        let file_handles =
-            self.preopen_files(&torrent_cache.file_metadata).await?;
-
-        // compute all pieces in parallel using rayon.
-        let piece_results: Vec<bool> = (0..total_pieces)
-            .into_par_iter()
-            .map(|piece_index| {
-                Self::verify_piece(
-                    piece_index,
-                    file_handles.as_slice(),
-                    piece_length,
-                    total_size,
-                    expected_hashes[piece_index],
-                )
-            })
-            .collect();
-
-        let mut downloaded_pieces = Bitfield::from_piece(total_pieces);
-        let mut pieces_requested = Bitfield::from_piece(total_pieces);
-
-        for (piece_index, result) in piece_results.into_iter().enumerate() {
-            if result {
-                downloaded_pieces.set(piece_index, true);
-                pieces_requested.set(piece_index, true);
-                // todo: generate block infos for the piece here
-            }
-        }
-
-        // Update state
-        let downloaded_count = downloaded_pieces.count_ones() as u64;
-        self.downloaded_pieces.insert(info_hash.clone(), downloaded_count);
-        self.pieces_requested.insert(info_hash.clone(), pieces_requested);
-
-        // Generate block infos
-        let block_infos = info.get_block_infos()?;
-        self.block_infos.insert(info_hash.clone(), block_infos);
-
-        info!(
-            "Verified {} downloaded pieces out of {} total pieces",
-            downloaded_count, total_pieces
-        );
-
-        Ok(())
-    }
-
     #[tracing::instrument(name = "disk", skip_all)]
     pub async fn run(&mut self) -> Result<(), Error> {
+        let mut flush_interval = interval(Duration::from_millis(100));
+        let mut dirty_count_history = Vec::with_capacity(10);
+
         //
         // only for debugging
         //
@@ -339,6 +262,34 @@ impl Disk {
 
         'outer: loop {
             select! {
+                _ = flush_interval.tick() => {
+                    let total_dirty: usize = self.dirty_files.values()
+                        .map(|bits| bits.count_ones())
+                        .sum();
+
+                    dirty_count_history.push(total_dirty);
+                    if dirty_count_history.len() > 10 {
+                        dirty_count_history.remove(0);
+                    }
+
+                    let avg_dirty = dirty_count_history.iter().sum::<usize>()
+                        / dirty_count_history.len().max(1);
+
+                    flush_interval = if avg_dirty > 50 {
+                         // aggressive flushing for high activity
+                        interval(Duration::from_millis(10))
+                    } else if avg_dirty > 10 {
+                        interval(Duration::from_millis(100))
+                    } else if avg_dirty > 0 {
+                        interval(Duration::from_millis(500))
+                    } else {
+                        // when idle
+                        interval(Duration::from_millis(1000))
+                    };
+
+                    self.flush_dirty_files().await;
+                    self.dirty_files.retain(|_, bits| bits.any());
+                }
                 // _ = disk_interval.tick() => {
                 //     for (k, v) in self.block_infos.iter() {
                 //         let pr = self.pieces_requested.get(k).unwrap();
@@ -400,6 +351,7 @@ impl Disk {
                             self.piece_order.remove_entry(&info_hash);
                             self.pieces_requested.remove_entry(&info_hash);
                             self.torrent_info.remove_entry(&info_hash);
+                            self.dirty_files.remove_entry(&info_hash);
                             self.peer_ctxs.retain(|v| v.info_hash != info_hash);
                         }
                         DiskMsg::MetadataSize(info_hash, size) => {
@@ -476,6 +428,101 @@ impl Disk {
         }
     }
 
+    async fn preopen_files<'a>(
+        &self,
+        file_metadata: &'a [FileMetadata],
+    ) -> Result<Vec<(&'a FileMetadata, Arc<Mmap>)>, Error> {
+        let mut mmaps = Vec::with_capacity(file_metadata.len());
+
+        for file_meta in file_metadata {
+            let file = File::open(&file_meta.path).await?;
+            let mmap = unsafe { Mmap::map(&file)? };
+
+            mmaps.push((file_meta, Arc::new(mmap)));
+        }
+
+        Ok(mmaps)
+    }
+
+    async fn handle_new_torrent_block_state(
+        &mut self,
+        info_hash: &InfoHash,
+    ) -> Result<(), Error> {
+        let torrent_cache = self
+            .torrent_cache
+            .get(info_hash)
+            .ok_or(Error::TorrentDoesNotExist)?
+            .clone();
+
+        let info = self
+            .torrent_info
+            .get(info_hash)
+            .ok_or(Error::TorrentDoesNotExist)?;
+
+        let expected_hashes: Vec<[u8; 20]> = info
+            .pieces
+            .chunks_exact(20)
+            .map(|chunk| chunk.try_into().unwrap())
+            .collect();
+
+        let total_pieces = info.pieces() as usize;
+        let piece_length = info.piece_length as u64;
+        let total_size = torrent_cache.total_size;
+
+        let file_handles =
+            self.preopen_files(&torrent_cache.file_metadata).await?;
+
+        // compute all pieces in parallel using rayon.
+        let piece_results: Vec<bool> = (0..total_pieces)
+            .into_par_iter()
+            .map(|piece_index| {
+                Self::verify_piece(
+                    piece_index,
+                    file_handles.as_slice(),
+                    piece_length,
+                    total_size,
+                    expected_hashes[piece_index],
+                )
+            })
+            .collect();
+
+        let mut downloaded_pieces = Bitfield::from_piece(total_pieces);
+        let mut pieces_requested = Bitfield::from_piece(total_pieces);
+        let block_infos =
+            self.block_infos.entry(info_hash.clone()).or_default();
+
+        for (piece_index, result) in piece_results.into_iter().enumerate() {
+            if result {
+                downloaded_pieces.set(piece_index, true);
+                pieces_requested.set(piece_index, true);
+                block_infos.insert(
+                    piece_index,
+                    info.get_block_infos_of_piece_self(piece_index),
+                );
+            }
+        }
+
+        // update state
+        let downloaded_count = downloaded_pieces.count_ones() as u64;
+        self.downloaded_pieces.insert(info_hash.clone(), downloaded_count);
+        self.pieces_requested.insert(info_hash.clone(), pieces_requested);
+
+        // generate block infos
+        let block_infos = info.get_block_infos()?;
+        self.block_infos.insert(info_hash.clone(), block_infos);
+
+        info!(
+            "verified {} downloaded pieces out of {} total pieces",
+            downloaded_count, total_pieces
+        );
+
+        for (f, mmap) in file_handles {
+            self.read_mmap_cache.put(f.path.to_path_buf(), mmap);
+        }
+
+        Ok(())
+    }
+
     /// Initialize data for an incomplete torrent from a metainfo file. Data
     /// such as: how many block infos are still missing to be downloaded,
     /// downloaded pieces, etc.
@@ -503,7 +550,7 @@ impl Disk {
                 let mut path = base.clone();
                 path.extend(&file.path);
                 file_metadata.push(FileMetadata {
-                    path,
+                    path: path.into(),
                     start_offset: current_offset,
                     length: file.length,
                 });
@@ -511,11 +558,16 @@ impl Disk {
             }
         } else {
             file_metadata.push(FileMetadata {
-                path: base,
+                path: base.into(),
                 start_offset: 0,
                 length: info.file_length.unwrap_or(0),
             });
         }
+
+        self.dirty_files.insert(
+            info_hash.clone(),
+            Bitfield::from_piece(file_metadata.len()),
+        );
 
         self.torrent_cache.insert(
             info_hash.clone(),
@@ -637,6 +689,54 @@ impl Disk {
         }
 
         Ok(())
+    }
+
+    fn mark_file_dirty(
+        &mut self,
+        info_hash: &InfoHash,
+        file_index: usize,
+    ) -> Result<(), Error> {
+        let dirty_bits = self
+            .dirty_files
+            .get_mut(info_hash)
+            .ok_or(Error::TorrentDoesNotExist)?;
+        dirty_bits.safe_set(file_index);
+        Ok(())
+    }
+
+    /// Return the file index given it's path on the torrent cache.
+    fn get_file_index(
+        &self,
+        info_hash: &InfoHash,
+        path: &Path,
+    ) -> Option<usize> {
+        self.torrent_cache.get(info_hash).and_then(|cache| {
+            cache.file_metadata.iter().position(|meta| *meta.path == *path)
+        })
+    }
+
+    async fn flush_dirty_files(&mut self) {
+        for (info_hash, dirty_bits) in &mut self.dirty_files {
+            let mut to_set = Bitfield::from_piece(dirty_bits.len());
+
+            let Some(cache) = self.torrent_cache.get(info_hash) else {
+                continue;
+            };
+            for file_index in dirty_bits.iter_ones() {
+                if let Some(file_meta) = cache.file_metadata.get(file_index)
+                    && let Some(mmap) =
+                        self.write_mmap_cache.get(&*file_meta.path)
+                {
+                    let mmap = mmap.lock().await;
+                    if let Err(e) = mmap.flush_async() {
+                        // keep it marked as dirty if flush failed
+                    } else {
+                        to_set.set(file_index, true);
+                    }
+                }
+            }
+            *dirty_bits &= !to_set;
+        }
     }
 
     /// Request available metadata pieces.
@@ -765,7 +865,6 @@ impl Disk {
         info_hash: &InfoHash,
         block_info: &BlockInfo,
     ) -> Result<Block, Error> {
-        // get torrent metadata
         let cache = self
             .torrent_cache
             .get(info_hash)
@@ -806,6 +905,45 @@ impl Disk {
         })
     }
 
+    pub async fn read_block_zero_copy(
+        &mut self,
+        info_hash: &InfoHash,
+        block_info: &BlockInfo,
+    ) -> Result<Bytes, Error> {
+        let cache = self
+            .torrent_cache
+            .get(info_hash)
+            .ok_or(Error::TorrentDoesNotExist)?;
+
+        // calculate absolute offset
+        let absolute_offset = block_info.index as u64 * cache.piece_length
+            + block_info.begin as u64;
+
+        // find containing file
+        let file_meta = cache
+            .file_metadata
+            .iter()
+            .find(|m| {
+                absolute_offset >= m.start_offset
+                    && absolute_offset < m.start_offset + m.length
+            })
+            .ok_or(Error::TorrentDoesNotExist)?;
+
+        // calculate file-relative offset
+        let file_offset = absolute_offset - file_meta.start_offset;
+
+        let start = file_offset as usize;
+        let end = start + block_info.len as usize;
+
+        let path = &file_meta.path.clone();
+
+        // get cached file handle
+        let mmap = self.get_cached_read_mmap(path).await?;
+
+        // Return a Bytes object that references the memory-mapped data
+        Ok(Bytes::copy_from_slice(&mmap[start..end]))
+    }
+
     /// Write block to a cache of pieces, when a piece has been fully
     /// downloaded and validated, write it to disk and clear the cache.
     ///
@@ -842,7 +980,7 @@ impl Disk {
 
         cache.push(block);
 
-        // Check if piece is fully downloaded
+        // check if piece is fully downloaded
         if self
             .block_cache
             .get(info_hash)
@@ -896,7 +1034,7 @@ impl Disk {
         let _ = torrent_ctx.tx.send(TorrentMsg::DownloadedPiece(index)).await;
 
         // write the piece to disk
-        self.write_pieces(info_hash, index).await?;
+        self.write_piece(info_hash, index).await?;
 
         if *self
             .piece_strategy
@@ -952,7 +1090,7 @@ impl Disk {
             let file_offset = overlap_start - file_meta.start_offset;
 
             write_ops.push((
-                file_meta.path.clone(),
+                file_meta.path.to_path_buf(),
                 file_offset,
                 buffer_start..buffer_end,
             ));
@@ -963,25 +1101,12 @@ impl Disk {
 
     /// Write all cached blocks of `piece` to disk.
     /// It will free the blocks in the cache.
-    pub async fn write_pieces(
+    pub async fn write_piece(
         &mut self,
         info_hash: &InfoHash,
         piece_index: usize,
     ) -> Result<(), Error> {
-        let blocks = self
-            .block_cache
-            .get_mut(info_hash)
-            .and_then(|c| c.remove(&piece_index))
-            .ok_or(Error::PieceInvalid)?;
-
-        let total_length = blocks.iter().map(|b| b.block.len()).sum();
-
-        // combine blocks into single contiguous buffer
-        let mut piece_buffer = Vec::with_capacity(total_length);
-
-        for mut block in blocks {
-            piece_buffer.append(&mut block.block);
-        }
+        let piece_buffer = self.get_piece_buffer(info_hash, piece_index)?;
 
         // calculate write operations
         let write_ops =
@@ -1002,7 +1127,7 @@ impl Disk {
             let mmap_arc = self.get_cached_write_mmap(&path).await?;
             let mut mmap = mmap_arc.lock().await;
 
-            // Sort ops by offset for sequential write
+            // sort ops by offset for sequential write
             let mut ops = ops;
             ops.sort_by_key(|(offset, _)| *offset);
 
@@ -1010,14 +1135,90 @@ impl Disk {
                 let start = file_offset as usize;
                 let end = start + data_range.len();
 
-                if end > mmap.len() {
-                    return Err(Error::NoPeers);
-                }
-
                 mmap[start..end].copy_from_slice(&piece_buffer[data_range]);
             }
 
-            mmap.flush()?;
+            let _ = self.mark_file_dirty(
+                info_hash,
+                self.get_file_index(info_hash, &path).unwrap(),
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Remove the bytes of a piece from the cache.
+    fn get_piece_buffer(
+        &mut self,
+        info_hash: &InfoHash,
+        piece_index: usize,
+    ) -> Result<Vec<u8>, Error> {
+        let blocks = self
+            .block_cache
+            .get_mut(info_hash)
+            .and_then(|c| c.remove(&piece_index))
+            .ok_or(Error::PieceInvalid)?;
+
+        let total_length = blocks.iter().map(|b| b.block.len()).sum();
+
+        // combine blocks into single contiguous buffer
+        let mut piece_buffer = Vec::with_capacity(total_length);
+
+        for mut block in blocks {
+            piece_buffer.append(&mut block.block);
+        }
+
+        Ok(piece_buffer)
+    }
+
+    async fn write_piece_direct_io(
+        &mut self,
+        info_hash: &InfoHash,
+        piece_index: usize,
+    ) -> Result<(), Error> {
+        let piece_buffer = self.get_piece_buffer(info_hash, piece_index)?;
+
+        let write_ops =
+            self.calculate_write_ops(info_hash, piece_index, &piece_buffer)?;
+
+        // group writes by file
+        let mut file_ops: HashMap<PathBuf, Vec<(u64, std::ops::Range<usize>)>> =
+            HashMap::new();
+
+        for (path, file_offset, data_range, ..) in write_ops {
+            file_ops.entry(path).or_default().push((file_offset, data_range));
+        }
+
+        // write to each file using direct I/O
+        for (path, ops) in file_ops {
+            let mut file = Self::open_file(path).await?;
+
+            // get file metadata to check if we're writing to the end
+            let metadata = file.metadata().await?;
+            let file_len = metadata.len();
+
+            // sort operations by offset for sequential writes
+            let mut ops = ops;
+            ops.sort_by_key(|(offset, _)| *offset);
+
+            let mut needs_sync = false;
+
+            for (file_offset, data_range) in ops {
+                let data = &piece_buffer[data_range];
+
+                file.seek(std::io::SeekFrom::Start(file_offset)).await?;
+
+                file.write_all(data).await?;
+
+                // check if this write reaches the end of the file
+                if file_offset + data.len() as u64 == file_len {
+                    needs_sync = true;
+                }
+            }
+
+            if needs_sync {
+                file.sync_data().await?;
+            }
         }
 
         Ok(())
@@ -1201,7 +1402,7 @@ impl Disk {
 
     fn verify_piece(
         piece_index: usize,
-        mmaps: &[(FileMetadata, Arc<Mmap>)],
+        mmaps: &[(&FileMetadata, Arc<Mmap>)],
         piece_length: u64,
         total_size: u64,
         expected_hash: [u8; 20],
@@ -1268,7 +1469,7 @@ impl Disk {
             }
         }
 
-        let hash = hasher.digest().bytes();
+        let hash = &hasher.finalize()[..];
         hash == expected_hash
     }
 
@@ -1302,14 +1503,14 @@ impl Disk {
 
         blocks.sort();
 
-        let mut hasher = sha1_smol::Sha1::new();
+        let mut hasher = Sha1::new();
         for block in blocks {
             hasher.update(&block.block);
         }
 
-        let hash = hasher.digest().bytes();
+        let hash = &hasher.finalize()[..];
 
-        if *hash_from_info != hash {
+        if *hash_from_info.as_slice() != *hash {
             return Err(Error::PieceInvalid);
         }
 
@@ -1422,25 +1623,20 @@ mod tests {
         let daemon_ctx = daemon.ctx.clone();
         let _daemon_tx = daemon_ctx.tx.clone();
 
-        let mut disk = Disk::new(
-            _daemon_tx,
-            disk_tx.clone(),
-            disk_rx,
-            disk_free_tx,
-            disk_free_rx,
-        )
-        .await
-        .unwrap();
+        let mut disk =
+            Disk::new(_daemon_tx, disk_tx.clone(), disk_rx, disk_free_rx)
+                .await
+                .unwrap();
 
         let disk_tx = disk.tx.clone();
-        let free_tx = disk.free_tx.clone();
+        let free_tx = disk_free_tx;
 
         let (tracker_tx, _tracker_rx) = mpsc::channel::<TrackerMsg>(100);
         let (torrent_tx, torrent_rx) = mpsc::channel::<TorrentMsg>(100);
 
-        let mut hasher = sha1_smol::Sha1::new();
-        hasher.update(&[7u8; (BLOCK_LEN) as usize]);
-        let hash = hasher.digest().bytes();
+        let mut hasher = Sha1::new();
+        hasher.update([7u8; (BLOCK_LEN) as usize]);
+        let hash = hasher.finalize();
 
         let mut pieces = vec![];
         for _ in 0..6 {
@@ -1469,7 +1665,7 @@ mod tests {
 
         let torrent_ctx = Arc::new(TorrentCtx {
             btx,
-            free_tx: disk.free_tx.clone(),
+            free_tx: free_tx.clone(),
             disk_tx: disk_tx.clone(),
             tx: torrent_tx,
             info_hash: info_hash.clone(),

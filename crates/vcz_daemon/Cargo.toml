@@ -17,7 +17,7 @@ hex = { workspace = true }
 magnet-url = { workspace = true }
 rand = { workspace = true }
 serde = { workspace = true }
-sha1_smol = { workspace = true }
+sha1 = { workspace = true }
 speedy = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }

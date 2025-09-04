@@ -47,6 +47,9 @@ pub enum Error {
     #[error("Failed to send a connect request to the tracker")]
     ConnectSendFailed,
 
+    #[error("Index out of bounds.")]
+    OutOfBounds,
+
     #[error("File not found: {0}")]
     FileNotFound(PathBuf),
 

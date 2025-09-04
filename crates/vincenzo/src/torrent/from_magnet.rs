@@ -1,6 +1,7 @@
 use super::*;
 use crate::{magnet::Magnet, metainfo::Info};
 use bendy::decoding::FromBencode;
+use sha1::{Digest, Sha1};
 
 impl Torrent<Connected, FromMagnet> {
     /// Run the Torrent main event loop to listen to internal [`TorrentMsg`].
@@ -163,16 +164,14 @@ impl Torrent<Connected, FromMagnet> {
         self.state.metadata_size = Some(downloaded_info.size);
         let magnet_hash = self.source.info_hash();
 
-        let mut hasher = sha1_smol::Sha1::new();
+        let mut hasher = Sha1::new();
         hasher.update(&info_bytes);
 
-        let hash = hasher.digest().bytes();
+        let hash = &hasher.finalize()[..];
 
         // validate the hash of the downloaded info
         // against the hash of the magnet link
-        if hex::decode(*magnet_hash).map_err(|_| Error::BencodeError)?
-            != hash.to_vec()
-        {
+        if hex::decode(*magnet_hash).map_err(|_| Error::BencodeError)? != hash {
             warn!("invalid info hash for info: {:?}", downloaded_info.name);
             self.state.info_pieces.clear();
             return Err(Error::PieceInvalid);

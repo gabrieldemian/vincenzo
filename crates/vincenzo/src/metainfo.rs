@@ -7,6 +7,7 @@ use bendy::{
     encoding::{self, AsString, Error, SingleItemEncoder, ToBencode},
 };
 use hashbrown::HashMap;
+use sha1::{Digest, Sha1};
 
 use crate::{
     error,
@@ -114,7 +115,6 @@ pub struct Info {
 
     // the following is internal computed data for better ergonomics, and
     // not included in the real Info.
-    /// The size of the bencoded Info.
     pub size: usize,
     pub info_hash: InfoHash,
 }
@@ -141,10 +141,39 @@ impl Info {
     }
 
     pub fn info_hash(buf: &[u8]) -> InfoHash {
-        let mut hasher = sha1_smol::Sha1::new();
+        let mut hasher = Sha1::new();
         hasher.update(buf);
-        let hash = hasher.digest().bytes();
-        InfoHash(hash)
+        let h = [0; 20];
+        hasher.finalize_into(&mut h.into());
+        InfoHash(h)
+    }
+
+    pub fn get_block_infos_of_piece_self(
+        &self,
+        piece_index: usize,
+    ) -> Vec<BlockInfo> {
+        let total_size = self.get_size() as usize;
+        let piece_length = self.piece_length as usize;
+        let piece_start = piece_index * piece_length;
+        let piece_end = (piece_start + piece_length).min(total_size);
+        let piece_size = (piece_end - piece_start) as u32;
+
+        // calculate all blocks for this piece in one go
+        let num_blocks = piece_size.div_ceil(BLOCK_LEN);
+        let mut blocks = Vec::with_capacity(num_blocks as usize);
+
+        for block_index in 0..num_blocks {
+            let begin = block_index * BLOCK_LEN;
+            let len = if block_index == num_blocks - 1 {
+                piece_size - begin
+            } else {
+                BLOCK_LEN
+            };
+
+            blocks.push(BlockInfo { index: piece_index as u32, begin, len });
+        }
+
+        blocks
     }
 
     /// Only get block infos of a piece.
@@ -154,10 +183,10 @@ impl Info {
         piece_index: usize,
     ) -> Vec<BlockInfo> {
         let piece_start = piece_index * piece_length;
-        let piece_end = std::cmp::min(piece_start + piece_length, total_size);
+        let piece_end = (piece_start + piece_length).min(total_size);
         let piece_size = (piece_end - piece_start) as u32;
 
-        // Calculate all blocks for this piece in one go
+        // calculate all blocks for this piece in one go
         let num_blocks = piece_size.div_ceil(BLOCK_LEN);
         let mut blocks = Vec::with_capacity(num_blocks as usize);
 
