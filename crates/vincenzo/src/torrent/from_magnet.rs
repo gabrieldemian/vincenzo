@@ -1,7 +1,6 @@
 use super::*;
 use crate::{magnet::Magnet, metainfo::Info};
 use bendy::decoding::FromBencode;
-use sha1::{Digest, Sha1};
 
 impl Torrent<Connected, FromMagnet> {
     /// Run the Torrent main event loop to listen to internal [`TorrentMsg`].
@@ -11,7 +10,9 @@ impl Torrent<Connected, FromMagnet> {
     pub async fn run(&mut self) -> Result<(), Error> {
         debug!("running torrent: {:?}", self.name);
 
-        self.spawn_outbound_peers(self.source.info.is_some()).await?;
+        self.status = TorrentStatus::DownloadingMetainfo;
+
+        let _ = self.spawn_outbound_peers(self.source.info.is_some()).await;
 
         loop {
             select! {
@@ -65,9 +66,6 @@ impl Torrent<Connected, FromMagnet> {
                         }
                         TorrentMsg::PeerConnectingError(addr) => {
                             self.state.connecting_peers.retain(|v| *v != addr);
-                            // we dont push this addr to the error_peers. If the TCP connection was
-                            // made but something happened in the handshake, there is nothing we
-                            // can do but to ignore this peer's existence.
                         }
                         TorrentMsg::PeerError(addr) => {
                             self.peer_error(addr).await;
@@ -94,13 +92,18 @@ impl Torrent<Connected, FromMagnet> {
                         }
                     }
                 }
+                _ = self.state.heartbeat_interval.tick() => {
+                    self.heartbeat_interval().await;
+                }
+                _ = self.state.announce_interval.tick(),
+                    if self.source.info.is_some() =>
+                {
+                    if let Ok(r) = self.announce_interval().await {
+                        self.state.announce_interval = r;
+                    }
+                }
                 _ = self.state.reconnect_interval.tick() => {
                     self.reconnect_interval().await;
-                }
-                _ = self.state.heartbeat_interval.tick(),
-                if self.source.info.is_some() =>
-                {
-                    self.heartbeat_interval().await;
                 }
                 _ = self.state.log_rates_interval.tick() => {
                     self.log_rates_interval();
@@ -114,11 +117,6 @@ impl Torrent<Connected, FromMagnet> {
                 _ = self.state.unchoke_interval.tick() => {
                     self.unchoke_interval().await;
                 }
-                _ = self.state.announce_interval.tick(),
-                if self.source.info.is_some() =>
-                {
-                    self.state.announce_interval = self.announce_interval().await?;
-                }
             }
         }
     }
@@ -129,23 +127,15 @@ impl Torrent<Connected, FromMagnet> {
         index: u64,
         bytes: Vec<u8>,
     ) -> Result<(), Error> {
-        debug!("downloaded_info_piece");
-
         if self.source.info.is_some() {
             return Ok(());
         };
-
-        if self.status == TorrentStatus::ConnectingTrackers {
-            self.status = TorrentStatus::DownloadingMetainfo;
-        }
 
         self.state.info_pieces.entry(index).or_default().extend(bytes);
 
         let has_info_downloaded =
             self.state.info_pieces.values().fold(0, |acc, v| acc + v.len())
                 >= total;
-
-        debug!("has_info_downloaded? {has_info_downloaded}");
 
         if !has_info_downloaded {
             return Ok(());
@@ -162,16 +152,10 @@ impl Torrent<Connected, FromMagnet> {
 
         let downloaded_info = Info::from_bencode(&info_bytes)?;
         self.state.metadata_size = Some(downloaded_info.size);
-        let magnet_hash = self.source.info_hash();
-
-        let mut hasher = Sha1::new();
-        hasher.update(&info_bytes);
-
-        let hash = &hasher.finalize()[..];
 
         // validate the hash of the downloaded info
         // against the hash of the magnet link
-        if hex::decode(*magnet_hash).map_err(|_| Error::BencodeError)? != hash {
+        if self.source.info_hash() != downloaded_info.info_hash {
             warn!("invalid info hash for info: {:?}", downloaded_info.name);
             self.state.info_pieces.clear();
             return Err(Error::PieceInvalid);
@@ -187,8 +171,8 @@ impl Torrent<Connected, FromMagnet> {
         );
 
         self.state.size = downloaded_info.get_size();
-        let pieces = downloaded_info.pieces();
-        self.state.bitfield = Bitfield::from_piece(pieces as usize);
+        self.state.bitfield =
+            Bitfield::from_piece(downloaded_info.pieces() as usize);
 
         self.ctx
             .disk_tx

@@ -272,7 +272,7 @@ impl TrackerTrait for Tracker<Udp> {
         }
 
         info!("peers count: {}", peer_list.len());
-        debug!("{} ips of peers {peer_list:#?}", peer_list.len());
+        debug!("{} ips of peers {peer_list:?}", peer_list.len());
         let peers: Vec<SocketAddr> = peer_list.into_iter().collect();
 
         Ok(peers)

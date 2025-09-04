@@ -16,7 +16,7 @@ impl Torrent<Connected, FromMetaInfo> {
         // todo: instantiate `self.state.info_pieces` to be able to answer to
         // piece requests from other peers.
 
-        self.spawn_outbound_peers(true).await?;
+        let _ = self.spawn_outbound_peers(true).await;
 
         loop {
             select! {
@@ -110,7 +110,9 @@ impl Torrent<Connected, FromMetaInfo> {
                     self.unchoke_interval().await;
                 }
                 _ = self.state.announce_interval.tick() => {
-                    self.state.announce_interval = self.announce_interval().await?;
+                    if let Ok(r) = self.announce_interval().await {
+                        self.state.announce_interval = r;
+                    }
                 }
             }
         }

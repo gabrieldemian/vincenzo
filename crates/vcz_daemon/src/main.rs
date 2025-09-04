@@ -22,7 +22,7 @@ async fn main() -> Result<(), Error> {
         .without_time()
         .with_target(false)
         .with_file(false)
-        .with_max_level(Level::INFO)
+        .with_max_level(Level::DEBUG)
         .finish();
 
     tracing::subscriber::set_global_default(subscriber)
@@ -53,8 +53,7 @@ async fn main() -> Result<(), Error> {
         let daemon = Daemon::new(disk_tx.clone(), free_tx.clone());
 
         let mut disk =
-            Disk::new(daemon.ctx.tx.clone(), disk_tx.clone(), disk_rx, free_rx)
-                .await?;
+            Disk::new(daemon.ctx.tx.clone(), disk_tx.clone(), disk_rx, free_rx);
 
         spawn(async move {
             let _ = disk.run().await;

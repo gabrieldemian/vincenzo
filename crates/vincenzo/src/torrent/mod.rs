@@ -128,8 +128,6 @@ impl<M: TorrentSource> Torrent<Idle, M> {
 
         drop(org_trackers);
 
-        let now = Instant::now();
-
         // try to reconnect with errored peers
         let reconnect_interval = interval(Duration::from_secs(5));
 
@@ -140,6 +138,8 @@ impl<M: TorrentSource> Torrent<Idle, M> {
 
         // unchoke the slowest interested peer.
         let optimistic_unchoke_interval = interval(Duration::from_secs(30));
+
+        let now = Instant::now();
 
         // unchoke algorithm:
         // - choose the best 3 interested uploaders and unchoke them.
@@ -406,6 +406,12 @@ impl<M: TorrentSource> Torrent<Connected, M> {
                 uploaded: self.state.counter.total_upload(),
                 left: 0,
             })
+            .await;
+
+        let _ = self
+            .ctx
+            .disk_tx
+            .send(DiskMsg::FinishedDownload(self.source.info_hash()))
             .await;
 
         if let Ok(r) = orx.await {
