@@ -1,5 +1,5 @@
 use magnet_url::Magnet;
-use tokio::{join, spawn, sync::mpsc};
+use tokio::{spawn, sync::mpsc};
 use tracing::Level;
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::FmtSubscriber;
@@ -55,12 +55,10 @@ async fn main() -> Result<(), Error> {
     let (free_tx, free_rx) = mpsc::unbounded_channel::<ReturnToDisk>();
 
     let mut daemon = Daemon::new(disk_tx.clone(), free_tx.clone());
+    let mut disk = Disk::new(daemon.ctx.clone(), disk_tx, disk_rx, free_rx);
 
-    let mut disk = Disk::new(daemon.ctx.tx.clone(), disk_tx, disk_rx, free_rx);
-
-    spawn(async move {
-        let _ = disk.run().await;
-    });
+    let disk_handle = spawn(async move { disk.run().await });
+    let daemon_handle = spawn(async move { daemon.run().await });
 
     let (fr_tx, fr_rx) = mpsc::unbounded_channel();
 
@@ -74,9 +72,11 @@ async fn main() -> Result<(), Error> {
         let _ = fr_tx.send(Action::NewTorrent(magnet));
     }
 
-    let (v1, v2) = join!(daemon.run(), fr.run(fr_rx));
-    v1?;
-    v2.unwrap();
+    // let fr_handle = spawn(async move { fr.run(fr_rx).await });
+
+    disk_handle.await??;
+    daemon_handle.await??;
+    fr.run(fr_rx).await.unwrap();
 
     Ok(())
 }

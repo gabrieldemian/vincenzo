@@ -21,9 +21,10 @@ use crate::{
 pub struct MetaInfo {
     pub announce: String,
     pub announce_list: Option<Vec<Vec<String>>>,
-    pub info: Info,
     pub comment: Option<String>,
+    // pub created_by: Option<String>,
     pub creation_date: Option<u32>,
+    pub info: Info,
     pub http_seeds: Option<Vec<String>>,
 }
 
@@ -120,6 +121,40 @@ pub struct Info {
 }
 
 impl Info {
+    pub fn to_meta_info(self, announce_list: Vec<String>) -> MetaInfo {
+        let announce = announce_list
+            .iter()
+            .find(|v| v.starts_with("udp"))
+            .cloned()
+            .unwrap_or(announce_list[0].clone());
+
+        let mut list = vec![
+            vec![], // udp
+            vec![], // http
+            vec![], // https
+            vec![], // wss
+        ];
+
+        for l in announce_list {
+            if l.starts_with("udp") {
+                list[0].push(l);
+            } else if l.starts_with("http") {
+                list[1].push(l);
+            } else if l.starts_with("https") {
+                list[2].push(l);
+            } else if l.starts_with("wss") {
+                list[3].push(l);
+            }
+        }
+
+        MetaInfo {
+            announce_list: Some(list),
+            announce,
+            info: self,
+            ..Default::default()
+        }
+    }
+
     pub fn name(mut self, name: String) -> Self {
         self.name = name;
         self

@@ -3,7 +3,7 @@ use std::{
     fmt::Display,
     net::{IpAddr, SocketAddr},
     ops::Deref,
-    sync::Arc,
+    sync::{Arc, atomic::Ordering},
 };
 
 use bincode::{Decode, Encode};
@@ -19,6 +19,7 @@ use crate::{
     magnet::Magnet,
     metainfo::{Info, MetaInfo},
     peer::{self, Peer, PeerCtx, PeerId},
+    torrent::{self, Torrent},
     tracker::TrackerCtx,
 };
 
@@ -70,6 +71,8 @@ pub enum TorrentMsg {
     DownloadedInfoPiece(usize, u64, Vec<u8>),
 
     ReadBitfield(oneshot::Sender<Bitfield>),
+
+    GetAnnounceList(oneshot::Sender<Vec<String>>),
 
     /// Sent when the peer is acting as a relay for the holepunch protocol.
     ReadPeerByIp(IpAddr, u16, oneshot::Sender<Option<Arc<PeerCtx>>>),
@@ -217,6 +220,48 @@ pub struct TorrentState {
     pub idle_peers: u8,
 }
 
+impl<M: TorrentSource> From<&Torrent<torrent::Idle, M>> for TorrentState {
+    fn from(value: &Torrent<torrent::Idle, M>) -> Self {
+        Self {
+            name: value.name.clone(),
+            status: TorrentStatus::ConnectingTrackers,
+            bitfield: value.bitfield.clone().into(),
+            info_hash: value.source.info_hash(),
+            ..Default::default()
+        }
+    }
+}
+
+impl<M: TorrentSource> From<&Torrent<torrent::Connected, M>> for TorrentState {
+    fn from(value: &Torrent<torrent::Connected, M>) -> Self {
+        let downloading_from =
+            value.state.connected_peers.iter().fold(0, |acc, v| {
+                acc + if !v.peer_choking.load(Ordering::Relaxed)
+                    && v.am_interested.load(Ordering::Relaxed)
+                {
+                    1
+                } else {
+                    0
+                }
+            });
+        Self {
+            name: value.name.clone(),
+            stats: value.state.stats.clone(),
+            info_hash: value.source.info_hash(),
+            size: value.state.size,
+            status: TorrentStatus::Downloading,
+            downloaded: value.state.counter.total_download(),
+            uploaded: value.state.counter.total_upload(),
+            bitfield: value.bitfield.clone().into_vec(),
+            idle_peers: value.state.idle_peers.len() as u8,
+            connected_peers: value.state.connected_peers.len() as u8,
+            download_rate: value.state.counter.download_rate_f64(),
+            upload_rate: value.state.counter.upload_rate_f64(),
+            downloading_from,
+        }
+    }
+}
+
 /// Status of the current Torrent, updated at every announce request.
 #[derive(
     Clone, Debug, PartialEq, Default, Readable, Writable, Encode, Decode,
@@ -278,12 +323,12 @@ pub trait TorrentSource {
     fn size(&self) -> u64;
 }
 
-pub(crate) struct FromMagnet {
+pub struct FromMagnet {
     pub magnet: Magnet,
     pub info: Option<Info>,
 }
 
-pub(crate) struct FromMetaInfo {
+pub struct FromMetaInfo {
     pub meta_info: MetaInfo,
 }
 
@@ -322,10 +367,6 @@ pub struct Connected {
     pub stats: Stats,
 
     pub counter: Counter,
-
-    /// Bitfield representing the presence or absence of pieces for our local
-    /// peer, where each bit is a piece.
-    pub bitfield: Bitfield,
 
     /// If using a Magnet link, the info will be downloaded in pieces
     /// and those pieces may come in different order,

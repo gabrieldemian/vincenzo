@@ -42,11 +42,15 @@ use tracing::{debug, info, trace, warn};
 /// This is the main entity responsible for the high-level management of
 /// a torrent download or upload.
 pub struct Torrent<S: State, M: TorrentSource> {
+    pub name: String,
     pub ctx: Arc<TorrentCtx>,
     pub daemon_ctx: Arc<DaemonCtx>,
-    pub name: String,
-    pub rx: mpsc::Receiver<TorrentMsg>,
     pub status: TorrentStatus,
+    pub rx: mpsc::Receiver<TorrentMsg>,
+
+    /// Bitfield representing the presence or absence of pieces for our local
+    /// peer, where each bit is a piece.
+    pub bitfield: Bitfield,
     pub(crate) state: S,
     pub(crate) source: M,
 }
@@ -170,7 +174,6 @@ impl<M: TorrentSource> Torrent<Idle, M> {
                 error_peers: Vec::with_capacity(
                     CONFIG.max_torrent_peers as usize,
                 ),
-                bitfield: Bitfield::default(),
                 stats,
                 idle_peers: peers,
                 tracker_ctx,
@@ -181,6 +184,7 @@ impl<M: TorrentSource> Torrent<Idle, M> {
                 info_pieces: BTreeMap::new(),
             },
             source: self.source,
+            bitfield: self.bitfield,
             ctx: self.ctx,
             daemon_ctx: self.daemon_ctx,
             name: self.name,
@@ -270,14 +274,14 @@ impl<M: TorrentSource> Torrent<Connected, M> {
         let download_rate = self.state.counter.download_rate();
         let upload_rate = self.state.counter.upload_rate();
 
-        info!(
+        debug!(
             "d: {} u: {} dr: {} ur: {} p: {} dp: {}",
             to_human_readable(downloaded as f64),
             to_human_readable(uploaded as f64),
             download_rate,
             upload_rate,
-            self.state.bitfield.len(),
-            self.state.bitfield.count_ones()
+            self.bitfield.len(),
+            self.bitfield.count_ones()
         );
     }
 
@@ -293,39 +297,7 @@ impl<M: TorrentSource> Torrent<Connected, M> {
         }
         self.state.counter.update_rates();
 
-        let downloaded =
-            self.state.counter.total_download().min(self.state.size);
-        let uploaded = self.state.counter.total_upload();
-        let download_rate = self.state.counter.download_rate_f64();
-        let upload_rate = self.state.counter.upload_rate_f64();
-
-        let downloading_from =
-            self.state.connected_peers.iter().fold(0, |acc, v| {
-                acc + if !v.peer_choking.load(Ordering::Relaxed)
-                    && v.am_interested.load(Ordering::Relaxed)
-                {
-                    1
-                } else {
-                    0
-                }
-            });
-
-        // send periodic updates to the TUI
-        let torrent_state = TorrentState {
-            name: self.name.clone(),
-            size: self.state.size,
-            downloaded,
-            uploaded,
-            stats: self.state.stats.clone(),
-            status: self.status,
-            upload_rate,
-            download_rate,
-            info_hash: self.ctx.info_hash.clone(),
-            bitfield: self.state.bitfield.clone().into_vec(),
-            connected_peers: self.state.connected_peers.len() as u8,
-            downloading_from,
-            idle_peers: self.state.idle_peers.len() as u8,
-        };
+        let torrent_state: TorrentState = (&*self).into();
 
         let _ = self
             .daemon_ctx
@@ -378,12 +350,12 @@ impl<M: TorrentSource> Torrent<Connected, M> {
     async fn downloaded_piece(&mut self, piece: usize) {
         debug!("downloaded_piece {piece}");
 
-        self.state.bitfield.safe_set(piece);
+        self.bitfield.safe_set(piece);
 
         let _ = self.ctx.btx.send(PeerBrMsg::HavePiece(piece));
 
-        let total_pieces = self.state.bitfield.len();
-        let downloaded_pieces = self.state.bitfield.count_ones();
+        let total_pieces = self.bitfield.len();
+        let downloaded_pieces = self.bitfield.count_ones();
         let is_download_complete = downloaded_pieces >= total_pieces;
 
         if !is_download_complete && self.status == TorrentStatus::Downloading {
@@ -769,7 +741,7 @@ impl<M: TorrentSource> Torrent<Connected, M> {
         &self,
         peer_id: &PeerId,
     ) -> Option<usize> {
-        let local = &self.state.bitfield;
+        let local = &self.bitfield;
         if !local.any() {
             return Some(0);
         };
@@ -787,7 +759,7 @@ impl<M: TorrentSource> Torrent<Connected, M> {
             .get(peer_id)
             // even though i'm doing a clone here, the compiler *probably*
             // optimizes this with SIMD.
-            .map(|remote| !self.state.bitfield.clone() & remote)
+            .map(|remote| !self.bitfield.clone() & remote)
             .unwrap_or_default()
     }
 }

@@ -50,17 +50,13 @@ async fn main() -> Result<(), Error> {
         let (disk_tx, disk_rx) = mpsc::channel::<DiskMsg>(512);
         let (free_tx, free_rx) = mpsc::unbounded_channel::<ReturnToDisk>();
 
-        let daemon = Daemon::new(disk_tx.clone(), free_tx.clone());
+        let mut daemon = Daemon::new(disk_tx.clone(), free_tx);
 
-        let mut disk =
-            Disk::new(daemon.ctx.tx.clone(), disk_tx.clone(), disk_rx, free_rx);
-
-        spawn(async move {
-            let _ = disk.run().await;
-        });
-
-        let mut daemon = Daemon::new(disk_tx, free_tx);
-        daemon.run().await?;
+        let mut disk = Disk::new(daemon.ctx.clone(), disk_tx, disk_rx, free_rx);
+        let disk_handle = spawn(async move { disk.run().await });
+        let daemon_handle = spawn(async move { daemon.run().await });
+        disk_handle.await??;
+        daemon_handle.await??;
     }
 
     // Now that the daemon is running on a process,

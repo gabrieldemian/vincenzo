@@ -433,7 +433,7 @@ impl Peer<Connected> {
     /// Check for timed out block requests and request them again.
     async fn rerequest_blocks(&mut self) -> Result<(), Error> {
         let blocks = self.state.req_man_block.get_timeout_blocks_and_update();
-        debug!("rerequesting {}", blocks.len());
+        trace!("rerequesting {} blocks", blocks.len());
 
         let is_empty = blocks.is_empty();
         for block in blocks {

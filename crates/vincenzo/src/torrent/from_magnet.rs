@@ -18,6 +18,9 @@ impl Torrent<Connected, FromMagnet> {
             select! {
                 Some(msg) = self.rx.recv() => {
                     match msg {
+                        TorrentMsg::GetAnnounceList(otx) => {
+                            let _ = otx.send(self.source.magnet.trackers().into());
+                        }
                         TorrentMsg::PeerHasPieceNotInLocal(id, tx) => {
                             let r = self.peer_has_piece_not_in_local(&id);
                             let _ = tx.send(r);
@@ -55,7 +58,7 @@ impl Torrent<Connected, FromMagnet> {
                             self.metadata_size(metadata_size).await;
                         }
                         TorrentMsg::ReadBitfield(oneshot) => {
-                            let _ = oneshot.send(self.state.bitfield.clone());
+                            let _ = oneshot.send(self.bitfield.clone());
                         }
                         TorrentMsg::DownloadedPiece(piece) => {
                             self.downloaded_piece(piece).await;
@@ -171,12 +174,11 @@ impl Torrent<Connected, FromMagnet> {
         );
 
         self.state.size = downloaded_info.get_size();
-        self.state.bitfield =
-            Bitfield::from_piece(downloaded_info.pieces() as usize);
+        self.bitfield = Bitfield::from_piece(downloaded_info.pieces() as usize);
 
         self.ctx
             .disk_tx
-            .send(DiskMsg::NewTorrent(
+            .send(DiskMsg::AddTorrent(
                 self.ctx.clone(),
                 downloaded_info.clone(),
             ))
@@ -210,6 +212,7 @@ impl Torrent<Idle, FromMagnet> {
         let metadata_size = None;
 
         Self {
+            bitfield: Bitfield::default(),
             name: magnet.parse_dn(),
             source: FromMagnet { magnet, info: None },
             state: Idle { metadata_size },

@@ -20,7 +20,7 @@ use tokio::{
     select, spawn,
     sync::{
         mpsc,
-        oneshot::{self, Sender},
+        oneshot::{self},
     },
     task::JoinHandle,
     time::interval,
@@ -32,10 +32,10 @@ use crate::{
     disk::{DiskMsg, ReturnToDisk},
     error::Error,
     magnet::Magnet,
-    metainfo::{Info, MetaInfo},
     peer::{self, Peer, PeerId},
     torrent::{
-        InfoHash, Torrent, TorrentCtx, TorrentMsg, TorrentState, TorrentStatus,
+        self, InfoHash, Torrent, TorrentCtx, TorrentMsg, TorrentState,
+        TorrentStatus,
     },
     utils::to_human_readable,
 };
@@ -78,12 +78,12 @@ pub struct DaemonCtx {
 /// Messages used by the [`Daemon`] for internal communication.
 /// All of these local messages have an equivalent remote message
 /// on [`DaemonMsg`].
-#[derive(Debug)]
 pub enum DaemonMsg {
     /// Tell Daemon to add a new torrent and it will immediately
     /// announce to a tracker, connect to the peers, and start the download.
     NewTorrentMagnet(magnet_url::Magnet),
-    NewTorrentMetaInfo(MetaInfo, Sender<(Info, Arc<TorrentCtx>)>),
+
+    AddTorrentMetaInfo(Torrent<torrent::Idle, torrent::FromMetaInfo>),
 
     GetConnectedPeers(oneshot::Sender<u32>),
     GetMetadataSize(oneshot::Sender<Option<usize>>, InfoHash),
@@ -268,64 +268,20 @@ impl Daemon {
         // token to cancel all frontend's tasks
         let all_fr_token = CancellationToken::new();
 
+        debug!("running event loop");
+
         'outer: loop {
             select! {
-                _ = test_interval.tick() => {
-                    #[cfg(feature = "test")]
-                    self.tick_test().await;
-                }
-                Ok((socket, addr)) = socket.accept() => {
-                    info!("connected to remote: {addr}");
-
-                    let socket = Framed::new(socket, DaemonCodec);
-                    let (mut sink, mut stream) = socket.split();
-
-                    let ctx = ctx.clone();
-                    let all_fr_token = all_fr_token.clone();
-                    let fr_token = CancellationToken::new();
-
-                    tokio::spawn(async move {
-                        let mut draw_interval = interval(Duration::from_secs(1));
-                        let ctx = ctx.clone();
-
-                        'inner: loop {
-                            select! {
-                                _ = all_fr_token.cancelled() => {
-                                    info!("disconnected from remote: {addr}");
-                                    sink.close().await?;
-                                    break 'inner;
-                                }
-                                _ = fr_token.cancelled() => {
-                                    info!("disconnected from remote: {addr}");
-                                    sink.close().await?;
-                                    break 'inner;
-                                }
-                                _ = draw_interval.tick() => {
-                                    let (otx, orx) = oneshot::channel();
-
-                                    ctx.tx.send(DaemonMsg::GetAllTorrentState(otx)).await?;
-
-                                    if sink.send(Message::TorrentStates(orx.await?)).await
-                                        .map_err(|_| Error::SendErrorTcp).is_err()
-                                    {
-                                        fr_token.cancel();
-                                    }
-                                }
-                                Some(Ok(msg)) = stream.next() => {
-                                    if msg == Message::FrontendQuit {
-                                        fr_token.cancel();
-                                    }
-                                    Self::handle_remote_msgs(&ctx.tx, msg, &mut sink).await?;
-                                }
-                                else => fr_token.cancel(),
-                            }
-                        }
-                        Ok::<(), Error>(())
-                    });
-                }
+                biased;
                 // Listen to internal mpsc messages
                 Some(msg) = self.rx.recv() => {
                     match msg {
+                        DaemonMsg::NewTorrentMagnet(magnet) => {
+                            let _ = self.new_torrent_magnet(magnet).await;
+                        }
+                        DaemonMsg::AddTorrentMetaInfo(torrent) => {
+                            let _ = self.add_torrent_meta_info(torrent).await;
+                        }
                         DaemonMsg::GetTorrentCtx(tx, info_hash) => {
                             let ctx = self.torrent_ctxs.get(&info_hash).cloned();
                             let _ = tx.send(ctx);
@@ -380,12 +336,6 @@ impl Daemon {
                                 let _ = ctx.tx.send(DaemonMsg::Quit).await;
                             }
                         }
-                        DaemonMsg::NewTorrentMagnet(magnet) => {
-                            let _ = self.new_torrent_magnet(magnet).await;
-                        }
-                        DaemonMsg::NewTorrentMetaInfo(meta_info, otx) => {
-                            let _ = self.new_torrent_meta_info(meta_info, otx).await;
-                        }
                         DaemonMsg::TogglePause(info_hash) => {
                             let _ = self.toggle_pause(&info_hash).await;
                         }
@@ -429,6 +379,59 @@ impl Daemon {
                             break 'outer;
                         }
                     }
+                }
+                _ = test_interval.tick() => {
+                    #[cfg(feature = "test")]
+                    self.tick_test().await;
+                }
+                Ok((socket, addr)) = socket.accept() => {
+                    info!("connected to remote: {addr}");
+
+                    let socket = Framed::new(socket, DaemonCodec);
+                    let (mut sink, mut stream) = socket.split();
+
+                    let ctx = ctx.clone();
+                    let all_fr_token = all_fr_token.clone();
+                    let fr_token = CancellationToken::new();
+
+                    tokio::spawn(async move {
+                        let mut draw_interval = interval(Duration::from_secs(1));
+                        let ctx = ctx.clone();
+
+                        'inner: loop {
+                            select! {
+                                _ = all_fr_token.cancelled() => {
+                                    info!("disconnected from remote: {addr}");
+                                    sink.close().await?;
+                                    break 'inner;
+                                }
+                                _ = fr_token.cancelled() => {
+                                    info!("disconnected from remote: {addr}");
+                                    sink.close().await?;
+                                    break 'inner;
+                                }
+                                _ = draw_interval.tick() => {
+                                    let (otx, orx) = oneshot::channel();
+
+                                    ctx.tx.send(DaemonMsg::GetAllTorrentState(otx)).await?;
+
+                                    if sink.send(Message::TorrentStates(orx.await?)).await
+                                        .map_err(|_| Error::SendErrorTcp).is_err()
+                                    {
+                                        fr_token.cancel();
+                                    }
+                                }
+                                Some(Ok(msg)) = stream.next() => {
+                                    if msg == Message::FrontendQuit {
+                                        fr_token.cancel();
+                                    }
+                                    Self::handle_remote_msgs(&ctx.tx, msg, &mut sink).await?;
+                                }
+                                else => fr_token.cancel(),
+                            }
+                        }
+                        Ok::<(), Error>(())
+                    });
                 }
             }
         }
@@ -539,51 +542,26 @@ impl Daemon {
         Ok(())
     }
 
-    pub async fn new_torrent_meta_info(
+    async fn add_torrent_meta_info(
         &mut self,
-        meta_info: MetaInfo,
-        otx: Sender<(Info, Arc<TorrentCtx>)>,
+        torrent: Torrent<torrent::Idle, torrent::FromMetaInfo>,
     ) -> Result<(), Error> {
-        if self
-            .torrent_states
-            .iter()
-            .any(|v| v.info_hash == meta_info.info.info_hash)
-        {
+        let info = &torrent.source.meta_info.info;
+
+        if self.torrent_states.iter().any(|v| v.info_hash == info.info_hash) {
             warn!("this torrent is already present");
             return Err(Error::NoDuplicateTorrent);
         }
 
-        let torrent_state = TorrentState {
-            name: meta_info.info.name.clone(),
-            info_hash: meta_info.info.info_hash.clone(),
-            ..Default::default()
-        };
-
-        self.torrent_states.push(torrent_state);
-
-        let info_hash = meta_info.info.info_hash.clone();
-        let info = meta_info.info.clone();
-
-        self.metadata_sizes
-            .insert(info_hash.clone(), Some(meta_info.info.size));
-
-        let torrent = Torrent::new_metainfo(
-            self.disk_tx.clone(),
-            self.ctx.free_tx.clone(),
-            self.ctx.clone(),
-            meta_info,
-        );
-
-        let torrent_ctx = torrent.ctx.clone();
-        self.torrent_ctxs.insert(info_hash, torrent.ctx.clone());
+        self.torrent_states.push((&torrent).into());
+        self.metadata_sizes.insert(info.info_hash.clone(), Some(info.size));
+        self.torrent_ctxs.insert(info.info_hash.clone(), torrent.ctx.clone());
 
         spawn(async move {
             let mut torrent = torrent.start().await?;
             torrent.run().await?;
             Ok::<(), Error>(())
         });
-
-        let _ = otx.send((info, torrent_ctx));
 
         Ok(())
     }

@@ -1,7 +1,10 @@
 use std::{collections::BTreeMap, io, path::PathBuf};
 
 use thiserror::Error;
-use tokio::sync::{mpsc, oneshot};
+use tokio::{
+    sync::{mpsc, oneshot},
+    task::JoinError,
+};
 
 use crate::{
     daemon::DaemonMsg,
@@ -55,6 +58,9 @@ pub enum Error {
 
     #[error("")]
     FrontendError,
+
+    #[error("Join error: {0}")]
+    JoinError(#[from] JoinError),
 
     #[error("Failed to send a connect request to the tracker")]
     MagnetError(#[from] magnet_url::MagnetError),

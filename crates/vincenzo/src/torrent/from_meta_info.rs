@@ -10,8 +10,10 @@ impl Torrent<Connected, FromMetaInfo> {
 
         self.status = TorrentStatus::Downloading;
         self.state.size = self.source.meta_info.info.get_size();
-        self.state.bitfield =
-            Bitfield::from_piece(self.source.meta_info.info.pieces() as usize);
+        self.state.counter = Counter::from_total_download(
+            self.bitfield.count_ones() as u64
+                * self.source.meta_info.info.piece_length as u64,
+        );
 
         // todo: instantiate `self.state.info_pieces` to be able to answer to
         // piece requests from other peers.
@@ -22,6 +24,15 @@ impl Torrent<Connected, FromMetaInfo> {
             select! {
                 Some(msg) = self.rx.recv() => {
                     match msg {
+                        TorrentMsg::GetAnnounceList(otx) => {
+                            let mut v = vec![self.source.meta_info.announce.clone()];
+
+                            if let Some(l) = self.source.meta_info.announce_list.clone() {
+                                v.extend(l.into_iter().flatten());
+                            }
+
+                            let _ = otx.send(v);
+                        }
                         TorrentMsg::PeerHasPieceNotInLocal(id, tx) => {
                             let r = self.peer_has_piece_not_in_local(&id);
                             let _ = tx.send(r);
@@ -56,7 +67,7 @@ impl Torrent<Connected, FromMetaInfo> {
                             self.read_peer_by_ip(ip, port, otx);
                         }
                         TorrentMsg::ReadBitfield(oneshot) => {
-                            let _ = oneshot.send(self.state.bitfield.clone());
+                            let _ = oneshot.send(self.bitfield.clone());
                         }
                         TorrentMsg::DownloadedPiece(piece) => {
                             self.downloaded_piece(piece).await;
@@ -122,9 +133,9 @@ impl Torrent<Connected, FromMetaInfo> {
 impl Torrent<Idle, FromMetaInfo> {
     pub fn new_metainfo(
         disk_tx: mpsc::Sender<DiskMsg>,
-        free_tx: mpsc::UnboundedSender<ReturnToDisk>,
         daemon_ctx: Arc<DaemonCtx>,
         meta_info: MetaInfo,
+        bitfield: Bitfield,
     ) -> Torrent<Idle, FromMetaInfo> {
         let name = meta_info.info.name.clone();
         let metadata_size = Some(meta_info.info.size);
@@ -133,7 +144,7 @@ impl Torrent<Idle, FromMetaInfo> {
         let (btx, _brx) = broadcast::channel::<PeerBrMsg>(500);
 
         let ctx = Arc::new(TorrentCtx {
-            free_tx,
+            free_tx: daemon_ctx.free_tx.clone(),
             btx,
             tx: tx.clone(),
             disk_tx,
@@ -141,6 +152,7 @@ impl Torrent<Idle, FromMetaInfo> {
         });
 
         Self {
+            bitfield,
             source: FromMetaInfo { meta_info },
             state: Idle { metadata_size },
             name,

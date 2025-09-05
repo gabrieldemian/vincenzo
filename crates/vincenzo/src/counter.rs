@@ -50,6 +50,10 @@ impl Counter {
         Self::default()
     }
 
+    pub fn from_total_download(t: u64) -> Self {
+        Counter { total_downloaded: t.into(), ..Default::default() }
+    }
+
     /// Record downloaded bytes
     pub fn record_download(&self, bytes: u64) {
         self.total_downloaded.fetch_add(bytes, Ordering::Relaxed);
@@ -85,11 +89,11 @@ impl Counter {
     }
 
     pub fn total_download(&self) -> u64 {
-        self.ema_download.load(Ordering::Relaxed)
+        self.total_downloaded.load(Ordering::Relaxed)
     }
 
     pub fn total_upload(&self) -> u64 {
-        self.ema_upload.load(Ordering::Relaxed)
+        self.total_uploaded.load(Ordering::Relaxed)
     }
 
     pub fn upload_rate_u64(&self) -> u64 {
@@ -177,9 +181,15 @@ mod tests {
         counter.record_upload(500);
         counter.record_download(2000);
         counter.record_upload(1000);
+        counter.record_download(1);
 
-        assert_eq!(counter.total_downloaded.load(Ordering::Relaxed), 3000);
-        assert_eq!(counter.total_uploaded.load(Ordering::Relaxed), 1500);
+        assert_eq!(counter.total_download(), 3001);
+        assert_eq!(counter.total_upload(), 1500);
+
+        counter.update_rates();
+
+        assert_eq!(counter.total_download(), 3001);
+        assert_eq!(counter.total_upload(), 1500);
     }
 
     #[test]
