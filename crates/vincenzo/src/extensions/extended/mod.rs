@@ -46,7 +46,7 @@ pub struct Extension {
     // pub yourip: Option<u8>,
     // pub complete_ago: Option<u8>,
     // pub ipv4: Option<u8>,
-    // pub ipv5: Option<u8>,
+    // pub ipv6: Option<u8>,
 }
 
 impl<'a, C: Context> Readable<'a, C> for Extension {

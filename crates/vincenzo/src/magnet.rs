@@ -54,7 +54,7 @@ impl Magnet {
     }
 
     /// Transform the "xt" field from hex, to a slice.
-    // todo: return an Option
+    // todo: return a Result
     pub fn parse_xt_infohash(&self) -> InfoHash {
         let info_hash = hex::decode(self.hash().unwrap()).unwrap();
         let mut x = [0u8; 20];

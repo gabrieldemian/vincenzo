@@ -1,3 +1,5 @@
+use bendy::encoding::ToBencode;
+
 use super::*;
 
 impl Torrent<Connected, FromMetaInfo> {
@@ -15,8 +17,19 @@ impl Torrent<Connected, FromMetaInfo> {
                 * self.source.meta_info.info.piece_length as u64,
         );
 
-        // todo: instantiate `self.state.info_pieces` to be able to answer to
-        // piece requests from other peers.
+        {
+            let info_pieces = &mut self.state.info_pieces;
+            let info_bytes = self.source.meta_info.info.to_bencode()?;
+            let piece_len = self.source.meta_info.info.piece_length as usize;
+
+            for p in 0..self.source.meta_info.info.pieces() as usize {
+                let start = p * piece_len;
+                info_pieces.insert(
+                    p as u64,
+                    info_bytes[start..(start + piece_len)].into(),
+                );
+            }
+        }
 
         let _ = self.spawn_outbound_peers(true).await;
 
