@@ -25,7 +25,6 @@ pub trait Requestable =
 pub struct RequestManager<T: Requestable> {
     timeouts: BinaryHeap<(Reverse<Instant>, T)>,
 
-    // todo: make the requests data structure generic.
     requests: BTreeMap<usize, Vec<T>>,
 
     /// Inverse index for requests

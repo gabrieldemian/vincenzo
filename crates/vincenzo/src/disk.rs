@@ -1500,6 +1500,7 @@ impl Disk {
         let mut entries = tokio::fs::read_dir(path).await?;
 
         while let Some(entry) = entries.next_entry().await? {
+        // ~/.config/vincenzo/torrents/complete
             let path = entry.path();
 
             // only read .torrent files
@@ -1526,46 +1527,11 @@ impl Disk {
         Ok(())
     }
 
-    // async fn read_incomplete_torrents(&mut self) -> Result<(), Error> {
-    //     // iterate over all .torrent files here
-    //     let path = self.incomplete_torrents_path();
-    //
-    //     let mut entries = tokio::fs::read_dir(path).await?;
-    //
-    //     while let Some(entry) = entries.next_entry().await? {
-    //         let path = entry.path();
-    //
-    //         // only read .torrent files
-    //         if path.extension().and_then(|s| s.to_str()) != Some("torrent") {
-    //             continue;
-    //         }
-    //
-    //         let bytes = tokio::fs::read(&path).await?;
-    //         let metainfo = MetaInfo::from_bencode(&bytes)?;
-    //
-    //         // skip duplicate
-    //         if self.torrent_ctxs.contains_key(&metainfo.info.info_hash) {
-    //             continue;
-    //         }
-    //
-    //         let (otx, orx) = oneshot::channel();
-    //         self.daemon_ctx
-    //             .tx
-    //             .send(DaemonMsg::NewTorrentMetaInfo(metainfo, otx))
-    //             .await?;
-    //         let (info, torrent_ctx) = orx.await?;
-    //         self.new_torrent(torrent_ctx, info).await?;
-    //     }
-    //
-    //     Ok(())
-    // }
-
     /// Read all .torrent files from incomplete folder, and add them to the
     /// client.
     async fn read_incomplete_torrents(&mut self) -> Result<(), Error> {
-        // iterate over all .torrent files here
+        // ~/.config/vincenzo/torrents/incomplete
         let path = self.incomplete_torrents_path();
-
         let mut entries = tokio::fs::read_dir(path).await?;
 
         while let Some(entry) = entries.next_entry().await? {
@@ -1585,7 +1551,11 @@ impl Disk {
             }
 
             let torrent = self.new_torrent_metainfo(metainfo).await?;
-            // todo: send msg to daemon
+
+            self.daemon_ctx
+                .tx
+                .send(DaemonMsg::AddTorrentMetaInfo(torrent))
+                .await?;
         }
 
         Ok(())
