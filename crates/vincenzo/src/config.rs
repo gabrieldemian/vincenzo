@@ -149,7 +149,7 @@ impl Config {
     }
 
     fn merge(file_config: Self, cli_config: Self) -> Self {
-        Self {
+        let s = Self {
             download_dir: cli_config.download_dir.or(file_config.download_dir),
             metadata_dir: cli_config.metadata_dir.or(file_config.metadata_dir),
             daemon_addr: cli_config.daemon_addr.or(file_config.daemon_addr),
@@ -173,7 +173,15 @@ impl Config {
             stats: cli_config.stats,
             pause: cli_config.pause,
             quit: cli_config.quit,
+        };
+        if s.max_global_peers == Some(0) || s.max_torrent_peers == Some(0) {
+            panic!("max_global_peers or max_torrent_peers cannot be zero");
         }
+
+        if s.max_global_peers < s.max_torrent_peers {
+            panic!("max_global_peers cannot be less than max_torrent_peers");
+        }
+        s
     }
 
     pub fn resolve(self) -> ResolvedConfig {

@@ -30,18 +30,6 @@ async fn main() -> Result<(), Error> {
 
     tracing::info!("config: {:?}", *CONFIG);
 
-    if CONFIG.max_global_peers == 0 || CONFIG.max_torrent_peers == 0 {
-        return Err(Error::ConfigError(
-            "max_global_peers or max_torrent_peers cannot be zero".into(),
-        ));
-    }
-
-    if CONFIG.max_global_peers < CONFIG.max_torrent_peers {
-        return Err(Error::ConfigError(
-            "max_global_peers cannot be less than max_torrent_peers".into(),
-        ));
-    }
-
     let is_daemon_running =
         TcpListener::bind(CONFIG.daemon_addr).await.is_err();
 
