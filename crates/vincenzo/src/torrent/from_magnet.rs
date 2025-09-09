@@ -102,7 +102,7 @@ impl Torrent<Connected, FromMagnet> {
                     if self.source.info.is_some() =>
                 {
                     if let Ok(r) = self.announce_interval().await {
-                        self.state.announce_interval = r;
+                        self.state.announce_interval.reset_at(r);
                     }
                 }
                 _ = self.state.reconnect_interval.tick() => {
@@ -173,8 +173,8 @@ impl Torrent<Connected, FromMagnet> {
             downloaded_info.blocks_count(),
         );
 
-        self.state.size = downloaded_info.get_size();
-        self.bitfield = Bitfield::from_piece(downloaded_info.pieces() as usize);
+        self.state.size = downloaded_info.get_size() as u64;
+        self.bitfield = Bitfield::from_piece(downloaded_info.pieces());
 
         self.ctx
             .disk_tx

@@ -1,4 +1,4 @@
-//! Metainfo is a .torrent file with information about the Torrent.
+//! Metainfo is a .torrent file with information abouthe Torrent.
 //! From the magnet link, we get the Metainfo from other peers.
 use std::collections::BTreeMap;
 
@@ -96,7 +96,7 @@ pub struct Info {
     pub cross_seed_entry: Option<[u8; 32]>,
 
     /// If the torrent has only 1 file, this value is some, and files is none
-    pub file_length: Option<u64>,
+    pub file_length: Option<usize>,
 
     /// If the torrent has many files, this is some, and file_length is none.
     pub files: Option<Vec<File>>,
@@ -105,7 +105,7 @@ pub struct Info {
     pub name: String,
 
     /// length in bytes of each piece, the last piece may have a smaller length
-    pub piece_length: u32,
+    pub piece_length: usize,
 
     /// A (byte) string consisting of the concatenation of all 20-byte SHA1
     /// hash values, one per piece.
@@ -161,17 +161,17 @@ impl Info {
     }
 
     /// Calculate how many pieces there are.
-    pub fn pieces(&self) -> u32 {
-        (self.pieces.len() as u32).div_ceil(20)
+    pub fn pieces(&self) -> usize {
+        (self.pieces.len()).div_ceil(20)
     }
 
     /// Calculate how many blocks there are in the entire torrent.
-    pub fn blocks_count(&self) -> u64 {
-        self.get_size().div_ceil(BLOCK_LEN as u64)
+    pub fn blocks_count(&self) -> usize {
+        self.get_size().div_ceil(BLOCK_LEN)
     }
 
     /// Calculate how many blocks there are per piece
-    pub fn blocks_per_piece(&self) -> u32 {
+    pub fn blocks_per_piece(&self) -> usize {
         self.piece_length.div_ceil(BLOCK_LEN)
     }
 
@@ -185,15 +185,15 @@ impl Info {
         &self,
         piece_index: usize,
     ) -> Vec<BlockInfo> {
-        let total_size = self.get_size() as usize;
-        let piece_length = self.piece_length as usize;
+        let total_size = self.get_size();
+        let piece_length = self.piece_length;
         let piece_start = piece_index * piece_length;
         let piece_end = (piece_start + piece_length).min(total_size);
-        let piece_size = (piece_end - piece_start) as u32;
+        let piece_size = piece_end - piece_start;
 
         // calculate all blocks for this piece in one go
         let num_blocks = piece_size.div_ceil(BLOCK_LEN);
-        let mut blocks = Vec::with_capacity(num_blocks as usize);
+        let mut blocks = Vec::with_capacity(num_blocks);
 
         for block_index in 0..num_blocks {
             let begin = block_index * BLOCK_LEN;
@@ -203,7 +203,7 @@ impl Info {
                 BLOCK_LEN
             };
 
-            blocks.push(BlockInfo { index: piece_index as u32, begin, len });
+            blocks.push(BlockInfo { index: piece_index, begin, len });
         }
 
         blocks
@@ -217,11 +217,11 @@ impl Info {
     ) -> Vec<BlockInfo> {
         let piece_start = piece_index * piece_length;
         let piece_end = (piece_start + piece_length).min(total_size);
-        let piece_size = (piece_end - piece_start) as u32;
+        let piece_size = piece_end - piece_start;
 
         // calculate all blocks for this piece in one go
         let num_blocks = piece_size.div_ceil(BLOCK_LEN);
-        let mut blocks = Vec::with_capacity(num_blocks as usize);
+        let mut blocks = Vec::with_capacity(num_blocks);
 
         for block_index in 0..num_blocks {
             let begin = block_index * BLOCK_LEN;
@@ -231,7 +231,7 @@ impl Info {
                 BLOCK_LEN
             };
 
-            blocks.push(BlockInfo { index: piece_index as u32, begin, len });
+            blocks.push(BlockInfo { index: piece_index, begin, len });
         }
 
         blocks
@@ -243,9 +243,9 @@ impl Info {
     pub fn get_block_infos(
         &self,
     ) -> Result<BTreeMap<usize, Vec<BlockInfo>>, error::Error> {
-        let total_size = self.get_size() as usize;
-        let piece_length = self.piece_length as usize;
-        let num_pieces = self.pieces() as usize;
+        let total_size = self.get_size();
+        let piece_length = self.piece_length;
+        let num_pieces = self.pieces();
         let mut block_infos: BTreeMap<usize, Vec<BlockInfo>> = BTreeMap::new();
 
         for piece_index in 0..num_pieces {
@@ -262,7 +262,7 @@ impl Info {
     }
 
     /// Get the size in bytes of the files of the torrent.
-    pub fn get_size(&self) -> u64 {
+    pub fn get_size(&self) -> usize {
         match &self.files {
             Some(files) => files.iter().map(|f| f.length).sum(),
             None => self.file_length.unwrap_or(0),
@@ -270,9 +270,9 @@ impl Info {
     }
 
     /// Get the size (in bytes) of a piece.
-    pub fn piece_size(&self, piece_index: usize) -> u32 {
-        let total_size = self.get_size() as u32;
-        if piece_index == self.pieces() as usize - 1 {
+    pub fn piece_size(&self, piece_index: usize) -> usize {
+        let total_size = self.get_size();
+        if piece_index == self.pieces() - 1 {
             let remainder = total_size % self.piece_length;
             if remainder == 0 { self.piece_length } else { remainder }
         } else {
@@ -286,19 +286,19 @@ impl Info {
 #[derive(Debug, PartialEq, Clone, Default, Hash, Eq)]
 pub struct File {
     /// Length of the file in bytes.
-    pub length: u64,
+    pub length: usize,
     /// Path of the file, excluding the parent name.
     pub path: Vec<String>,
 }
 
 impl File {
     /// Get the len of the given piece in the file, in bytes..
-    pub fn get_piece_len(&self, piece: u32, piece_length: u64) -> u64 {
-        let b = (piece as u64 * piece_length) + piece_length;
+    pub fn get_piece_len(&self, piece: usize, piece_length: usize) -> usize {
+        let b = (piece * piece_length) + piece_length;
         if b <= self.length { piece_length } else { self.length % piece_length }
     }
     /// Return the number of pieces in the file, rounded up.
-    pub fn pieces(&self, piece_length: u64) -> u64 {
+    pub fn pieces(&self, piece_length: usize) -> usize {
         self.length.div_ceil(piece_length)
     }
 }
@@ -327,8 +327,8 @@ impl FromBencode for File {
         while let Some(pair) = dict_dec.next_pair()? {
             match pair {
                 (b"length", value) => {
-                    length =
-                        u64::decode_bencode_object(value).context("length")?;
+                    length = usize::decode_bencode_object(value)
+                        .context("length")?;
                 }
                 (b"path", value) => {
                     path = Vec::<String>::decode_bencode_object(value)
@@ -501,7 +501,7 @@ impl FromBencode for Info {
                         .map(Some)?;
                 }
                 (b"length", value) => {
-                    file_length = u64::decode_bencode_object(value)
+                    file_length = usize::decode_bencode_object(value)
                         .context("file.length")
                         .map(Some)?;
                 }
@@ -516,7 +516,7 @@ impl FromBencode for Info {
                         .map(Some)?;
                 }
                 (b"piece length", value) => {
-                    piece_length = u32::decode_bencode_object(value)
+                    piece_length = usize::decode_bencode_object(value)
                         .context("piece length")
                         .map(Some)?;
                 }
@@ -555,7 +555,7 @@ impl FromBencode for Info {
 mod tests {
     use super::*;
 
-    fn create_test_info(total_size: u64, piece_length: u32) -> Info {
+    fn create_test_info(total_size: usize, piece_length: usize) -> Info {
         let pieces_len =
             (total_size as f64 / piece_length as f64).ceil() as usize * 20;
         Info {
@@ -713,7 +713,7 @@ mod tests {
 
     #[test]
     fn get_block_infos_partial_last_block() {
-        let info = create_test_info(BLOCK_LEN as u64 + 1, BLOCK_LEN);
+        let info = create_test_info(BLOCK_LEN + 1, BLOCK_LEN);
         let blocks = info.get_block_infos().unwrap();
 
         assert_eq!(blocks.len(), 2);

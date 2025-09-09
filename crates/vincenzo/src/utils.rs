@@ -79,5 +79,11 @@ mod tests {
 
         let n = 1_950_000_000.0;
         assert_eq!(to_human_readable(n), "1.95 GB");
+
+        let n = u64::MAX;
+        assert_eq!(to_human_readable(n as f64), "18.45 EB");
+
+        let n = u128::MAX;
+        assert_eq!(to_human_readable(n as f64), "340282366920938.38 YB");
     }
 }

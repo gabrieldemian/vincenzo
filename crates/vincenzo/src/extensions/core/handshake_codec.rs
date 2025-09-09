@@ -40,10 +40,10 @@ use crate::error::Error;
 /// 0x0070:  4b6c 4e67 6e55 6568                      KlNgnUeh
 #[derive(Clone, Debug, Default)]
 pub struct Handshake {
-    /// 0013
+    /// 13__
     pub pstr_len: u8,
 
-    /// 0042 6974 546f 7272 656e 7420 7072 6f74
+    /// __42 6974 546f 7272 656e 7420 7072 6f74
     /// 6f63 6f6c
     pub pstr: [u8; 19],
 
@@ -74,6 +74,7 @@ impl Handshake {
             ext: Some(Extension::supported(Some(0))),
         }
     }
+
     pub fn validate(&self, target: &Self) -> bool {
         if target.peer_id.0.len() != 20 {
             warn!("! invalid peer_id from receiving handshake");
@@ -134,11 +135,11 @@ impl Decoder for HandshakeCodec {
 
     // # IMPORTANT
     //
-    // it is very common that some clients send 3-4 messages in the same buffer
+    // it is very common to receive 3-4 messages in the same buffer
     // <handshake><extended_handshake><bitfield><unchoke>
     //
-    // we try to decode the first 2 messages here, the rest are handled
-    // by the core codec.
+    // we try to decode the first 2 messages here (handshake and extended), the
+    // rest are handled by the core codec.
     fn decode(
         &mut self,
         buf: &mut BytesMut,
@@ -148,7 +149,7 @@ impl Decoder for HandshakeCodec {
             return Ok(None);
         }
 
-        // handshake buf 0..68
+        // handshake buf = 0..68
         let mut handshake_buf = buf.split_to(68);
 
         if handshake_buf.get_u8() as usize != PSTR_LEN {
@@ -187,9 +188,10 @@ impl Decoder for HandshakeCodec {
 
         // the cursor here is in size
 
-        // need at least 4 bytes for length prefix
-        // size + core_id + msg_id
+        // need at least 6 bytes: size + core_id + msg_id
         if buf.len() < 6 {
+            // if buf is < 6 this cannot be an extended handshake, don't touch
+            // the buffer and just return.
             return Ok(Some(handshake));
         }
 
@@ -197,7 +199,7 @@ impl Decoder for HandshakeCodec {
         let size =
             u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
 
-        // incomplete message
+        // incomplete message, wait for more bytes.
         if buf.len() < size + 4 {
             return Ok(None);
         }

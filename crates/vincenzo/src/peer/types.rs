@@ -36,7 +36,7 @@ use crate::{
         MetadataData, MetadataPiece, core::BlockInfo,
     },
     peer::{self, Peer, RequestManager},
-    torrent::{InfoHash, PeerBrMsg, TorrentCtx, TorrentMsg},
+    torrent::{PeerBrMsg, TorrentCtx, TorrentMsg},
 };
 
 #[derive(Clone, PartialEq, Eq, Hash, Default, Readable, Writable)]
@@ -164,9 +164,6 @@ pub struct PeerCtx {
     /// Our local addr for this peer.
     pub local_addr: SocketAddr,
 
-    /// The info_hash of the torrent that this Peer belongs to.
-    pub info_hash: InfoHash,
-
     /// Counter for upload and download rates, in the local peer perspective.
     pub counter: Counter,
 
@@ -262,7 +259,6 @@ impl peer::Peer<Idle> {
         }
 
         socket.send(local_handshake.clone()).await?;
-        socket.flush().await?;
 
         let mut attempts = 0;
 
@@ -293,7 +289,6 @@ impl peer::Peer<Idle> {
 
                     if attempts < MAX_ATTEMPTS {
                         socket.send(local_handshake.clone()).await?;
-                        socket.flush().await?;
                         continue;
                     }
 
@@ -313,7 +308,6 @@ impl peer::Peer<Idle> {
                     }
                     if attempts < MAX_ATTEMPTS {
                         socket.send(local_handshake.clone()).await?;
-                        socket.flush().await?;
                         continue;
                     }
                     return Err(Error::PeerClosedSocket);
@@ -327,7 +321,6 @@ impl peer::Peer<Idle> {
                     );
                     if attempts < MAX_ATTEMPTS {
                         socket.send(local_handshake.clone()).await?;
-                        socket.flush().await?;
                         continue;
                     }
                     return Err(Error::HandshakeTimeout);
@@ -362,7 +355,6 @@ impl peer::Peer<Idle> {
             remote_addr: remote,
             id: peer_handshake.peer_id,
             tx,
-            info_hash: peer_handshake.info_hash,
             local_addr: local,
         });
 
@@ -452,7 +444,6 @@ impl peer::Peer<Idle> {
         }
 
         socket.send(our_handshake).await?;
-        socket.flush().await?;
 
         debug!("received peer handshake {peer_handshake:?}",);
 
@@ -510,7 +501,6 @@ impl peer::Peer<Idle> {
             remote_addr: remote,
             id: peer_handshake.peer_id,
             tx,
-            info_hash: peer_handshake.info_hash,
             local_addr: local,
         };
 

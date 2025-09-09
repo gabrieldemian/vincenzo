@@ -65,6 +65,8 @@ pub enum DiskMsg {
 
     MetadataSize(InfoHash, usize),
 
+    ReadInfo(InfoHash, Sender<Option<Vec<u8>>>),
+
     /// The Peer does not have an ID until the handshake, when that happens,
     /// this message will be sent immediately to add the peer context.
     NewPeer(Arc<PeerCtx>),
@@ -80,7 +82,7 @@ pub enum DiskMsg {
     ReadBlock {
         info_hash: InfoHash,
         block_info: BlockInfo,
-        recipient: Sender<Block>,
+        recipient: Sender<Bytes>,
     },
 
     /// Handle a new downloaded Piece, validate that the hash all the blocks of
@@ -138,16 +140,16 @@ pub enum PieceStrategy {
 #[derive(Debug, Clone)]
 pub struct FileMetadata {
     pub path: Arc<Path>,
-    pub start_offset: u64,
-    pub length: u64,
+    pub start_offset: usize,
+    pub length: usize,
 }
 
 // Cache entry with precomputed metadata
 #[derive(Debug, Clone)]
 pub struct TorrentCache {
     pub file_metadata: Vec<FileMetadata>,
-    pub piece_length: u64,
-    pub total_size: u64,
+    pub piece_length: usize,
+    pub total_size: usize,
 }
 
 /// When a peer is Choked, or receives an error and must close the
@@ -282,17 +284,42 @@ impl Disk {
                             self.pieces_requested.remove_entry(&info_hash);
                             self.torrent_info.remove_entry(&info_hash);
                             self.dirty_files.remove_entry(&info_hash);
-                            self.peer_ctxs.retain(|v| v.info_hash != info_hash);
+                            self.peer_ctxs.retain(|v| v.torrent_ctx.info_hash != info_hash);
                         }
                         DiskMsg::FinishedDownload(info_hash) => {
                             let _ = self.write_complete_torrent_metainfo(&info_hash).await;
+                        }
+                        DiskMsg::ReadInfo(info_hash, otx) => {
+                            let Some(info) = self.torrent_info.get(&info_hash)
+                            else {
+                                let _ = otx.send(None);
+                                continue;
+                            };
+
+                            let is_complete = self.is_torrent_complete(&info.name);
+                            let mut buf = Vec::with_capacity(info.size);
+
+                            if is_complete {
+                                let mut path = self.complete_torrents_path();
+                                path.push(&info.name);
+                                path.set_extension("torrent");
+                                let mut file = Self::open_file(&path).await?;
+                                file.read_to_end(&mut buf).await?;
+                            } else {
+                                let mut path = self.incomplete_torrents_path();
+                                path.push(&info.name);
+                                path.set_extension("torrent");
+                                let mut file = Self::open_file(&path).await?;
+                                file.read_to_end(&mut buf).await?;
+                            }
+                            let _ = otx.send(Some(buf));
                         }
                         DiskMsg::MetadataSize(info_hash, size) => {
                             if self.metadata_pieces.contains_key(
                                 &info_hash,
                             ) { continue };
 
-                            let pieces = size.div_ceil(BLOCK_LEN as usize);
+                            let pieces = size.div_ceil(BLOCK_LEN);
                             info!("meta pieces {pieces}");
 
                             let pieces =
@@ -318,7 +345,8 @@ impl Disk {
                             trace!("read_block");
 
                             let block =
-                                self.read_block(&info_hash, &block_info).await?;
+                                self.read_block_zero_copy(&info_hash, &block_info)
+                            .await?;
 
                             let _ = recipient.send(block);
                         }
@@ -461,7 +489,7 @@ impl Disk {
 
         // send msg to torrent with some information,
         // the bytes downloaded from pieces and also the bitfield from it.
-        let b = downloaded_pieces.count_ones() * info.piece_length as usize;
+        let b = downloaded_pieces.count_ones() * info.piece_length;
         debug!("already downloaded {b} bytes");
 
         if !is_complete {
@@ -543,8 +571,8 @@ impl Disk {
             .map(|chunk| chunk.try_into().unwrap())
             .collect();
 
-        let total_pieces = info.pieces() as usize;
-        let piece_length = info.piece_length as u64;
+        let total_pieces = info.pieces();
+        let piece_length = info.piece_length;
         let total_size = torrent_cache.total_size;
 
         // will also create missing files, and pad the files with null bytes,
@@ -671,7 +699,7 @@ impl Disk {
             info.info_hash.clone(),
             TorrentCache {
                 file_metadata,
-                piece_length: info.piece_length as u64,
+                piece_length: info.piece_length,
                 total_size: info.get_size(),
             },
         );
@@ -704,7 +732,7 @@ impl Disk {
         let peer_ctxs: Vec<Arc<PeerCtx>> = self
             .peer_ctxs
             .iter()
-            .filter(|&v| v.info_hash == *info_hash)
+            .filter(|&v| v.torrent_ctx.info_hash == *info_hash)
             .cloned()
             .collect();
 
@@ -868,16 +896,18 @@ impl Disk {
 
         let piece_order = self
             .piece_order
-            .get(&peer_ctx.info_hash)
+            .get(&peer_ctx.torrent_ctx.info_hash)
             .ok_or(Error::TorrentDoesNotExist)?;
 
         let pieces_requested = self
             .pieces_requested
-            .get_mut(&peer_ctx.info_hash)
+            .get_mut(&peer_ctx.torrent_ctx.info_hash)
             .ok_or(Error::TorrentDoesNotExist)?;
 
         if pieces_requested.count_ones() >= pieces_requested.len() {
-            self.tx.send(DiskMsg::Endgame(peer_ctx.info_hash.clone())).await?;
+            self.tx
+                .send(DiskMsg::Endgame(peer_ctx.torrent_ctx.info_hash.clone()))
+                .await?;
         }
 
         for piece in piece_order.iter() {
@@ -893,7 +923,7 @@ impl Disk {
 
             let Some(block_infos) = self
                 .block_infos
-                .get_mut(&peer_ctx.info_hash)
+                .get_mut(&peer_ctx.torrent_ctx.info_hash)
                 .ok_or(Error::TorrentDoesNotExist)?
                 .get_mut(piece)
             else {
@@ -912,7 +942,7 @@ impl Disk {
                 pieces_requested.safe_set(*piece);
 
                 self.block_infos
-                    .get_mut(&peer_ctx.info_hash)
+                    .get_mut(&peer_ctx.torrent_ctx.info_hash)
                     .ok_or(Error::TorrentDoesNotExist)?
                     .remove(piece);
             }
@@ -941,51 +971,6 @@ impl Disk {
             })
     }
 
-    pub async fn read_block(
-        &mut self,
-        info_hash: &InfoHash,
-        block_info: &BlockInfo,
-    ) -> Result<Block, Error> {
-        let cache = self
-            .torrent_cache
-            .get(info_hash)
-            .ok_or(Error::TorrentDoesNotExist)?;
-
-        // calculate absolute offset
-        let absolute_offset = block_info.index as u64 * cache.piece_length
-            + block_info.begin as u64;
-
-        // find containing file
-        let file_meta = cache
-            .file_metadata
-            .iter()
-            .find(|m| {
-                absolute_offset >= m.start_offset
-                    && absolute_offset < m.start_offset + m.length
-            })
-            .ok_or(Error::TorrentDoesNotExist)?;
-
-        let path = &file_meta.path.clone();
-
-        // calculate file-relative offset
-        let file_offset = absolute_offset - file_meta.start_offset;
-
-        // get cached file handle
-        let file = self.get_cached_read_mmap(path).await?;
-
-        let start = file_offset as usize;
-        let end = start + block_info.len as usize;
-
-        // read data
-        let buf = file[start..end].to_vec();
-
-        Ok(Block {
-            index: block_info.index as usize,
-            begin: block_info.begin,
-            block: buf,
-        })
-    }
-
     pub async fn read_block_zero_copy(
         &mut self,
         info_hash: &InfoHash,
@@ -997,8 +982,8 @@ impl Disk {
             .ok_or(Error::TorrentDoesNotExist)?;
 
         // calculate absolute offset
-        let absolute_offset = block_info.index as u64 * cache.piece_length
-            + block_info.begin as u64;
+        let absolute_offset =
+            block_info.index * cache.piece_length + block_info.begin;
 
         // find containing file
         let file_meta = cache
@@ -1011,11 +996,8 @@ impl Disk {
             .ok_or(Error::TorrentDoesNotExist)?;
 
         // calculate file-relative offset
-        let file_offset = absolute_offset - file_meta.start_offset;
-
-        let start = file_offset as usize;
-        let end = start + block_info.len as usize;
-
+        let start = absolute_offset - file_meta.start_offset;
+        let end = start + block_info.len;
         let path = &file_meta.path.clone();
 
         // get cached file handle
@@ -1070,7 +1052,7 @@ impl Disk {
             .ok_or(Error::PieceInvalid)?
             .iter()
             .fold(0, |acc, v| acc + v.block.len())
-            < self.piece_size(info_hash, index)? as usize
+            < self.piece_size(info_hash, index)?
         {
             return Ok(());
         }
@@ -1083,8 +1065,8 @@ impl Disk {
                 .ok_or(Error::TorrentDoesNotExist)?;
 
             let info_blocks = Info::get_block_infos_of_piece(
-                info.total_size as usize,
-                info.piece_length as usize,
+                info.total_size,
+                info.piece_length,
                 index,
             );
 
@@ -1139,23 +1121,23 @@ impl Disk {
         info_hash: &InfoHash,
         piece_index: usize,
         piece_buffer: &[u8],
-    ) -> Result<Vec<(PathBuf, u64, std::ops::Range<usize>)>, Error> {
+    ) -> Result<Vec<(PathBuf, usize, std::ops::Range<usize>)>, Error> {
         let cache = self
             .torrent_cache
             .get(info_hash)
             .ok_or(Error::TorrentDoesNotExist)?;
 
-        let piece_start = piece_index as u64 * cache.piece_length;
+        let piece_start = piece_index * cache.piece_length;
         let piece_end =
             (piece_start + cache.piece_length).min(cache.total_size);
-        let piece_size = (piece_end - piece_start) as usize;
+        let piece_size = piece_end - piece_start;
 
         // Validate piece buffer size
         if piece_buffer.len() < piece_size {
             return Err(Error::PieceInvalid);
         }
 
-        let mut write_ops: Vec<(PathBuf, u64, std::ops::Range<usize>)> =
+        let mut write_ops: Vec<(PathBuf, usize, std::ops::Range<usize>)> =
             Vec::new();
 
         for file_meta in &cache.file_metadata {
@@ -1167,8 +1149,8 @@ impl Disk {
                 continue;
             }
 
-            let buffer_start = (overlap_start - piece_start) as usize;
-            let buffer_end = (overlap_end - piece_start) as usize;
+            let buffer_start = overlap_start - piece_start;
+            let buffer_end = overlap_end - piece_start;
             let file_offset = overlap_start - file_meta.start_offset;
 
             write_ops.push((
@@ -1195,8 +1177,10 @@ impl Disk {
             self.calculate_write_ops(info_hash, piece_index, &piece_buffer)?;
 
         // group writes by file
-        let mut file_ops: HashMap<PathBuf, Vec<(u64, std::ops::Range<usize>)>> =
-            HashMap::new();
+        let mut file_ops: HashMap<
+            PathBuf,
+            Vec<(usize, std::ops::Range<usize>)>,
+        > = HashMap::new();
 
         for (path, file_offset, data_range) in write_ops {
             file_ops
@@ -1214,7 +1198,7 @@ impl Disk {
             ops.sort_by_key(|(offset, _)| *offset);
 
             for (file_offset, data_range) in ops {
-                let start = file_offset as usize;
+                let start = file_offset;
                 let end = start + data_range.len();
 
                 mmap[start..end].copy_from_slice(&piece_buffer[data_range]);
@@ -1246,8 +1230,8 @@ impl Disk {
         // combine blocks into single contiguous buffer
         let mut piece_buffer = Vec::with_capacity(total_length);
 
-        for mut block in blocks {
-            piece_buffer.append(&mut block.block);
+        for block in blocks {
+            piece_buffer.append(&mut block.block.into());
         }
 
         Ok(piece_buffer)
@@ -1264,8 +1248,10 @@ impl Disk {
             self.calculate_write_ops(info_hash, piece_index, &piece_buffer)?;
 
         // group writes by file
-        let mut file_ops: HashMap<PathBuf, Vec<(u64, std::ops::Range<usize>)>> =
-            HashMap::new();
+        let mut file_ops: HashMap<
+            PathBuf,
+            Vec<(usize, std::ops::Range<usize>)>,
+        > = HashMap::new();
 
         for (path, file_offset, data_range, ..) in write_ops {
             file_ops.entry(path).or_default().push((file_offset, data_range));
@@ -1288,12 +1274,12 @@ impl Disk {
             for (file_offset, data_range) in ops {
                 let data = &piece_buffer[data_range];
 
-                file.seek(std::io::SeekFrom::Start(file_offset)).await?;
+                file.seek(std::io::SeekFrom::Start(file_offset as u64)).await?;
 
                 file.write_all(data).await?;
 
                 // check if this write reaches the end of the file
-                if file_offset + data.len() as u64 == file_len {
+                if file_offset as u64 + data.len() as u64 == file_len {
                     needs_sync = true;
                 }
             }
@@ -1312,15 +1298,15 @@ impl Disk {
         &self,
         info_hash: &InfoHash,
         piece_index: usize,
-    ) -> Result<u32, Error> {
+    ) -> Result<usize, Error> {
         let info = self
             .torrent_info
             .get(info_hash)
             .ok_or(Error::TorrentDoesNotExist)?;
 
-        Ok(if piece_index == info.pieces() as usize - 1 {
-            let remainder = info.get_size() % info.piece_length as u64;
-            if remainder == 0 { info.piece_length } else { remainder as u32 }
+        Ok(if piece_index == info.pieces() - 1 {
+            let remainder = info.get_size() % info.piece_length;
+            if remainder == 0 { info.piece_length } else { remainder }
         } else {
             info.piece_length
         })
@@ -1412,7 +1398,7 @@ impl Disk {
                 }
 
                 if let Ok(file) = Self::open_file(&meta.path).await {
-                    file.set_len(meta.length).await?;
+                    file.set_len(meta.length as u64).await?;
                 }
             }
         }
@@ -1500,7 +1486,7 @@ impl Disk {
         let mut entries = tokio::fs::read_dir(path).await?;
 
         while let Some(entry) = entries.next_entry().await? {
-        // ~/.config/vincenzo/torrents/complete
+            // ~/.config/vincenzo/torrents/complete
             let path = entry.path();
 
             // only read .torrent files
@@ -1564,13 +1550,13 @@ impl Disk {
     fn verify_piece(
         piece_index: usize,
         mmaps: &[(&FileMetadata, Arc<Mmap>)],
-        piece_length: u64,
-        total_size: u64,
+        piece_length: usize,
+        total_size: usize,
         expected_hash: [u8; 20],
     ) -> bool {
-        let piece_start = (piece_index as u64) * piece_length;
+        let piece_start = piece_index * piece_length;
         let piece_end = std::cmp::min(piece_start + piece_length, total_size);
-        let piece_size = (piece_end - piece_start) as usize;
+        let piece_size = piece_end - piece_start;
 
         let mut hasher = Sha1::new();
         let mut bytes_remaining = piece_size;
@@ -1583,10 +1569,10 @@ impl Disk {
             if piece_start < file_end && piece_end > file_start {
                 let read_start = piece_start.max(file_start);
                 let read_end = piece_end.min(file_end);
-                let read_length = (read_end - read_start) as usize;
+                let read_length = read_end - read_start;
 
                 // calculate file offset
-                let file_offset = (read_start - file_start) as usize;
+                let file_offset = read_start - file_start;
 
                 // handle out-of-bounds access
                 if file_offset >= mmap.len() {
@@ -1750,15 +1736,15 @@ mod tests {
 
         let files = vec![
             metainfo::File {
-                length: BLOCK_LEN as u64 * 2,
+                length: BLOCK_LEN * 2,
                 path: vec!["foo.txt".to_owned()],
             },
             metainfo::File {
-                length: BLOCK_LEN as u64 * 2,
+                length: BLOCK_LEN * 2,
                 path: vec!["bar".to_owned(), "baz.txt".to_owned()],
             },
             metainfo::File {
-                length: BLOCK_LEN as u64 * 2,
+                length: BLOCK_LEN * 2,
                 path: vec![
                     "bar".to_owned(),
                     "buzz".to_owned(),
@@ -1797,7 +1783,7 @@ mod tests {
         let (torrent_tx, torrent_rx) = mpsc::channel::<TorrentMsg>(100);
 
         let mut hasher = Sha1::new();
-        hasher.update([7u8; (BLOCK_LEN) as usize]);
+        hasher.update([7u8; BLOCK_LEN]);
         let hash = hasher.finalize();
 
         let mut pieces = vec![];
@@ -1847,7 +1833,6 @@ mod tests {
             )),
             counter: Counter::default(),
             last_download_rate_update: Mutex::new(Instant::now()),
-            info_hash: magnet.parse_xt_infohash(),
             tx: peer_tx.clone(),
             peer_interested: true.into(),
             id: PeerId::generate(),
@@ -1863,8 +1848,7 @@ mod tests {
         let listener = TcpListener::bind("0.0.0.0:0").await?;
         let local_addr = listener.local_addr()?;
 
-        let pieces =
-            bitvec::bitvec![u8, bitvec::prelude::Msb0; 1; pieces_len as usize];
+        let pieces = bitvec::bitvec![u8, bitvec::prelude::Msb0; 1; pieces_len];
 
         let peer_ctx_ = peer_ctx.clone();
 
@@ -1922,7 +1906,7 @@ mod tests {
                 connected_peers: vec![peer_ctx.clone()],
                 info_pieces: BTreeMap::new(),
             },
-            bitfield: bitvec::bitvec![u8, bitvec::prelude::Msb0; 0; pieces_len as usize],
+            bitfield: bitvec::bitvec![u8, bitvec::prelude::Msb0; 0; pieces_len ],
             ctx: torrent_ctx.clone(),
             daemon_ctx,
             name: torrent_dir.clone(),
@@ -2003,7 +1987,7 @@ mod tests {
                 block: Block {
                     index: 1,
                     begin: 0,
-                    block: vec![7u8; BLOCK_LEN as usize],
+                    block: vec![7u8; BLOCK_LEN].into(),
                 },
             })
             .await?;
@@ -2018,11 +2002,11 @@ mod tests {
             })
             .await?;
 
-        let block = orx.await?;
+        let block = Block { index: 1, begin: 0, block: orx.await? };
 
         assert_eq!(block.index, 1);
         assert_eq!(block.begin, 0);
-        assert_eq!(block.block.len(), blocks[0].len as usize);
+        assert_eq!(block.block.len(), blocks[0].len);
 
         // let _ = tokio::fs::remove_dir_all(format!("/tmp/{download_dir}")).
         // await;

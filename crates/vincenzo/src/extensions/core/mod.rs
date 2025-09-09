@@ -8,14 +8,14 @@ mod handshake_codec;
 pub use codec::*;
 pub use handshake_codec::*;
 
-use bytes::{BufMut, BytesMut};
+use bytes::{BufMut, Bytes, BytesMut};
 use tokio::io;
 
 /// The default block_len that most clients support, some clients drop
 /// the connection on blocks larger than this value.
 ///
 /// Tha last block of a piece might be smaller.
-pub const BLOCK_LEN: u32 = 16384;
+pub const BLOCK_LEN: usize = 16384;
 
 /// Protocol String (PSTR)
 /// Bytes of the string "BitTorrent protocol". Used during handshake.
@@ -39,10 +39,11 @@ pub struct Block {
     /// The index of the piece this block belongs to.
     pub index: usize,
     /// The zero-based byte offset into the piece.
-    pub begin: u32,
+    pub begin: usize,
     /// The block's data. 16 KiB most of the times,
     /// but the last block of a piece *might* be smaller.
-    pub block: Vec<u8>,
+    // pub block: Vec<u8>,
+    pub block: Bytes,
 }
 
 impl Block {
@@ -54,7 +55,7 @@ impl Block {
             .try_into()
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
         buf.put_u32(piece_index);
-        buf.put_u32(self.begin);
+        buf.put_u32(self.begin as u32);
         buf.extend_from_slice(&self.block);
         Ok(())
     }
@@ -62,7 +63,7 @@ impl Block {
     /// Validate the [`Block`]. Like most clients, we only support
     /// data <= 16kiB.
     pub fn is_valid(&self) -> bool {
-        self.block.len() <= BLOCK_LEN as usize && self.begin <= BLOCK_LEN
+        self.block.len() <= BLOCK_LEN && self.begin <= BLOCK_LEN
     }
 }
 
@@ -77,22 +78,22 @@ impl Block {
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct BlockInfo {
     /// The index of the piece of which this is a block.
-    pub index: u32,
+    pub index: usize,
     /// The zero-based byte offset into the piece.
-    pub begin: u32,
+    pub begin: usize,
     /// The block's length in bytes. <= 16 KiB
-    pub len: u32,
+    pub len: usize,
 }
 
 impl From<&BlockInfo> for usize {
     fn from(val: &BlockInfo) -> Self {
-        val.index as usize
+        val.index
     }
 }
 
 impl From<BlockInfo> for usize {
     fn from(val: BlockInfo) -> Self {
-        val.index as usize
+        val.index
     }
 }
 
@@ -104,46 +105,38 @@ impl Default for BlockInfo {
 
 impl From<Block> for BlockInfo {
     fn from(val: Block) -> Self {
-        BlockInfo {
-            index: val.index as u32,
-            begin: val.begin,
-            len: val.block.len() as u32,
-        }
+        BlockInfo { index: val.index, begin: val.begin, len: val.block.len() }
     }
 }
 
 impl From<&Block> for BlockInfo {
     fn from(val: &Block) -> Self {
-        BlockInfo {
-            index: val.index as u32,
-            begin: val.begin,
-            len: val.block.len() as u32,
-        }
+        BlockInfo { index: val.index, begin: val.begin, len: val.block.len() }
     }
 }
 
 impl BlockInfo {
-    pub fn new(index: u32, begin: u32, len: u32) -> Self {
+    pub fn new(index: usize, begin: usize, len: usize) -> Self {
         Self { index, begin, len }
     }
-    pub fn index(mut self, index: u32) -> Self {
+    pub fn index(mut self, index: usize) -> Self {
         self.index = index;
         self
     }
-    pub fn begin(mut self, begin: u32) -> Self {
+    pub fn begin(mut self, begin: usize) -> Self {
         self.begin = begin;
         self
     }
-    pub fn len(mut self, len: u32) -> Self {
+    pub fn len(mut self, len: usize) -> Self {
         self.len = len;
         self
     }
     /// Encodes the block info in the network binary protocol's format into the
     /// given buffer.
     pub fn encode(&self, buf: &mut BytesMut) -> io::Result<()> {
-        buf.put_u32(self.index);
-        buf.put_u32(self.begin);
-        buf.put_u32(self.len);
+        buf.put_u32(self.index as u32);
+        buf.put_u32(self.begin as u32);
+        buf.put_u32(self.len as u32);
         Ok(())
     }
     /// Validate the [`BlockInfo`]. Like most clients, we only support

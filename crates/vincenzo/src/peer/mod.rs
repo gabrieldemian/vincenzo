@@ -330,9 +330,9 @@ impl Peer<Connected> {
             self.state.req_man_block.remove_request(&block_info);
 
         // ignore unsolicited blocks, could be a malicious peer, a bugged
-        // client, etc.
+        // client, etc. Or when the client has sent a cancel but because of the
+        // latency, the peer doesn't know that yet.
         if !was_requested {
-            debug!("< not requested block {block_info:?}");
             return Ok(());
         }
 

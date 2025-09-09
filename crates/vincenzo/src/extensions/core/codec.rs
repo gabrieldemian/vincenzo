@@ -220,8 +220,8 @@ impl ExtMsgHandler<Core, CoreState> for MsgHandler {
                 debug!("< cancel {block_info:?}");
                 peer.state.incoming_requests.retain(|v| *v != block_info);
             }
-            Core::Request(block_info) => {
-                debug!("< request {block_info:?}");
+            Core::Request(b @ BlockInfo { index, begin, .. }) => {
+                debug!("< request {b:?}");
 
                 if peer.state.ctx.peer_choking.load(Ordering::Relaxed) {
                     return Ok(());
@@ -229,20 +229,25 @@ impl ExtMsgHandler<Core, CoreState> for MsgHandler {
 
                 let (tx, rx) = oneshot::channel();
 
-                peer.state.incoming_requests.push(block_info.clone());
+                peer.state.incoming_requests.push(b.clone());
 
                 peer.state
                     .ctx
                     .torrent_ctx
                     .disk_tx
                     .send(DiskMsg::ReadBlock {
-                        block_info,
+                        block_info: b,
                         recipient: tx,
                         info_hash: peer.state.ctx.torrent_ctx.info_hash.clone(),
                     })
                     .await?;
 
-                peer.send(Core::Piece(rx.await?)).await?;
+                peer.send(Core::Piece(Block {
+                    index,
+                    begin,
+                    block: rx.await?,
+                }))
+                .await?;
             }
         }
 
@@ -313,7 +318,7 @@ impl Encoder<Core> for CoreCodec {
                 })?;
 
                 buf.put_u32(index);
-                buf.put_u32(begin);
+                buf.put_u32(begin as u32);
                 buf.put(&block[..]);
             }
             Core::Cancel(block) => {
@@ -428,9 +433,9 @@ impl Decoder for CoreCodec {
                 if buf.remaining() < 4 + 4 + 4 {
                     return Ok(None);
                 }
-                let index = buf.get_u32();
-                let begin = buf.get_u32();
-                let len = buf.get_u32();
+                let index = buf.get_u32() as usize;
+                let begin = buf.get_u32() as usize;
+                let len = buf.get_u32() as usize;
 
                 Core::Request(BlockInfo { index, begin, len })
             }
@@ -441,10 +446,10 @@ impl Decoder for CoreCodec {
                     return Ok(None);
                 }
                 let index = buf.get_u32() as usize;
-                let begin = buf.get_u32();
+                let begin = buf.get_u32() as usize;
 
                 // size - 4 bytes (index) - 4 bytes (begin) - 1 byte (msg_id)
-                let block = buf.copy_to_bytes(size - 9).to_vec();
+                let block = buf.copy_to_bytes(size - 9);
 
                 Core::Piece(Block { index, begin, block })
             }
@@ -454,9 +459,9 @@ impl Decoder for CoreCodec {
                 if buf.remaining() < 4 + 4 + 4 {
                     return Ok(None);
                 }
-                let index = buf.get_u32();
-                let begin = buf.get_u32();
-                let len = buf.get_u32();
+                let index = buf.get_u32() as usize;
+                let begin = buf.get_u32() as usize;
+                let len = buf.get_u32() as usize;
 
                 Core::Cancel(BlockInfo { index, begin, len })
             }
@@ -485,7 +490,7 @@ mod tests {
 
     use super::*;
     use bitvec::{bitvec, prelude::Msb0};
-    use bytes::{Buf, BytesMut};
+    use bytes::{Buf, Bytes, BytesMut};
     use tokio_util::codec::{Decoder, Encoder};
 
     #[test]
@@ -672,7 +677,7 @@ mod tests {
         // begin
         assert_eq!(buf.get_u32(), 0);
         // len of block
-        assert_eq!(buf.get_u32(), BLOCK_LEN);
+        assert_eq!(buf.get_u32(), BLOCK_LEN as u32);
 
         let mut buf = BytesMut::new();
         CoreCodec.encode(msg, &mut buf).unwrap();
@@ -692,7 +697,8 @@ mod tests {
     #[test]
     fn piece() {
         let mut buf = BytesMut::new();
-        let msg = Core::Piece(Block { index: 0, begin: 0, block: vec![0] });
+        let msg =
+            Core::Piece(Block { index: 0, begin: 0, block: vec![0].into() });
         CoreCodec.encode(msg.clone(), &mut buf).unwrap();
 
         // len

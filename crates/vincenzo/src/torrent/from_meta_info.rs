@@ -1,4 +1,4 @@
-use bendy::encoding::ToBencode;
+use crate::extensions::BLOCK_LEN;
 
 use super::*;
 
@@ -11,23 +11,28 @@ impl Torrent<Connected, FromMetaInfo> {
         debug!("running torrent: {:?}", self.name);
 
         self.status = TorrentStatus::Downloading;
-        self.state.size = self.source.meta_info.info.get_size();
+        self.state.size = self.source.meta_info.info.get_size() as u64;
         self.state.counter = Counter::from_total_download(
             self.bitfield.count_ones() as u64
                 * self.source.meta_info.info.piece_length as u64,
         );
 
         {
-            let info_pieces = &mut self.state.info_pieces;
-            let info_bytes = self.source.meta_info.info.to_bencode()?;
-            let piece_len = self.source.meta_info.info.piece_length as usize;
+            let (otx, orx) = oneshot::channel();
+            self.ctx
+                .disk_tx
+                .send(DiskMsg::ReadInfo(self.source.info_hash(), otx))
+                .await?;
 
-            for p in 0..self.source.meta_info.info.pieces() as usize {
-                let start = p * piece_len;
-                info_pieces.insert(
-                    p as u64,
-                    info_bytes[start..(start + piece_len)].into(),
-                );
+            let info_bytes = orx.await?.unwrap();
+            let info_size = info_bytes.len();
+            let info_pieces = &mut self.state.info_pieces;
+            let meta_pieces = info_size.div_ceil(BLOCK_LEN);
+
+            for p in 0..meta_pieces {
+                let start = p * BLOCK_LEN;
+                let end = (start + BLOCK_LEN).min(info_size);
+                info_pieces.insert(p as u64, info_bytes[start..end].into());
             }
         }
 
@@ -135,7 +140,7 @@ impl Torrent<Connected, FromMetaInfo> {
                 }
                 _ = self.state.announce_interval.tick() => {
                     if let Ok(r) = self.announce_interval().await {
-                        self.state.announce_interval = r;
+                        self.state.announce_interval.reset_at(r);
                     }
                 }
             }

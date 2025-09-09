@@ -55,6 +55,6 @@ where
     type Error = Error;
     fn try_into_extended_msg(msg: M) -> Result<ExtendedMessage, Self::Error> {
         let bytes: BytesMut = msg.try_into()?;
-        Ok(ExtendedMessage(M::ID, bytes.to_vec()))
+        Ok(ExtendedMessage(M::ID, bytes.into()))
     }
 }

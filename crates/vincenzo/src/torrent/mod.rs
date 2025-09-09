@@ -35,7 +35,7 @@ use tokio::{
     net::TcpStream,
     select, spawn,
     sync::{broadcast, mpsc, oneshot},
-    time::{Instant, Interval, interval, interval_at, timeout},
+    time::{Instant, interval, interval_at, timeout},
 };
 use tracing::{debug, info, trace, warn};
 
@@ -204,7 +204,7 @@ impl<M: TorrentSource> Torrent<Connected, M> {
         let _ = self.reconnect_errored_peers().await;
     }
 
-    async fn announce_interval(&mut self) -> Result<Interval, Error> {
+    async fn announce_interval(&mut self) -> Result<Instant, Error> {
         let (otx, orx) = oneshot::channel();
         let tracker_tx = &self.state.tracker_ctx.tx;
 
@@ -226,7 +226,8 @@ impl<M: TorrentSource> Torrent<Connected, M> {
         // update our stats, received from the tracker
         self.state.stats = resp.into();
 
-        Ok(interval(Duration::from_secs(self.state.stats.interval as u64)))
+        Ok(Instant::now()
+            + Duration::from_secs(self.state.stats.interval as u64))
     }
 
     async fn unchoke_interval(&mut self) {

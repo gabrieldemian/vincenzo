@@ -15,9 +15,6 @@ use tracing::{debug, info, warn};
 
 use super::{Metadata, MetadataMsgType};
 
-#[derive(Debug, Clone)]
-pub struct MetadataCodec;
-
 #[derive(Clone)]
 pub struct MetadataData();
 

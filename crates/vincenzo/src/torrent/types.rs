@@ -351,7 +351,7 @@ impl TorrentSource for FromMetaInfo {
         self.meta_info.info.info_hash.clone()
     }
     fn size(&self) -> u64 {
-        self.meta_info.info.get_size()
+        self.meta_info.info.get_size() as u64
     }
 }
 
