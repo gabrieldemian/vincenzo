@@ -36,7 +36,7 @@ use crate::{
         MetadataData, MetadataPiece, core::BlockInfo,
     },
     peer::{self, Peer, RequestManager},
-    torrent::{PeerBrMsg, TorrentCtx, TorrentMsg},
+    torrent::{PeerBrMsg, TorrentCtx, TorrentMsg, TorrentStatus},
 };
 
 #[derive(Clone, PartialEq, Eq, Hash, Default, Readable, Writable)]
@@ -391,6 +391,29 @@ impl peer::Peer<Idle> {
             peer.handle_ext(ext).await?;
         }
 
+        // maybe send bitfield
+        {
+            let (otx, orx) = oneshot::channel();
+            peer.state
+                .ctx
+                .torrent_ctx
+                .tx
+                .send(TorrentMsg::ReadBitfield(otx))
+                .await?;
+
+            let bitfield = orx.await?;
+
+            if bitfield.any() {
+                tracing::info!(
+                    "> bitfield len: {} ones: {}",
+                    bitfield.len(),
+                    bitfield.count_ones()
+                );
+
+                peer.state.sink.send(Core::Bitfield(bitfield)).await?;
+            }
+        }
+
         Ok(peer)
     }
 
@@ -506,7 +529,7 @@ impl peer::Peer<Idle> {
 
         let (sink, stream) = socket.split();
 
-        let peer = peer::Peer {
+        let mut peer = peer::Peer {
             state_log: StateLog::default(),
             state: Connected {
                 free_tx: daemon_ctx.free_tx.clone(),
@@ -526,6 +549,53 @@ impl peer::Peer<Idle> {
                 rx,
             },
         };
+
+        // when running a new Peer, we might
+        // already have the info downloaded.
+        {
+            let (otx, orx) = oneshot::channel();
+            peer.state
+                .ctx
+                .torrent_ctx
+                .tx
+                .send(TorrentMsg::HaveInfo(otx))
+                .await?;
+            peer.state.have_info = orx.await?;
+        }
+
+        {
+            let (otx, orx) = oneshot::channel();
+            peer.state
+                .ctx
+                .torrent_ctx
+                .tx
+                .send(TorrentMsg::GetTorrentStatus(otx))
+                .await?;
+            peer.state.seed_only = orx.await? == TorrentStatus::Seeding;
+        }
+
+        // maybe send bitfield
+        {
+            let (otx, orx) = oneshot::channel();
+            peer.state
+                .ctx
+                .torrent_ctx
+                .tx
+                .send(TorrentMsg::ReadBitfield(otx))
+                .await?;
+
+            let bitfield = orx.await?;
+
+            if bitfield.any() {
+                tracing::info!(
+                    "> bitfield len: {} ones: {}",
+                    bitfield.len(),
+                    bitfield.count_ones()
+                );
+
+                peer.state.sink.send(Core::Bitfield(bitfield)).await?;
+            }
+        }
 
         Ok(peer)
     }

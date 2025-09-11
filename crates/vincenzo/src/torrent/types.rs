@@ -60,6 +60,8 @@ pub enum TorrentMsg {
     /// Received when a peer sent a metadata size on extended handshake.
     MetadataSize(usize),
 
+    GetTorrentStatus(oneshot::Sender<TorrentStatus>),
+
     HaveInfo(oneshot::Sender<bool>),
 
     GetMetadataSize(oneshot::Sender<Option<usize>>),
@@ -244,12 +246,13 @@ impl<M: TorrentSource> From<&Torrent<torrent::Connected, M>> for TorrentState {
                     0
                 }
             });
+
         Self {
             name: value.name.clone(),
             stats: value.state.stats.clone(),
             info_hash: value.source.info_hash(),
             size: value.state.size,
-            status: TorrentStatus::Downloading,
+            status: value.status,
             downloaded: value.state.counter.total_download(),
             uploaded: value.state.counter.total_upload(),
             bitfield: value.bitfield.clone().into_vec(),
@@ -351,7 +354,7 @@ impl TorrentSource for FromMetaInfo {
         self.meta_info.info.info_hash.clone()
     }
     fn size(&self) -> u64 {
-        self.meta_info.info.get_size() as u64
+        self.meta_info.info.get_torrent_size() as u64
     }
 }
 

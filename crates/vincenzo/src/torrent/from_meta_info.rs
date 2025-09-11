@@ -1,3 +1,5 @@
+use bendy::encoding::ToBencode;
+
 use crate::extensions::BLOCK_LEN;
 
 use super::*;
@@ -10,24 +12,23 @@ impl Torrent<Connected, FromMetaInfo> {
     pub async fn run(&mut self) -> Result<(), Error> {
         debug!("running torrent: {:?}", self.name);
 
-        self.status = TorrentStatus::Downloading;
-        self.state.size = self.source.meta_info.info.get_size() as u64;
+        let is_seed_only = self.bitfield.count_ones() >= self.bitfield.len();
+
+        if is_seed_only {
+            self.status = TorrentStatus::Seeding;
+        }
+
+        self.state.size = self.source.meta_info.info.get_torrent_size() as u64;
         self.state.counter = Counter::from_total_download(
             self.bitfield.count_ones() as u64
                 * self.source.meta_info.info.piece_length as u64,
         );
 
         {
-            let (otx, orx) = oneshot::channel();
-            self.ctx
-                .disk_tx
-                .send(DiskMsg::ReadInfo(self.source.info_hash(), otx))
-                .await?;
-
-            let info_bytes = orx.await?.unwrap();
-            let info_size = info_bytes.len();
-            let info_pieces = &mut self.state.info_pieces;
+            let info_bytes = self.source.meta_info.info.to_bencode()?;
+            let info_size = self.source.meta_info.info.metadata_size;
             let meta_pieces = info_size.div_ceil(BLOCK_LEN);
+            let info_pieces = &mut self.state.info_pieces;
 
             for p in 0..meta_pieces {
                 let start = p * BLOCK_LEN;
@@ -42,6 +43,9 @@ impl Torrent<Connected, FromMetaInfo> {
             select! {
                 Some(msg) = self.rx.recv() => {
                     match msg {
+                        TorrentMsg::GetTorrentStatus(otx) => {
+                            let _ = otx.send(self.status);
+                        }
                         TorrentMsg::GetAnnounceList(otx) => {
                             let mut v = vec![self.source.meta_info.announce.clone()];
 
@@ -63,7 +67,7 @@ impl Torrent<Connected, FromMetaInfo> {
                             let _ = tx.send(true);
                         }
                         TorrentMsg::GetMetadataSize(tx) => {
-                            let m = self.source.meta_info.info.size;
+                            let m = self.source.meta_info.info.metadata_size;
                             let _ = tx.send(Some(m));
                         }
                         TorrentMsg::GetPeerBitfield(id, tx) => {
@@ -156,7 +160,7 @@ impl Torrent<Idle, FromMetaInfo> {
         bitfield: Bitfield,
     ) -> Torrent<Idle, FromMetaInfo> {
         let name = meta_info.info.name.clone();
-        let metadata_size = Some(meta_info.info.size);
+        let metadata_size = Some(meta_info.info.metadata_size);
 
         let (tx, rx) = mpsc::channel::<TorrentMsg>(100);
         let (btx, _brx) = broadcast::channel::<PeerBrMsg>(500);

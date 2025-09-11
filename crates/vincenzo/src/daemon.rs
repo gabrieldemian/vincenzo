@@ -413,9 +413,11 @@ impl Daemon {
                                 _ = draw_interval.tick() => {
                                     let (otx, orx) = oneshot::channel();
 
-                                    ctx.tx.send(DaemonMsg::GetAllTorrentState(otx)).await?;
+                                    ctx.tx.send(DaemonMsg::GetAllTorrentState(otx))
+                                        .await?;
 
-                                    if sink.send(Message::TorrentStates(orx.await?)).await
+                                    if sink.send(Message::TorrentStates(orx.await?))
+                                        .await
                                         .map_err(|_| Error::SendErrorTcp).is_err()
                                     {
                                         fr_token.cancel();
@@ -425,7 +427,8 @@ impl Daemon {
                                     if msg == Message::FrontendQuit {
                                         fr_token.cancel();
                                     }
-                                    Self::handle_remote_msgs(&ctx.tx, msg, &mut sink).await?;
+                                    Self::handle_remote_msgs(&ctx.tx, msg, &mut sink)
+                                        .await?;
                                 }
                                 else => fr_token.cancel(),
                             }
@@ -553,9 +556,10 @@ impl Daemon {
             return Err(Error::NoDuplicateTorrent);
         }
 
-        self.torrent_states.push((&torrent).into());
-        self.metadata_sizes.insert(info.info_hash.clone(), Some(info.size));
+        self.metadata_sizes
+            .insert(info.info_hash.clone(), Some(info.metadata_size));
         self.torrent_ctxs.insert(info.info_hash.clone(), torrent.ctx.clone());
+        self.torrent_states.push((&torrent).into());
 
         spawn(async move {
             let mut torrent = torrent.start().await?;

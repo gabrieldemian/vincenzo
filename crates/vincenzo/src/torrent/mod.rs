@@ -207,7 +207,6 @@ impl<M: TorrentSource> Torrent<Connected, M> {
     async fn announce_interval(&mut self) -> Result<Instant, Error> {
         let (otx, orx) = oneshot::channel();
         let tracker_tx = &self.state.tracker_ctx.tx;
-
         let downloaded = self.state.counter.total_download();
 
         let _ = tracker_tx
@@ -357,6 +356,7 @@ impl<M: TorrentSource> Torrent<Connected, M> {
 
         let total_pieces = self.bitfield.len();
         let downloaded_pieces = self.bitfield.count_ones();
+        debug!("downloaded pieces {}", downloaded_pieces);
         let is_download_complete = downloaded_pieces >= total_pieces;
 
         if !is_download_complete && self.status == TorrentStatus::Downloading {
@@ -518,6 +518,7 @@ impl<M: TorrentSource> Torrent<Connected, M> {
         );
 
         let metadata_size = self.state.metadata_size;
+        let is_seed_only = self.status == TorrentStatus::Seeding;
 
         for peer in self.state.idle_peers.iter().take(to_request).cloned() {
             let ctx = ctx.clone();
@@ -542,6 +543,7 @@ impl<M: TorrentSource> Torrent<Connected, M> {
                             .await?;
 
                         connected_peer.state.have_info = have_info;
+                        connected_peer.state.seed_only = is_seed_only;
 
                         if let Err(r) = connected_peer.run().await {
                             warn!(

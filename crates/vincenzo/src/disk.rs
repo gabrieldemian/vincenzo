@@ -52,6 +52,7 @@ use crate::{
     metainfo::{Info, MetaInfo},
     peer::{PeerCtx, PeerId},
     torrent::{self, InfoHash, Torrent, TorrentCtx, TorrentMsg},
+    utils::to_human_readable,
 };
 
 // 64KB zero buffer
@@ -64,8 +65,6 @@ pub enum DiskMsg {
     AddTorrent(Arc<TorrentCtx>, Info),
 
     MetadataSize(InfoHash, usize),
-
-    ReadInfo(InfoHash, Sender<Option<Vec<u8>>>),
 
     /// The Peer does not have an ID until the handshake, when that happens,
     /// this message will be sent immediately to add the peer context.
@@ -254,8 +253,8 @@ impl Disk {
     #[tracing::instrument(name = "disk", skip_all)]
     pub async fn run(&mut self) -> Result<(), Error> {
         // only for debugging
-        // let mut disk_interval = interval(Duration::from_secs(3));
-        let mut flush_interval = interval(Duration::from_millis(100));
+        let mut disk_interval = interval(Duration::from_secs(3));
+        let mut flush_interval = interval(Duration::from_millis(1000));
         let mut dirty_count_history = Vec::with_capacity(10);
 
         // ensure the necessary folders are created.
@@ -288,31 +287,6 @@ impl Disk {
                         }
                         DiskMsg::FinishedDownload(info_hash) => {
                             let _ = self.write_complete_torrent_metainfo(&info_hash).await;
-                        }
-                        DiskMsg::ReadInfo(info_hash, otx) => {
-                            let Some(info) = self.torrent_info.get(&info_hash)
-                            else {
-                                let _ = otx.send(None);
-                                continue;
-                            };
-
-                            let is_complete = self.is_torrent_complete(&info.name);
-                            let mut buf = Vec::with_capacity(info.size);
-
-                            if is_complete {
-                                let mut path = self.complete_torrents_path();
-                                path.push(&info.name);
-                                path.set_extension("torrent");
-                                let mut file = Self::open_file(&path).await?;
-                                file.read_to_end(&mut buf).await?;
-                            } else {
-                                let mut path = self.incomplete_torrents_path();
-                                path.push(&info.name);
-                                path.set_extension("torrent");
-                                let mut file = Self::open_file(&path).await?;
-                                file.read_to_end(&mut buf).await?;
-                            }
-                            let _ = otx.send(Some(buf));
                         }
                         DiskMsg::MetadataSize(info_hash, size) => {
                             if self.metadata_pieces.contains_key(
@@ -413,17 +387,17 @@ impl Disk {
                     self.flush_dirty_files().await;
                     self.dirty_files.retain(|_, bits| bits.any());
                 }
-                // _ = disk_interval.tick() => {
-                //     for (k, v) in self.block_infos.iter() {
-                //         let pr = self.pieces_requested.get(k).unwrap();
-                //         info!(
-                //             "p: {} b: {} pr: {}",
-                //             v.len(),
-                //             v.values().fold(0, |acc, v| acc + v.len()),
-                //             pr.count_ones(),
-                //         );
-                //     }
-                // }
+                _ = disk_interval.tick() => {
+                    for (k, v) in self.block_infos.iter() {
+                        let pr = self.pieces_requested.get(k).unwrap();
+                        info!(
+                            "p: {} b: {} pr: {}",
+                            v.len(),
+                            v.values().fold(0, |acc, v| acc + v.len()),
+                            pr.count_ones(),
+                        );
+                    }
+                }
                 Some(return_to_disk) = self.free_rx.recv() => {
                     match return_to_disk {
                         ReturnToDisk::Block(info_hash, blocks) => {
@@ -477,8 +451,13 @@ impl Disk {
         self.torrent_ctxs.insert(info_hash.clone(), torrent_ctx.clone());
         self.torrent_info.insert(info_hash.clone(), info.clone());
 
-        // is the torrent name is a .torrent file in `torrents/complete`
+        // if the client already has a .torrent file, it's a duplicate.
         let is_complete = self.is_torrent_complete(&info.name);
+        let is_incomplete = self.is_torrent_complete(&info.name);
+
+        if is_complete || is_incomplete {
+            return Err(Error::NoDuplicateTorrent);
+        }
 
         self.compute_torrent_cache(&info);
 
@@ -501,8 +480,7 @@ impl Disk {
         Ok(())
     }
 
-    /// Create a new torrent from a .torrent file on disk and send it to the
-    /// daemon.
+    /// Create a new torrent from a .torrent file on disk.
     async fn new_torrent_metainfo(
         &mut self,
         metainfo: MetaInfo,
@@ -521,6 +499,15 @@ impl Disk {
             self.compute_downloaded_pieces(&metainfo.info).await?;
 
         self.compute_torrent_state(&info_hash, &downloaded_pieces)?;
+
+        let b = downloaded_pieces.count_ones() * metainfo.info.piece_length;
+        info!("already downloaded {b} bytes {:?}", to_human_readable(b as f64));
+        info!(
+            "missing {}",
+            to_human_readable(
+                metainfo.info.get_torrent_size() as f64 - b as f64
+            )
+        );
 
         let torrent = Torrent::new_metainfo(
             self.tx.clone(),
@@ -556,6 +543,7 @@ impl Disk {
 
     /// Compute the downloaded and valid pieces of the torrent and feed the read
     /// cache with the file handles.
+    #[tracing::instrument(skip(self), fields(info = %info.info_hash))]
     async fn compute_downloaded_pieces(
         &mut self,
         info: &Info,
@@ -605,7 +593,7 @@ impl Disk {
             downloaded_pieces.set(piece_index, result);
         }
 
-        debug!(
+        info!(
             "computed {} pieces, {} downloaded",
             downloaded_pieces.len(),
             downloaded_pieces.count_ones()
@@ -656,17 +644,25 @@ impl Disk {
         let mut pieces: Vec<usize> =
             Vec::with_capacity(downloaded_pieces.count_zeros());
 
-        for (i, _) in downloaded_pieces.iter_zeros().enumerate() {
-            pieces.push(i);
+        for p in downloaded_pieces.iter_zeros() {
+            pieces.push(p);
         }
 
         if piece_strategy == PieceStrategy::Random {
             pieces.shuffle(&mut rand::rng());
         }
 
+        let files_count = self
+            .torrent_cache
+            .get(info_hash)
+            .ok_or(Error::TorrentDoesNotExist)?
+            .file_metadata
+            .len();
+
         self.piece_order.insert(info_hash.clone(), pieces);
         self.block_cache.insert(info_hash.clone(), Default::default());
-        self.dirty_files.insert(info_hash.clone(), Default::default());
+        self.dirty_files
+            .insert(info_hash.clone(), Bitfield::from_piece(files_count));
 
         Ok(())
     }
@@ -700,7 +696,7 @@ impl Disk {
             TorrentCache {
                 file_metadata,
                 piece_length: info.piece_length,
-                total_size: info.get_size(),
+                total_size: info.get_torrent_size(),
             },
         );
     }
@@ -951,7 +947,6 @@ impl Disk {
                 break;
             }
         }
-
         Ok(result)
     }
 
@@ -1305,7 +1300,7 @@ impl Disk {
             .ok_or(Error::TorrentDoesNotExist)?;
 
         Ok(if piece_index == info.pieces() - 1 {
-            let remainder = info.get_size() % info.piece_length;
+            let remainder = info.get_torrent_size() % info.piece_length;
             if remainder == 0 { info.piece_length } else { remainder }
         } else {
             info.piece_length
@@ -1460,7 +1455,7 @@ impl Disk {
         complete_file_path.push(&info.name);
         complete_file_path.set_extension("torrent");
 
-        let mut buf = Vec::with_capacity(info.size);
+        let mut buf = Vec::with_capacity(info.metadata_size);
         let mut file = Self::open_file(&incomplete_file_path).await?;
         file.read_to_end(&mut buf).await?;
 
@@ -1474,6 +1469,13 @@ impl Disk {
 
     fn is_torrent_complete(&self, name: &str) -> bool {
         let mut path = self.complete_torrents_path();
+        path.push(name);
+        path.set_extension("torrent");
+        path.exists()
+    }
+
+    fn is_torrent_incomplete(&self, name: &str) -> bool {
+        let mut path = self.incomplete_torrents_path();
         path.push(name);
         path.set_extension("torrent");
         path.exists()
@@ -1799,7 +1801,7 @@ mod tests {
             name: torrent_dir.clone(),
             file_length: None,
             files: Some(files.clone()),
-            size: 0,
+            metadata_size: 0,
             info_hash: InfoHash::default(),
         };
 

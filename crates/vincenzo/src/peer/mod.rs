@@ -15,7 +15,7 @@ use tokio::{
     time::{Instant, interval, interval_at},
 };
 
-use tracing::{debug, trace};
+use tracing::{debug, info, trace};
 
 use crate::{
     disk::ReturnToDisk,
@@ -83,44 +83,6 @@ impl Peer<Connected> {
             Duration::from_secs(60),
         );
 
-        // maybe send bitfield
-        {
-            let (otx, orx) = oneshot::channel();
-            self.state
-                .ctx
-                .torrent_ctx
-                .tx
-                .send(TorrentMsg::ReadBitfield(otx))
-                .await?;
-
-            let bitfield = orx.await?;
-
-            if bitfield.any() {
-                debug!(
-                    "> bitfield len: {} ones: {}",
-                    bitfield.len(),
-                    bitfield.count_ones()
-                );
-
-                self.feed(Core::Bitfield(bitfield)).await?;
-            }
-        }
-
-        // when running a new Peer, we might
-        // already have the info downloaded.
-        {
-            if !self.state.have_info {
-                let (otx, orx) = oneshot::channel();
-                self.state
-                    .ctx
-                    .torrent_ctx
-                    .tx
-                    .send(TorrentMsg::HaveInfo(otx))
-                    .await?;
-                self.state.have_info = orx.await?;
-            }
-        }
-
         let mut brx = self.state.ctx.torrent_ctx.btx.subscribe();
 
         loop {
@@ -135,8 +97,9 @@ impl Peer<Connected> {
                     }
                     self.rerequest_blocks().await?;
                 }
-                _ = interested_interval.tick(), if !self.state.seed_only && !self.state.is_paused => {
-
+                _ = interested_interval.tick(),
+                    if !self.state.seed_only && !self.state.is_paused
+                => {
                     if !self.state.ctx.peer_choking.load(Ordering::Relaxed) {
                         tracing::info!(
                             "b {:?} p {} tout {:?} avg {:?}",
@@ -154,12 +117,12 @@ impl Peer<Connected> {
 
                     let should_be_interested = orx.await?;
 
-                    debug!("should_be_interested {should_be_interested:?}");
+                    trace!("should_be_interested {should_be_interested:?}");
 
                     if should_be_interested.is_some() &&
                         !self.state.ctx.am_interested.load(Ordering::Relaxed)
                     {
-                        debug!("> interested");
+                        info!("> interested");
                         self.state.ctx.am_interested.store(true, Ordering::Relaxed);
                         self.state_log[1] = 'i';
                         self.send(Core::Interested).await?;
@@ -392,8 +355,6 @@ impl Peer<Connected> {
     pub async fn request_blocks(&mut self) -> Result<(), Error> {
         // max available requests for this peer at the current moment
         let qnt = self.state.req_man_block.get_available_request_len();
-
-        trace!("requesting block infos: {qnt}");
 
         if qnt == 0 {
             return Ok(());

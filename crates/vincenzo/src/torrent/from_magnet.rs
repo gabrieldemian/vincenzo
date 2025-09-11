@@ -21,6 +21,9 @@ impl Torrent<Connected, FromMagnet> {
                         TorrentMsg::GetAnnounceList(otx) => {
                             let _ = otx.send(self.source.magnet.trackers().into());
                         }
+                        TorrentMsg::GetTorrentStatus(otx) => {
+                            let _ = otx.send(self.status);
+                        }
                         TorrentMsg::PeerHasPieceNotInLocal(id, tx) => {
                             let r = self.peer_has_piece_not_in_local(&id);
                             let _ = tx.send(r);
@@ -154,7 +157,7 @@ impl Torrent<Connected, FromMagnet> {
             });
 
         let downloaded_info = Info::from_bencode(&info_bytes)?;
-        self.state.metadata_size = Some(downloaded_info.size);
+        self.state.metadata_size = Some(downloaded_info.metadata_size);
 
         // validate the hash of the downloaded info
         // against the hash of the magnet link
@@ -173,7 +176,7 @@ impl Torrent<Connected, FromMagnet> {
             downloaded_info.blocks_count(),
         );
 
-        self.state.size = downloaded_info.get_size() as u64;
+        self.state.size = downloaded_info.get_torrent_size() as u64;
         self.bitfield = Bitfield::from_piece(downloaded_info.pieces());
 
         self.ctx

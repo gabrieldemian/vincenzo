@@ -63,7 +63,7 @@ impl MetaInfo {
         hashmap
     }
 
-    pub fn get_info_from_slice(
+    pub(crate) fn get_info_from_slice(
         buf: &[u8],
     ) -> Result<Option<&[u8]>, bendy::decoding::Error> {
         let mut dict_decoder = Decoder::new(buf);
@@ -116,7 +116,7 @@ pub struct Info {
 
     // the following is internal computed data for better ergonomics, and
     // not included in the real Info.
-    pub size: usize,
+    pub metadata_size: usize,
     pub info_hash: InfoHash,
 }
 
@@ -167,7 +167,7 @@ impl Info {
 
     /// Calculate how many blocks there are in the entire torrent.
     pub fn blocks_count(&self) -> usize {
-        self.get_size().div_ceil(BLOCK_LEN)
+        self.get_torrent_size().div_ceil(BLOCK_LEN)
     }
 
     /// Calculate how many blocks there are per piece
@@ -185,7 +185,7 @@ impl Info {
         &self,
         piece_index: usize,
     ) -> Vec<BlockInfo> {
-        let total_size = self.get_size();
+        let total_size = self.get_torrent_size();
         let piece_length = self.piece_length;
         let piece_start = piece_index * piece_length;
         let piece_end = (piece_start + piece_length).min(total_size);
@@ -243,7 +243,7 @@ impl Info {
     pub fn get_block_infos(
         &self,
     ) -> Result<BTreeMap<usize, Vec<BlockInfo>>, error::Error> {
-        let total_size = self.get_size();
+        let total_size = self.get_torrent_size();
         let piece_length = self.piece_length;
         let num_pieces = self.pieces();
         let mut block_infos: BTreeMap<usize, Vec<BlockInfo>> = BTreeMap::new();
@@ -262,7 +262,7 @@ impl Info {
     }
 
     /// Get the size in bytes of the files of the torrent.
-    pub fn get_size(&self) -> usize {
+    pub fn get_torrent_size(&self) -> usize {
         match &self.files {
             Some(files) => files.iter().map(|f| f.length).sum(),
             None => self.file_length.unwrap_or(0),
@@ -271,7 +271,7 @@ impl Info {
 
     /// Get the size (in bytes) of a piece.
     pub fn piece_size(&self, piece_index: usize) -> usize {
-        let total_size = self.get_size();
+        let total_size = self.get_torrent_size();
         if piece_index == self.pieces() - 1 {
             let remainder = total_size % self.piece_length;
             if remainder == 0 { self.piece_length } else { remainder }
@@ -545,7 +545,7 @@ impl FromBencode for Info {
             piece_length,
             pieces,
             source,
-            size,
+            metadata_size: size,
             info_hash,
         })
     }
@@ -880,7 +880,7 @@ mod tests {
                         path: vec!["book.pdf".to_owned()],
                     }]),
                     file_length: None,
-                    size: 5095,
+                    metadata_size: 5095,
                     info_hash: InfoHash([
                         154, 233, 176, 64, 118, 135, 255, 199, 183, 28, 17,
                         243, 46, 47, 150, 17, 152, 204, 57, 64,
@@ -952,7 +952,7 @@ mod tests {
                 name: "debian-9.4.0-amd64-netinst.iso".to_owned(),
                 files: None,
                 file_length: Some(305_135_616),
-                size: 0,
+                metadata_size: 0,
                 info_hash: InfoHash::default(),
             },
         };
