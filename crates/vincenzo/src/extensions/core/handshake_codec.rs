@@ -38,6 +38,8 @@ use crate::error::Error;
 /// 0x0050:  d7e0 49fc 9182 5ac8 069e 640a b45a 511f  ..I...Z...d..ZQ.
 /// 0x0060:  87d8 f807 7663 7a2d 3030 3030 312d 6f54  ....vcz-00001-oT
 /// 0x0070:  4b6c 4e67 6e55 6568                      KlNgnUeh
+///
+/// Note: a handshake (without ext) has exactly 68 bytes.
 #[derive(Clone, Debug, Default)]
 pub struct Handshake {
     /// 13__
@@ -149,8 +151,8 @@ impl Decoder for HandshakeCodec {
             return Ok(None);
         }
 
-        // handshake buf = 0..68
-        let mut handshake_buf = buf.split_to(68);
+        let mut handshake_buf = &buf[0..68];
+        let mut buf = &buf[68..];
 
         if handshake_buf.get_u8() as usize != PSTR_LEN {
             return Err(Error::HandshakeInvalid);

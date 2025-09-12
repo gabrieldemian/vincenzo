@@ -15,7 +15,7 @@ use tokio::{
     time::{Instant, interval, interval_at},
 };
 
-use tracing::{debug, info, trace};
+use tracing::{debug, trace};
 
 use crate::{
     disk::ReturnToDisk,
@@ -101,7 +101,7 @@ impl Peer<Connected> {
                     if !self.state.seed_only && !self.state.is_paused
                 => {
                     if !self.state.ctx.peer_choking.load(Ordering::Relaxed) {
-                        tracing::info!(
+                        tracing::debug!(
                             "b {:?} p {} tout {:?} avg {:?}",
                             self.state.req_man_block.len(),
                             self.state.req_man_block.len_pieces(),
@@ -122,7 +122,7 @@ impl Peer<Connected> {
                     if should_be_interested.is_some() &&
                         !self.state.ctx.am_interested.load(Ordering::Relaxed)
                     {
-                        info!("> interested");
+                        debug!("> interested");
                         self.state.ctx.am_interested.store(true, Ordering::Relaxed);
                         self.state_log[1] = 'i';
                         self.send(Core::Interested).await?;

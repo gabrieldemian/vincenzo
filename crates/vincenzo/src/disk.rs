@@ -284,6 +284,9 @@ impl Disk {
                             self.torrent_info.remove_entry(&info_hash);
                             self.dirty_files.remove_entry(&info_hash);
                             self.peer_ctxs.retain(|v| v.torrent_ctx.info_hash != info_hash);
+
+                            let path = self.get_metainfo_path(&info_hash)?;
+                            tokio::fs::remove_file(path).await?;
                         }
                         DiskMsg::FinishedDownload(info_hash) => {
                             let _ = self.write_complete_torrent_metainfo(&info_hash).await;
@@ -309,15 +312,12 @@ impl Disk {
                             let _ = self.enter_endgame(info_hash).await;
                         }
                         DiskMsg::DeletePeer(addr) => {
-                            trace!("delete_peer {addr:?}");
                             self.delete_peer(addr);
                         }
                         DiskMsg::AddTorrent(torrent, info) => {
                             let _ = self.add_torrent(torrent, info).await;
                         }
                         DiskMsg::ReadBlock { block_info, recipient, info_hash } => {
-                            trace!("read_block");
-
                             let block =
                                 self.read_block_zero_copy(&info_hash, &block_info)
                             .await?;
@@ -333,8 +333,6 @@ impl Disk {
                                 .await
                                 .unwrap_or_default();
 
-                            trace!("disk sending {} block infos", infos.len());
-
                             let _ = recipient.send(infos);
                         }
                         DiskMsg::RequestMetadata { qnt, recipient, info_hash } => {
@@ -345,12 +343,10 @@ impl Disk {
                             let _ = recipient.send(pieces);
                         }
                         DiskMsg::ValidatePiece { info_hash, recipient, piece } => {
-                            trace!("validate_piece");
                             let r = self.validate_piece(&info_hash, piece).await;
                             let _ = recipient.send(r);
                         }
                         DiskMsg::NewPeer(peer) => {
-                            trace!("new_peer");
                             self.new_peer(peer);
                         }
                         DiskMsg::Quit => {
@@ -387,17 +383,17 @@ impl Disk {
                     self.flush_dirty_files().await;
                     self.dirty_files.retain(|_, bits| bits.any());
                 }
-                _ = disk_interval.tick() => {
-                    for (k, v) in self.block_infos.iter() {
-                        let pr = self.pieces_requested.get(k).unwrap();
-                        info!(
-                            "p: {} b: {} pr: {}",
-                            v.len(),
-                            v.values().fold(0, |acc, v| acc + v.len()),
-                            pr.count_ones(),
-                        );
-                    }
-                }
+                // _ = disk_interval.tick() => {
+                //     for (k, v) in self.block_infos.iter() {
+                //         let pr = self.pieces_requested.get(k).unwrap();
+                //         info!(
+                //             "p: {} b: {} pr: {}",
+                //             v.len(),
+                //             v.values().fold(0, |acc, v| acc + v.len()),
+                //             pr.count_ones(),
+                //         );
+                //     }
+                // }
                 Some(return_to_disk) = self.free_rx.recv() => {
                     match return_to_disk {
                         ReturnToDisk::Block(info_hash, blocks) => {
@@ -502,12 +498,6 @@ impl Disk {
 
         let b = downloaded_pieces.count_ones() * metainfo.info.piece_length;
         info!("already downloaded {b} bytes {:?}", to_human_readable(b as f64));
-        info!(
-            "missing {}",
-            to_human_readable(
-                metainfo.info.get_torrent_size() as f64 - b as f64
-            )
-        );
 
         let torrent = Torrent::new_metainfo(
             self.tx.clone(),
@@ -1665,6 +1655,29 @@ impl Disk {
 
         Ok(())
     }
+
+    fn get_metainfo_path(
+        &self,
+        info_hash: &InfoHash,
+    ) -> Result<PathBuf, Error> {
+        let info = self
+            .torrent_info
+            .get(info_hash)
+            .ok_or(Error::TorrentDoesNotExist)?;
+
+        if self.is_torrent_complete(&info.name) {
+            let mut path = self.complete_torrents_path();
+            path.push(&info.name);
+            path.set_extension("torrent");
+            return Ok(path);
+        } else if self.is_torrent_incomplete(&info.name) {
+            let mut path = self.incomplete_torrents_path();
+            path.push(&info.name);
+            path.set_extension("torrent");
+            return Ok(path);
+        }
+        Err(Error::TorrentDoesNotExist)
+    }
 }
 
 #[cfg(test)]
@@ -1672,6 +1685,7 @@ mod tests {
     use super::*;
 
     use futures::StreamExt;
+    use hashbrown::HashSet;
     use rand::{Rng, distr::Alphanumeric};
     use std::{
         net::{Ipv4Addr, SocketAddrV4},
@@ -1695,7 +1709,7 @@ mod tests {
             StateLog,
         },
         torrent::{Connected, FromMagnet, PeerBrMsg, Stats, Torrent},
-        tracker::{TrackerCtx, TrackerMsg},
+        tracker::TrackerMsg,
     };
 
     use tokio::{
@@ -1781,7 +1795,7 @@ mod tests {
         let disk_tx = disk.tx.clone();
         let free_tx = disk_free_tx;
 
-        let (tracker_tx, _tracker_rx) = mpsc::channel::<TrackerMsg>(100);
+        let (tracker_tx, _tracker_rx) = broadcast::channel::<TrackerMsg>(100);
         let (torrent_tx, torrent_rx) = mpsc::channel::<TorrentMsg>(100);
 
         let mut hasher = Sha1::new();
@@ -1874,11 +1888,6 @@ mod tests {
             Duration::from_secs(10),
         );
 
-        let announce_interval = interval_at(
-            Instant::now() + Duration::from_secs(500),
-            Duration::from_secs(500),
-        );
-
         let mut torrent = Torrent {
             source: FromMagnet { magnet, info: Some(info.clone()) },
             state: Connected {
@@ -1887,7 +1896,6 @@ mod tests {
                 log_rates_interval,
                 optimistic_unchoke_interval,
                 unchoke_interval,
-                announce_interval,
                 peer_pieces: HashMap::from([(peer_ctx_.id.clone(), pieces)]),
                 size: 0,
                 counter: Counter::new(),
@@ -1896,14 +1904,8 @@ mod tests {
                 connecting_peers: Vec::new(),
                 error_peers: Vec::new(),
                 stats: Stats { seeders: 1, leechers: 1, interval: 1000 },
-                idle_peers: vec![],
-                tracker_ctx: Arc::new(TrackerCtx {
-                    tracker_addr: SocketAddr::V4(SocketAddrV4::new(
-                        Ipv4Addr::new(0, 0, 0, 0),
-                        0,
-                    )),
-                    tx: tracker_tx.clone(),
-                }),
+                idle_peers: HashSet::new(),
+                tracker_tx: tracker_tx.clone(),
                 metadata_size,
                 connected_peers: vec![peer_ctx.clone()],
                 info_pieces: BTreeMap::new(),

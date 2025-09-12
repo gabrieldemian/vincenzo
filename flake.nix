@@ -33,6 +33,7 @@
             (writeShellScriptBin "writedump" ''sudo tcpdump -i CloudflareWARP -XX 'tcp and port not https' -w dump.pcap'')
             rustup
             cargo-bloat
+            cargo-flamegraph
             cargo-unused-features
             cargo-udeps
             taplo

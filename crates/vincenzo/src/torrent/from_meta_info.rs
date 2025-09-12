@@ -37,14 +37,21 @@ impl Torrent<Connected, FromMetaInfo> {
             }
         }
 
-        let _ = self.spawn_outbound_peers(true).await;
-
         loop {
             select! {
                 Some(msg) = self.rx.recv() => {
                     match msg {
+                        TorrentMsg::AddIdlePeers(peers) => {
+                            self.state.idle_peers.extend(peers);
+                        }
                         TorrentMsg::GetTorrentStatus(otx) => {
                             let _ = otx.send(self.status);
+                        }
+                        TorrentMsg::GetAnnounceData(otx) => {
+                            let downloaded = self.state.counter.total_download();
+                            let uploaded = self.state.counter.total_upload();
+                            let left = self.state.size.saturating_sub(downloaded);
+                            let _ = otx.send((downloaded, uploaded, left));
                         }
                         TorrentMsg::GetAnnounceList(otx) => {
                             let mut v = vec![self.source.meta_info.announce.clone()];
@@ -95,11 +102,8 @@ impl Torrent<Connected, FromMetaInfo> {
                             self.downloaded_piece(piece).await;
                         }
                         TorrentMsg::PeerConnecting(addr) => {
-                            self.state.idle_peers.retain(|v| *v != addr);
+                            self.state.idle_peers.remove(&addr);
                             self.state.connecting_peers.push(addr);
-                        }
-                        TorrentMsg::PeerConnectingError(addr) => {
-                            self.state.connecting_peers.retain(|v| *v != addr);
                         }
                         TorrentMsg::PeerError(addr) => {
                             self.peer_error(addr).await;
@@ -118,17 +122,18 @@ impl Torrent<Connected, FromMetaInfo> {
                             self.toggle_pause();
                         }
                         TorrentMsg::Quit => {
-                            self.quit().await;
+                            self.quit();
                             return Ok(());
                         }
                         _ => {}
                     }
                 }
-                _ = self.state.reconnect_interval.tick() => {
-                    self.reconnect_interval().await;
-                }
                 _ = self.state.heartbeat_interval.tick() => {
                     self.heartbeat_interval().await;
+                }
+                _ = self.state.reconnect_interval.tick() => {
+                    // self.reconnect_interval().await;
+                    let _ = self.spawn_outbound_peers(true).await;
                 }
                 _ = self.state.log_rates_interval.tick() => {
                     self.log_rates_interval();
@@ -136,16 +141,10 @@ impl Torrent<Connected, FromMetaInfo> {
                 _ = self.state.optimistic_unchoke_interval.tick() => {
                     self.optimistic_unchoke_interval().await;
                 }
-                // for the unchoke interval, the local client is interested in the best
-                // uploaders (from our perspctive) (tit-for-tat)
-                // which gives us the most bytes out of the other
+                // for the unchoke algorithm, the local client is interested in the best
+                // uploaders (from their perspctive) (tit-for-tat)
                 _ = self.state.unchoke_interval.tick() => {
                     self.unchoke_interval().await;
-                }
-                _ = self.state.announce_interval.tick() => {
-                    if let Ok(r) = self.announce_interval().await {
-                        self.state.announce_interval.reset_at(r);
-                    }
                 }
             }
         }
@@ -163,7 +162,7 @@ impl Torrent<Idle, FromMetaInfo> {
         let metadata_size = Some(meta_info.info.metadata_size);
 
         let (tx, rx) = mpsc::channel::<TorrentMsg>(100);
-        let (btx, _brx) = broadcast::channel::<PeerBrMsg>(500);
+        let (btx, _brx) = broadcast::channel::<PeerBrMsg>(100);
 
         let ctx = Arc::new(TorrentCtx {
             free_tx: daemon_ctx.free_tx.clone(),

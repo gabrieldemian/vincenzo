@@ -8,8 +8,9 @@ mod from_magnet;
 mod from_meta_info;
 mod types;
 
-use hashbrown::HashMap;
+use hashbrown::{HashMap, HashSet};
 use rand::Rng;
+
 // re-exports
 pub use types::*;
 
@@ -22,6 +23,7 @@ use crate::{
     error::Error,
     metainfo::MetaInfo,
     peer::{self, Peer, PeerCtx, PeerId, PeerMsg},
+    torrent,
     tracker::{Tracker, TrackerMsg, TrackerTrait, event::Event},
     utils::to_human_readable,
 };
@@ -66,11 +68,9 @@ pub struct TorrentCtx {
 }
 
 impl<M: TorrentSource> Torrent<Idle, M> {
-    /// Start the Torrent, by sending `connect` and `announce_exchange`
-    /// messages to one of the trackers, and returning a list of peers.
+    /// Start the torrent by first connecting to all trackers concurrently and
+    /// then returns a connected torrent which can be run.
     pub async fn start(self) -> Result<Torrent<Connected, M>, Error> {
-        let org_trackers = self.source.organize_trackers();
-
         if let Some(metadata_size) = self.state.metadata_size {
             let _ = self
                 .daemon_ctx
@@ -82,65 +82,77 @@ impl<M: TorrentSource> Torrent<Idle, M> {
                 .await;
         }
 
-        // todo: support multi tracker torrents.
-        // after connecting to the first tracker, have an interval that
-        // calculates the number of missing active peers from the local
-        // torrent limit and request more to other trackers.
-        //
-        // create a cancellation token for all trackers,
-        // store idle trackers and active trackers.
-
-        let udp_trackers = org_trackers.get("udp").unwrap();
+        let org_trackers = self.source.organize_trackers();
+        let udp_trackers = org_trackers.get("udp").unwrap().clone();
+        drop(org_trackers);
 
         if udp_trackers.is_empty() {
             return Err(Error::MagnetNoTracker);
         }
 
-        let mut tracker = Tracker::connect_to_tracker(
-            udp_trackers,
-            self.ctx.info_hash.clone(),
-            self.daemon_ctx.clone(),
-        )
-        .await?;
+        let (tracker_tx, _tracker_rx) = broadcast::channel::<TrackerMsg>(50);
+        let mut tracker_tasks = Vec::with_capacity(udp_trackers.len());
 
-        debug!(
-            "connected to tracker: {:?}, sending announce",
-            tracker.ctx.tracker_addr
-        );
+        let info_hash = self.ctx.info_hash.clone();
+        let local_peer_id = self.daemon_ctx.local_peer_id.clone();
+        let torrent_tx = self.ctx.tx.clone();
+        let size = self.source.size();
 
-        let (res, payload) =
-            tracker.announce(Event::Started, 0, 0, self.source.size()).await?;
+        // * 50 because a tracker typically sends 50 peers.
+        let mut idle_peers = HashSet::with_capacity(udp_trackers.len() * 50);
+        let mut stats = None;
 
-        debug!("{res:?}");
+        for tracker in udp_trackers {
+            let info_hash_clone = info_hash.clone();
+            let local_peer_id_clone = local_peer_id.clone();
+            let torrent_tx_clone = torrent_tx.clone();
+            let tracker_tx_clone = tracker_tx.clone();
 
-        let peers = tracker.parse_compact_peer_list(payload.as_ref())?;
+            tracker_tasks.push(tokio::spawn(async move {
+                Self::announce(
+                    &tracker,
+                    info_hash_clone,
+                    local_peer_id_clone,
+                    torrent_tx_clone,
+                    tracker_tx_clone.subscribe(),
+                    size,
+                )
+                .await
+            }));
+        }
 
-        let stats = Stats {
-            interval: res.interval,
-            seeders: res.seeders,
-            leechers: res.leechers,
-        };
+        let results = futures::future::join_all(tracker_tasks).await;
+        debug!("connected to {} trackers", results.len());
 
-        debug!("{stats:?}");
+        for result in results {
+            match result {
+                Ok(Ok((peers, st))) => {
+                    // use the first successful tracker's stats
+                    if stats.is_none() {
+                        stats = Some(st);
+                    }
+                    idle_peers.extend(peers);
+                }
+                Ok(Err(e)) => {
+                    debug!("Tracker announcement failed: {e}");
+                }
+                Err(e) => {
+                    debug!("Task join error: {e}");
+                }
+            }
+        }
 
-        let tracker_ctx = Arc::new(tracker.ctx.clone());
-
-        spawn(async move {
-            tracker.run().await?;
-            Ok::<(), Error>(())
-        });
-
-        drop(org_trackers);
+        let stats = stats.ok_or(Error::MagnetNoTracker)?;
 
         // try to reconnect with errored peers
         let reconnect_interval = interval(Duration::from_secs(5));
 
-        // send state to the frontend, if connected.
+        // send state to the daemon
         let heartbeat_interval = interval(Duration::from_secs(1));
 
         let log_rates_interval = interval(Duration::from_secs(5));
 
-        // unchoke the slowest interested peer.
+        // unchoke the slowest interested peer and unchoke a random one.
         let optimistic_unchoke_interval = interval(Duration::from_secs(30));
 
         let now = Instant::now();
@@ -150,22 +162,17 @@ impl<M: TorrentSource> Torrent<Idle, M> {
         let unchoke_interval =
             interval_at(now + Duration::from_secs(10), Duration::from_secs(10));
 
-        let announce_interval = interval_at(
-            now + Duration::from_secs(stats.interval.into()),
-            Duration::from_secs(stats.interval.into()),
-        );
-
         Ok(Torrent {
             state: Connected {
+                tracker_tx,
                 reconnect_interval,
                 heartbeat_interval,
                 log_rates_interval,
                 optimistic_unchoke_interval,
                 unchoke_interval,
-                announce_interval,
                 peer_pieces: HashMap::default(),
                 counter: Counter::default(),
-                size: self.source.size(),
+                size,
                 unchoked_peers: Vec::with_capacity(3),
                 opt_unchoked_peer: None,
                 connecting_peers: Vec::with_capacity(
@@ -175,8 +182,7 @@ impl<M: TorrentSource> Torrent<Idle, M> {
                     CONFIG.max_torrent_peers as usize,
                 ),
                 stats,
-                idle_peers: peers,
-                tracker_ctx,
+                idle_peers,
                 metadata_size: self.state.metadata_size,
                 connected_peers: Vec::with_capacity(
                     CONFIG.max_torrent_peers as usize,
@@ -194,6 +200,46 @@ impl<M: TorrentSource> Torrent<Idle, M> {
     }
 }
 
+impl<M: TorrentSource, S: torrent::State> Torrent<S, M> {
+    /// helper function to connect and announce to a tracker, that can be used
+    /// in tasks.
+    async fn announce(
+        tracker: &str,
+        info_hash: InfoHash,
+        local_peer_id: PeerId,
+        tx: mpsc::Sender<TorrentMsg>,
+        tracker_rx: broadcast::Receiver<TrackerMsg>,
+        size: u64,
+    ) -> Result<(Vec<SocketAddr>, Stats), Error> {
+        let mut tracker = Tracker::connect_to_tracker(
+            tracker,
+            info_hash,
+            local_peer_id,
+            tracker_rx,
+            tx,
+        )
+        .await?;
+
+        let (res, payload) =
+            tracker.announce(Event::Started, 0, 0, size).await?;
+
+        let peers = tracker.parse_compact_peer_list(payload.as_ref())?;
+
+        let stats = Stats {
+            interval: res.interval,
+            seeders: res.seeders,
+            leechers: res.leechers,
+        };
+
+        spawn(async move {
+            tracker.run().await?;
+            Ok::<(), Error>(())
+        });
+
+        Ok((peers, stats))
+    }
+}
+
 impl<M: TorrentSource> Torrent<Connected, M> {
     async fn reconnect_interval(&mut self) {
         trace!(
@@ -202,31 +248,6 @@ impl<M: TorrentSource> Torrent<Connected, M> {
             self.state.error_peers.len(),
         );
         let _ = self.reconnect_errored_peers().await;
-    }
-
-    async fn announce_interval(&mut self) -> Result<Instant, Error> {
-        let (otx, orx) = oneshot::channel();
-        let tracker_tx = &self.state.tracker_ctx.tx;
-        let downloaded = self.state.counter.total_download();
-
-        let _ = tracker_tx
-            .send(TrackerMsg::Announce {
-                event: Event::None,
-                recipient: Some(otx),
-                downloaded,
-                uploaded: self.state.counter.total_upload(),
-                left: self.state.size.saturating_sub(downloaded),
-            })
-            .await;
-
-        let (resp, _payload) = orx.await?;
-        trace!("new stats {resp:#?}");
-
-        // update our stats, received from the tracker
-        self.state.stats = resp.into();
-
-        Ok(Instant::now()
-            + Duration::from_secs(self.state.stats.interval as u64))
     }
 
     async fn unchoke_interval(&mut self) {
@@ -273,6 +294,14 @@ impl<M: TorrentSource> Torrent<Connected, M> {
         let uploaded = self.state.counter.total_upload();
         let download_rate = self.state.counter.download_rate();
         let upload_rate = self.state.counter.upload_rate();
+
+        debug!(
+            "idle {} connected {} connecting {} error {}",
+            self.state.idle_peers.len(),
+            self.state.connected_peers.len(),
+            self.state.connecting_peers.len(),
+            self.state.error_peers.len(),
+        );
 
         debug!(
             "d: {} u: {} dr: {} ur: {} p: {} dp: {}",
@@ -366,31 +395,18 @@ impl<M: TorrentSource> Torrent<Connected, M> {
         info!("downloaded entire torrent, entering seed only mode.");
         self.status = TorrentStatus::Seeding;
 
-        let (otx, orx) = oneshot::channel();
-
-        let _ = self
-            .state
-            .tracker_ctx
-            .tx
-            .send(TrackerMsg::Announce {
-                event: Event::Completed,
-                recipient: Some(otx),
-                downloaded: self.state.counter.total_download(),
-                uploaded: self.state.counter.total_upload(),
-                left: 0,
-            })
-            .await;
+        let _ = self.state.tracker_tx.send(TrackerMsg::Announce {
+            event: Event::Completed,
+            downloaded: self.state.counter.total_download(),
+            uploaded: self.state.counter.total_upload(),
+            left: 0,
+        });
 
         let _ = self
             .ctx
             .disk_tx
             .send(DiskMsg::FinishedDownload(self.source.info_hash()))
             .await;
-
-        if let Ok(r) = orx.await {
-            debug!("announced completion with success {r:?}");
-            self.state.stats = r.0.into();
-        }
 
         let _ = self.ctx.btx.send(PeerBrMsg::Seedonly);
     }
@@ -399,6 +415,8 @@ impl<M: TorrentSource> Torrent<Connected, M> {
         self.state.error_peers.push(Peer::<peer::PeerError>::new(addr));
         self.state.connected_peers.retain(|v| v.remote_addr != addr);
         self.state.unchoked_peers.retain(|v| v.remote_addr != addr);
+        self.state.connecting_peers.retain(|v| *v != addr);
+        self.state.idle_peers.remove(&addr);
 
         if let Some(opt_addr) =
             self.state.opt_unchoked_peer.as_ref().map(|v| v.remote_addr)
@@ -406,20 +424,21 @@ impl<M: TorrentSource> Torrent<Connected, M> {
         {
             self.state.opt_unchoked_peer = None;
         }
-        self.state.idle_peers.retain(|v| *v != addr);
 
         let _ = self.ctx.disk_tx.send(DiskMsg::DeletePeer(addr)).await;
-
         let _ =
             self.daemon_ctx.tx.send(DaemonMsg::DecrementConnectedPeers).await;
     }
 
     async fn peer_connected(&mut self, ctx: Arc<PeerCtx>) {
-        trace!("peer_connected");
-
         self.state.connected_peers.push(ctx.clone());
         self.state.connecting_peers.retain(|v| *v != ctx.remote_addr);
+        self.state.error_peers.retain(|v| v.state.addr != ctx.remote_addr);
+        self.state.idle_peers.remove(&ctx.remote_addr);
 
+        let _ =
+            ctx.torrent_ctx.disk_tx.send(DiskMsg::NewPeer(ctx.clone())).await;
+        let _ = ctx.torrent_ctx.btx.send(PeerBrMsg::NewPeer(ctx.clone()));
         let _ =
             self.daemon_ctx.tx.send(DaemonMsg::IncrementConnectedPeers).await;
     }
@@ -452,23 +471,17 @@ impl<M: TorrentSource> Torrent<Connected, M> {
         };
     }
 
-    async fn quit(&mut self) {
-        info!("quitting torrent {:?}", self.name);
-        let tracker_tx = &self.state.tracker_ctx.tx;
-
+    fn quit(&mut self) {
+        let tracker_tx = &self.state.tracker_tx;
         let _ = self.ctx.btx.send(PeerBrMsg::Quit);
-
         let downloaded = self.state.counter.total_download();
 
-        let _ = tracker_tx
-            .send(TrackerMsg::Announce {
-                event: Event::Stopped,
-                recipient: None,
-                downloaded,
-                uploaded: self.state.counter.total_upload(),
-                left: self.state.size.saturating_sub(downloaded),
-            })
-            .await;
+        let _ = tracker_tx.send(TrackerMsg::Announce {
+            event: Event::Stopped,
+            downloaded,
+            uploaded: self.state.counter.total_upload(),
+            left: self.state.size.saturating_sub(downloaded),
+        });
     }
 
     /// Return a number of available connections that the torrent can do.
@@ -502,7 +515,8 @@ impl<M: TorrentSource> Torrent<Connected, M> {
         Ok(())
     }
 
-    /// Spawn an event loop for each peer
+    /// Try to connect to all idle peers (if there is capacity) and run their
+    /// event loops.
     pub async fn spawn_outbound_peers(
         &self,
         have_info: bool,
@@ -511,12 +525,6 @@ impl<M: TorrentSource> Torrent<Connected, M> {
         let daemon_ctx = self.daemon_ctx.clone();
 
         let to_request = self.available_connections().await?;
-
-        trace!(
-            "{:?} sending handshakes to {to_request} peers",
-            self.ctx.info_hash
-        );
-
         let metadata_size = self.state.metadata_size;
         let is_seed_only = self.status == TorrentStatus::Seeding;
 
@@ -533,20 +541,24 @@ impl<M: TorrentSource> Torrent<Connected, M> {
                     Ok(Ok(socket)) => {
                         let idle_peer = Peer::<peer::Idle>::new();
 
-                        let mut connected_peer = idle_peer
+                        let Ok(mut connected_peer) = idle_peer
                             .outbound_handshake(
                                 socket,
                                 daemon_ctx,
                                 torrent_ctx,
                                 metadata_size,
                             )
-                            .await?;
+                            .await
+                        else {
+                            ctx.tx.send(TorrentMsg::PeerError(peer)).await?;
+                            return Err(Error::HandshakeInvalid);
+                        };
 
                         connected_peer.state.have_info = have_info;
                         connected_peer.state.seed_only = is_seed_only;
 
                         if let Err(r) = connected_peer.run().await {
-                            warn!(
+                            debug!(
                                 "{} peer loop stopped due to an error: {r:?}",
                                 connected_peer.state.ctx.remote_addr
                             );
@@ -555,12 +567,13 @@ impl<M: TorrentSource> Torrent<Connected, M> {
                             return Err(r);
                         }
                     }
-                    Ok(Err(e)) => {
-                        warn!("connection fin with peer: {} {e}", peer);
+                    Ok(Err(_)) => {
                         ctx.tx.send(TorrentMsg::PeerError(peer)).await?;
                     }
                     // timeout
-                    Err(_) => {}
+                    Err(_) => {
+                        ctx.tx.send(TorrentMsg::PeerError(peer)).await?;
+                    }
                 }
 
                 Ok::<(), Error>(())

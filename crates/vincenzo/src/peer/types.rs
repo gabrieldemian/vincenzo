@@ -20,10 +20,10 @@ use tokio::{
         mpsc::{self, Receiver},
         oneshot,
     },
-    time::{Instant, sleep, timeout},
+    time::{Instant, timeout},
 };
 use tokio_util::codec::{Framed, FramedParts};
-use tracing::{debug, warn};
+use tracing::debug;
 
 use crate::{
     bitfield::Reserved,
@@ -228,8 +228,6 @@ impl Default for peer::Peer<Idle> {
 }
 
 static HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
-static RETRY_INTERVAL: Duration = Duration::from_millis(500);
-static MAX_ATTEMPTS: usize = 3;
 
 impl peer::Peer<Idle> {
     pub fn new() -> Self {
@@ -244,9 +242,10 @@ impl peer::Peer<Idle> {
         metadata_size: Option<usize>,
     ) -> Result<peer::Peer<Connected>, Error> {
         let remote = socket.peer_addr()?;
+        torrent_ctx.tx.send(TorrentMsg::PeerConnecting(remote)).await?;
+
         let local = socket.local_addr()?;
         let mut socket = Framed::new(socket, HandshakeCodec);
-
         let info_hash = &torrent_ctx.info_hash;
 
         tracing::debug!("{remote} sending outbound handshake");
@@ -260,78 +259,30 @@ impl peer::Peer<Idle> {
 
         socket.send(local_handshake.clone()).await?;
 
-        let mut attempts = 0;
-
-        // --- event loop ---
-
-        let peer_handshake = loop {
-            attempts += 1;
-
-            if attempts > 1 {
-                sleep(RETRY_INTERVAL).await;
-            }
-
+        let peer_handshake =
             match timeout(HANDSHAKE_TIMEOUT, socket.next()).await {
-                Ok(Some(Ok(handshake))) => break handshake,
+                Ok(Some(Ok(handshake))) => handshake,
                 Ok(Some(Err(e))) => {
-                    tracing::error!(
-                        "handshake decode error: {e}, retrying count: \
-                         {attempts}"
-                    );
-
-                    let buf = socket.read_buffer();
-                    if !buf.is_empty() {
-                        warn!(
-                            "invalid handshake with buffer len {}",
-                            buf.len()
-                        );
-                    }
-
-                    if attempts < MAX_ATTEMPTS {
-                        socket.send(local_handshake.clone()).await?;
-                        continue;
-                    }
-
+                    tracing::debug!("handshake error: {e}");
                     return Err(Error::HandshakeInvalid);
                 }
                 Ok(None) => {
-                    tracing::warn!(
-                        "peer closed connection during handshake, retrying \
-                         count: {attempts}"
-                    );
-                    let buf = socket.read_buffer();
-                    if !buf.is_empty() {
-                        warn!(
-                            "closed connection with buffer len {}",
-                            buf.len()
-                        );
-                    }
-                    if attempts < MAX_ATTEMPTS {
-                        socket.send(local_handshake.clone()).await?;
-                        continue;
-                    }
+                    tracing::trace!("peer closed connection during handshake");
                     return Err(Error::PeerClosedSocket);
                 }
                 Err(_) => {
-                    // Timeout occurred
-                    tracing::warn!(
-                        "handshake timeout with after {}ms, retrying count: \
-                         {attempts}",
+                    tracing::trace!(
+                        "handshake timeout with after {}ms",
                         HANDSHAKE_TIMEOUT.as_millis()
                     );
-                    if attempts < MAX_ATTEMPTS {
-                        socket.send(local_handshake.clone()).await?;
-                        continue;
-                    }
                     return Err(Error::HandshakeTimeout);
                 }
-            }
-        };
+            };
 
-        tracing::debug!("{remote} ext {:?}", peer_handshake.ext);
+        tracing::trace!("{remote} ext {:?}", peer_handshake.ext);
 
         if !peer_handshake.validate(&local_handshake) {
-            warn!("handshake is invalid");
+            debug!("handshake is invalid");
             return Err(Error::HandshakeInvalid);
         }
 
@@ -404,12 +355,6 @@ impl peer::Peer<Idle> {
             let bitfield = orx.await?;
 
             if bitfield.any() {
-                tracing::info!(
-                    "> bitfield len: {} ones: {}",
-                    bitfield.len(),
-                    bitfield.count_ones()
-                );
-
                 peer.state.sink.send(Core::Bitfield(bitfield)).await?;
             }
         }
@@ -468,15 +413,13 @@ impl peer::Peer<Idle> {
 
         socket.send(our_handshake).await?;
 
-        debug!("received peer handshake {peer_handshake:?}",);
-
         let our_handshake = Handshake::new(
             peer_handshake.info_hash.clone(),
             daemon_ctx.local_peer_id.clone(),
         );
 
         if !peer_handshake.validate(&our_handshake) {
-            warn!("handshake is invalid");
+            debug!("handshake is invalid");
             return Err(Error::HandshakeInvalid);
         }
 
@@ -497,12 +440,7 @@ impl peer::Peer<Idle> {
         torrent_ctx.tx.send(TorrentMsg::PeerConnecting(remote)).await?;
 
         debug!("sending inbound handshake");
-        if socket.send(our_handshake).await.is_err() {
-            torrent_ctx
-                .tx
-                .send(TorrentMsg::PeerConnectingError(remote))
-                .await?;
-        };
+        socket.send(our_handshake).await?;
 
         let old_parts = socket.into_parts();
         let mut new_parts = FramedParts::new(old_parts.io, CoreCodec);
@@ -587,12 +525,6 @@ impl peer::Peer<Idle> {
             let bitfield = orx.await?;
 
             if bitfield.any() {
-                tracing::info!(
-                    "> bitfield len: {} ones: {}",
-                    bitfield.len(),
-                    bitfield.count_ones()
-                );
-
                 peer.state.sink.send(Core::Bitfield(bitfield)).await?;
             }
         }

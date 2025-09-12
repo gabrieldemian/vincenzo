@@ -8,16 +8,19 @@ use std::{
     fmt::Debug,
     future::Future,
     net::{IpAddr, SocketAddr},
-    sync::Arc,
     time::Duration,
 };
 
-use crate::{daemon::DaemonCtx, error::Error, torrent::InfoHash};
+use crate::{
+    error::Error,
+    peer::PeerId,
+    torrent::{InfoHash, TorrentMsg},
+};
 use tokio::{
     net::{ToSocketAddrs, UdpSocket},
     select,
-    sync::{mpsc, oneshot},
-    time::timeout,
+    sync::{broadcast, mpsc, oneshot},
+    time::{Instant, interval_at, timeout},
 };
 use tracing::{debug, error, info};
 
@@ -53,7 +56,7 @@ pub trait TrackerTrait: Sized {
     /// The buffer needs to be decoded depending on the event type, for an
     /// [`Event::Started`] the `parse_compact_peer_list` should be used.
     fn announce(
-        &self,
+        &mut self,
         event: Event,
         downloaded: u64,
         uploaded: u64,
@@ -67,45 +70,33 @@ pub trait TrackerTrait: Sized {
     ) -> Result<Vec<SocketAddr>, Error>;
 
     /// Try to connect to one tracker, in order, and return Self.
-    fn connect_to_tracker<A>(
-        trackers: &[A],
+    fn connect_to_tracker(
+        tracker: &str,
         info_hash: InfoHash,
-        daemon_ctx: Arc<DaemonCtx>,
-    ) -> impl Future<Output = Result<Self, Error>>
-    where
-        A: ToSocketAddrs
-            + Debug
-            + Send
-            + Sync
-            + 'static
-            + std::fmt::Display
-            + Clone,
-        A::Iter: Send;
+        local_peer_id: PeerId,
+        rx: broadcast::Receiver<TrackerMsg>,
+        torrent_tx: mpsc::Sender<TorrentMsg>,
+    ) -> impl Future<Output = Result<Self, Error>>;
 }
 
 /// The generic `P` stands for "Protocol".
 /// Currently, only UDP and HTTP are supported.
 pub struct Tracker<P: Protocol> {
-    pub ctx: TrackerCtx,
-    pub daemon_ctx: Arc<DaemonCtx>,
+    pub tracker_addr: SocketAddr,
+    pub local_peer_id: PeerId,
     pub info_hash: InfoHash,
-    pub rx: mpsc::Receiver<TrackerMsg>,
+    pub rx: broadcast::Receiver<TrackerMsg>,
     pub connection_id: u64,
+    pub interval: u32,
+    pub torrent_tx: mpsc::Sender<TorrentMsg>,
     state: P,
 }
 
 #[derive(Debug, Clone)]
-pub struct TrackerCtx {
-    pub tx: mpsc::Sender<TrackerMsg>,
-    /// Remote addr of the tracker.
-    pub tracker_addr: SocketAddr,
-}
-
-#[derive(Debug)]
 pub enum TrackerMsg {
     Announce {
         event: Event,
-        recipient: Option<oneshot::Sender<(announce::Response, Vec<u8>)>>,
+        // recipient: Option<oneshot::Sender<(announce::Response, Vec<u8>)>>,
         downloaded: u64,
         uploaded: u64,
         left: u64,
@@ -169,7 +160,7 @@ impl TrackerTrait for Tracker<Udp> {
     }
 
     async fn announce(
-        &self,
+        &mut self,
         event: Event,
         downloaded: u64,
         uploaded: u64,
@@ -180,7 +171,7 @@ impl TrackerTrait for Tracker<Udp> {
         let req = announce::Request {
             connection_id: self.connection_id,
             info_hash: self.info_hash.clone(),
-            peer_id: self.daemon_ctx.local_peer_id.clone(),
+            peer_id: self.local_peer_id.clone(),
             downloaded,
             left,
             uploaded,
@@ -230,6 +221,8 @@ impl TrackerTrait for Tracker<Udp> {
             return Err(Error::TrackerResponse);
         }
 
+        self.interval = res.interval;
+
         Ok((res, payload.to_owned()))
     }
 
@@ -237,9 +230,8 @@ impl TrackerTrait for Tracker<Udp> {
         &self,
         buf: &[u8],
     ) -> Result<Vec<SocketAddr>, Error> {
-        let mut peer_list = Vec::<SocketAddr>::new();
-
-        let is_ipv6 = self.ctx.tracker_addr.is_ipv6();
+        let mut peer_list = Vec::<SocketAddr>::with_capacity(50);
+        let is_ipv6 = self.tracker_addr.is_ipv6();
 
         // in ipv4 the addresses come in packets of 6 bytes,
         // first 4 for ip and 2 for port
@@ -271,8 +263,8 @@ impl TrackerTrait for Tracker<Udp> {
             peer_list.push((ip, port).into());
         }
 
-        info!("peers count: {}", peer_list.len());
-        debug!("{} ips of peers {peer_list:?}", peer_list.len());
+        tracing::trace!("peers count: {}", peer_list.len());
+        tracing::trace!("{} ips of peers {peer_list:?}", peer_list.len());
         let peers: Vec<SocketAddr> = peer_list.into_iter().collect();
 
         Ok(peers)
@@ -281,61 +273,36 @@ impl TrackerTrait for Tracker<Udp> {
     /// Bind UDP socket and send a connect handshake,
     /// to one of the trackers.
     // todo: announce again if download is stale
-    async fn connect_to_tracker<A>(
-        trackers: &[A],
+    async fn connect_to_tracker(
+        tracker: &str,
         info_hash: InfoHash,
-        daemon_ctx: Arc<DaemonCtx>,
-    ) -> Result<Self, Error>
-    where
-        A: ToSocketAddrs
-            + Debug
-            + Send
-            + Sync
-            + 'static
-            + std::fmt::Display
-            + Clone,
-        A::Iter: Send,
-    {
-        info!("trying to connect to one of {:?} trackers", trackers.len());
-
-        // Connect to all trackers, return on the first
-        // successful handshake.
-        for tracker_addr in trackers {
-            debug!("trying to connect {tracker_addr:?}");
-
-            let socket = match Self::new_udp_socket(tracker_addr.clone()).await
-            {
-                Ok(socket) => socket,
-                Err(_) => {
-                    debug!("could not connect to tracker");
-                    continue;
-                }
-            };
-
-            let (tracker_tx, tracker_rx) = mpsc::channel::<TrackerMsg>(100);
-
-            let mut tracker = Tracker {
-                ctx: TrackerCtx {
-                    tracker_addr: socket.peer_addr().unwrap(),
-                    tx: tracker_tx,
-                },
-                daemon_ctx: daemon_ctx.clone(),
-                info_hash: info_hash.clone(),
-                connection_id: 0,
-                state: Udp { socket },
-                rx: tracker_rx,
-            };
-
-            if Tracker::connect(&mut tracker).await.is_ok() {
-                debug!("announced to tracker {tracker_addr}");
-                return Ok(tracker);
+        local_peer_id: PeerId,
+        rx: broadcast::Receiver<TrackerMsg>,
+        torrent_tx: mpsc::Sender<TorrentMsg>,
+    ) -> Result<Self, Error> {
+        let socket = match Self::new_udp_socket(tracker).await {
+            Ok(socket) => socket,
+            Err(_) => {
+                debug!("could not connect to tracker");
+                return Err(Error::TrackerResponse);
             }
-        }
+        };
 
-        error!(
-            "Could not connect to any tracker, all trackers rejected the \
-             connection."
-        );
+        let mut tracker = Tracker {
+            tracker_addr: socket.peer_addr().unwrap(),
+            interval: 0,
+            local_peer_id,
+            info_hash: info_hash.clone(),
+            connection_id: 0,
+            state: Udp { socket },
+            torrent_tx,
+            rx,
+        };
+
+        if Tracker::connect(&mut tracker).await.is_ok() {
+            // debug!("announced to tracker {tracker_addr:?}");
+            return Ok(tracker);
+        }
 
         Err(Error::TrackerNoHosts)
     }
@@ -361,35 +328,60 @@ impl Tracker<Udp> {
     }
 
     #[tracing::instrument(name = "tracker", skip_all,
-        fields(
-            addr = %self.ctx.tracker_addr,
-        )
+        fields(addr = %self.tracker_addr)
     )]
     pub async fn run(&mut self) -> Result<(), Error> {
         debug!("running tracker");
 
+        let mut interval = interval_at(
+            Instant::now() + Duration::from_secs(self.interval.into()),
+            Duration::from_secs(self.interval.into()),
+        );
+
         loop {
             select! {
-                Some(msg) = self.rx.recv() => {
+                _ = interval.tick() => {
+                    let (otx, orx) = oneshot::channel();
+                    self.torrent_tx.send(TorrentMsg::GetAnnounceData(otx)).await?;
+                    let (downloaded, uploaded, left) = orx.await?;
+
+                    let (res, payload) = self
+                        .announce(Event::None, downloaded, uploaded, left)
+                        .await?;
+
+                    interval.reset_at(
+                        Instant::now() + Duration::from_secs(res.interval as u64)
+                    );
+
+                    let peers = self.parse_compact_peer_list(payload.as_ref())?;
+
+                    self.torrent_tx.send(TorrentMsg::AddIdlePeers(
+                        peers.into_iter().collect()
+                    ))
+                    .await?;
+                }
+                Ok(msg) = self.rx.recv() => {
                     match msg {
                         TrackerMsg::Announce {
-                            recipient,
                             event,
                             downloaded,
                             uploaded,
                             left,
                         } => {
-                            let res = self
+                            let (_res, payload) = self
                                 .announce(event, downloaded, uploaded, left)
                                 .await?;
-
-                            if let Some(recipient) = recipient {
-                                let _ = recipient.send(res);
-                            }
 
                             if event == Event::Stopped {
                                 return Ok(());
                             }
+
+                            let peers = self.parse_compact_peer_list(payload.as_ref())?;
+
+                            self.torrent_tx.send(TorrentMsg::AddIdlePeers(
+                                peers.into_iter().collect()
+                            ))
+                            .await?;
                         }
                     }
                 }

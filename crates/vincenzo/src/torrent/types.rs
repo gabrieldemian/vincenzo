@@ -7,10 +7,13 @@ use std::{
 };
 
 use bincode::{Decode, Encode};
-use hashbrown::HashMap;
+use hashbrown::{HashMap, HashSet};
 use rand::Rng;
 use speedy::{Readable, Writable};
-use tokio::{sync::oneshot, time::Interval};
+use tokio::{
+    sync::{broadcast, oneshot},
+    time::Interval,
+};
 
 use crate::{
     bitfield::Bitfield,
@@ -20,7 +23,7 @@ use crate::{
     metainfo::{Info, MetaInfo},
     peer::{self, Peer, PeerCtx, PeerId},
     torrent::{self, Torrent},
-    tracker::TrackerCtx,
+    tracker::TrackerMsg,
 };
 
 /// Broadcasted messages for all peers in a torrent.
@@ -56,6 +59,13 @@ pub enum TorrentMsg {
     /// an entire piece. We send Have messages to peers
     /// that don't have it and update the UI with stats.
     DownloadedPiece(usize),
+
+    /// Sent by the tracker on periodic announces to add more peers to be
+    /// connected.
+    AddIdlePeers(HashSet<SocketAddr>),
+
+    /// downloaded, uploaded, left
+    GetAnnounceData(oneshot::Sender<(u64, u64, u64)>),
 
     /// Received when a peer sent a metadata size on extended handshake.
     MetadataSize(usize),
@@ -102,10 +112,6 @@ pub enum TorrentMsg {
 
     /// Set a piece of the peer's bitfield to true
     PeerHave(PeerId, usize),
-
-    /// Error when handshaking a peer, even though the TCP connection was
-    /// established.
-    PeerConnectingError(SocketAddr),
 
     /// Start endgame mode, sent by the disk.
     Endgame(BTreeMap<usize, Vec<BlockInfo>>),
@@ -382,7 +388,7 @@ pub struct Connected {
     /// Idle peers returned from an announce request to the tracker.
     /// Will be removed from this vec as we connect with them, and added as we
     /// request more peers to the tracker.
-    pub idle_peers: Vec<SocketAddr>,
+    pub idle_peers: HashSet<SocketAddr>,
 
     /// Idle peers being handshaked and soon moved to `connected_peer`.
     pub connecting_peers: Vec<SocketAddr>,
@@ -405,9 +411,8 @@ pub struct Connected {
     /// Pieces that all peers have.
     pub peer_pieces: HashMap<PeerId, Bitfield>,
 
-    pub tracker_ctx: Arc<TrackerCtx>,
+    pub tracker_tx: broadcast::Sender<TrackerMsg>,
 
-    pub(crate) announce_interval: Interval,
     pub(crate) reconnect_interval: Interval,
     pub(crate) heartbeat_interval: Interval,
     pub(crate) log_rates_interval: Interval,
