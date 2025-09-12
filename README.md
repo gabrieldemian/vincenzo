@@ -34,22 +34,65 @@ The official UI runs on the terminal with vim-like keybindings.
 
 ## How to use
 
-Open your terminal and enter:
+The easiest way is to download or compile the "vcz" binary which contains both UI and daemon, and run it on the terminal:
 
 ```bash
 vcz
 ```
 
+You can also have the daemon running and the UI in another machine, but that requires changing the configuration.
+
 ## Configuration
 
-The binaries read a toml config file.
-It is located at the default config folder of your OS.
+We have 3 sources of configuration, in order of lowest priority to the highest: config file -> CLI flags -> ENV variables.
+
+The config file is located at the default config folder of your OS.
 
 - Linux: ~/.config/vincenzo/config.toml
 - Windows: C:\\Users\\Alice\\AppData\\Roaming\\Vincenzo\\config.toml
 - MacOS: /Users/Alice/Library/Application Support/Vincenzo/config.toml
 
-### Defaults
+For the CLI flags, use --help.
+
+### CLI flags
+
+```text
+$vcz --help
+
+Usage: vczd [OPTIONS]
+
+Options:
+      --download-dir <DOWNLOAD_DIR>
+          Where to store files of torrents. Defaults to the download dir of the user.
+      --metadata-dir <METADATA_DIR>
+          Where to store .torrent files. Defaults to `~/.config/vincenzo/torrents`
+      --daemon-addr <DAEMON_ADDR>
+          Where the daemon listens for connections. Defaults to `0.0.0.0:0`
+      --local-peer-port <LOCAL_PEER_PORT>
+          Port of the client, defaults to 51413
+      --max-global-peers <MAX_GLOBAL_PEERS>
+          Max number of global TCP connections, defaults to 500
+      --max-torrent-peers <MAX_TORRENT_PEERS>
+          Max number of TCP connections for each torrent, defaults to 50, and is capped by `max_global_peers`
+      --is-ipv6 <IS_IPV6>
+          If the client will use an ipv6 socket to connect to other peers. Defaults to false [possible values: true, false]
+      --quit-after-complete <QUIT_AFTER_COMPLETE>
+          If the daemon should quit after all downloads are complete. Defaults to false [possible values: true, false]
+  -m, --magnet <MAGNET>
+          Add magnet url to the daemon
+  -s, --stats
+          Print the stats of all torrents
+  -p, --pause <PAUSE>
+          Pause the torrent with the given info hash
+  -q, --quit
+          Terminate the process of the daemon
+  -h, --help
+          Print help
+  -V, --version
+          Print version
+```
+
+### Default config.toml
 
 ```toml
 download_dir = "$XDG_DOWNLOAD_DIR"
@@ -82,13 +125,15 @@ Not necessarily in this order:
 
 - [x] Cache writes.
 
+- [x] Save metainfo files on disk.
+
+- [x] Multi-tracker.
+
 - [ ] Customizable UI color scheme.
 
 - [ ] Customizable keybindings.
 
 - [ ] Anti-snubbing.
-
-- [ ] Save metainfo files on disk.
 
 - [ ] UTP
 

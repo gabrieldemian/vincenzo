@@ -11,7 +11,7 @@ use crate::{
 use bendy::{decoding::FromBencode, encoding::ToBencode};
 use futures::SinkExt;
 use tokio::sync::oneshot;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 use super::{Metadata, MetadataMsgType};
 
@@ -88,7 +88,7 @@ impl ExtMsgHandler<Metadata, MetadataData> for MsgHandler {
 
                 match rx.await? {
                     Some(info_slice) => {
-                        info!("sending data with piece {:?}", msg.piece);
+                        debug!("sending data with piece {:?}", msg.piece);
                         debug!(
                             "{} sending data with piece {} {}",
                             peer.state.ctx.local_addr,
@@ -126,7 +126,7 @@ impl ExtMsgHandler<Metadata, MetadataData> for MsgHandler {
                 }
             }
             MetadataMsgType::Reject => {
-                debug!("metadata rej piece {}", msg.piece);
+                debug!("metadata reject piece {}", msg.piece);
             }
         }
 

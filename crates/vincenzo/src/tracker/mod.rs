@@ -94,13 +94,7 @@ pub struct Tracker<P: Protocol> {
 
 #[derive(Debug, Clone)]
 pub enum TrackerMsg {
-    Announce {
-        event: Event,
-        // recipient: Option<oneshot::Sender<(announce::Response, Vec<u8>)>>,
-        downloaded: u64,
-        uploaded: u64,
-        left: u64,
-    },
+    Announce { event: Event, downloaded: u64, uploaded: u64, left: u64 },
 }
 
 impl TrackerTrait for Tracker<Udp> {
@@ -145,7 +139,7 @@ impl TrackerTrait for Tracker<Udp> {
 
         let (res, _) = connect::Response::deserialize(&buf)?;
 
-        debug!("received res from tracker {res:#?}");
+        tracing::trace!("received res from tracker {res:#?}");
 
         if res.transaction_id != req.transaction_id
             || res.action != req.action as u32
@@ -166,7 +160,7 @@ impl TrackerTrait for Tracker<Udp> {
         uploaded: u64,
         left: u64,
     ) -> Result<(announce::Response, Vec<u8>), Error> {
-        debug!("announcing {event:#?} to tracker");
+        tracing::trace!("announcing {event:#?} to tracker");
 
         let req = announce::Request {
             connection_id: self.connection_id,
@@ -331,7 +325,7 @@ impl Tracker<Udp> {
         fields(addr = %self.tracker_addr)
     )]
     pub async fn run(&mut self) -> Result<(), Error> {
-        debug!("running tracker");
+        tracing::trace!("running tracker");
 
         let mut interval = interval_at(
             Instant::now() + Duration::from_secs(self.interval.into()),

@@ -38,7 +38,7 @@ use tokio::{
     },
     time::interval,
 };
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, info, warn};
 
 use crate::{
     bitfield::{Bitfield, VczBitfield},
@@ -271,6 +271,8 @@ impl Disk {
                 Some(msg) = self.rx.recv() => {
                     match msg {
                         DiskMsg::DeleteTorrent(info_hash) => {
+                            let path = self.get_metainfo_path(&info_hash)?;
+                            tokio::fs::remove_file(path).await?;
                             self.torrent_cache.remove_entry(&info_hash);
                             self.block_cache.remove_entry(&info_hash);
                             self.torrent_ctxs.remove_entry(&info_hash);
@@ -284,9 +286,6 @@ impl Disk {
                             self.torrent_info.remove_entry(&info_hash);
                             self.dirty_files.remove_entry(&info_hash);
                             self.peer_ctxs.retain(|v| v.torrent_ctx.info_hash != info_hash);
-
-                            let path = self.get_metainfo_path(&info_hash)?;
-                            tokio::fs::remove_file(path).await?;
                         }
                         DiskMsg::FinishedDownload(info_hash) => {
                             let _ = self.write_complete_torrent_metainfo(&info_hash).await;
@@ -319,7 +318,7 @@ impl Disk {
                         }
                         DiskMsg::ReadBlock { block_info, recipient, info_hash } => {
                             let block =
-                                self.read_block_zero_copy(&info_hash, &block_info)
+                                self.read_block(&info_hash, &block_info)
                             .await?;
 
                             let _ = recipient.send(block);
@@ -359,6 +358,10 @@ impl Disk {
                     let total_dirty: usize = self.dirty_files.values()
                         .map(|bits| bits.count_ones())
                         .sum();
+
+                    if total_dirty == 0 {
+                        continue;
+                    }
 
                     dirty_count_history.push(total_dirty);
                     if dirty_count_history.len() > 10 {
@@ -467,9 +470,7 @@ impl Disk {
         let b = downloaded_pieces.count_ones() * info.piece_length;
         debug!("already downloaded {b} bytes");
 
-        if !is_complete {
-            self.write_incomplete_torrent_metainfo(info).await?;
-        }
+        self.write_incomplete_torrent_metainfo(info).await?;
 
         self.compute_torrent_state(&info_hash, &downloaded_pieces)?;
 
@@ -574,6 +575,7 @@ impl Disk {
 
         // reuse the already open file handles and put in the cache.
         for (f, mmap) in file_handles {
+            let _ = mmap.advise(memmap2::Advice::Random);
             self.read_mmap_cache.put(f.path.to_path_buf(), mmap);
         }
 
@@ -956,7 +958,7 @@ impl Disk {
             })
     }
 
-    pub async fn read_block_zero_copy(
+    pub async fn read_block(
         &mut self,
         info_hash: &InfoHash,
         block_info: &BlockInfo,
@@ -1185,6 +1187,11 @@ impl Disk {
             for (file_offset, data_range) in ops {
                 let start = file_offset;
                 let end = start + data_range.len();
+                let _ = mmap.advise_range(
+                    memmap2::Advice::Sequential,
+                    start,
+                    end - start,
+                );
 
                 mmap[start..end].copy_from_slice(&piece_buffer[data_range]);
             }
@@ -1333,7 +1340,9 @@ impl Disk {
 
         // cache miss
         let file = Self::open_file(path).await?;
-        let mmap = Arc::new(Mutex::new(unsafe { MmapMut::map_mut(&file)? }));
+        let mmap = unsafe { MmapMut::map_mut(&file) }?;
+        let _ = mmap.advise(memmap2::Advice::Random);
+        let mmap = Arc::new(Mutex::new(mmap));
 
         self.write_mmap_cache.put(path.into(), mmap.clone());
         Ok(mmap)
@@ -1795,7 +1804,7 @@ mod tests {
         let disk_tx = disk.tx.clone();
         let free_tx = disk_free_tx;
 
-        let (tracker_tx, _tracker_rx) = broadcast::channel::<TrackerMsg>(100);
+        let (tracker_tx, _tracker_rx) = broadcast::channel::<TrackerMsg>(10);
         let (torrent_tx, torrent_rx) = mpsc::channel::<TorrentMsg>(100);
 
         let mut hasher = Sha1::new();
@@ -1825,7 +1834,7 @@ mod tests {
 
         let metadata_size = Some(1234);
 
-        let (btx, _brx) = broadcast::channel::<PeerBrMsg>(500);
+        let (btx, _brx) = broadcast::channel::<PeerBrMsg>(100);
 
         let torrent_ctx = Arc::new(TorrentCtx {
             btx,
@@ -1871,7 +1880,7 @@ mod tests {
         let stream = TcpStream::connect(local_addr).await?;
 
         // try to reconnect with errored peers
-        let reconnect_interval = interval(Duration::from_secs(5));
+        let reconnect_interval = interval(Duration::from_secs(2));
 
         // send state to the frontend, if connected.
         let heartbeat_interval = interval(Duration::from_secs(1));

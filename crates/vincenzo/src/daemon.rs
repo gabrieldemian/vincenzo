@@ -222,10 +222,6 @@ impl Daemon {
     async fn delete_all_torrents(&mut self) -> Result<(), Error> {
         for ctx in self.torrent_ctxs.values() {
             let _ = ctx.tx.send(TorrentMsg::Quit).await;
-            let _ = ctx
-                .disk_tx
-                .send(DiskMsg::DeleteTorrent(ctx.info_hash.clone()))
-                .await;
         }
         self.torrent_ctxs.clear();
         Ok(())

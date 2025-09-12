@@ -254,32 +254,30 @@ impl peer::Peer<Idle> {
             Handshake::new(info_hash.clone(), daemon_ctx.local_peer_id.clone());
 
         if let Some(ext) = local_handshake.ext.as_mut() {
-            ext.metadata_size = metadata_size;
+            ext.metadata_size = Some(metadata_size.unwrap_or(0));
         }
 
         socket.send(local_handshake.clone()).await?;
 
-        let peer_handshake =
-            match timeout(HANDSHAKE_TIMEOUT, socket.next()).await {
-                Ok(Some(Ok(handshake))) => handshake,
-                Ok(Some(Err(e))) => {
-                    tracing::debug!("handshake error: {e}");
-                    return Err(Error::HandshakeInvalid);
-                }
-                Ok(None) => {
-                    tracing::trace!("peer closed connection during handshake");
-                    return Err(Error::PeerClosedSocket);
-                }
-                Err(_) => {
-                    tracing::trace!(
-                        "handshake timeout with after {}ms",
-                        HANDSHAKE_TIMEOUT.as_millis()
-                    );
-                    return Err(Error::HandshakeTimeout);
-                }
-            };
-
-        tracing::trace!("{remote} ext {:?}", peer_handshake.ext);
+        let peer_handshake = match timeout(HANDSHAKE_TIMEOUT, socket.next())
+            .await
+        {
+            Ok(Some(Ok(handshake))) => handshake,
+            Ok(Some(Err(_))) => {
+                return Err(Error::HandshakeInvalid);
+            }
+            Ok(None) => {
+                tracing::trace!("peer closed connection during handshake");
+                return Err(Error::PeerClosedSocket);
+            }
+            Err(_) => {
+                tracing::trace!(
+                    "handshake timeout with after {}ms",
+                    HANDSHAKE_TIMEOUT.as_millis()
+                );
+                return Err(Error::HandshakeTimeout);
+            }
+        };
 
         if !peer_handshake.validate(&local_handshake) {
             debug!("handshake is invalid");
@@ -487,6 +485,10 @@ impl peer::Peer<Idle> {
                 rx,
             },
         };
+
+        if let Some(ext) = peer_handshake.ext {
+            peer.handle_ext(ext).await?;
+        }
 
         // when running a new Peer, we might
         // already have the info downloaded.

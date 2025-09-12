@@ -12,6 +12,8 @@ impl Torrent<Connected, FromMetaInfo> {
     pub async fn run(&mut self) -> Result<(), Error> {
         debug!("running torrent: {:?}", self.name);
 
+        self.status = TorrentStatus::Downloading;
+
         let is_seed_only = self.bitfield.count_ones() >= self.bitfield.len();
 
         if is_seed_only {

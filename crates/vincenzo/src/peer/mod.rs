@@ -443,12 +443,13 @@ impl Peer<Connected> {
             .await?;
 
         let pieces: Vec<MetadataPiece> = orx.await?;
-
         for piece in &pieces {
-            let msg = Metadata::request(piece.0 as u64);
-            let buf = msg.to_bencode()?;
-            self.feed(Core::Extended(ExtendedMessage(ut_metadata, buf)))
-                .await?;
+            if self.state.req_man_meta.add_request(MetadataPiece(piece.0)) {
+                let msg = Metadata::request(piece.0 as u64);
+                let buf = msg.to_bencode()?;
+                self.feed(Core::Extended(ExtendedMessage(ut_metadata, buf)))
+                    .await?;
+            }
         }
 
         if !pieces.is_empty() {

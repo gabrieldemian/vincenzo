@@ -31,7 +31,7 @@ impl Request {
     }
 
     pub fn serialize(&self) -> [u8; 16] {
-        debug!("sending connect request {self:#?}");
+        tracing::trace!("sending connect request {self:#?}");
         let mut buf = [0u8; 16];
         buf[..8].copy_from_slice(&Self::MAGIC.to_be_bytes());
         buf[8..12].copy_from_slice(&(self.action as u32).to_be_bytes());

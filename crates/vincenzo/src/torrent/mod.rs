@@ -90,7 +90,7 @@ impl<M: TorrentSource> Torrent<Idle, M> {
             return Err(Error::MagnetNoTracker);
         }
 
-        let (tracker_tx, _tracker_rx) = broadcast::channel::<TrackerMsg>(50);
+        let (tracker_tx, _tracker_rx) = broadcast::channel::<TrackerMsg>(10);
         let mut tracker_tasks = Vec::with_capacity(udp_trackers.len());
 
         let info_hash = self.ctx.info_hash.clone();
@@ -385,10 +385,12 @@ impl<M: TorrentSource> Torrent<Connected, M> {
 
         let total_pieces = self.bitfield.len();
         let downloaded_pieces = self.bitfield.count_ones();
+
         debug!("downloaded pieces {}", downloaded_pieces);
+
         let is_download_complete = downloaded_pieces >= total_pieces;
 
-        if !is_download_complete && self.status == TorrentStatus::Downloading {
+        if !is_download_complete && self.status != TorrentStatus::Seeding {
             return;
         }
 

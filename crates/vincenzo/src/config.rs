@@ -15,8 +15,8 @@ use crate::{daemon::Daemon, error::Error};
 #[clap(name = "Vincenzo", author = "Gabriel Lombardo")]
 #[command( author, version, about = None, long_about = None,)]
 pub struct Config {
-    /// Where to store files of torrents. Defaults the download dir of the
-    /// user's home.
+    /// Where to store files of torrents. Defaults to the download dir of the
+    /// user.
     #[clap(long)]
     #[serde(default)]
     pub download_dir: Option<PathBuf>,
@@ -37,7 +37,7 @@ pub struct Config {
     #[serde(default)]
     pub local_peer_port: Option<u16>,
 
-    /// Max numbers of global TCP connections, defaults to 500.
+    /// Max number of global TCP connections, defaults to 500.
     #[clap(long)]
     #[serde(default)]
     pub max_global_peers: Option<u32>,

@@ -60,7 +60,7 @@ pub struct Handshake {
     pub peer_id: PeerId,
 
     /// If the handshake has an extended handshake. Local handshakes always
-    /// have this to S0me. And in practice, all normal clients support this
+    /// have this to Some. And in practice, all normal clients support this
     /// extension too.
     pub ext: Option<Extension>,
 }
@@ -152,7 +152,7 @@ impl Decoder for HandshakeCodec {
         }
 
         let mut handshake_buf = &buf[0..68];
-        let mut buf = &buf[68..];
+        let mut ext_buf = &buf[68..];
 
         if handshake_buf.get_u8() as usize != PSTR_LEN {
             return Err(Error::HandshakeInvalid);
@@ -191,32 +191,33 @@ impl Decoder for HandshakeCodec {
         // the cursor here is in size
 
         // need at least 6 bytes: size + core_id + msg_id
-        if buf.len() < 6 {
+        if ext_buf.len() < 6 {
             // if buf is < 6 this cannot be an extended handshake, don't touch
             // the buffer and just return.
             return Ok(Some(handshake));
         }
 
         // don't advance cursor
-        let size =
-            u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
+        let size = u32::from_be_bytes([
+            ext_buf[0], ext_buf[1], ext_buf[2], ext_buf[3],
+        ]) as usize;
 
         // incomplete message, wait for more bytes.
-        if buf.len() < size + 4 {
+        if ext_buf.len() < size + 4 {
             return Ok(None);
         }
 
         // if not an extended handshake, return
-        if buf[4] != CoreId::Extended as u8 || buf[5] != Extended::ID {
+        if ext_buf[4] != CoreId::Extended as u8 || ext_buf[5] != Extended::ID {
             return Ok(Some(handshake));
         }
 
         // advance cursor past the size and the 2 ids, into the payload.
-        buf.advance(6); // 4 (length) + core_id (1) + ext_id (1)
+        ext_buf.advance(6); // 4 (length) + core_id (1) + ext_id (1)
 
         // get only the chunk of the current message.
         // -2 because the size includes the size of the 2 messages.
-        let payload = buf.copy_to_bytes(size - 2);
+        let payload = ext_buf.copy_to_bytes(size - 2);
 
         let ext_handshake = Extension::from_bencode(&payload);
 
@@ -225,6 +226,9 @@ impl Decoder for HandshakeCodec {
         } else {
             warn!("peer sent corrupted extension");
         }
+
+        let n = BytesMut::from(ext_buf);
+        *buf = n;
 
         Ok(Some(handshake))
     }
@@ -287,6 +291,7 @@ pub mod tests {
         let mut buf = BytesMut::with_capacity(bytes.len());
         buf.extend_from_slice(&bytes);
         let _ext = HandshakeCodec.decode(&mut buf).unwrap();
+        println!("_ext {_ext:?}");
 
         // the last message is a bitfield, used in a different codec.
         let core = CoreCodec.decode(&mut buf).unwrap().unwrap();
