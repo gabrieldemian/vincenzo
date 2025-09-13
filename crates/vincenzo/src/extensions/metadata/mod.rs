@@ -148,12 +148,11 @@ impl FromBencode for Metadata {
             }
         }
 
-        Ok(Self {
-            msg_type: msg_type.try_into().map_err(|_| Error::BencodeError)?,
-            piece,
-            total_size,
-            payload,
-        })
+        let msg_type: MetadataMsgType = msg_type.try_into().map_err(|_| {
+            decoding::Error::malformed_content(Error::BencodeError)
+        })?;
+
+        Ok(Self { msg_type, piece, total_size, payload })
     }
 }
 

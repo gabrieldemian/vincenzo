@@ -35,7 +35,7 @@ use crate::{
         Core, CoreCodec, Extension, Handshake, HandshakeCodec, HolepunchData,
         MetadataData, MetadataPiece, core::BlockInfo,
     },
-    peer::{self, Peer, RequestManager},
+    peer::{self, RequestManager},
     torrent::{PeerBrMsg, TorrentCtx, TorrentMsg, TorrentStatus},
 };
 
@@ -212,9 +212,7 @@ pub enum Direction {
 }
 
 /// A peer can be: Idle, Connected, or Error.
-pub trait PeerState {
-    fn free_pending_blocks(&mut self) {}
-}
+pub trait PeerState {}
 
 /// New peers just returned by the tracker, without any type of connection,
 /// ready to be handshaked at any moment.
@@ -259,25 +257,24 @@ impl peer::Peer<Idle> {
 
         socket.send(local_handshake.clone()).await?;
 
-        let peer_handshake = match timeout(HANDSHAKE_TIMEOUT, socket.next())
-            .await
-        {
-            Ok(Some(Ok(handshake))) => handshake,
-            Ok(Some(Err(_))) => {
-                return Err(Error::HandshakeInvalid);
-            }
-            Ok(None) => {
-                tracing::trace!("peer closed connection during handshake");
-                return Err(Error::PeerClosedSocket);
-            }
-            Err(_) => {
-                tracing::trace!(
-                    "handshake timeout with after {}ms",
-                    HANDSHAKE_TIMEOUT.as_millis()
-                );
-                return Err(Error::HandshakeTimeout);
-            }
-        };
+        let peer_handshake =
+            match timeout(HANDSHAKE_TIMEOUT, socket.next()).await {
+                Ok(Some(Ok(handshake))) => handshake,
+                Ok(Some(Err(_))) => {
+                    return Err(Error::HandshakeInvalid);
+                }
+                Ok(None) => {
+                    tracing::trace!("peer closed connection during handshake");
+                    return Err(Error::PeerClosedSocket);
+                }
+                Err(_) => {
+                    tracing::trace!(
+                        "handshake timeout with after {}ms",
+                        HANDSHAKE_TIMEOUT.as_millis()
+                    );
+                    return Err(Error::HandshakeTimeout);
+                }
+            };
 
         if !peer_handshake.validate(&local_handshake) {
             debug!("handshake is invalid");
@@ -309,7 +306,11 @@ impl peer::Peer<Idle> {
 
         let _ =
             ctx.torrent_ctx.disk_tx.send(DiskMsg::NewPeer(ctx.clone())).await;
-        let _ = ctx.torrent_ctx.btx.send(PeerBrMsg::NewPeer(ctx.clone()));
+        let _ = ctx
+            .torrent_ctx
+            .btx
+            .broadcast(PeerBrMsg::NewPeer(ctx.clone()))
+            .await;
 
         let (sink, stream) = socket.split();
 
@@ -633,10 +634,10 @@ impl PeerState for PeerError {}
 impl PeerState for Connected {}
 impl PeerState for Connecting {}
 impl PeerState for Idle {}
-impl<S: PeerState> PeerState for Peer<S> {}
 
-impl<S: PeerState> Drop for Peer<S> {
-    fn drop(&mut self) {
-        self.free_pending_blocks();
-    }
-}
+// impl<S: PeerState> PeerState for Peer<S> {}
+// impl Drop for Peer<Connected> {
+//     fn drop(&mut self) {
+//         self.free_pending_blocks();
+//     }
+// }

@@ -386,42 +386,50 @@ impl Disk {
                     self.flush_dirty_files().await;
                     self.dirty_files.retain(|_, bits| bits.any());
                 }
-                // _ = disk_interval.tick() => {
-                //     for (k, v) in self.block_infos.iter() {
-                //         let pr = self.pieces_requested.get(k).unwrap();
-                //         info!(
-                //             "p: {} b: {} pr: {}",
-                //             v.len(),
-                //             v.values().fold(0, |acc, v| acc + v.len()),
-                //             pr.count_ones(),
-                //         );
-                //     }
-                // }
+                _ = disk_interval.tick() => {
+                    for (k, v) in self.block_infos.iter() {
+                        let pr = self.pieces_requested.get(k).unwrap();
+                        info!(
+                            "p: {} b: {} pr: {}",
+                            v.len(),
+                            v.values().fold(0, |acc, v| acc + v.len()),
+                            pr.count_ones(),
+                        );
+                    }
+                }
                 Some(return_to_disk) = self.free_rx.recv() => {
                     match return_to_disk {
                         ReturnToDisk::Block(info_hash, blocks) => {
-                            let endgame = self
-                                .endgame
-                                .get(&info_hash)
-                                .ok_or(Error::TorrentDoesNotExist)?;
-
-                            if *endgame {
+                            tracing::info!("ReturnToDisk");
+                            if self.endgame.get(&info_hash).copied().unwrap_or(false) {
                                 let torrent_ctx = self
                                     .torrent_ctxs
                                     .get_mut(&info_hash)
                                     .ok_or(Error::TorrentDoesNotExist)?;
                                 torrent_ctx.tx.send(TorrentMsg::Endgame(blocks)).await?;
                             } else {
+                                let pr = self.pieces_requested
+                                    .entry(info_hash.clone())
+                                    .or_default();
+
                                 for k in blocks.keys() {
-                                    self.pieces_requested
-                                        .get_mut(&info_hash)
-                                        .ok_or(Error::TorrentDoesNotExist)?
-                                        .set(*k, false);
+                                    pr.set(*k, false);
                                 }
-                                self.block_infos
-                                    .get_mut(&info_hash)
-                                    .ok_or(Error::TorrentDoesNotExist)?
-                                    .extend(blocks);
+
+                                let bi = self.block_infos
+                                    .entry(info_hash)
+                                    .or_default();
+
+                                // can't directly extend, so merge
+                                for (piece_index, new_blocks) in blocks {
+                                    if let Some(existing_blocks) =
+                                        bi.get_mut(&piece_index)
+                                    {
+                                        existing_blocks.extend(new_blocks);
+                                    } else {
+                                        bi.insert(piece_index, new_blocks);
+                                    }
+                                }
                             }
                         }
                         ReturnToDisk::Metadata(info_hash, pieces) => {
@@ -856,6 +864,38 @@ impl Disk {
         Ok(v)
     }
 
+    async fn enter_endgame(
+        &mut self,
+        info_hash: InfoHash,
+    ) -> Result<(), Error> {
+        let endgame = self
+            .endgame
+            .get_mut(&info_hash)
+            .ok_or(Error::TorrentDoesNotExist)?;
+
+        if *endgame {
+            return Ok(());
+        }
+
+        *endgame = true;
+
+        let blocks = std::mem::take(
+            self.block_infos
+                .get_mut(&info_hash)
+                .ok_or(Error::TorrentDoesNotExist)?,
+        );
+
+        let torrent_ctx = self
+            .torrent_ctxs
+            .get(&info_hash)
+            .ok_or(Error::TorrentDoesNotExist)?;
+
+        torrent_ctx.tx.send(TorrentMsg::Endgame(blocks)).await?;
+        info!("endgame");
+
+        Ok(())
+    }
+
     /// Request available block infos following the order of PieceStrategy.
     pub async fn request_blocks(
         &mut self,
@@ -892,11 +932,11 @@ impl Disk {
             .get_mut(&peer_ctx.torrent_ctx.info_hash)
             .ok_or(Error::TorrentDoesNotExist)?;
 
-        if pieces_requested.count_ones() >= pieces_requested.len() {
-            self.tx
-                .send(DiskMsg::Endgame(peer_ctx.torrent_ctx.info_hash.clone()))
-                .await?;
-        }
+        // if pieces_requested.count_ones() >= pieces_requested.len() {
+        //     self.tx
+        //         .send(DiskMsg::Endgame(peer_ctx.torrent_ctx.info_hash.
+        // clone()))         .await?;
+        // }
 
         for piece in piece_order.iter() {
             // if this piece was already requested, skip
@@ -1348,39 +1388,6 @@ impl Disk {
         Ok(mmap)
     }
 
-    async fn enter_endgame(
-        &mut self,
-        info_hash: InfoHash,
-    ) -> Result<(), Error> {
-        let endgame = self
-            .endgame
-            .get_mut(&info_hash)
-            .ok_or(Error::TorrentDoesNotExist)?;
-
-        if *endgame {
-            return Ok(());
-        }
-
-        info!("endgame");
-
-        *endgame = true;
-
-        let torrent_ctx = self
-            .torrent_ctxs
-            .get(&info_hash)
-            .ok_or(Error::TorrentDoesNotExist)?;
-
-        let blocks = std::mem::take(
-            self.block_infos
-                .get_mut(&info_hash)
-                .ok_or(Error::TorrentDoesNotExist)?,
-        );
-
-        torrent_ctx.tx.send(TorrentMsg::Endgame(blocks)).await?;
-
-        Ok(())
-    }
-
     async fn preallocate_files(
         &mut self,
         info_hash: &InfoHash,
@@ -1693,6 +1700,7 @@ impl Disk {
 mod tests {
     use super::*;
 
+    use async_broadcast::broadcast;
     use futures::StreamExt;
     use hashbrown::HashSet;
     use rand::{Rng, distr::Alphanumeric};
@@ -1701,7 +1709,7 @@ mod tests {
         time::Duration,
     };
     use tokio::{
-        sync::{Mutex, broadcast},
+        sync::Mutex,
         time::{Instant, interval, interval_at},
     };
     use tokio_util::codec::Framed;
@@ -1804,7 +1812,7 @@ mod tests {
         let disk_tx = disk.tx.clone();
         let free_tx = disk_free_tx;
 
-        let (tracker_tx, _tracker_rx) = broadcast::channel::<TrackerMsg>(10);
+        let (tracker_tx, _tracker_rx) = broadcast::<TrackerMsg>(10);
         let (torrent_tx, torrent_rx) = mpsc::channel::<TorrentMsg>(100);
 
         let mut hasher = Sha1::new();
@@ -1834,7 +1842,7 @@ mod tests {
 
         let metadata_size = Some(1234);
 
-        let (btx, _brx) = broadcast::channel::<PeerBrMsg>(100);
+        let (btx, _brx) = broadcast::<PeerBrMsg>(100);
 
         let torrent_ctx = Arc::new(TorrentCtx {
             btx,

@@ -10,10 +10,7 @@ use bincode::{Decode, Encode};
 use hashbrown::{HashMap, HashSet};
 use rand::Rng;
 use speedy::{Readable, Writable};
-use tokio::{
-    sync::{broadcast, oneshot},
-    time::Interval,
-};
+use tokio::{sync::oneshot, time::Interval};
 
 use crate::{
     bitfield::Bitfield,
@@ -411,7 +408,7 @@ pub struct Connected {
     /// Pieces that all peers have.
     pub peer_pieces: HashMap<PeerId, Bitfield>,
 
-    pub tracker_tx: broadcast::Sender<TrackerMsg>,
+    pub tracker_tx: async_broadcast::Sender<TrackerMsg>,
 
     pub(crate) reconnect_interval: Interval,
     pub(crate) heartbeat_interval: Interval,

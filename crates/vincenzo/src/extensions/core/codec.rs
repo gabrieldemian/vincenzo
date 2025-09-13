@@ -490,7 +490,7 @@ mod tests {
 
     use super::*;
     use bitvec::{bitvec, prelude::Msb0};
-    use bytes::{Buf, Bytes, BytesMut};
+    use bytes::{Buf, BytesMut};
     use tokio_util::codec::{Decoder, Encoder};
 
     #[test]

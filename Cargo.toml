@@ -22,10 +22,11 @@ resolver = "2"
 [workspace.dependencies]
 int-enum = "1.2.0"
 bincode = { version = "=2.0.1" }
+async-broadcast = { version = "=0.7.2" }
 quote = "1.0.36"
 lru = "0.16.0"
 syn = "2.0.74"
-bendy = { version = "0.3.3", features = ["std", "serde"] }
+bendy = { version = "0.5.0", features = ["std", "serde"] }
 bitvec = "1.0.1"
 bytes = "1.4.0"
 clap = { version = "4.3.4", features = ["derive"] }

@@ -114,7 +114,7 @@ impl Torrent<Connected, FromMetaInfo> {
                             self.peer_connected(ctx).await;
                         }
                         TorrentMsg::Endgame(blocks) => {
-                            let _ = self.ctx.btx.send(PeerBrMsg::Endgame(blocks));
+                            let _ = self.ctx.btx.broadcast(PeerBrMsg::Endgame(blocks)).await;
                         }
                         TorrentMsg::RequestInfoPiece(index, recipient) => {
                             let bytes = self.state.info_pieces.get(&index).cloned();
@@ -164,7 +164,7 @@ impl Torrent<Idle, FromMetaInfo> {
         let metadata_size = Some(meta_info.info.metadata_size);
 
         let (tx, rx) = mpsc::channel::<TorrentMsg>(100);
-        let (btx, _brx) = broadcast::channel::<PeerBrMsg>(100);
+        let (btx, _brx) = broadcast::<PeerBrMsg>(100);
 
         let ctx = Arc::new(TorrentCtx {
             free_tx: daemon_ctx.free_tx.clone(),

@@ -172,10 +172,17 @@ impl Daemon {
                                 idle_peer.inbound_handshake(socket, daemon_ctx).await?;
 
                             if let Err(r) = connected_peer.run().await {
-                                warn!(
+                                debug!(
                                     "{} peer loop stopped due to an error: {r:?}",
                                     connected_peer.state.ctx.remote_addr
                                 );
+                                connected_peer.state.ctx.torrent_ctx.tx
+                                    .send(
+                                        TorrentMsg::PeerError(
+                                            connected_peer.state.ctx.remote_addr
+                                        )
+                                    )
+                                .await?;
                                 connected_peer.free_pending_blocks();
                                 return Err(r);
                             }

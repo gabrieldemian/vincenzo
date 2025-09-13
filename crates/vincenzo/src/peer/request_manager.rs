@@ -30,6 +30,12 @@ pub struct RequestManager<T: Requestable> {
     /// Inverse index for requests
     index: HashMap<T, usize>,
 
+    /// How many requests wered made in total.
+    pub req_count: u64,
+
+    /// How many requests were responded.
+    pub downloaded_count: u64,
+
     /// Max amount of inflight pending requests
     limit: usize,
 
@@ -50,6 +56,8 @@ pub struct RequestManager<T: Requestable> {
 impl<T: Requestable> Default for RequestManager<T> {
     fn default() -> Self {
         Self {
+            req_count: 0,
+            downloaded_count: 0,
             timeouts: BinaryHeap::default(),
             requests: BTreeMap::default(),
             index: HashMap::default(),
@@ -153,15 +161,18 @@ impl<T: Requestable> RequestManager<T> {
     }
 
     pub fn drain(&mut self) -> BTreeMap<usize, Vec<T>> {
-        self.index.clear();
-        self.timeouts.clear();
-        std::mem::take(&mut self.requests)
+        let r = std::mem::take(&mut self.requests);
+        self.clear();
+        r
     }
 
     pub fn clear(&mut self) {
-        self.index.clear();
-        self.timeouts.clear();
-        self.requests.clear();
+        *self = Self {
+            limit: self.limit,
+            downloaded_count: self.downloaded_count,
+            req_count: self.req_count,
+            ..Default::default()
+        };
     }
 
     pub fn extend(&mut self, blocks: BTreeMap<usize, Vec<T>>) {
@@ -188,6 +199,7 @@ impl<T: Requestable> RequestManager<T> {
         req_entry.push(block.clone());
         self.index.insert(block.clone(), pos);
         self.timeouts.push((Reverse(timeout), block));
+        self.req_count += 1;
         true
     }
 
@@ -215,6 +227,8 @@ impl<T: Requestable> RequestManager<T> {
         if requests.is_empty() {
             self.requests.remove(&i);
         }
+
+        self.downloaded_count += 1;
 
         true
     }

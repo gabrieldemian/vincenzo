@@ -27,20 +27,19 @@ pub struct Extension {
     /// messages (dictionary of supported extensions)
     pub m: M,
 
+    /// added by Metadata protocol, BEP 0009 the size of the metadata file,
+    /// which is the info-dictionary part of the metainfo(.torrent) file
+    pub metadata_size: Option<usize>,
+
     /// port
     pub p: Option<u16>,
 
-    /// a string identifying the client and the version
-    pub v: Option<String>,
-
-    /// number of outstanding requests messages this client supports
-    /// without dropping any.
+    /// number of outstanding requests messages this client supports without
+    /// dropping any.
     pub reqq: Option<u16>,
 
-    /// added by Metadata protocol, BEP 0009
-    /// the size of the metadata file, which is the
-    /// info-dictionary part of the metainfo(.torrent) file
-    pub metadata_size: Option<usize>,
+    /// a string identifying the client and the version
+    pub v: Option<String>,
     // todo: implement these
     // pub upload_only: Option<u8>,
     // pub yourip: Option<u8>,
@@ -357,6 +356,40 @@ mod tests {
         let metadata = Metadata::from_bencode(b);
         assert_eq!(metadata_request, metadata.unwrap())
     }
+
+    // it fails if the source contains unsorted keys, maybe find a way to sort
+    // them before running the bendy conversion.
+    //
+    // #[test]
+    // fn metadata_unsorted() {
+    //     let bytes = [
+    //         100, 49, 58, 101, 105, 48, 101, 52, 58, 105, 112, 118, 52, 52,
+    // 58,         31, 206, 178, 30, 49, 50, 58, 99, 111, 109, 112, 108,
+    // 101, 116,         101, 95, 97, 103, 111, 105, 49, 101, 49, 58, 109,
+    // 100, 49, 49, 58,         117, 112, 108, 111, 97, 100, 95, 111, 110,
+    // 108, 121, 105, 51, 101,         49, 49, 58, 108, 116, 95, 100, 111,
+    // 110, 116, 104, 97, 118, 101,         105, 55, 101, 49, 50, 58, 117,
+    // 116, 95, 104, 111, 108, 101, 112,         117, 110, 99, 104, 105, 52,
+    // 101, 49, 49, 58, 117, 116, 95, 109,         101, 116, 97, 100, 97,
+    // 116, 97, 105, 50, 101, 54, 58, 117, 116, 95,         112, 101, 120,
+    // 105, 49, 101, 49, 48, 58, 117, 116, 95, 99, 111,         109, 109,
+    // 101, 110, 116, 105, 54, 101, 54, 58, 117, 116, 95, 98,         105,
+    // 100, 105, 57, 101, 49, 53, 58, 117, 116, 95, 98, 105, 100, 95,
+    //         114, 101, 115, 112, 111, 110, 115, 101, 105, 49, 48, 101, 49, 55,
+    //         58, 117, 116, 95, 99, 104, 97, 110, 110, 101, 108, 95, 115, 116,
+    //         97, 116, 101, 50, 105, 49, 49, 101, 49, 56, 58, 117, 116, 95,
+    // 112,         97, 121, 109, 101, 110, 116, 95, 97, 100, 100, 114, 101,
+    // 115, 115,         105, 49, 50, 101, 101, 49, 51, 58, 109, 101, 116,
+    // 97, 100, 97, 116,         97, 95, 115, 105, 122, 101, 105, 56, 53,
+    // 54, 51, 57, 101, 49, 58,         112, 105, 52, 57, 55, 56, 54, 101,
+    // 52, 58, 114, 101, 113, 113, 105,         50, 53, 53, 101, 49, 58,
+    // 118, 49, 51, 58, 206, 188, 84, 111, 114,         114, 101, 110, 116,
+    // 32, 51, 46, 54, 50, 58, 121, 112, 105, 51, 51,         49, 56, 50,
+    // 101, 54, 58, 121, 111, 117, 114, 105, 112, 52, 58, 90,         91,
+    // 24, 16, 101,     ];
+    //     let metadata = Extension::from_bencode(&bytes).unwrap();
+    //     println!("{metadata:?}");
+    // }
 
     // should transform a byte array into an Extension
     #[test]

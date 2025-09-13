@@ -83,7 +83,7 @@ impl Peer<Connected> {
             Duration::from_secs(60),
         );
 
-        let mut brx = self.state.ctx.torrent_ctx.btx.subscribe();
+        let mut brx = self.state.ctx.torrent_ctx.btx.new_receiver();
 
         loop {
             select! {
@@ -92,19 +92,20 @@ impl Peer<Connected> {
                     self.rerequest_metadata().await?;
                 }
                 _ = block_interval.tick(), if self.can_request() => {
-                    if !self.state.in_endgame {
-                        self.request_blocks().await?;
-                    }
+                    self.request_blocks().await?;
                     self.rerequest_blocks().await?;
                 }
                 _ = interested_interval.tick(),
                     if !self.state.seed_only && !self.state.is_paused
                 => {
-                    if !self.state.ctx.peer_choking.load(Ordering::Relaxed) {
-                        tracing::debug!(
-                            "b {:?} p {} tout {:?} avg {:?}",
+                    if !self.state.ctx.peer_choking.load(Ordering::Relaxed)
+                        &&
+                        self.state.ctx.am_interested.load(Ordering::Relaxed)
+                    {
+                        tracing::info!(
+                            "b {} d {} t {:?} avg {:?}",
                             self.state.req_man_block.len(),
-                            self.state.req_man_block.len_pieces(),
+                            self.state.req_man_block.downloaded_count,
                             self.state.req_man_block.get_timeout(),
                             self.state.req_man_block.get_avg(),
                         );
@@ -183,12 +184,16 @@ impl Peer<Connected> {
                             }
                         }
                         PeerBrMsg::Endgame(blocks) => {
+                            tracing::info!("received Endgame {}",
+                                blocks.iter().fold(0, |acc, v| acc + v.1.len())
+                            );
                             self.start_endgame().await;
                             self.state
                                 .req_man_block
                                 .extend(blocks);
                         }
                         PeerBrMsg::Request(blocks) => {
+                            tracing::info!("received Request");
                             self.state
                                 .req_man_block
                                 .extend(blocks);
@@ -308,7 +313,8 @@ impl Peer<Connected> {
                 .ctx
                 .torrent_ctx
                 .btx
-                .send(PeerBrMsg::Cancel(block_info));
+                .broadcast(PeerBrMsg::Cancel(block_info))
+                .await;
         }
 
         self.state
@@ -324,24 +330,28 @@ impl Peer<Connected> {
         Ok(())
     }
 
-    /// Take outgoing block infos that are in queue and send them back
-    /// to the disk so that other peers can request those blocks.
-    /// A good example to use this is when the Peer is no longer
-    /// available (disconnected).
+    /// Take outgoing block infos and metadata pieces and send them back to the
+    /// disk so that other peers can request them.
     pub fn free_pending_blocks(&mut self) {
-        if self.state.have_info {
-            let blocks = self.state.req_man_block.drain();
-            debug!("returning {} blocks", blocks.len());
+        let blocks = self.state.req_man_block.drain();
 
+        tracing::info!(
+            "returning {} blocks",
+            blocks.iter().fold(0, |acc, v| acc + v.1.len())
+        );
+
+        if !blocks.is_empty() {
             let _ = self.state.free_tx.send(ReturnToDisk::Block(
                 self.state.ctx.torrent_ctx.info_hash.clone(),
                 blocks,
             ));
-        } else {
-            let pieces = self.state.req_man_meta.drain();
-            let pieces = pieces.into_values().flatten().collect::<Vec<_>>();
-            debug!("returning {} pieces", pieces.len());
+        }
 
+        let pieces = self.state.req_man_meta.drain();
+        let pieces = pieces.into_values().flatten().collect::<Vec<_>>();
+        debug!("returning {} pieces", pieces.len());
+
+        if !pieces.is_empty() {
             let _ = self.state.free_tx.send(ReturnToDisk::Metadata(
                 self.state.ctx.torrent_ctx.info_hash.clone(),
                 pieces,
@@ -492,8 +502,14 @@ impl Peer<Connected> {
     /// arrives, send Cancel messages to all other peers.
     pub async fn start_endgame(&mut self) {
         self.state.in_endgame = true;
-        let blocks = self.state.req_man_block.drain();
-        let _ = self.state.ctx.torrent_ctx.btx.send(PeerBrMsg::Request(blocks));
+        let blocks = self.state.req_man_block.get_requests();
+        let r = self
+            .state
+            .ctx
+            .torrent_ctx
+            .btx
+            .broadcast(PeerBrMsg::Request(blocks))
+            .await;
     }
 
     /// Send a message to sink and record upload rate, but the sink is not
