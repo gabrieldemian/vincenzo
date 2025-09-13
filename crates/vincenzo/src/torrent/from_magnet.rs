@@ -84,7 +84,7 @@ impl Torrent<Connected, FromMagnet> {
                             self.peer_connected(ctx).await;
                         }
                         TorrentMsg::Endgame(blocks) => {
-                            let _ = self.ctx.btx.broadcast(PeerBrMsg::Endgame(blocks)).await;
+                            let _ = self.ctx.btx.send(PeerBrMsg::Endgame(blocks));
                         }
                         TorrentMsg::DownloadedInfoPiece(total, index, bytes) => {
                             self.downloaded_info_piece(total, index, bytes).await?;
@@ -187,7 +187,7 @@ impl Torrent<Connected, FromMagnet> {
         self.source.info = Some(downloaded_info);
         self.status = TorrentStatus::Downloading;
 
-        let _ = self.ctx.btx.broadcast(PeerBrMsg::HaveInfo).await;
+        let _ = self.ctx.btx.send(PeerBrMsg::HaveInfo);
         Ok(())
     }
 }
@@ -200,12 +200,12 @@ impl Torrent<Idle, FromMagnet> {
         magnet: Magnet,
     ) -> Torrent<Idle, FromMagnet> {
         let (tx, rx) = mpsc::channel::<TorrentMsg>(100);
-        let (btx, _brx) = broadcast::<PeerBrMsg>(100);
+        let (btx, _brx) = broadcast::channel::<PeerBrMsg>(100);
 
         let ctx = Arc::new(TorrentCtx {
             free_tx,
             btx,
-            tx: tx.clone(),
+            tx,
             disk_tx,
             info_hash: magnet.parse_xt_infohash(),
         });

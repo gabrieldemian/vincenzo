@@ -83,7 +83,7 @@ impl Peer<Connected> {
             Duration::from_secs(60),
         );
 
-        let mut brx = self.state.ctx.torrent_ctx.btx.new_receiver();
+        let mut brx = self.state.ctx.torrent_ctx.btx.subscribe();
 
         loop {
             select! {
@@ -102,7 +102,7 @@ impl Peer<Connected> {
                         &&
                         self.state.ctx.am_interested.load(Ordering::Relaxed)
                     {
-                        tracing::info!(
+                        tracing::debug!(
                             "b {} d {} t {:?} avg {:?}",
                             self.state.req_man_block.len(),
                             self.state.req_man_block.downloaded_count,
@@ -184,16 +184,12 @@ impl Peer<Connected> {
                             }
                         }
                         PeerBrMsg::Endgame(blocks) => {
-                            tracing::info!("received Endgame {}",
-                                blocks.iter().fold(0, |acc, v| acc + v.1.len())
-                            );
                             self.start_endgame().await;
                             self.state
                                 .req_man_block
                                 .extend(blocks);
                         }
                         PeerBrMsg::Request(blocks) => {
-                            tracing::info!("received Request");
                             self.state
                                 .req_man_block
                                 .extend(blocks);
@@ -313,8 +309,7 @@ impl Peer<Connected> {
                 .ctx
                 .torrent_ctx
                 .btx
-                .broadcast(PeerBrMsg::Cancel(block_info))
-                .await;
+                .send(PeerBrMsg::Cancel(block_info));
         }
 
         self.state
@@ -503,13 +498,7 @@ impl Peer<Connected> {
     pub async fn start_endgame(&mut self) {
         self.state.in_endgame = true;
         let blocks = self.state.req_man_block.get_requests();
-        let r = self
-            .state
-            .ctx
-            .torrent_ctx
-            .btx
-            .broadcast(PeerBrMsg::Request(blocks))
-            .await;
+        let _ = self.state.ctx.torrent_ctx.btx.send(PeerBrMsg::Request(blocks));
     }
 
     /// Send a message to sink and record upload rate, but the sink is not

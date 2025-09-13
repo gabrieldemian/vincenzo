@@ -306,11 +306,7 @@ impl peer::Peer<Idle> {
 
         let _ =
             ctx.torrent_ctx.disk_tx.send(DiskMsg::NewPeer(ctx.clone())).await;
-        let _ = ctx
-            .torrent_ctx
-            .btx
-            .broadcast(PeerBrMsg::NewPeer(ctx.clone()))
-            .await;
+        let _ = ctx.torrent_ctx.btx.send(PeerBrMsg::NewPeer(ctx.clone()));
 
         let (sink, stream) = socket.split();
 

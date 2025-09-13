@@ -27,7 +27,6 @@ use crate::{
     tracker::{Tracker, TrackerMsg, TrackerTrait, event::Event},
     utils::to_human_readable,
 };
-use async_broadcast::{self, broadcast};
 use std::{
     collections::BTreeMap,
     net::{IpAddr, SocketAddr},
@@ -37,7 +36,7 @@ use std::{
 use tokio::{
     net::TcpStream,
     select, spawn,
-    sync::{mpsc, oneshot},
+    sync::{broadcast, mpsc, oneshot},
     time::{Instant, interval, interval_at, timeout},
 };
 use tracing::{debug, info, trace, warn};
@@ -64,7 +63,7 @@ pub struct TorrentCtx {
     pub disk_tx: mpsc::Sender<DiskMsg>,
     pub free_tx: mpsc::UnboundedSender<ReturnToDisk>,
     pub tx: mpsc::Sender<TorrentMsg>,
-    pub btx: async_broadcast::Sender<PeerBrMsg>,
+    pub btx: broadcast::Sender<PeerBrMsg>,
     pub info_hash: InfoHash,
 }
 
@@ -97,7 +96,7 @@ impl<M: TorrentSource> Torrent<Idle, M> {
 
         info!("connecting to {} udp trackers", udp_trackers.len());
 
-        let (tracker_tx, _tracker_rx) = broadcast::<TrackerMsg>(10);
+        let (tracker_tx, _tracker_rx) = broadcast::channel::<TrackerMsg>(10);
         let mut tracker_tasks = Vec::with_capacity(udp_trackers.len());
 
         let info_hash = self.ctx.info_hash.clone();
@@ -121,7 +120,7 @@ impl<M: TorrentSource> Torrent<Idle, M> {
                     info_hash_clone,
                     local_peer_id_clone,
                     torrent_tx_clone.clone(),
-                    tracker_tx_clone.clone().new_receiver(),
+                    tracker_tx_clone.subscribe(),
                     size,
                 )
                 .await
@@ -230,7 +229,7 @@ impl<M: TorrentSource, S: torrent::State> Torrent<S, M> {
         info_hash: InfoHash,
         local_peer_id: PeerId,
         tx: mpsc::Sender<TorrentMsg>,
-        tracker_rx: async_broadcast::Receiver<TrackerMsg>,
+        tracker_rx: broadcast::Receiver<TrackerMsg>,
         size: u64,
     ) -> Result<(Vec<SocketAddr>, Stats), Error> {
         let mut tracker = Tracker::connect_to_tracker(
@@ -403,7 +402,7 @@ impl<M: TorrentSource> Torrent<Connected, M> {
 
         self.bitfield.safe_set(piece);
 
-        let _ = self.ctx.btx.broadcast(PeerBrMsg::HavePiece(piece)).await;
+        let _ = self.ctx.btx.send(PeerBrMsg::HavePiece(piece));
 
         let total_pieces = self.bitfield.len();
         let downloaded_pieces = self.bitfield.count_ones();
@@ -419,16 +418,12 @@ impl<M: TorrentSource> Torrent<Connected, M> {
         info!("downloaded entire torrent, entering seed only mode.");
         self.status = TorrentStatus::Seeding;
 
-        let _ = self
-            .state
-            .tracker_tx
-            .broadcast(TrackerMsg::Announce {
-                event: Event::Completed,
-                downloaded: self.state.counter.total_download(),
-                uploaded: self.state.counter.total_upload(),
-                left: 0,
-            })
-            .await;
+        let _ = self.state.tracker_tx.send(TrackerMsg::Announce {
+            event: Event::Completed,
+            downloaded: self.state.counter.total_download(),
+            uploaded: self.state.counter.total_upload(),
+            left: 0,
+        });
 
         let _ = self
             .ctx
@@ -436,7 +431,7 @@ impl<M: TorrentSource> Torrent<Connected, M> {
             .send(DiskMsg::FinishedDownload(self.source.info_hash()))
             .await;
 
-        let _ = self.ctx.btx.broadcast(PeerBrMsg::Seedonly).await;
+        let _ = self.ctx.btx.send(PeerBrMsg::Seedonly);
     }
 
     async fn peer_error(&mut self, addr: SocketAddr) {
@@ -466,11 +461,7 @@ impl<M: TorrentSource> Torrent<Connected, M> {
 
         let _ =
             ctx.torrent_ctx.disk_tx.send(DiskMsg::NewPeer(ctx.clone())).await;
-        let _ = ctx
-            .torrent_ctx
-            .btx
-            .broadcast(PeerBrMsg::NewPeer(ctx.clone()))
-            .await;
+        let _ = ctx.torrent_ctx.btx.send(PeerBrMsg::NewPeer(ctx.clone()));
         let _ =
             self.daemon_ctx.tx.send(DaemonMsg::IncrementConnectedPeers).await;
     }
@@ -486,9 +477,9 @@ impl<M: TorrentSource> Torrent<Connected, M> {
         info!("toggle pause");
 
         if self.status == TorrentStatus::Paused {
-            let _ = self.ctx.btx.try_broadcast(PeerBrMsg::Resume);
+            let _ = self.ctx.btx.send(PeerBrMsg::Resume);
         } else {
-            let _ = self.ctx.btx.try_broadcast(PeerBrMsg::Pause);
+            let _ = self.ctx.btx.send(PeerBrMsg::Pause);
         }
 
         if self.status == TorrentStatus::Paused {
@@ -505,10 +496,10 @@ impl<M: TorrentSource> Torrent<Connected, M> {
 
     fn quit(&mut self) {
         let tracker_tx = &self.state.tracker_tx;
-        let _ = self.ctx.btx.try_broadcast(PeerBrMsg::Quit);
+        let _ = self.ctx.btx.send(PeerBrMsg::Quit);
         let downloaded = self.state.counter.total_download();
 
-        let _ = tracker_tx.try_broadcast(TrackerMsg::Announce {
+        let _ = tracker_tx.send(TrackerMsg::Announce {
             event: Event::Stopped,
             downloaded,
             uploaded: self.state.counter.total_upload(),

@@ -19,7 +19,7 @@ use crate::{
 use tokio::{
     net::{ToSocketAddrs, UdpSocket},
     select,
-    sync::{mpsc, oneshot},
+    sync::{broadcast, mpsc, oneshot},
     time::{Instant, interval_at, timeout},
 };
 use tracing::{debug, error};
@@ -74,7 +74,7 @@ pub trait TrackerTrait: Sized {
         tracker: &str,
         info_hash: InfoHash,
         local_peer_id: PeerId,
-        rx: async_broadcast::Receiver<TrackerMsg>,
+        rx: broadcast::Receiver<TrackerMsg>,
         torrent_tx: mpsc::Sender<TorrentMsg>,
     ) -> impl Future<Output = Result<Self, Error>>;
 }
@@ -85,7 +85,7 @@ pub struct Tracker<P: Protocol> {
     pub tracker_addr: SocketAddr,
     pub local_peer_id: PeerId,
     pub info_hash: InfoHash,
-    pub rx: async_broadcast::Receiver<TrackerMsg>,
+    pub rx: broadcast::Receiver<TrackerMsg>,
     pub connection_id: u64,
     pub interval: u32,
     pub torrent_tx: mpsc::Sender<TorrentMsg>,
@@ -271,7 +271,7 @@ impl TrackerTrait for Tracker<Udp> {
         tracker: &str,
         info_hash: InfoHash,
         local_peer_id: PeerId,
-        rx: async_broadcast::Receiver<TrackerMsg>,
+        rx: broadcast::Receiver<TrackerMsg>,
         torrent_tx: mpsc::Sender<TorrentMsg>,
     ) -> Result<Self, Error> {
         let socket = match Self::new_udp_socket(tracker).await {
@@ -294,7 +294,6 @@ impl TrackerTrait for Tracker<Udp> {
         };
 
         if Tracker::connect(&mut tracker).await.is_ok() {
-            // debug!("announced to tracker {tracker_addr:?}");
             return Ok(tracker);
         }
 

@@ -15,7 +15,6 @@ exclude = ["tests/*", "*.log"]
 [dependencies]
 int-enum = "1.2.0"
 bincode = { workspace = true }
-async-broadcast = { workspace = true }
 lru = { workspace = true }
 bendy = { workspace = true }
 rayon = { workspace = true }
