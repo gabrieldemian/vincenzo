@@ -70,6 +70,9 @@ pub struct TorrentCtx {
 impl<M: TorrentSource> Torrent<Idle, M> {
     /// Start the torrent by first connecting to all trackers concurrently and
     /// then returns a connected torrent which can be run.
+    ///
+    /// The function will return when it receives an announce from the first
+    /// tracker, the other ones will be awaited for in the background.
     pub async fn start(self) -> Result<Torrent<Connected, M>, Error> {
         if let Some(metadata_size) = self.state.metadata_size {
             let _ = self
@@ -84,6 +87,7 @@ impl<M: TorrentSource> Torrent<Idle, M> {
 
         let org_trackers = self.source.organize_trackers();
         let udp_trackers = org_trackers.get("udp").unwrap().clone();
+        let udp_trackers_len = udp_trackers.len();
         drop(org_trackers);
 
         if udp_trackers.is_empty() {
@@ -98,9 +102,7 @@ impl<M: TorrentSource> Torrent<Idle, M> {
         let torrent_tx = self.ctx.tx.clone();
         let size = self.source.size();
 
-        // * 50 because a tracker typically sends 50 peers.
-        let mut idle_peers = HashSet::with_capacity(udp_trackers.len() * 50);
-        let mut stats = None;
+        let (first_response_tx, mut first_response_rx) = mpsc::channel(1);
 
         for tracker in udp_trackers {
             let info_hash_clone = info_hash.clone();
@@ -108,41 +110,57 @@ impl<M: TorrentSource> Torrent<Idle, M> {
             let torrent_tx_clone = torrent_tx.clone();
             let tracker_tx_clone = tracker_tx.clone();
 
+            let first_response_tx = first_response_tx.clone();
+
             tracker_tasks.push(tokio::spawn(async move {
-                Self::announce(
+                match Self::announce(
                     &tracker,
                     info_hash_clone,
                     local_peer_id_clone,
-                    torrent_tx_clone,
+                    torrent_tx_clone.clone(),
                     tracker_tx_clone.subscribe(),
                     size,
                 )
                 .await
+                {
+                    Ok((peers, st)) => {
+                        if first_response_tx
+                            .try_send((peers.clone(), st))
+                            .is_ok()
+                        {
+                        } else {
+                            // oneshot is closed, only send to torrent task
+                            let _ = torrent_tx_clone
+                                .send(TorrentMsg::AddIdlePeers(
+                                    peers.clone().into_iter().collect(),
+                                ))
+                                .await;
+                        }
+
+                        Ok(())
+                    }
+                    Err(e) => Err(e),
+                }
             }));
         }
 
-        let results = futures::future::join_all(tracker_tasks).await;
-        debug!("connected to {} trackers", results.len());
+        let (idle_peers, stats) = match tokio::time::timeout(
+            Duration::from_secs(5),
+            first_response_rx.recv(),
+        )
+        .await
+        {
+            Ok(Some(r)) => (r.0.into_iter().collect(), r.1),
+            _ => (
+                // * 50 because a tracker typically sends 50 peers.
+                HashSet::with_capacity(udp_trackers_len * 50),
+                Stats::default(),
+            ),
+        };
 
-        for result in results {
-            match result {
-                Ok(Ok((peers, st))) => {
-                    // use the first successful tracker's stats
-                    if stats.is_none() {
-                        stats = Some(st);
-                    }
-                    idle_peers.extend(peers);
-                }
-                Ok(Err(e)) => {
-                    debug!("Tracker announcement failed: {e}");
-                }
-                Err(e) => {
-                    debug!("Task join error: {e}");
-                }
-            }
-        }
-
-        let stats = stats.ok_or(Error::MagnetNoTracker)?;
+        tokio::spawn(async move {
+            futures::future::join_all(tracker_tasks).await;
+        });
 
         // try to reconnect with errored peers
         let reconnect_interval = interval(Duration::from_secs(5));
@@ -182,7 +200,7 @@ impl<M: TorrentSource> Torrent<Idle, M> {
                     CONFIG.max_torrent_peers as usize,
                 ),
                 stats,
-                idle_peers,
+                idle_peers: idle_peers.into_iter().collect(),
                 metadata_size: self.state.metadata_size,
                 connected_peers: Vec::with_capacity(
                     CONFIG.max_torrent_peers as usize,
