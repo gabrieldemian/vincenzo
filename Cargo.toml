@@ -15,6 +15,7 @@ members = [
   "crates/vincenzo",
   "crates/vincenzo_macros",
   "crates/vcz",
+  "crates/utp",
 ]
 
 resolver = "2"

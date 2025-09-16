@@ -1,0 +1,11 @@
+[package]
+name = "utp"
+version = "0.0.1"
+edition = "2024"
+
+[dependencies]
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+bitvec = { workspace = true }
+rand = { workspace = true }
+int-enum = { workspace = true }
