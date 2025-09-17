@@ -9,3 +9,6 @@ tokio-util = { workspace = true }
 bitvec = { workspace = true }
 rand = { workspace = true }
 int-enum = { workspace = true }
+
+[dev-dependencies]
+futures = { workspace = true }

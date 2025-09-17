@@ -1881,6 +1881,7 @@ name = "utp"
 version = "0.0.1"
 dependencies = [
  "bitvec",
+ "futures",
  "int-enum",
  "rand",
  "tokio",
