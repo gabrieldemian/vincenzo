@@ -51,7 +51,7 @@ impl Header {
         buf
     }
 
-    pub(crate) fn to_bytes_mut(&self) -> BytesMut {
+    pub(crate) fn to_bytes_mut(self) -> BytesMut {
         let mut buf = BytesMut::with_capacity(20);
         buf.put_u8(self.type_ver.0);
         buf.put_u8(self.extension);
@@ -104,10 +104,6 @@ impl TypeVer {
 
     pub fn from_packet(packet: PacketType) -> Self {
         Self(UTP_VERSION | (packet as u8) << 4)
-    }
-
-    pub fn set_packet_type(&mut self, packet_type: PacketType) {
-        self.0 = ((packet_type as u8) << 4) | (self.0 & 0x0F);
     }
 }
 
@@ -233,11 +229,11 @@ impl UtpHeader {
     }
 
     fn seq_nr(&self) -> u16 {
-        self.seq_nr.load(Ordering::Relaxed)
+        self.seq_nr.load(Ordering::SeqCst)
     }
 
     fn ack_nr(&self) -> u16 {
-        self.ack_nr.load(Ordering::Relaxed)
+        self.ack_nr.load(Ordering::SeqCst)
     }
 
     pub(crate) fn set_ack_nr(&self, ack_nr: u16) {
@@ -249,16 +245,16 @@ impl UtpHeader {
     }
 
     fn conn_id_recv(&self) -> u16 {
-        self.conn_id_recv.load(Ordering::Relaxed)
+        self.conn_id_recv.load(Ordering::SeqCst)
     }
 
     fn conn_id_send(&self) -> u16 {
-        self.conn_id_recv.load(Ordering::Relaxed)
+        self.conn_id_recv.load(Ordering::SeqCst)
     }
 
     fn next_seq_nr(&self) -> u16 {
         self.seq_nr.fetch_add(1, Ordering::SeqCst);
-        self.seq_nr.load(Ordering::Relaxed)
+        self.seq_nr.load(Ordering::SeqCst)
     }
 
     pub(crate) fn handle_recv_syn(&mut self, header: &Header) {
@@ -281,7 +277,7 @@ impl UtpHeader {
 
     fn get_timestamp_diff(&self, now: u32) -> u32 {
         if let Some(diff) = self.last_recv_packet_timestamp {
-            diff.saturating_sub(now)
+            now.saturating_sub(diff)
         } else {
             0
         }
@@ -333,33 +329,6 @@ mod tests {
         assert_eq!(type_ver.packet_type().unwrap(), PacketType::State);
         assert_eq!(type_ver.version(), 1);
         assert_eq!(type_ver.0, 0x21);
-    }
-
-    #[test]
-    fn type_packet_modification() {
-        let mut type_ver = TypeVer::from_packet(PacketType::Data);
-        assert_eq!(type_ver.packet_type().unwrap(), PacketType::Data);
-        assert_eq!(type_ver.version(), 1);
-
-        type_ver.set_packet_type(PacketType::Fin);
-        assert_eq!(type_ver.packet_type().unwrap(), PacketType::Fin);
-        assert_eq!(type_ver.version(), 1);
-
-        type_ver.set_packet_type(PacketType::Reset);
-        assert_eq!(type_ver.packet_type().unwrap(), PacketType::Reset);
-        assert_eq!(type_ver.version(), 1);
-
-        type_ver.set_packet_type(PacketType::Syn);
-        assert_eq!(type_ver.packet_type().unwrap(), PacketType::Syn);
-        assert_eq!(type_ver.version(), 1);
-
-        type_ver.set_packet_type(PacketType::State);
-        assert_eq!(type_ver.packet_type().unwrap(), PacketType::State);
-        assert_eq!(type_ver.version(), 1);
-
-        type_ver.set_packet_type(PacketType::Data);
-        assert_eq!(type_ver.packet_type().unwrap(), PacketType::Data);
-        assert_eq!(type_ver.version(), 1);
     }
 
     #[test]

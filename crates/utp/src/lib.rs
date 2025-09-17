@@ -7,17 +7,14 @@ mod packet;
 pub(crate) use packet::*;
 
 use std::{
-    future::poll_fn,
     io::{self},
     net::SocketAddr,
-    ops::Deref,
-    pin::pin,
     sync::{
         Arc,
         atomic::{AtomicU16, AtomicU32, AtomicU64, Ordering},
     },
     task::Poll,
-    time::{Instant, SystemTime, UNIX_EPOCH},
+    time::{SystemTime, UNIX_EPOCH},
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite},
@@ -77,16 +74,12 @@ impl AsyncWrite for UtpSocket {
         cx: &mut std::task::Context<'_>,
         buf: &[u8],
     ) -> Poll<Result<usize, std::io::Error>> {
-        // println!("writing buf {buf:?}",);
-
         // ensure we have enough capacity in the buffer
         if self.buf.remaining_mut() < buf.len() {
             // If we don't have enough space, we could:
             // 1. Try to flush existing data
             // 2. Allocate more space
             // 3. Return WouldBlock to apply backpressure
-
-            // return Poll::Ready(Err(io::ErrorKind::WouldBlock));
 
             // try to flush and then check again
             match self.as_mut().poll_flush(cx) {
@@ -124,7 +117,7 @@ impl AsyncWrite for UtpSocket {
                     }
                 }
                 Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
-                Poll::Pending => break,
+                Poll::Pending => return Poll::Pending,
             }
         }
 
@@ -156,11 +149,15 @@ impl AsyncWrite for UtpSocket {
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> Poll<Result<(), std::io::Error>> {
+        println!("shutting down");
         self.state = ConnectionState::Closing;
 
         match self.as_mut().poll_flush(cx) {
             Poll::Ready(Ok(_)) => match self.udp_socket.poll_send(cx, &[8]) {
-                Poll::Pending => Poll::Pending,
+                Poll::Pending => {
+                    cx.waker().wake_by_ref();
+                    Poll::Pending
+                }
                 Poll::Ready(Err(e)) => {
                     self.state = ConnectionState::Closed;
                     Poll::Ready(Err(e))
@@ -174,7 +171,10 @@ impl AsyncWrite for UtpSocket {
                 self.state = ConnectionState::Closed;
                 Poll::Ready(Err(e))
             }
-            Poll::Pending => Poll::Pending,
+            Poll::Pending => {
+                cx.waker().wake_by_ref();
+                Poll::Pending
+            }
         }
     }
 }
@@ -199,7 +199,10 @@ impl AsyncRead for UtpSocket {
         }
 
         match self.try_receive_packet(cx, buf) {
-            Poll::Pending => Poll::Pending,
+            Poll::Pending => {
+                cx.waker().wake_by_ref();
+                Poll::Pending
+            }
             Poll::Ready(v) => match v {
                 Ok(_packet) => Poll::Ready(Ok(())),
                 Err(e) => Poll::Ready(Err(e)),
@@ -214,11 +217,12 @@ impl UtpSocket {
         cx: &mut std::task::Context<'_>,
         buf: &mut tokio::io::ReadBuf<'_>,
     ) -> Poll<io::Result<UtpPacket>> {
-        match self.udp_socket.poll_recv(cx, buf) {
+        match self.udp_socket.poll_recv_from(cx, buf) {
             Poll::Pending => Poll::Pending,
             Poll::Ready(r) => match r {
-                Ok(()) => {
+                Ok(sender) => {
                     let packet = UtpPacket::from_bytes(buf.initialized())?;
+
                     match packet.header.type_ver.packet_type()? {
                         PacketType::Data => {
                             println!("recv data");
@@ -231,28 +235,13 @@ impl UtpSocket {
                             Poll::Ready(Ok(packet))
                         }
                         PacketType::Syn => {
-                            let sender = self.udp_socket.poll_peek_sender(cx);
+                            println!("received syn");
+                            self.handle_syn(&packet.header)?;
+                            let state = self.utp_header.new_state().to_bytes();
 
-                            match sender {
-                                Poll::Pending => Poll::Pending,
-                                Poll::Ready(v) => match v {
-                                    Ok(sender) => {
-                                        println!("recv syn sender: {sender:?}",);
-
-                                        self.handle_syn(&packet.header)?;
-
-                                        let header = self
-                                            .utp_header
-                                            .new_state()
-                                            .to_bytes();
-
-                                        self.udp_socket
-                                            .poll_send_to(cx, &header, sender)
-                                            .map_ok(|_| packet)
-                                    }
-                                    Err(e) => Poll::Ready(Err(e)),
-                                },
-                            }
+                            self.udp_socket
+                                .poll_send_to(cx, &state, sender)
+                                .map_ok(|_| packet)
                         }
                         PacketType::Fin => {
                             self.handle_fin(&packet.header)?;
@@ -287,7 +276,6 @@ impl UtpSocket {
             state: ConnectionState::Closed,
             cur_window: 10_000.into(),
             max_window: 10_000.into(),
-
             // default to 100ms in microseconds
             rtt: AtomicU64::new(100_000),
         })
@@ -297,17 +285,16 @@ impl UtpSocket {
     pub async fn connect<A: ToSocketAddrs>(
         &mut self,
         addr: A,
-    ) -> std::io::Result<()> {
-        let remote_addr = lookup_host(addr).await?.next().ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "No address provided",
-            )
-        })?;
+    ) -> io::Result<()> {
+        let remote_addr = lookup_host(addr)
+            .await?
+            .next()
+            .ok_or(io::ErrorKind::InvalidInput)?;
 
         self.udp_socket.connect(remote_addr).await?;
         self.state = ConnectionState::SynSent;
         self.send_syn().await?;
+        println!("sent sync");
 
         Ok(())
     }
@@ -315,7 +302,7 @@ impl UtpSocket {
     /// Sends a SYN packet to initiate connection
     async fn send_syn(&mut self) -> std::io::Result<()> {
         let header = self.utp_header.new_syn();
-        let packet = header.to_bytes();
+        let packet = header.to_bytes_mut();
         self.udp_socket.send(&packet).await?;
         Ok(())
     }
@@ -374,12 +361,6 @@ impl UtpSocket {
     pub fn remote_addr(&self) -> std::io::Result<SocketAddr> {
         self.udp_socket.peer_addr()
     }
-
-    /// Sends the entire buffer to the socket and cleans it.
-    async fn send_packet(&mut self, buf: &[u8]) -> std::io::Result<()> {
-        self.udp_socket.send(buf).await?;
-        Ok(())
-    }
 }
 
 fn current_timestamp() -> u32 {
@@ -388,12 +369,8 @@ fn current_timestamp() -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use futures::{
-        SinkExt,
-        stream::{SplitSink, StreamExt},
-    };
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio_util::codec::{Decoder, Encoder, Framed};
+    use tokio_util::codec::{Decoder, Encoder};
 
     use super::*;
 
@@ -409,25 +386,24 @@ mod tests {
             .await
             .expect("Failed to bind UDP socket");
 
+        //
+        // sender -- syn --> receiver
+        //
         sender
             .connect(receiver.local_addr().unwrap())
             .await
             .expect("Failed to connect");
-
         assert_eq!(sender.state, ConnectionState::SynSent);
 
-        sender.write_u8(1).await?;
-        sender.write_u8(2).await?;
-        sender.write_u8(3).await?;
-        sender.flush().await?;
-
         let mut buf = [0u8; 20];
-        receiver.read_exact(&mut buf).await?;
-        let syn = UtpPacket::from_bytes(&buf)?;
+        receiver.read_exact(&mut buf).await.unwrap();
+        let syn = UtpPacket::from_bytes(&buf);
         println!("syn {syn:#?}");
-
         assert_eq!(receiver.state, ConnectionState::SynRecv);
 
+        //
+        // sender <- ack -- receiver
+        //
         let mut buf = [0u8; 20];
         sender.read_exact(&mut buf).await?;
         let state = UtpPacket::from_bytes(&buf)?;
@@ -435,6 +411,9 @@ mod tests {
 
         assert_eq!(sender.state, ConnectionState::Connected);
 
+        //
+        // sender -- data --> receiver
+        //
         sender.write_u8(1).await?;
         sender.flush().await?;
 
