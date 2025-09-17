@@ -7,8 +7,11 @@ mod packet;
 pub(crate) use packet::*;
 
 use std::{
+    future::poll_fn,
     io::{self},
     net::SocketAddr,
+    ops::Deref,
+    pin::pin,
     sync::{
         Arc,
         atomic::{AtomicU16, AtomicU32, AtomicU64, Ordering},
@@ -66,19 +69,43 @@ pub struct UtpSocket {
 
     // round trip time as microseconds.
     rtt: AtomicU64,
-    last_packet_time: Instant,
 }
 
 impl AsyncWrite for UtpSocket {
     fn poll_write(
         mut self: std::pin::Pin<&mut Self>,
-        _cx: &mut std::task::Context<'_>,
+        cx: &mut std::task::Context<'_>,
         buf: &[u8],
     ) -> Poll<Result<usize, std::io::Error>> {
-        if buf.is_empty() {
-            return Poll::Ready(Ok(0));
+        // println!("writing buf {buf:?}",);
+
+        // ensure we have enough capacity in the buffer
+        if self.buf.remaining_mut() < buf.len() {
+            // If we don't have enough space, we could:
+            // 1. Try to flush existing data
+            // 2. Allocate more space
+            // 3. Return WouldBlock to apply backpressure
+
+            // return Poll::Ready(Err(io::ErrorKind::WouldBlock));
+
+            // try to flush and then check again
+            match self.as_mut().poll_flush(cx) {
+                Poll::Ready(Ok(())) => {
+                    if self.buf.remaining_mut() < buf.len() {
+                        // still not enough space, apply backpressure
+                        cx.waker().wake_by_ref();
+                        return Poll::Pending;
+                    }
+                }
+                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+                Poll::Pending => {
+                    // we need to wait for flush to complete
+                    cx.waker().wake_by_ref();
+                    return Poll::Pending;
+                }
+            }
         }
-        self.buf.copy_from_slice(buf);
+        self.buf.extend_from_slice(buf);
         Poll::Ready(Ok(buf.len()))
     }
 
@@ -86,13 +113,12 @@ impl AsyncWrite for UtpSocket {
     fn poll_flush(
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Result<(), std::io::Error>> {
+    ) -> Poll<Result<(), std::io::Error>> {
         while let Poll::Ready(Some(mut payload)) = self.control_rx.poll_recv(cx)
         {
             match self.udp_socket.poll_send(cx, &payload) {
                 Poll::Ready(Ok(n)) => {
                     if n == payload.len() {
-                        self.last_packet_time = Instant::now();
                     } else {
                         payload.advance(n);
                     }
@@ -112,14 +138,13 @@ impl AsyncWrite for UtpSocket {
 
         match self.udp_socket.poll_send(cx, &packet) {
             Poll::Ready(Ok(n)) => {
-                if n == self.buf.len() {
-                    self.buf.clear();
-                    self.last_packet_time = Instant::now();
+                if n == packet.len() {
                     Poll::Ready(Ok(()))
                 } else {
-                    self.buf.advance(n);
                     cx.waker().wake_by_ref();
-                    Poll::Pending
+                    Poll::Ready(Err(io::Error::other(
+                        "Partial UDP packet send occurred",
+                    )))
                 }
             }
             Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
@@ -130,7 +155,7 @@ impl AsyncWrite for UtpSocket {
     fn poll_shutdown(
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Result<(), std::io::Error>> {
+    ) -> Poll<Result<(), std::io::Error>> {
         self.state = ConnectionState::Closing;
 
         match self.as_mut().poll_flush(cx) {
@@ -159,7 +184,7 @@ impl AsyncRead for UtpSocket {
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
         buf: &mut tokio::io::ReadBuf<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
+    ) -> Poll<std::io::Result<()>> {
         if !self.buf.is_empty() {
             let recv_len = self.buf.len();
             let copy_len = std::cmp::min(recv_len, buf.remaining());
@@ -173,21 +198,12 @@ impl AsyncRead for UtpSocket {
             return Poll::Ready(Ok(()));
         }
 
-        match self.try_receive_packet(cx) {
-            Ok(Some(packet)) => {
-                self.buf.extend_from_slice(&packet.payload);
-                let _ = self.control_tx.try_send(packet.header.to_bytes_mut());
-
-                // now try to read again
-                cx.waker().wake_by_ref();
-                Poll::Pending
-            }
-            Ok(None) => {
-                // no packet available, register for wakeup
-                cx.waker().wake_by_ref();
-                Poll::Pending
-            }
-            Err(e) => Poll::Ready(Err(e)),
+        match self.try_receive_packet(cx, buf) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(v) => match v {
+                Ok(_packet) => Poll::Ready(Ok(())),
+                Err(e) => Poll::Ready(Err(e)),
+            },
         }
     }
 }
@@ -195,44 +211,62 @@ impl AsyncRead for UtpSocket {
 impl UtpSocket {
     fn try_receive_packet(
         &mut self,
-        _cx: &mut std::task::Context<'_>,
-    ) -> io::Result<Option<UtpPacket>> {
-        let mut temp_buf = Vec::with_capacity(1500);
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<io::Result<UtpPacket>> {
+        match self.udp_socket.poll_recv(cx, buf) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(r) => match r {
+                Ok(()) => {
+                    let packet = UtpPacket::from_bytes(buf.initialized())?;
+                    match packet.header.type_ver.packet_type()? {
+                        PacketType::Data => {
+                            println!("recv data");
+                            self.handle_data(&packet.header)?;
+                            Poll::Ready(Ok(packet))
+                        }
+                        PacketType::State => {
+                            println!("recv state");
+                            self.handle_state(&packet.header)?;
+                            Poll::Ready(Ok(packet))
+                        }
+                        PacketType::Syn => {
+                            let sender = self.udp_socket.poll_peek_sender(cx);
 
-        match self.udp_socket.try_recv(&mut temp_buf) {
-            Ok(len) => {
-                let packet = UtpPacket::parse_packet(&temp_buf[..len])?;
+                            match sender {
+                                Poll::Pending => Poll::Pending,
+                                Poll::Ready(v) => match v {
+                                    Ok(sender) => {
+                                        println!("recv syn sender: {sender:?}",);
 
-                match packet.header.type_ver.packet_type()? {
-                    PacketType::Data => {
-                        self.handle_data(&packet.header)?;
-                        Ok(Some(packet))
-                    }
-                    PacketType::State => {
-                        self.handle_state(&packet.header)?;
-                        Ok(None)
-                    }
-                    PacketType::Syn => {
-                        self.handle_syn(&packet.header)?;
-                        Ok(None)
-                    }
-                    PacketType::Fin => {
-                        self.handle_fin(&packet.header)?;
-                        Ok(None)
-                    }
-                    PacketType::Reset => {
-                        self.handle_reset(&packet.header)?;
-                        Ok(None)
+                                        self.handle_syn(&packet.header)?;
+
+                                        let header = self
+                                            .utp_header
+                                            .new_state()
+                                            .to_bytes();
+
+                                        self.udp_socket
+                                            .poll_send_to(cx, &header, sender)
+                                            .map_ok(|_| packet)
+                                    }
+                                    Err(e) => Poll::Ready(Err(e)),
+                                },
+                            }
+                        }
+                        PacketType::Fin => {
+                            self.handle_fin(&packet.header)?;
+                            Poll::Ready(Ok(packet))
+                        }
+                        PacketType::Reset => {
+                            self.handle_reset(&packet.header)?;
+                            Poll::Ready(Ok(packet))
+                        }
                     }
                 }
-            }
-            Err(e) => Err(e),
+                Err(e) => Poll::Ready(Err(e)),
+            },
         }
-    }
-
-    async fn send_ack(&mut self) -> io::Result<()> {
-        let header = self.utp_header.new_state().to_bytes();
-        self.send_packet(&header).await
     }
 
     pub fn local_addr(&self) -> std::io::Result<SocketAddr> {
@@ -242,20 +276,20 @@ impl UtpSocket {
     /// Creates a new UTP socket bound to the specified address
     pub async fn bind<A: ToSocketAddrs>(addr: A) -> std::io::Result<Self> {
         let udp_socket = Arc::new(UdpSocket::bind(addr).await?);
-        let (control_tx, control_rx) = mpsc::channel(32);
+        let (control_tx, control_rx) = mpsc::channel(10_000);
 
         Ok(UtpSocket {
             udp_socket,
             control_tx,
             control_rx,
-            buf: BytesMut::new(),
+            buf: BytesMut::with_capacity(10_000),
             utp_header: UtpHeader::new(10_000),
             state: ConnectionState::Closed,
-            cur_window: 0.into(),
+            cur_window: 10_000.into(),
             max_window: 10_000.into(),
+
             // default to 100ms in microseconds
             rtt: AtomicU64::new(100_000),
-            last_packet_time: Instant::now(),
         })
     }
 
@@ -271,8 +305,8 @@ impl UtpSocket {
             )
         })?;
 
-        self.state = ConnectionState::SynSent;
         self.udp_socket.connect(remote_addr).await?;
+        self.state = ConnectionState::SynSent;
         self.send_syn().await?;
 
         Ok(())
@@ -344,7 +378,6 @@ impl UtpSocket {
     /// Sends the entire buffer to the socket and cleans it.
     async fn send_packet(&mut self, buf: &[u8]) -> std::io::Result<()> {
         self.udp_socket.send(buf).await?;
-        self.last_packet_time = Instant::now();
         Ok(())
     }
 }
@@ -359,10 +392,61 @@ mod tests {
         SinkExt,
         stream::{SplitSink, StreamExt},
     };
-    use tokio::io::AsyncWriteExt;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio_util::codec::{Decoder, Encoder, Framed};
 
     use super::*;
+
+    /// Test that the example provided in the BEP 0029 works.
+    /// https://www.bittorrent.org/beps/bep_0029.html
+    #[tokio::test]
+    async fn bep_29_example() -> io::Result<()> {
+        let mut sender = UtpSocket::bind("0.0.0.0:34254")
+            .await
+            .expect("Failed to bind UTP socket");
+
+        let mut receiver = UtpSocket::bind("0.0.0.0:34255")
+            .await
+            .expect("Failed to bind UDP socket");
+
+        sender
+            .connect(receiver.local_addr().unwrap())
+            .await
+            .expect("Failed to connect");
+
+        assert_eq!(sender.state, ConnectionState::SynSent);
+
+        sender.write_u8(1).await?;
+        sender.write_u8(2).await?;
+        sender.write_u8(3).await?;
+        sender.flush().await?;
+
+        let mut buf = [0u8; 20];
+        receiver.read_exact(&mut buf).await?;
+        let syn = UtpPacket::from_bytes(&buf)?;
+        println!("syn {syn:#?}");
+
+        assert_eq!(receiver.state, ConnectionState::SynRecv);
+
+        let mut buf = [0u8; 20];
+        sender.read_exact(&mut buf).await?;
+        let state = UtpPacket::from_bytes(&buf)?;
+        println!("state {state:#?}");
+
+        assert_eq!(sender.state, ConnectionState::Connected);
+
+        sender.write_u8(1).await?;
+        sender.flush().await?;
+
+        let mut buf = [0u8; 21];
+        receiver.read_exact(&mut buf).await?;
+        let data = UtpPacket::from_bytes(&buf)?;
+        println!("data {data:#?}");
+
+        assert_eq!(receiver.state, ConnectionState::Connected);
+
+        Ok(())
+    }
 
     struct TestCodec;
     impl Encoder<u8> for TestCodec {
@@ -388,32 +472,5 @@ mod tests {
         ) -> Result<Option<Self::Item>, Self::Error> {
             Ok(Some(src.get_u8()))
         }
-    }
-
-    #[tokio::test]
-    async fn test_bind_and_send() {
-        let mut sender = UtpSocket::bind("127.0.0.1:34254")
-            .await
-            .expect("Failed to bind UTP socket");
-
-        let mut receiver = UtpSocket::bind("127.0.0.1:34255")
-            .await
-            .expect("Failed to bind UDP socket");
-
-        sender
-            .connect(receiver.local_addr().unwrap())
-            .await
-            .expect("Failed to connect");
-
-        let mut framed = Framed::new(sender, TestCodec);
-        let (mut sink, mut stream) = framed.split();
-
-        tokio::spawn(async move {
-            let bytes_sent = sink.send(7).await;
-        });
-
-        tokio::spawn(async move {
-            let bytes_recv = stream.next().await;
-        });
     }
 }

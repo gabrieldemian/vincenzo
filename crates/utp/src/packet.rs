@@ -44,7 +44,7 @@ pub(crate) enum PacketType {
 }
 
 /// UTP packet structure
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(crate) struct UtpPacket {
     pub header: Header,
     pub payload: Bytes,
@@ -61,7 +61,7 @@ impl From<UtpPacket> for Vec<u8> {
 
 impl UtpPacket {
     /// Parse a byte buffer into a UtpPacket
-    pub fn parse_packet(data: &[u8]) -> io::Result<Self> {
+    pub fn from_bytes(data: &[u8]) -> io::Result<Self> {
         if data.len() < 20 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
