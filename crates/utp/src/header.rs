@@ -2,6 +2,9 @@
 
 use super::*;
 
+/// UTP protocol version (currently version 1)
+pub(crate) const UTP_VERSION: u8 = 1;
+
 /// 0       4       8               16              24              32
 /// +-------+-------+---------------+---------------+---------------+
 /// | type  | ver   | extension     | connection_id                 |
@@ -138,8 +141,9 @@ pub(crate) struct UtpHeader {
     conn_id_send: AtomicU16,
     conn_id_recv: AtomicU16,
 
-    /// Timestamp in microseconds of the last received packet.
-    last_recv_packet_timestamp: Option<u32>,
+    /// Timestamp in microseconds
+    last_recv_packet_timestamp: u32,
+    last_sent_packet_timestamp: u32,
 }
 
 impl UtpHeader {
@@ -150,7 +154,8 @@ impl UtpHeader {
             wnd_size,
             seq_nr: 0.into(),
             ack_nr: 0.into(),
-            last_recv_packet_timestamp: None,
+            last_recv_packet_timestamp: 0,
+            last_sent_packet_timestamp: 0,
         }
     }
 
@@ -160,19 +165,23 @@ impl UtpHeader {
         let t = self.conn_id_recv.load(Ordering::Relaxed) + 1;
         self.conn_id_send.store(t, Ordering::SeqCst);
 
+        let now = current_timestamp();
+        self.last_sent_packet_timestamp = now;
+
         Header {
             ack_nr: self.ack_nr(),
             seq_nr: self.next_seq_nr(),
             conn_id: self.conn_id_recv(),
             type_ver: TypeVer::from_packet(PacketType::Syn),
             wnd_size: self.wnd_size,
-            timestamp: current_timestamp(),
+            timestamp: now,
             ..Default::default()
         }
     }
 
-    pub(crate) fn new_fin(&self) -> Header {
+    pub(crate) fn new_fin(&mut self) -> Header {
         let timestamp = current_timestamp();
+        self.last_sent_packet_timestamp = timestamp;
         Header {
             ack_nr: self.ack_nr(),
             conn_id: self.conn_id_send(),
@@ -186,8 +195,10 @@ impl UtpHeader {
     }
 
     /// Create a new header with the packet type data.
-    pub(crate) fn new_data(&self) -> Header {
+    pub(crate) fn new_data(&mut self) -> Header {
         let timestamp = current_timestamp();
+        self.last_sent_packet_timestamp = timestamp;
+
         Header {
             seq_nr: self.next_seq_nr(),
             ack_nr: self.ack_nr(),
@@ -200,8 +211,10 @@ impl UtpHeader {
         }
     }
 
-    pub(crate) fn new_state(&self) -> Header {
+    pub(crate) fn new_state(&mut self) -> Header {
         let timestamp = current_timestamp();
+        self.last_sent_packet_timestamp = timestamp;
+
         Header {
             seq_nr: self.next_seq_nr(),
             ack_nr: self.ack_nr(),
@@ -214,8 +227,10 @@ impl UtpHeader {
         }
     }
 
-    pub(crate) fn new_reset(&self, seq_nr: u16) -> Header {
+    pub(crate) fn new_reset(&mut self, seq_nr: u16) -> Header {
         let timestamp = current_timestamp();
+        self.last_sent_packet_timestamp = timestamp;
+
         Header {
             conn_id: self.conn_id_send(),
             type_ver: TypeVer::from_packet(PacketType::Reset),
@@ -258,7 +273,7 @@ impl UtpHeader {
     }
 
     pub(crate) fn handle_recv_syn(&mut self, header: &Header) {
-        self.last_recv_packet_timestamp = Some(header.timestamp);
+        self.last_recv_packet_timestamp = header.timestamp;
         self.conn_id_send.store(header.conn_id, Ordering::SeqCst);
         self.conn_id_recv.store(header.conn_id + 1, Ordering::SeqCst);
         self.set_seq_nr(rand::random());
@@ -266,21 +281,17 @@ impl UtpHeader {
     }
 
     pub(crate) fn handle_recv_state(&mut self, header: &Header) {
-        self.last_recv_packet_timestamp = Some(header.timestamp);
+        self.last_recv_packet_timestamp = header.timestamp;
         self.set_ack_nr(header.seq_nr);
     }
 
     pub(crate) fn handle_recv_data(&mut self, header: &Header) {
-        self.last_recv_packet_timestamp = Some(header.timestamp);
+        self.last_recv_packet_timestamp = header.timestamp;
         self.set_ack_nr(header.seq_nr);
     }
 
     fn get_timestamp_diff(&self, now: u32) -> u32 {
-        if let Some(diff) = self.last_recv_packet_timestamp {
-            now.saturating_sub(diff)
-        } else {
-            0
-        }
+        now.saturating_sub(self.last_recv_packet_timestamp)
     }
 }
 

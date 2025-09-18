@@ -6,12 +6,15 @@ pub(crate) use header::*;
 mod packet;
 pub(crate) use packet::*;
 
+mod congestion_control;
+pub(crate) use congestion_control::*;
+
 use std::{
     io::{self},
     net::SocketAddr,
     sync::{
         Arc,
-        atomic::{AtomicU16, AtomicU32, AtomicU64, Ordering},
+        atomic::{AtomicU16, Ordering},
     },
     task::Poll,
     time::{SystemTime, UNIX_EPOCH},
@@ -22,9 +25,6 @@ use tokio::{
     sync::mpsc,
 };
 use tokio_util::bytes::{Buf, BufMut, Bytes, BytesMut};
-
-/// UTP protocol version (currently version 1)
-pub(crate) const UTP_VERSION: u8 = 1;
 
 /// Connection state for UTP socket
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -37,8 +37,8 @@ pub(crate) enum ConnectionState {
 }
 
 pub struct UtpSocket {
-    control_tx: mpsc::Sender<BytesMut>,
-    control_rx: mpsc::Receiver<BytesMut>,
+    tx: mpsc::Sender<BytesMut>,
+    rx: mpsc::Receiver<BytesMut>,
 
     udp_socket: Arc<UdpSocket>,
 
@@ -48,24 +48,9 @@ pub struct UtpSocket {
 
     state: ConnectionState,
 
-    // io: PollEvented<mio::net::UdpSocket>,
-    /// The number of bytes in-flight.
-    cur_window: AtomicU32,
-
-    /// Maximum window that the socket *may* enforce.
-    ///
-    /// A socket may only send a packet if cur_window + packet_size is less
-    /// than or equal to min(max_window, wnd_size).
-    ///
-    /// An implementation MAY violate the above rule if the max_window is
-    /// smaller than the packet size, and it paces the packets so that the
-    /// average cur_window is less than or equal to max_window.
-    max_window: AtomicU32,
+    cc: CongestionControl,
 
     buf: BytesMut,
-
-    // round trip time as microseconds.
-    rtt: AtomicU64,
 }
 
 impl AsyncWrite for UtpSocket {
@@ -107,8 +92,7 @@ impl AsyncWrite for UtpSocket {
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> Poll<Result<(), std::io::Error>> {
-        while let Poll::Ready(Some(mut payload)) = self.control_rx.poll_recv(cx)
-        {
+        while let Poll::Ready(Some(mut payload)) = self.rx.poll_recv(cx) {
             match self.udp_socket.poll_send(cx, &payload) {
                 Poll::Ready(Ok(n)) => {
                     if n == payload.len() {
@@ -117,7 +101,7 @@ impl AsyncWrite for UtpSocket {
                     }
                 }
                 Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
-                Poll::Pending => return Poll::Pending,
+                Poll::Pending => return self.udp_socket.poll_send_ready(cx),
             }
         }
 
@@ -200,8 +184,8 @@ impl AsyncRead for UtpSocket {
 
         match self.try_receive_packet(cx, buf) {
             Poll::Pending => {
-                cx.waker().wake_by_ref();
-                Poll::Pending
+                // cx.waker().wake_by_ref();
+                self.udp_socket.poll_recv_ready(cx)
             }
             Poll::Ready(v) => match v {
                 Ok(_packet) => Poll::Ready(Ok(())),
@@ -212,6 +196,16 @@ impl AsyncRead for UtpSocket {
 }
 
 impl UtpSocket {
+    pub fn on_packet_acked(
+        &mut self,
+        packet_rtt: u64,
+        outstanding_bytes: u32,
+        current_delay: u64,
+    ) {
+        self.cc.update_rtt(packet_rtt, current_delay);
+        self.cc.update_window(outstanding_bytes, current_delay);
+    }
+
     fn try_receive_packet(
         &mut self,
         cx: &mut std::task::Context<'_>,
@@ -269,16 +263,22 @@ impl UtpSocket {
 
         Ok(UtpSocket {
             udp_socket,
-            control_tx,
-            control_rx,
+            tx: control_tx,
+            rx: control_rx,
             buf: BytesMut::with_capacity(10_000),
             utp_header: UtpHeader::new(10_000),
             state: ConnectionState::Closed,
-            cur_window: 10_000.into(),
-            max_window: 10_000.into(),
-            // default to 100ms in microseconds
-            rtt: AtomicU64::new(100_000),
+            cc: CongestionControl::new(),
         })
+    }
+
+    /// Accepts a new incoming connection from this listener.
+    ///
+    /// This function will yield once a new UTP connection is established. When
+    /// established, the corresponding [`UtpSocket`] and the remote peer's
+    /// address will be returned.
+    pub async fn accept(&self) -> io::Result<(Self, SocketAddr)> {
+        todo!()
     }
 
     /// Connects to a remote UTP endpoint
@@ -352,10 +352,6 @@ impl UtpSocket {
 
     fn handle_reset(&self, header: &Header) -> std::io::Result<()> {
         todo!()
-    }
-
-    fn cur_window(&self) -> u32 {
-        self.cur_window.load(Ordering::Relaxed)
     }
 
     pub fn remote_addr(&self) -> std::io::Result<SocketAddr> {
