@@ -61,6 +61,7 @@ mod tests {
         let syn = Packet::from_bytes(&buf)?;
         println!("syn {syn:#?}");
 
+        assert_eq!(sender.sent_packets.len(), 1);
         assert_eq!(syn.header.type_ver, TypeVer::from_packet(PacketType::Syn));
         assert_eq!(syn.header.seq_nr, 0);
         assert_eq!(syn.header.ack_nr, 0);
@@ -106,6 +107,16 @@ mod tests {
         let data = Packet::from_bytes(&buf)?;
         println!("data {data:#?}");
 
+        assert_eq!(
+            data.header.type_ver,
+            TypeVer::from_packet(PacketType::Data)
+        );
+        assert!(
+            !receiver.sent_packets.is_empty(),
+            "receiver has an ack to send"
+        );
+        assert_eq!(sender.sent_packets.len(), 1);
+        assert_eq!(sender.sent_packets[0].packet, data);
         assert_eq!(receiver.state, ConnectionState::Connected);
         assert_eq!(
             data.header.conn_id,
@@ -122,13 +133,34 @@ mod tests {
         // - receiver doesn't have data, send ack packet.
 
         //
-        // sender <- ack -- sender
+        // sender <- ack2 -- receiver
         //
-        // receiver.flush().await?;
-        // let mut buf = [0u8; 20];
-        // sender.read_exact(&mut buf).await?;
-        // let state2 = UtpPacket::from_bytes(&buf)?;
-        // println!("state2 {state2:#?}");
+        receiver.flush().await?;
+        let mut buf = [0u8; 20];
+        sender.read_exact(&mut buf).await?;
+        let ack2 = Packet::from_bytes(&buf)?;
+        println!("ack2 {ack2:#?}");
+
+        assert_eq!(
+            ack2.header.type_ver,
+            TypeVer::from_packet(PacketType::State)
+        );
+        assert_eq!(
+            receiver.sent_packets.len(),
+            1,
+            "receiver has 1 unacked ack"
+        );
+        assert!(
+            sender.sent_packets.is_empty(),
+            "receiver acked every packet from sender"
+        );
+        assert!(sender.incoming_buf.is_empty());
+        assert_eq!(ack2.header.conn_id, ack.header.conn_id);
+        assert_eq!(ack2.header.seq_nr - 1, ack.header.seq_nr);
+        assert_eq!(
+            ack2.header.ack_nr, data.header.seq_nr,
+            "ack2 should ack the previous data"
+        );
 
         //
         // sender <- data2 -- receiver
@@ -138,15 +170,18 @@ mod tests {
         let mut buf = [0u8; 21];
         sender.read_exact(&mut buf).await?;
         let data2 = Packet::from_bytes(&buf)?;
-        println!("data 2 {data2:#?}");
-        assert_eq!(receiver.state, ConnectionState::Connected);
-        assert_eq!(sender.state, ConnectionState::Connected);
+        println!("data2 {data2:#?}");
+        assert_eq!(
+            // ack 33
+            data2.header.type_ver,
+            TypeVer::from_packet(PacketType::Data)
+        );
         assert_eq!(data2.header.conn_id, syn.header.conn_id);
         assert_eq!(
             data2.header.ack_nr, data.header.seq_nr,
             "data2 should ack the previous data"
         );
-        assert_eq!(data2.header.seq_nr, ack.header.seq_nr + 1);
+        assert_eq!(data2.header.seq_nr - 1, ack2.header.seq_nr);
         assert_eq!(*data2.payload, [2]);
 
         Ok(())

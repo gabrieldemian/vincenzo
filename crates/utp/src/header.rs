@@ -23,7 +23,7 @@ pub(crate) const HEADER_LEN: usize = 20;
 /// +---------------+---------------+---------------+---------------+
 /// | seq_nr                        | ack_nr                        |
 /// +---------------+---------------+---------------+---------------+
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Header {
     pub type_ver: TypeVer,
 
@@ -42,7 +42,7 @@ pub(crate) struct Header {
     /// latest one-way delay measurement of the link from the remote peer to
     /// the local machine.
     pub timestamp_diff: u32,
-    wnd_size: u32,
+    pub wnd_size: u32,
     pub seq_nr: u16,
     pub ack_nr: u16,
 }

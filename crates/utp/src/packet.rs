@@ -52,7 +52,7 @@ pub(super) struct SentPacket {
 }
 
 /// UTP packet structure
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq)]
 pub(crate) struct Packet {
     pub header: Header,
     pub payload: Bytes,

@@ -28,6 +28,7 @@ impl UtpListener {
                 sent_packets: Default::default(),
                 socket: self.socket.clone(),
                 incoming_buf: Vec::new(),
+                write_buf: Vec::default(),
                 utp_header: UtpHeader::new(),
                 state: ConnectionState::Closed,
                 cc: CongestionControl::new(),
@@ -35,7 +36,7 @@ impl UtpListener {
         };
 
         stream.socket.connect(sender).await?;
-        stream.handle_syn(&Header::from_bytes(&buf)?)?;
+        stream.handle_syn(&Header::from_bytes(&buf)?);
 
         Ok(stream)
     }

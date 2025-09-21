@@ -43,6 +43,9 @@ pub struct UtpStream {
 
     /// Non-acked sent packets.
     pub(crate) sent_packets: VecDeque<SentPacket>,
+
+    /// Packets not yet sent.
+    pub(crate) write_buf: Vec<Packet>,
 }
 
 impl UtpStream {
@@ -53,6 +56,7 @@ impl UtpStream {
             utp_header: UtpHeader::default(),
             cc: CongestionControl::default(),
             incoming_buf: Vec::default(),
+            write_buf: Vec::default(),
             sent_packets: VecDeque::default(),
         })
     }
@@ -64,6 +68,7 @@ impl UtpStream {
             utp_header: UtpHeader::default(),
             cc: CongestionControl::default(),
             incoming_buf: Vec::default(),
+            write_buf: Vec::default(),
             sent_packets: VecDeque::default(),
         }
     }
@@ -119,24 +124,38 @@ impl UtpStream {
 
                     match packet.header.type_ver.packet_type()? {
                         PacketType::Data => {
-                            println!("recv data {packet:?}");
+                            println!("recv data");
+
                             self.handle_data(&packet);
-                            Poll::Ready(Ok(packet))
+
+                            if let Some(state) = self.sent_packets.iter().last()
+                            {
+                                self.socket
+                                    .poll_send(cx, &state.packet.as_bytes_mut())
+                                    .map_ok(|_| packet)
+                            } else {
+                                Poll::Ready(Ok(packet))
+                            }
                         }
                         PacketType::State => {
                             println!("recv state");
-                            self.handle_state(&packet.header)?;
+                            self.handle_state(&packet.header);
                             Poll::Ready(Ok(packet))
                         }
                         PacketType::Syn => {
                             println!("received syn");
-                            self.handle_syn(&packet.header)?;
 
-                            let wnd = self.cc.window();
-                            let state =
-                                self.utp_header.new_state(wnd).to_bytes();
+                            self.handle_syn(&packet.header);
+                            self.send_state();
 
-                            self.socket.poll_send(cx, &state).map_ok(|_| packet)
+                            if let Some(state) = self.sent_packets.iter().last()
+                            {
+                                self.socket
+                                    .poll_send(cx, &state.packet.as_bytes_mut())
+                                    .map_ok(|_| packet)
+                            } else {
+                                Poll::Ready(Ok(packet))
+                            }
                         }
                         PacketType::Fin => {
                             self.handle_fin(&packet.header)?;
@@ -175,13 +194,11 @@ impl UtpStream {
     }
 
     /// Handles SYN packet
-    pub(crate) fn handle_syn(
-        &mut self,
-        header: &Header,
-    ) -> std::io::Result<()> {
-        self.state = ConnectionState::SynRecv;
+    pub(crate) fn handle_syn(&mut self, header: &Header) {
+        if self.state == ConnectionState::Closed {
+            self.state = ConnectionState::SynRecv;
+        }
         self.utp_header.handle_syn(header);
-        Ok(())
     }
 
     /// Send ACK.
@@ -195,13 +212,15 @@ impl UtpStream {
     }
 
     /// Handle ACKs
-    fn handle_state(&mut self, header: &Header) -> std::io::Result<()> {
-        self.state = ConnectionState::Connected;
+    fn handle_state(&mut self, header: &Header) {
+        if self.state == ConnectionState::SynSent {
+            self.state = ConnectionState::Connected;
+        }
         let ack_nr = header.ack_nr;
         let last_ack = self.utp_header.last_ack_nr();
 
         // this is a new ACK
-        if (ack_nr > last_ack) || (ack_nr == 0 || last_ack == 0) {
+        if (ack_nr > last_ack) || (ack_nr == 0 && last_ack == 0) {
             self.utp_header.handle_new_ack(header);
             self.process_new_ack(ack_nr);
         }
@@ -213,8 +232,6 @@ impl UtpStream {
                 self.handle_packet_loss(ack_nr + 1);
             }
         }
-
-        Ok(())
     }
 
     /// Process new ACK and remove acknowledged packets from send buffer
@@ -266,23 +283,19 @@ impl UtpStream {
             {
                 // limit retransmissions
                 packet.retransmit_count += 1;
+                // todo: should I update the timestamp on retransmission ?
                 packet.packet.header.timestamp = current_timestamp();
-                // todo
-                // let wnd = self.cc.window();
-                // let header = self.utp_header.new_retransmit_data(wnd,
-                // seq_nr); let packet = UtpPacket { header,
-                // payload: packet.data.clone() };
+                packet.packet.header.wnd_size = self.cc.window();
+                self.write_buf.push(packet.packet.clone());
             }
         }
     }
 
-    fn add_to_send_buf(&mut self, payload: &[u8]) {
+    fn push_to_write_buf(&mut self, payload: &[u8]) {
         let wnd = self.cc.window();
         let header = self.utp_header.new_data(wnd);
         let packet = Packet::new(header, payload);
-        let send_buffer = &mut self.sent_packets;
-        send_buffer.push_back(SentPacket { packet, ..Default::default() });
-        // println!("send_buffer {:#?}", send_buffer);
+        self.write_buf.push(packet);
     }
 
     fn handle_data(&mut self, packet: &Packet) {
@@ -295,7 +308,7 @@ impl UtpStream {
         // if there is no data to send, ACK right now, otherwise the next data
         // packet will already ACK.
         if !self.any_packet_to_send() {
-            // self.send_state();
+            self.send_state();
         }
     }
 
@@ -309,7 +322,8 @@ impl UtpStream {
     }
 
     fn any_packet_to_send(&self) -> bool {
-        self.sent_packets.iter().any(|v| !v.packet.payload.is_empty())
+        !self.write_buf.is_empty()
+            && self.write_buf.iter().any(|v| !v.payload.is_empty())
     }
 
     fn handle_fin(&self, header: &Header) -> std::io::Result<()> {
@@ -389,7 +403,7 @@ impl AsyncWrite for UtpStream {
         //     }
         // }
         // }
-        self.add_to_send_buf(buf);
+        self.push_to_write_buf(buf);
         self.check_timeouts();
         Poll::Ready(Ok(buf.len()))
     }
@@ -401,21 +415,26 @@ impl AsyncWrite for UtpStream {
     ) -> Poll<Result<(), std::io::Error>> {
         self.check_timeouts();
 
-        // println!("sent_packets {:#?}", self.sent_packets);
-        if self.sent_packets.is_empty() {
+        if self.write_buf.is_empty() {
             return Poll::Ready(Ok(()));
         }
 
         let mut r = Poll::Ready(Ok(()));
+        let mut to_sent = Vec::new();
+        let mut to_delete = vec![true; self.write_buf.len()];
 
-        for packet in self.sent_packets.iter() {
-            let packet_bytes = packet.packet.as_bytes_mut();
+        for (i, packet) in self.write_buf.iter().enumerate() {
+            let packet_bytes = packet.as_bytes_mut();
             let packet_len = packet_bytes.len();
 
             match self.socket.poll_send(cx, &packet_bytes) {
                 Poll::Ready(Ok(n)) => {
                     if n == packet_len {
-                        // Poll::Ready(Ok(()))
+                        to_sent.push(SentPacket {
+                            packet: packet.clone(),
+                            ..Default::default()
+                        });
+                        to_delete[i] = false;
                     } else {
                         // r = Poll::Pending;
                         // self.socket.poll_send_ready(cx);
@@ -436,6 +455,11 @@ impl AsyncWrite for UtpStream {
                 }
             };
         }
+
+        self.sent_packets.extend(to_sent);
+        let mut iter = to_delete.into_iter();
+        self.write_buf.retain(|_| iter.next().unwrap());
+
         r
     }
 
