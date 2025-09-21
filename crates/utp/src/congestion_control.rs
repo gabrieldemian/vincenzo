@@ -5,7 +5,7 @@
 
 use std::{
     collections::VecDeque,
-    sync::atomic::{AtomicU32, AtomicU64, Ordering},
+    sync::atomic::{AtomicU32, Ordering},
     time::{self},
 };
 
@@ -15,28 +15,28 @@ use std::{
 /// This effectively makes uTP yield to any TCP traffic.
 ///
 /// 100 ms in microseconds
-const CCONTROL_TARGET: f64 = 100.0 * 1_000.0;
+const CCONTROL_TARGET: f32 = 100.0 * 1_000.0;
 
 /// 500ms in microseconds
-pub(crate) const MIN_TIMEOUT: u64 = 500_000;
+pub(crate) const MIN_TIMEOUT: u32 = 500_000;
 
 /// 500ms in microseconds
-pub(crate) const MIN_TIMEOUT_F64: f64 = 500_000.0;
+pub(crate) const MIN_TIMEOUT_F64: f32 = 500_000.0;
 
 /// The maximum number of packets to increase per RTT.
-pub(crate) const MAX_CWND_INCREASE_PACKETS_PER_RTT: f64 = 2.0;
+pub(crate) const MAX_CWND_INCREASE_PACKETS_PER_RTT: f32 = 2.0;
 
-const MIN_WINDOW_SIZE_F64: f64 = 1500.0; // 1 MTU
+const MIN_WINDOW_SIZE_F64: f32 = 1500.0; // 1 MTU
 const MIN_WINDOW_SIZE: u32 = 1500; // 1 MTU
 
 /// Max number of bytes to increase the window per RTT.
-const MAX_CWND_INCREASE_BYTES_PER_RTT: f64 =
+const MAX_CWND_INCREASE_BYTES_PER_RTT: f32 =
     MIN_WINDOW_SIZE_F64 * MAX_CWND_INCREASE_PACKETS_PER_RTT;
 
 /// If the network has been congested by the duration of this value, the window
 /// will be decreased.
 /// 100 ms in microseconds.
-const MAX_WINDOW_DECAY: u64 = 100_000;
+const MAX_WINDOW_DECAY: u32 = 500_000;
 
 /// Window decay factor for window reduction if the delay is >
 /// `CCONTROL_TARGET`.
@@ -44,15 +44,16 @@ const MAX_WINDOW_DECAY: u64 = 100_000;
 /// UTP halves the window in it's implementation of LEDBAT, but it
 /// does so in a delay-based fashion which occurs before the TCP packet loss, so
 /// it can yield bandwidth to other TCP connections.
-const WINDOW_DECAY_FACTOR: f64 = 0.5;
+const WINDOW_DECAY_FACTOR: f32 = 0.5;
 
 /// Each socket keeps a sliding minimum of the lowest value for the last two
 /// minutes. This value is called base_delay, and is used as a baseline, the
 /// minimum delay between the hosts.
 ///
 /// 2 minutes in microseconds.
-const BASE_DELAY_WINDOW: u64 = 120 * 1_000_000;
+const BASE_DELAY_WINDOW: u32 = 120 * 1_000_000;
 
+/// The congestion control of UTP is LEDBAT with some modifications.
 #[derive(Debug)]
 pub(crate) struct CongestionControl {
     /// Send congestion window in bytes, this is the maximum bytes the socket
@@ -60,20 +61,20 @@ pub(crate) struct CongestionControl {
     window: AtomicU32,
 
     /// Smoothed round trip time in microseconds
-    rtt: AtomicU64,
+    rtt: AtomicU32,
 
     /// Round trip time variance in microseconds
-    rtt_var: AtomicU64,
+    rtt_var: AtomicU32,
 
     /// Current timeout in microseconds, the minimum value being
     /// [`MIN_TIMEOUT`].
-    timeout: AtomicU64,
+    timeout: AtomicU32,
 
     /// Timestamp of last window update
-    last_window_update: AtomicU64,
+    last_window_update: AtomicU32,
 
     /// Timestamp of last window decay
-    last_decay: AtomicU64,
+    last_decay: AtomicU32,
 
     /// Each socket keeps a sliding minimum `diff_timestamp` (here represented
     /// as microseconds) of the lowest value for the last two minutes.
@@ -81,29 +82,35 @@ pub(crate) struct CongestionControl {
     /// This `diff_timestamp` means how long does it take for the packet to
     /// arrive the destination, this is the `diff_timestamp` of the
     /// [`crate::Header`].
-    base_delay: AtomicU64,
+    base_delay: AtomicU32,
 
     /// timestamp, timestamp_difference (micros)
-    diff_timestamp_history: VecDeque<(u64, u64)>,
+    diff_timestamp_history: VecDeque<(u32, u32)>,
 }
 
-impl CongestionControl {
-    pub(crate) fn new() -> Self {
+impl Default for CongestionControl {
+    fn default() -> Self {
         CongestionControl {
             // 64 KB
             window: AtomicU32::new(65_536),
-            rtt: AtomicU64::new(100_000),
-            rtt_var: AtomicU64::new(0),
-            timeout: AtomicU64::new(MIN_TIMEOUT),
-            base_delay: AtomicU64::new(u64::MAX),
+            rtt: AtomicU32::new(100_000),
+            rtt_var: AtomicU32::new(0),
+            timeout: AtomicU32::new(MIN_TIMEOUT),
+            base_delay: AtomicU32::new(u32::MAX),
             last_window_update: Self::current_time_micros().into(),
             last_decay: Self::current_time_micros().into(),
             diff_timestamp_history: VecDeque::new(),
         }
     }
+}
+
+impl CongestionControl {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
 
     /// Update base delay with a new timestamp difference measurement.
-    fn update_base_delay(&mut self, timestamp_diff: u64) {
+    fn update_base_delay(&mut self, timestamp_diff: u32) {
         let now = Self::current_time_micros();
         let history = &mut self.diff_timestamp_history;
 
@@ -120,33 +127,33 @@ impl CongestionControl {
 
         // find minimum timestamp difference in the window
         let new_base_delay =
-            history.iter().map(|&(_, diff)| diff).min().unwrap_or(u64::MAX);
+            history.iter().map(|&(_, diff)| diff).min().unwrap_or(u32::MAX);
 
         self.base_delay.store(new_base_delay, Ordering::Release);
     }
 
     /// Update RTT and RTT variance based on a new measurement
-    pub(crate) fn update_rtt(&mut self, packet_rtt: u64, timestamp_diff: u64) {
+    pub(crate) fn update_rtt(&mut self, packet_rtt: u32, timestamp_diff: u32) {
         if packet_rtt == 0 {
             return;
         }
 
         self.update_base_delay(timestamp_diff);
 
-        let rtt = self.rtt.load(Ordering::Acquire) as f64;
-        let rtt_var = self.rtt_var.load(Ordering::Acquire) as f64;
-        let packet_rtt = packet_rtt as f64;
+        let rtt = self.rtt() as f32;
+        let rtt_var = self.rtt_var() as f32;
+        let packet_rtt = packet_rtt as f32;
 
         let delta = rtt - packet_rtt;
 
         let new_rtt_var = rtt_var + (delta.abs() - rtt_var) / 4.0;
         let new_rtt = rtt + (packet_rtt - rtt) / 8.0;
 
-        self.rtt.store(new_rtt as u64, Ordering::Release);
-        self.rtt_var.store(new_rtt_var as u64, Ordering::Release);
+        self.rtt.store(new_rtt as u32, Ordering::Release);
+        self.rtt_var.store(new_rtt_var as u32, Ordering::Release);
 
         let new_timeout = (new_rtt + new_rtt_var * 4.0).max(MIN_TIMEOUT_F64);
-        self.timeout.store(new_timeout as u64, Ordering::Release);
+        self.timeout.store(new_timeout as u32, Ordering::Release);
     }
 
     /// Update congestion window based on current conditions
@@ -155,12 +162,12 @@ impl CongestionControl {
         // bytes in-flight (non-acked)
         outstanding_bytes: u32,
         // header.timestamp_diff in microseconds
-        timestamp_diff: u64,
+        timestamp_diff: u32,
     ) {
         self.update_base_delay(timestamp_diff);
 
-        let current_rtt = self.rtt.load(Ordering::Acquire);
-        let last_update = self.last_window_update.load(Ordering::Acquire);
+        let current_rtt = self.rtt();
+        let last_update = self.last_window_update();
         let elapsed = Self::elapsed_since(last_update);
 
         // only update window at most once per RTT
@@ -169,18 +176,18 @@ impl CongestionControl {
         }
 
         // sliding minimum delay of the last 2 minutes.
-        let base_delay = self.base_delay() as f64;
+        let base_delay = self.base_delay() as f32;
 
         // a measurement of the current buffering delay on the socket. This is
         // used to increase or decrease the send window.
-        let our_delay = (timestamp_diff as f64) - base_delay;
+        let our_delay = (timestamp_diff as f32) - base_delay;
 
         // how far the actual measured delay is from the target delay
         let off_target = CCONTROL_TARGET - our_delay;
         let delay_factor = off_target / CCONTROL_TARGET;
 
-        let window = self.window() as f64;
-        let outstanding_bytes = outstanding_bytes as f64;
+        let window = self.window() as f32;
+        let outstanding_bytes = outstanding_bytes as f32;
 
         // calculate window factor (ratio of outstanding bytes to window size)
         let window_factor = outstanding_bytes / window.max(1.0);
@@ -207,15 +214,16 @@ impl CongestionControl {
         let elapsed = Self::elapsed_since(last_decay);
 
         if elapsed >= MAX_WINDOW_DECAY {
-            let current_window = self.window() as f64;
-            let new_window = (current_window * WINDOW_DECAY_FACTOR)
-                .max(MIN_WINDOW_SIZE as f64)
-                as u32;
-
-            self.window.store(new_window, Ordering::Release);
-            self.last_decay
-                .store(Self::current_time_micros(), Ordering::Release);
+            self.packet_loss();
         }
+    }
+
+    pub(crate) fn packet_loss(&self) {
+        let current_window = self.window() as f32;
+        let new_window = (current_window * WINDOW_DECAY_FACTOR)
+            .max(MIN_WINDOW_SIZE as f32) as u32;
+        self.window.store(new_window, Ordering::Release);
+        self.last_decay.store(Self::current_time_micros(), Ordering::Release);
     }
 
     // Getters for current values
@@ -223,43 +231,39 @@ impl CongestionControl {
         self.window.load(Ordering::Acquire)
     }
 
-    pub(crate) fn rtt(&self) -> u64 {
+    pub(crate) fn rtt(&self) -> u32 {
         self.rtt.load(Ordering::Acquire)
     }
 
-    pub(crate) fn rtt_var(&self) -> u64 {
+    pub(crate) fn rtt_var(&self) -> u32 {
         self.rtt_var.load(Ordering::Acquire)
     }
 
-    pub(crate) fn timeout(&self) -> u64 {
+    pub(crate) fn timeout(&self) -> u32 {
         self.timeout.load(Ordering::Acquire)
     }
 
-    fn last_decay(&self) -> u64 {
+    fn last_decay(&self) -> u32 {
         self.last_decay.load(Ordering::Acquire)
     }
 
-    fn base_delay(&self) -> u64 {
+    fn last_window_update(&self) -> u32 {
+        self.last_window_update.load(Ordering::Acquire)
+    }
+
+    fn base_delay(&self) -> u32 {
         self.base_delay.load(Ordering::Acquire)
     }
 
-    fn current_time_micros() -> u64 {
+    fn current_time_micros() -> u32 {
         time::SystemTime::now()
             .duration_since(time::UNIX_EPOCH)
             .unwrap_or_default()
-            .as_micros() as u64
+            .as_micros() as u32
     }
 
-    fn elapsed_since(timestamp_micros: u64) -> u64 {
+    fn elapsed_since(timestamp_micros: u32) -> u32 {
         Self::current_time_micros().saturating_sub(timestamp_micros)
-    }
-
-    fn micros_to_millis(micros: u64) -> u64 {
-        micros / 1000
-    }
-
-    fn millis_to_micros(millis: u64) -> u64 {
-        millis * 1000
     }
 }
 
@@ -302,7 +306,7 @@ mod tests {
         // bypass rate limit
         let old_timestamp =
             SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_micros()
-                as u64
+                as u32
                 - cc.rtt() * 2;
 
         cc.last_window_update.store(old_timestamp, Ordering::Release);
@@ -387,7 +391,7 @@ mod tests {
         // force decay by setting last_decay to a time far in the past
         let old_timestamp =
             SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_micros()
-                as u64
+                as u32
                 - MAX_WINDOW_DECAY * 2;
 
         cc.last_decay.store(old_timestamp, Ordering::Release);
@@ -400,14 +404,14 @@ mod tests {
         // window should be decayed by the decay factor
         assert_eq!(
             decayed_window,
-            (1_000_000_f64 * WINDOW_DECAY_FACTOR) as u32
+            (1_000_000_f32 * WINDOW_DECAY_FACTOR) as u32
         );
 
         // verify last_decay was updated to a recent time
         let new_decay_timestamp = cc.last_decay.load(Ordering::Acquire);
         let current_time =
             SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_micros()
-                as u64;
+                as u32;
 
         // the new timestamp should be recent (within 1 second)
         assert!(current_time - new_decay_timestamp < 1_000_000);
@@ -429,7 +433,7 @@ mod tests {
         assert_eq!(window_after_first, window_after_second);
 
         // wait for RTT period and try again
-        sleep(Duration::from_micros(cc.rtt())).await;
+        sleep(Duration::from_micros(cc.rtt() as u64)).await;
         cc.update_window(initial_window / 2, 50_000);
         let window_after_wait = cc.window();
 

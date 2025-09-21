@@ -1,9 +1,15 @@
 //! Header of the protocol.
 
 use super::*;
+use std::{
+    io,
+    sync::atomic::{AtomicU16, AtomicU32, Ordering},
+};
 
 /// UTP protocol version (currently version 1)
 pub(crate) const UTP_VERSION: u8 = 1;
+
+pub(crate) const HEADER_LEN: usize = 20;
 
 /// 0       4       8               16              24              32
 /// +-------+-------+---------------+---------------+---------------+
@@ -17,7 +23,7 @@ pub(crate) const UTP_VERSION: u8 = 1;
 /// +---------------+---------------+---------------+---------------+
 /// | seq_nr                        | ack_nr                        |
 /// +---------------+---------------+---------------+---------------+
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct Header {
     pub type_ver: TypeVer,
 
@@ -25,24 +31,62 @@ pub(crate) struct Header {
     /// 0 means no extension.
     extension: u8,
 
+    /// The local recv id, where the remote will set the `conn_id` to ours.
     pub conn_id: u16,
 
     /// The timestamp of when this packet was sent.
-    timestamp: u32,
+    pub timestamp: u32,
 
     /// the difference between the local time and the timestamp in the last
     /// received packet, at the time the last packet was received. This is the
     /// latest one-way delay measurement of the link from the remote peer to
     /// the local machine.
-    timestamp_diff: u32,
+    pub timestamp_diff: u32,
     wnd_size: u32,
     pub seq_nr: u16,
     pub ack_nr: u16,
 }
 
+impl AsRef<[u8]> for Header {
+    /// Returns the packet header as a slice of bytes.
+    fn as_ref(&self) -> &[u8] {
+        unsafe { &*(self as *const Header as *const [u8; HEADER_LEN]) }
+    }
+}
+
+impl TryFrom<&[u8]> for Header {
+    type Error = io::Error;
+
+    fn try_from(buf: &[u8]) -> Result<Self, Self::Error> {
+        if buf.len() < HEADER_LEN {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Packet too short",
+            ));
+        }
+
+        if buf[0] & 0x0F != 1 || PacketType::try_from(buf[0] >> 4).is_err() {
+            return Err(io::ErrorKind::InvalidData.into());
+        }
+
+        Ok(Header {
+            type_ver: TypeVer(buf[0]),
+            extension: buf[1],
+            conn_id: u16::from_be_bytes([buf[2], buf[3]]),
+            timestamp: u32::from_be_bytes([buf[4], buf[5], buf[6], buf[7]]),
+            timestamp_diff: u32::from_be_bytes([
+                buf[8], buf[9], buf[10], buf[11],
+            ]),
+            wnd_size: u32::from_be_bytes([buf[12], buf[13], buf[14], buf[15]]),
+            seq_nr: u16::from_be_bytes([buf[16], buf[17]]),
+            ack_nr: u16::from_be_bytes([buf[18], buf[19]]),
+        })
+    }
+}
+
 impl Header {
-    pub fn to_bytes(&self) -> [u8; 20] {
-        let mut buf = [0u8; 20];
+    pub fn to_bytes(&self) -> [u8; HEADER_LEN] {
+        let mut buf = [0u8; HEADER_LEN];
         buf[0] = self.type_ver.0;
         buf[1] = self.extension;
         buf[2..4].copy_from_slice(&self.conn_id.to_be_bytes());
@@ -54,8 +98,8 @@ impl Header {
         buf
     }
 
-    pub(crate) fn to_bytes_mut(self) -> BytesMut {
-        let mut buf = BytesMut::with_capacity(20);
+    pub(crate) fn as_bytes_mut(&self) -> BytesMut {
+        let mut buf = BytesMut::with_capacity(HEADER_LEN);
         buf.put_u8(self.type_ver.0);
         buf.put_u8(self.extension);
         buf.put_u16(self.conn_id);
@@ -68,7 +112,7 @@ impl Header {
     }
 
     pub fn from_bytes(buf: &[u8]) -> io::Result<Self> {
-        if buf.len() != 20 {
+        if buf.len() != HEADER_LEN {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "Packet too short",
@@ -90,7 +134,13 @@ impl Header {
     }
 }
 
-#[derive(Debug)]
+impl From<Header> for Packet {
+    fn from(header: Header) -> Self {
+        Self { header, payload: Bytes::new() }
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
 pub(crate) struct TypeVer(pub(crate) u8);
 
 impl TypeVer {
@@ -122,17 +172,20 @@ impl std::fmt::Display for TypeVer {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(crate) struct UtpHeader {
-    /// Advertised receive window
-    wnd_size: u32,
-
     /// This is the sequence number of this packet.
     seq_nr: AtomicU16,
 
     /// The sequence number the sender of the packet last received in
     /// the other direction.
     ack_nr: AtomicU16,
+
+    /// Last ack of the remote.
+    last_ack_nr: AtomicU16,
+
+    /// seq_nr -> duplicate ack count
+    pub ack_history: HashMap<u16, u32>,
 
     /// This is a random, unique, number identifying all the packets that
     /// belong to the same connection. Each socket has one connection ID for
@@ -142,52 +195,46 @@ pub(crate) struct UtpHeader {
     conn_id_recv: AtomicU16,
 
     /// Timestamp in microseconds
-    last_recv_packet_timestamp: u32,
-    last_sent_packet_timestamp: u32,
+    last_recv_packet_timestamp: AtomicU32,
+    last_sent_packet_timestamp: AtomicU32,
 }
 
 impl UtpHeader {
-    pub(crate) fn new(wnd_size: u32) -> Self {
-        UtpHeader {
-            conn_id_send: 0.into(),
-            conn_id_recv: 0.into(),
-            wnd_size,
-            seq_nr: 0.into(),
-            ack_nr: 0.into(),
-            last_recv_packet_timestamp: 0,
-            last_sent_packet_timestamp: 0,
-        }
+    pub(crate) fn new() -> Self {
+        UtpHeader::default()
     }
 
     /// Create a new header with the packet type syn.
-    pub(crate) fn new_syn(&mut self) -> Header {
-        self.conn_id_recv.store(rand::random::<u16>(), Ordering::SeqCst);
-        let t = self.conn_id_recv.load(Ordering::Relaxed) + 1;
-        self.conn_id_send.store(t, Ordering::SeqCst);
+    pub(crate) fn new_syn(&self, wnd_size: u32) -> Header {
+        let conn_id_recv: u16 = rand::random();
+        self.conn_id_recv.store(conn_id_recv, Ordering::SeqCst);
+
+        let conn_id_send = conn_id_recv + 1;
+        self.conn_id_send.store(conn_id_send, Ordering::SeqCst);
 
         let now = current_timestamp();
-        self.last_sent_packet_timestamp = now;
+        self.last_sent_packet_timestamp.store(now, Ordering::Release);
 
         Header {
             ack_nr: self.ack_nr(),
             seq_nr: self.next_seq_nr(),
             conn_id: self.conn_id_recv(),
             type_ver: TypeVer::from_packet(PacketType::Syn),
-            wnd_size: self.wnd_size,
+            wnd_size,
             timestamp: now,
             ..Default::default()
         }
     }
 
-    pub(crate) fn new_fin(&mut self) -> Header {
+    pub(crate) fn new_fin(&self, wnd_size: u32) -> Header {
         let timestamp = current_timestamp();
-        self.last_sent_packet_timestamp = timestamp;
+        self.last_sent_packet_timestamp.store(timestamp, Ordering::Release);
         Header {
             ack_nr: self.ack_nr(),
             conn_id: self.conn_id_send(),
             type_ver: TypeVer::from_packet(PacketType::Fin),
             seq_nr: self.next_seq_nr(),
-            wnd_size: self.wnd_size,
+            wnd_size,
             timestamp,
             timestamp_diff: self.get_timestamp_diff(timestamp),
             ..Default::default()
@@ -195,48 +242,69 @@ impl UtpHeader {
     }
 
     /// Create a new header with the packet type data.
-    pub(crate) fn new_data(&mut self) -> Header {
+    pub(crate) fn new_data(&self, wnd_size: u32) -> Header {
         let timestamp = current_timestamp();
-        self.last_sent_packet_timestamp = timestamp;
+        self.last_sent_packet_timestamp.store(timestamp, Ordering::Release);
 
         Header {
             seq_nr: self.next_seq_nr(),
             ack_nr: self.ack_nr(),
             conn_id: self.conn_id_send(),
             type_ver: TypeVer::from_packet(PacketType::Data),
-            wnd_size: self.wnd_size,
             timestamp,
+            wnd_size,
             timestamp_diff: self.get_timestamp_diff(timestamp),
             ..Default::default()
         }
     }
 
-    pub(crate) fn new_state(&mut self) -> Header {
+    /// Create a new header with the packet type data.
+    pub(crate) fn new_retransmit_data(
+        &self,
+        wnd_size: u32,
+        seq_nr: u16,
+    ) -> Header {
         let timestamp = current_timestamp();
-        self.last_sent_packet_timestamp = timestamp;
+        self.last_sent_packet_timestamp.store(timestamp, Ordering::Release);
+
+        Header {
+            seq_nr,
+            ack_nr: self.ack_nr(),
+            conn_id: self.conn_id_send(),
+            type_ver: TypeVer::from_packet(PacketType::Data),
+            timestamp,
+            wnd_size,
+            timestamp_diff: self.get_timestamp_diff(timestamp),
+            ..Default::default()
+        }
+    }
+
+    pub(crate) fn new_state(&self, wnd_size: u32) -> Header {
+        let timestamp = current_timestamp();
+        self.last_sent_packet_timestamp.store(timestamp, Ordering::Release);
 
         Header {
             seq_nr: self.next_seq_nr(),
             ack_nr: self.ack_nr(),
             conn_id: self.conn_id_send(),
             type_ver: TypeVer::from_packet(PacketType::State),
-            wnd_size: self.wnd_size,
             timestamp,
+            wnd_size,
             timestamp_diff: self.get_timestamp_diff(timestamp),
             ..Default::default()
         }
     }
 
-    pub(crate) fn new_reset(&mut self, seq_nr: u16) -> Header {
+    pub(crate) fn new_reset(&self, seq_nr: u16, wnd_size: u32) -> Header {
         let timestamp = current_timestamp();
-        self.last_sent_packet_timestamp = timestamp;
+        self.last_sent_packet_timestamp.store(timestamp, Ordering::Release);
 
         Header {
             conn_id: self.conn_id_send(),
             type_ver: TypeVer::from_packet(PacketType::Reset),
             seq_nr: self.seq_nr(),
-            wnd_size: self.wnd_size,
             ack_nr: seq_nr,
+            wnd_size,
             timestamp,
             timestamp_diff: self.get_timestamp_diff(timestamp),
             ..Default::default()
@@ -247,12 +315,20 @@ impl UtpHeader {
         self.seq_nr.load(Ordering::SeqCst)
     }
 
+    fn next_seq_nr(&self) -> u16 {
+        self.seq_nr.fetch_add(1, Ordering::SeqCst)
+    }
+
     fn ack_nr(&self) -> u16 {
         self.ack_nr.load(Ordering::SeqCst)
     }
 
     pub(crate) fn set_ack_nr(&self, ack_nr: u16) {
         self.ack_nr.store(ack_nr, Ordering::SeqCst);
+    }
+
+    pub(crate) fn last_ack_nr(&self) -> u16 {
+        self.last_ack_nr.load(Ordering::Relaxed)
     }
 
     pub(crate) fn set_seq_nr(&self, seq_nr: u16) {
@@ -264,34 +340,57 @@ impl UtpHeader {
     }
 
     fn conn_id_send(&self) -> u16 {
-        self.conn_id_recv.load(Ordering::SeqCst)
+        self.conn_id_send.load(Ordering::SeqCst)
     }
 
-    fn next_seq_nr(&self) -> u16 {
-        self.seq_nr.fetch_add(1, Ordering::SeqCst);
-        self.seq_nr.load(Ordering::SeqCst)
+    pub(crate) fn inc_duplicate_ack(&mut self, seq_nr: u16) -> u32 {
+        let m = &mut self.ack_history;
+        let v = m.entry(seq_nr).or_default();
+        *v += 1;
+        *v
     }
 
-    pub(crate) fn handle_recv_syn(&mut self, header: &Header) {
-        self.last_recv_packet_timestamp = header.timestamp;
+    pub(crate) fn zero_duplicate_ack(&mut self, seq_nr: u16) {
+        let m = &mut self.ack_history;
+        let v = m.entry(seq_nr).or_default();
+        *v = 0;
+    }
+
+    /// Calculate RTT in microseconds.
+    pub(crate) fn get_rtt(&self) -> u32 {
+        current_timestamp().saturating_sub(
+            self.last_sent_packet_timestamp.load(Ordering::Relaxed),
+        )
+    }
+
+    pub(crate) fn handle_syn(&self, header: &Header) {
+        self.last_recv_packet_timestamp
+            .store(header.timestamp, Ordering::Relaxed);
+
         self.conn_id_send.store(header.conn_id, Ordering::SeqCst);
         self.conn_id_recv.store(header.conn_id + 1, Ordering::SeqCst);
+
         self.set_seq_nr(rand::random());
         self.set_ack_nr(header.seq_nr);
     }
 
-    pub(crate) fn handle_recv_state(&mut self, header: &Header) {
-        self.last_recv_packet_timestamp = header.timestamp;
+    pub(crate) fn handle_new_ack(&self, header: &Header) {
+        self.last_recv_packet_timestamp
+            .store(header.timestamp, Ordering::Relaxed);
         self.set_ack_nr(header.seq_nr);
+        self.last_ack_nr.store(header.ack_nr, Ordering::Release);
     }
 
-    pub(crate) fn handle_recv_data(&mut self, header: &Header) {
-        self.last_recv_packet_timestamp = header.timestamp;
+    pub(crate) fn handle_data(&self, header: &Header) {
+        self.last_recv_packet_timestamp
+            .store(header.timestamp, Ordering::Relaxed);
         self.set_ack_nr(header.seq_nr);
     }
 
     fn get_timestamp_diff(&self, now: u32) -> u32 {
-        now.saturating_sub(self.last_recv_packet_timestamp)
+        now.saturating_sub(
+            self.last_recv_packet_timestamp.load(Ordering::Relaxed),
+        )
     }
 }
 

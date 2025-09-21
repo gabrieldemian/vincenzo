@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 tokio = { workspace = true }
+hashbrown = { workspace = true }
 tokio-util = { workspace = true }
 bitvec = { workspace = true }
 rand = { workspace = true }

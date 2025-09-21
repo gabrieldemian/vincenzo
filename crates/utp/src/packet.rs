@@ -1,3 +1,5 @@
+use std::io;
+
 use int_enum::IntEnum;
 
 use super::*;
@@ -43,15 +45,21 @@ pub(crate) enum PacketType {
     Syn = 4,
 }
 
+#[derive(Debug, Clone, Default)]
+pub(super) struct SentPacket {
+    pub packet: Packet,
+    pub retransmit_count: u8,
+}
+
 /// UTP packet structure
-#[derive(Debug, Default)]
-pub(crate) struct UtpPacket {
+#[derive(Debug, Default, Clone)]
+pub(crate) struct Packet {
     pub header: Header,
     pub payload: Bytes,
 }
 
-impl From<UtpPacket> for Vec<u8> {
-    fn from(value: UtpPacket) -> Self {
+impl From<Packet> for Vec<u8> {
+    fn from(value: Packet) -> Self {
         let mut v = Vec::with_capacity(20 + value.payload.len());
         v.extend_from_slice(&value.header.to_bytes());
         v.extend_from_slice(&value.payload);
@@ -59,19 +67,37 @@ impl From<UtpPacket> for Vec<u8> {
     }
 }
 
-impl UtpPacket {
+impl From<Packet> for Bytes {
+    fn from(value: Packet) -> Self {
+        let mut v = Vec::with_capacity(20 + value.payload.len());
+        v.extend_from_slice(&value.header.to_bytes());
+        v.extend_from_slice(&value.payload);
+        Bytes::copy_from_slice(&v)
+    }
+}
+
+impl Packet {
+    pub fn new(header: Header, payload: &[u8]) -> Self {
+        Self { header, payload: Bytes::copy_from_slice(payload) }
+    }
+
+    pub fn into_bytes(self) -> Vec<u8> {
+        self.into()
+    }
+
+    pub fn as_bytes_mut(&self) -> BytesMut {
+        let header = self.header.as_bytes_mut();
+        let payload = self.payload.clone();
+        let mut b = BytesMut::with_capacity(20 + payload.len());
+        b.extend_from_slice(&header);
+        b.extend_from_slice(&payload);
+        b
+    }
+
     /// Parse a byte buffer into a UtpPacket
     pub fn from_bytes(data: &[u8]) -> io::Result<Self> {
-        if data.len() < 20 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Packet too short for UTP header",
-            ));
-        }
-
-        let header = Header::from_bytes(&data[0..20])?;
+        let header = Header::try_from(&data[0..20])?;
         let payload = Bytes::copy_from_slice(&data[20..]);
-
-        Ok(UtpPacket { header, payload })
+        Ok(Packet { header, payload })
     }
 }
