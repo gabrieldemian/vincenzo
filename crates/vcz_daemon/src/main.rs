@@ -39,8 +39,8 @@ async fn main() -> Result<(), Error> {
         let (free_tx, free_rx) = mpsc::unbounded_channel::<ReturnToDisk>();
 
         let mut daemon = Daemon::new(disk_tx.clone(), free_tx);
-
         let mut disk = Disk::new(daemon.ctx.clone(), disk_tx, disk_rx, free_rx);
+
         let disk_handle = spawn(async move { disk.run().await });
         let daemon_handle = spawn(async move { daemon.run().await });
         disk_handle.await??;

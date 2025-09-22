@@ -24,9 +24,6 @@ pub enum Action {
     /// First the page will process TerminalEvent and transform it into Input.
     Input(Input),
 
-    /// Render another page on the UI
-    ChangePage(Page),
-
     NewTorrent(magnet_url::Magnet),
     TogglePause(InfoHash),
     DeleteTorrent(InfoHash),

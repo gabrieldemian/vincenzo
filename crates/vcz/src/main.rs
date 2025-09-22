@@ -50,9 +50,6 @@ async fn main() -> Result<(), Error> {
 
     let (fr_tx, fr_rx) = mpsc::unbounded_channel();
 
-    // Start and run the terminal UI
-    let mut fr = App::new(fr_tx.clone());
-
     // If the user passed a magnet through the CLI,
     // start this torrent immediately
     if let Some(magnet) = &CONFIG.magnet {
@@ -60,11 +57,8 @@ async fn main() -> Result<(), Error> {
         let _ = fr_tx.send(Action::NewTorrent(magnet));
     }
 
-    // let fr_handle = spawn(async move { fr.run(fr_rx).await });
+    // Start and run the terminal UI
+    let mut app = App::new(fr_tx.clone());
 
-    disk_handle.await??;
-    daemon_handle.await??;
-    fr.run(fr_rx).await.unwrap();
-
-    Ok(())
+    tokio::join!(biased; daemon_handle, disk_handle, app.run(fr_rx)).0?
 }

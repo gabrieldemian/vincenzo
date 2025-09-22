@@ -155,7 +155,7 @@ impl Deref for InfoHash {
 impl std::fmt::Debug for InfoHash {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let s = self.to_string();
-        let s = s.get(..10).unwrap();
+        let s = &s[..0];
         f.write_str(s)
     }
 }

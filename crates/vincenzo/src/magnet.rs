@@ -38,9 +38,10 @@ impl Magnet {
     /// The name will come URL encoded, and it is also optional.
     pub fn parse_dn(&self) -> String {
         if let Some(dn) = self.0.display_name()
-            && let Ok(dn) = urlencoding::decode(dn) {
-                return dn.to_string();
-            }
+            && let Ok(dn) = urlencoding::decode(dn)
+        {
+            return dn.to_string();
+        }
         "Unknown".to_owned()
     }
 
@@ -56,7 +57,10 @@ impl Magnet {
     /// Transform the "xt" field from hex, to a slice.
     // todo: return a Result
     pub fn parse_xt_infohash(&self) -> InfoHash {
-        let info_hash = hex::decode(self.hash().unwrap()).unwrap();
+        let info_hash = hex::decode(
+            self.hash().unwrap_or("0000000000000000000000000000000000000000"),
+        )
+        .unwrap();
         let mut x = [0u8; 20];
 
         x[..20].copy_from_slice(&info_hash[..20]);
@@ -111,8 +115,8 @@ pub mod tests {
 
     use super::*;
 
-    #[tokio::test]
-    async fn parse_string_to_magnet() {
+    #[test]
+    fn parse_string_to_magnet() {
         let mstr = "magnet:?xt=urn:btih:1234567890abcdef1234567890abcdef12345678&dn=My%20Torrent&xl=12345&tr=udp://tracker.example.com:6969&tr=udp://tracker2.example.com:6969&tr=wss://tracker3.example.com&ws=https://example.com/see";
 
         let magnet = Magnet_::new(mstr).unwrap();
@@ -138,8 +142,8 @@ pub mod tests {
         // assert!(false);
     }
 
-    #[tokio::test]
-    async fn magnet_from_string() {
+    #[test]
+    fn magnet_from_string() {
         let s = "magnet:?xt=urn:btih:61084b062ec1a41002810f99e4cddc33057b3bd5&\
                  dn=%5BSubsPlease%5D%20Dandadan%20-%2013%20%281080p%29%20%\
                  5BA3CDCC67%5D.mkv&tr=http%3A%2F%2Fnyaa.tracker.wf%3A7777%\
@@ -148,11 +152,9 @@ pub mod tests {
                  tr=udp%3A%2F%2Fexodus.desync.com%3A6969%2Fannounce&tr=udp%3A%\
                  2F%2Ftracker.torrent.eu.org%3A451%2Fannounce";
 
-        let _magnet = Magnet::new(s).unwrap();
+        let _magnet = Magnet_::new(s).unwrap();
         // println!("{magnet:#?}");
         // println!("{:#?}", magnet.organize_trackers());
-
-        // assert!(false);
     }
 }
 

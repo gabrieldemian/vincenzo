@@ -1,8 +1,11 @@
+use std::time::Duration;
+
 use futures::{SinkExt, Stream, StreamExt};
 use tokio::{
     net::TcpStream,
     select, spawn,
     sync::mpsc::{UnboundedReceiver, UnboundedSender},
+    time::timeout,
 };
 use tokio_util::codec::Framed;
 use tracing::debug;
@@ -12,7 +15,7 @@ use vincenzo::{
 };
 
 use crate::{
-    action::{self, Action},
+    action::Action,
     error::Error,
     pages::{Page, torrent_list::TorrentList},
     tui::Tui,
@@ -22,7 +25,7 @@ pub struct App {
     pub is_detached: bool,
     pub tx: UnboundedSender<Action>,
     should_quit: bool,
-    page: Box<dyn Page>,
+    page: TorrentList<'static>,
 }
 
 impl App {
@@ -32,7 +35,7 @@ impl App {
     }
 
     pub fn new(tx: UnboundedSender<Action>) -> Self {
-        let page = Box::new(TorrentList::new(tx.clone()));
+        let page = TorrentList::new(tx.clone());
 
         App { should_quit: false, tx, page, is_detached: false }
     }
@@ -46,9 +49,26 @@ impl App {
 
         let tx = self.tx.clone();
 
-        let socket = TcpStream::connect(CONFIG.daemon_addr)
+        let mut i = 0;
+
+        let socket = loop {
+            match timeout(
+                Duration::from_millis(100),
+                TcpStream::connect(CONFIG.daemon_addr),
+            )
             .await
-            .map_err(|_| Error::DaemonNotRunning(CONFIG.daemon_addr))?;
+            {
+                Ok(Ok(v)) => break v,
+                _ => {
+                    i += 1;
+                    if i > 5 {
+                        return Err(Error::DaemonNotRunning(
+                            CONFIG.daemon_addr,
+                        ));
+                    }
+                }
+            }
+        };
 
         // spawn event loop to listen to messages sent by the daemon
         let socket = Framed::new(socket, DaemonCodec);
@@ -78,9 +98,6 @@ impl App {
                         handle.abort();
                         tui.cancel();
                         self.should_quit = true;
-                    }
-                    Action::ChangePage(page) => {
-                        self.handle_change_component(page)?
                     }
                     Action::NewTorrent(magnet) => {
                         sink.send(Message::NewTorrent(magnet.clone())).await?;
@@ -135,19 +152,5 @@ impl App {
                 else => break
             }
         }
-    }
-
-    /// Handle the logic to render another component on the screen, after
-    /// receiving an [`Action::ChangePage`]
-    fn handle_change_component(
-        &mut self,
-        page: action::Page,
-    ) -> Result<(), Error> {
-        self.page = match page {
-            action::Page::TorrentList => {
-                Box::new(TorrentList::new(self.tx.clone()))
-            }
-        };
-        Ok(())
     }
 }
