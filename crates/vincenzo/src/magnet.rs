@@ -75,22 +75,17 @@ impl Magnet {
         ]);
 
         for x in self.trackers() {
-            let x = x.clone();
-            let mut uri = urlencoding::decode(&x).unwrap().to_string();
-            let (protocol, _) = x.split_once("%3A").unwrap();
-            // %3A%2F%2F -> ://
+            let Some(b) = x.find("%3A%2F%2F") else { continue };
+            let Some(e) = x[b + 8..].find("%2F") else { continue };
+            let prot = &x[..b];
 
-            if protocol == "udp" {
-                uri = uri.replace("udp://", "");
-                // remove any /announce
-                if let Some(i) = uri.find("/announce") {
-                    uri = uri[..i].to_string();
-                };
-            }
+            // skip the utp:// at the beggining and the /announce at the end.
+            let url = &x[(b + 9)..e + b + 8];
+            // decode url_encoded `%3A` to `:`
+            let url = url.to_owned().replace("%3A", ":");
 
-            let trackers = hashmap.get_mut(protocol).unwrap();
-
-            trackers.push(uri.to_string());
+            let Some(trackers) = hashmap.get_mut(prot) else { continue };
+            trackers.push(url.to_owned());
         }
 
         hashmap
@@ -111,56 +106,75 @@ impl Magnet {
 
 #[cfg(test)]
 pub mod tests {
-    use magnet_url::MagnetBuilder;
-
     use super::*;
+
+    #[test]
+    fn organize_trackers() {
+        let mstr =
+            "magnet:?xt=urn:btih:0000000000000000000000000000000000000000&\
+             dn=Name&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337%2Fannounce&\
+             tr=&tr=udp%3A%2F%2Fopen.tracker.cl%3A1337%2Fannounce&tr=&tr=udp%\
+             3A%2F%2F9.rarbg.com%3A2810%2Fannounce&tr=&tr=udp%3A%2F%2Ftracker.\
+             openbittorrent.com%3A6969%2Fannounce&tr=&tr=udp%3A%2F%2Fwww.\
+             torrent.eu.org%3A451%2Fannounce&tr=&tr=udp%3A%2F%2Ftracker.\
+             torrent.eu.org%3A451%2Fannounce&tr=&tr=udp%3A%2F%2Fexodus.desync.\
+             com%3A6969%2Fannounce&tr=&tr=udp%3A%2F%2Ftracker.opentrackr.org%\
+             3A1337%2Fannounce&tr=http%3A%2F%2Ftracker.openbittorrent.com%\
+             3A80%2Fannounce&tr=udp%3A%2F%2Fopentracker.i2p.rocks%3A6969%\
+             2Fannounce&tr=udp%3A%2F%2Ftracker.internetwarriors.net%3A1337%\
+             2Fannounce&tr=udp%3A%2F%2Ftracker.leechers-paradise.org%3A6969%\
+             2Fannounce&tr=udp%3A%2F%2Fcoppersurfer.tk%3A6969%2Fannounce&\
+             tr=udp%3A%2F%2Ftracker.zer0day.to%3A1337%2Fannounce";
+        let magnet = Magnet::new(mstr).unwrap();
+        let org = magnet.organize_trackers();
+
+        assert_eq!(org["http"], ["tracker.openbittorrent.com:80"]);
+        assert_eq!(
+            org["udp"],
+            [
+                "tracker.opentrackr.org:1337",
+                "open.tracker.cl:1337",
+                "9.rarbg.com:2810",
+                "tracker.openbittorrent.com:6969",
+                "www.torrent.eu.org:451",
+                "tracker.torrent.eu.org:451",
+                "exodus.desync.com:6969",
+                "tracker.opentrackr.org:1337",
+                "opentracker.i2p.rocks:6969",
+                "tracker.internetwarriors.net:1337",
+                "tracker.leechers-paradise.org:6969",
+                "coppersurfer.tk:6969",
+                "tracker.zer0day.to:1337",
+            ]
+        );
+
+        let mstr = "magnet:?xt=urn:btih:\
+                    0000000000000000000000000000000000000000&dn=%5BSubsPlease%\
+                    5D%20Dandadan%20-%2024%20%281080p%29%20%5BAD3DEA4E%5D.mkv&\
+                    tr=http%3A%2F%2Fnyaa.tracker.wf%3A7777%2Fannounce&tr=udp%\
+                    3A%2F%2Fopen.stealth.si%3A80%2Fannounce&tr=udp%3A%2F%\
+                    2Ftracker.opentrackr.org%3A1337%2Fannounce&tr=udp%3A%2F%\
+                    2Fexodus.desync.com%3A6969%2Fannounce&tr=udp%3A%2F%\
+                    2Ftracker.torrent.eu.org%3A451%2Fannounce";
+        let magnet = Magnet::new(mstr).unwrap();
+        let org = magnet.organize_trackers();
+
+        assert_eq!(org["http"], ["nyaa.tracker.wf:7777"]);
+        assert_eq!(
+            org["udp"],
+            [
+                "open.stealth.si:80",
+                "tracker.opentrackr.org:1337",
+                "exodus.desync.com:6969",
+                "tracker.torrent.eu.org:451",
+            ]
+        );
+    }
 
     #[test]
     fn parse_string_to_magnet() {
         let mstr = "magnet:?xt=urn:btih:1234567890abcdef1234567890abcdef12345678&dn=My%20Torrent&xl=12345&tr=udp://tracker.example.com:6969&tr=udp://tracker2.example.com:6969&tr=wss://tracker3.example.com&ws=https://example.com/see";
 
-        let magnet = Magnet_::new(mstr).unwrap();
-
-        println!("trackers {:?}", magnet.trackers());
-
-        let magnet = MagnetBuilder::new()
-            .display_name("My Torrent")
-            .hash_type("btih")
-            .hash("1234567890abcdef1234567890abcdef12345678")
-            .length(12345)
-            .add_tracker("udp://tracker.example.com:6969")
-            .add_trackers(&[
-                "udp://tracker2.example.com:6969",
-                "wss://tracker3.example.com",
-                "http://tracker4.example.com",
-            ])
-            .web_seed("https://example.com/seed")
-            .build();
-
-        println!("Generated magnet URL: {:?}", magnet.trackers());
-
-        // assert!(false);
-    }
-
-    #[test]
-    fn magnet_from_string() {
-        let s = "magnet:?xt=urn:btih:61084b062ec1a41002810f99e4cddc33057b3bd5&\
-                 dn=%5BSubsPlease%5D%20Dandadan%20-%2013%20%281080p%29%20%\
-                 5BA3CDCC67%5D.mkv&tr=http%3A%2F%2Fnyaa.tracker.wf%3A7777%\
-                 2Fannounce&tr=udp%3A%2F%2Fopen.stealth.si%3A80%2Fannounce&\
-                 tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337%2Fannounce&\
-                 tr=udp%3A%2F%2Fexodus.desync.com%3A6969%2Fannounce&tr=udp%3A%\
-                 2F%2Ftracker.torrent.eu.org%3A451%2Fannounce";
-
-        let _magnet = Magnet_::new(s).unwrap();
-        // println!("{magnet:#?}");
-        // println!("{:#?}", magnet.organize_trackers());
+        assert!(Magnet_::new(mstr).is_ok());
     }
 }
-
-// magnet:?xt=urn:btih:3d5e3dec8fedacf52a984a91089ea60ef0a93086&dn=%
-// 5BSubsPlease%5D%20Dandadan%20-%2016%20%281080p%29%20%5B5681367F%5D.mkv&
-// tr=http%3A%2F%2Fnyaa.tracker.wf%3A7777%2Fannounce&tr=udp%3A%2F%2Fopen.
-// stealth.si%3A80%2Fannounce&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337%
-// 2Fannounce&tr=udp%3A%2F%2Fexodus.desync.com%3A6969%2Fannounce&tr=udp%3A%2F%
-// 2Ftracker.torrent.eu.org%3A451%2Fannounce
