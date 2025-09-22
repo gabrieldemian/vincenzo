@@ -44,11 +44,6 @@ impl App {
         &mut self,
         mut rx: UnboundedReceiver<Action>,
     ) -> Result<(), Error> {
-        let mut tui = Tui::new()?;
-        tui.run()?;
-
-        let tx = self.tx.clone();
-
         let mut i = 0;
 
         let socket = loop {
@@ -61,14 +56,20 @@ impl App {
                 Ok(Ok(v)) => break v,
                 _ => {
                     i += 1;
-                    if i > 5 {
+                    if i > 10 {
                         return Err(Error::DaemonNotRunning(
                             CONFIG.daemon_addr,
                         ));
                     }
+                    tokio::time::sleep(Duration::from_millis(150)).await;
                 }
             }
         };
+
+        let mut tui = Tui::new()?;
+        tui.run()?;
+
+        let tx = self.tx.clone();
 
         // spawn event loop to listen to messages sent by the daemon
         let socket = Framed::new(socket, DaemonCodec);

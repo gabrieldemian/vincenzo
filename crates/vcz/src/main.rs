@@ -60,5 +60,5 @@ async fn main() -> Result<(), Error> {
     // Start and run the terminal UI
     let mut app = App::new(fr_tx.clone());
 
-    tokio::join!(biased; daemon_handle, disk_handle, app.run(fr_rx)).0?
+    tokio::join!(daemon_handle, disk_handle, app.run(fr_rx)).0?
 }

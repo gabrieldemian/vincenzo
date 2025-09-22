@@ -251,7 +251,6 @@ impl Daemon {
     #[tracing::instrument(name = "daemon", skip_all)]
     pub async fn run(&mut self) -> Result<(), Error> {
         let socket = TcpListener::bind(CONFIG.daemon_addr).await.unwrap();
-
         info!("listening on: {}", CONFIG.daemon_addr);
 
         let ctx = self.ctx.clone();

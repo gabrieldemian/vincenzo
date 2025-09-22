@@ -148,7 +148,7 @@ impl<'a> Page for TorrentList<'a> {
             let mut download_rate = to_human_readable(state.download_rate);
             download_rate.push_str("/s");
 
-            let name = Span::from(state.name.clone()).bold();
+            let mut name = Span::from(state.name.clone()).bold();
 
             let status_style = match state.status {
                 TorrentStatus::Seeding => PALETTE.success,
@@ -176,6 +176,7 @@ impl<'a> Page for TorrentList<'a> {
                 self.active_torrent = Some(state.info_hash.clone());
                 line_top = line_top.patch_style(PALETTE.highlight_fg);
                 line_bottom = line_bottom.patch_style(PALETTE.highlight_fg);
+                name = name.fg(PALETTE.primary);
             }
 
             // let total = ctx.connected_peers + ctx.idle_peers;
@@ -224,6 +225,12 @@ impl<'a> Page for TorrentList<'a> {
             }
 
             torrent_rows.push(ListItem::new(items));
+        }
+
+        // if nothing is selected, we want to select the first item if there are
+        // torrents.
+        if self.state.selected().is_none() && !torrent_rows.is_empty() {
+            self.next();
         }
 
         self.scroll_state =
