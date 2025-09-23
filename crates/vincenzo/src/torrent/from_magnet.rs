@@ -153,7 +153,7 @@ impl Torrent<Connected, FromMagnet> {
                 acc
             });
 
-        let downloaded_info = Info::from_bencode(&info_bytes)?;
+        let downloaded_info = Arc::new(Info::from_bencode(&info_bytes)?);
         self.state.metadata_size = Some(downloaded_info.metadata_size);
 
         // validate the hash of the downloaded info
@@ -184,6 +184,8 @@ impl Torrent<Connected, FromMagnet> {
             ))
             .await?;
 
+        // todo: not really using self.source.info for anything except to return
+        // a boolean.
         self.source.info = Some(downloaded_info);
         self.status = TorrentStatus::Downloading;
 

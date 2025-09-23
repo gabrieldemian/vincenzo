@@ -62,7 +62,7 @@ static ZERO_BUF: [u8; 65536] = [0; 65536];
 pub enum DiskMsg {
     /// Sent by the frontend or CLI flag to add a new torrent from a magnet,
     /// just after the metainfo was downloaded.
-    AddTorrent(Arc<TorrentCtx>, Info),
+    AddTorrent(Arc<TorrentCtx>, Arc<Info>),
 
     MetadataSize(InfoHash, usize),
 
@@ -189,11 +189,12 @@ pub struct Disk {
 
     pub(crate) endgame: HashMap<InfoHash, bool>,
 
-    /// A cache of blocks, where the key is a piece.
+    /// A cache of blocks, where the key is a piece. The cache will be cleared
+    /// when the entire piece is downloaded and validated as it will be
+    /// written to disk.
     block_cache: HashMap<InfoHash, BTreeMap<usize, Vec<Block>>>,
 
-    /// A clone of Info to avoid locking.
-    torrent_info: HashMap<InfoHash, Info>,
+    torrent_info: HashMap<InfoHash, Arc<Info>>,
 
     /// The block infos of each piece of a torrent.
     block_infos: HashMap<InfoHash, BTreeMap<usize, Vec<BlockInfo>>>,
@@ -450,7 +451,7 @@ impl Disk {
     async fn add_torrent(
         &mut self,
         torrent_ctx: Arc<TorrentCtx>,
-        info: Info,
+        info: Arc<Info>,
     ) -> Result<(), Error> {
         debug!("new torrent {:?}", info.info_hash);
         let info_hash = info.info_hash.clone();
@@ -478,6 +479,7 @@ impl Disk {
         let b = downloaded_pieces.count_ones() * info.piece_length;
         debug!("already downloaded {b} bytes");
 
+        let info: Info = (*info).clone();
         self.write_incomplete_torrent_metainfo(info).await?;
 
         self.compute_torrent_state(&info_hash, &downloaded_pieces)?;
@@ -493,7 +495,9 @@ impl Disk {
         debug!("new torrent {:?}", metainfo.info.info_hash);
         let info_hash = metainfo.info.info_hash.clone();
 
-        self.torrent_info.insert(info_hash.clone(), metainfo.info.clone());
+        let info = Arc::new(metainfo.info.clone());
+
+        self.torrent_info.insert(info_hash.clone(), info);
 
         self.compute_torrent_cache(&metainfo.info);
 
@@ -1905,7 +1909,7 @@ mod tests {
         );
 
         let mut torrent = Torrent {
-            source: FromMagnet { magnet, info: Some(info.clone()) },
+            source: FromMagnet { magnet, info: Some(Arc::new(info.clone())) },
             state: Connected {
                 reconnect_interval,
                 heartbeat_interval,
@@ -1935,7 +1939,7 @@ mod tests {
         };
 
         disk.new_peer(peer_ctx.clone());
-        disk.add_torrent(torrent_ctx, info.clone()).await?;
+        disk.add_torrent(torrent_ctx, Arc::new(info)).await?;
 
         spawn(async move {
             let _ = disk.run().await;

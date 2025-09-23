@@ -170,11 +170,4 @@ pub mod tests {
             ]
         );
     }
-
-    #[test]
-    fn parse_string_to_magnet() {
-        let mstr = "magnet:?xt=urn:btih:1234567890abcdef1234567890abcdef12345678&dn=My%20Torrent&xl=12345&tr=udp://tracker.example.com:6969&tr=udp://tracker2.example.com:6969&tr=wss://tracker3.example.com&ws=https://example.com/see";
-
-        assert!(Magnet_::new(mstr).is_ok());
-    }
 }

@@ -334,7 +334,7 @@ pub trait TorrentSource {
 
 pub struct FromMagnet {
     pub magnet: Magnet,
-    pub info: Option<Info>,
+    pub info: Option<Arc<Info>>,
 }
 
 pub struct FromMetaInfo {
