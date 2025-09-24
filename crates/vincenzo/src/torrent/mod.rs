@@ -21,6 +21,7 @@ use crate::{
     daemon::{DaemonCtx, DaemonMsg},
     disk::{DiskMsg, ReturnToDisk},
     error::Error,
+    extensions::BlockInfo,
     metainfo::MetaInfo,
     peer::{self, Peer, PeerCtx, PeerId, PeerMsg},
     torrent,
@@ -125,7 +126,7 @@ impl<M: TorrentSource> Torrent<Idle, M> {
                 )
                 .await
                 {
-                    Ok((peers, st)) => {
+                    Ok((st, peers)) => {
                         info!("connected to a tracker");
                         if first_response_tx
                             .try_send((peers.clone(), st))
@@ -231,7 +232,7 @@ impl<M: TorrentSource, S: torrent::State> Torrent<S, M> {
         tx: mpsc::Sender<TorrentMsg>,
         tracker_rx: broadcast::Receiver<TrackerMsg>,
         size: u64,
-    ) -> Result<(Vec<SocketAddr>, Stats), Error> {
+    ) -> Result<(Stats, Vec<SocketAddr>), Error> {
         let mut tracker = Tracker::connect_to_tracker(
             tracker,
             info_hash,
@@ -241,23 +242,14 @@ impl<M: TorrentSource, S: torrent::State> Torrent<S, M> {
         )
         .await?;
 
-        let (res, payload) =
-            tracker.announce(Event::Started, 0, 0, size).await?;
-
-        let peers = tracker.parse_compact_peer_list(payload.as_ref())?;
-
-        let stats = Stats {
-            interval: res.interval,
-            seeders: res.seeders,
-            leechers: res.leechers,
-        };
+        let res = tracker.announce(Event::Started, 0, 0, size).await?;
 
         spawn(async move {
             tracker.run().await?;
             Ok::<(), Error>(())
         });
 
-        Ok((peers, stats))
+        Ok(res)
     }
 }
 
@@ -534,6 +526,49 @@ impl<M: TorrentSource> Torrent<Connected, M> {
         // let errored: Vec<_> =
         //     self.state.error_peers.drain(..).map(|v| v.state.addr).collect();
         // self.state.idle_peers.extend(errored);
+
+        Ok(())
+    }
+
+    /// Get the slowest peers, clone and send `qnt` block infos to the given
+    /// `peer_tx`.
+    pub async fn clone_block_infos_to_peer(
+        &mut self,
+        mut qnt: usize,
+        peer_tx: mpsc::Sender<PeerMsg>,
+    ) -> Result<(), Error> {
+        // sort connected peers by slowest to fastest.
+        self.state.connected_peers.sort_by(|a, b| {
+            a.counter.download_rate_u64().cmp(&b.counter.download_rate_u64())
+        });
+
+        let mut r = Vec::with_capacity(qnt);
+
+        for p in &self.state.connected_peers {
+            let (otx, orx) = oneshot::channel();
+            p.tx.send(PeerMsg::CloneBlocks(qnt, otx)).await?;
+            r.extend(orx.await?);
+
+            qnt = qnt.saturating_sub(r.len());
+
+            if qnt == 0 {
+                let mut tree: BTreeMap<usize, Vec<BlockInfo>> = BTreeMap::new();
+
+                for info in r {
+                    let e = tree.entry(info.index).or_default();
+                    e.push(info);
+                }
+
+                if peer_tx.send(PeerMsg::Blocks(tree.clone())).await.is_err() {
+                    let _ = self.ctx.free_tx.send(ReturnToDisk::Block(
+                        self.ctx.info_hash.clone(),
+                        tree,
+                    ));
+                }
+
+                break;
+            }
+        }
 
         Ok(())
     }

@@ -13,7 +13,7 @@ use crate::{extensions::BlockInfo, peer::DEFAULT_REQUEST_QUEUE_LEN};
 
 /// A type that can be requested.
 /// The `Into<usize>` bound refers to the ability of a requestable type to have
-/// an ID.
+/// a key to be grouped into.
 pub trait Requestable =
     Eq + Default + Clone + Ord + Hash where for<'a> &'a Self: Into<usize>;
 
@@ -58,13 +58,17 @@ impl<T: Requestable> Default for RequestManager<T> {
         Self {
             req_count: 0,
             downloaded_count: 0,
-            timeouts: BinaryHeap::default(),
+            timeouts: BinaryHeap::with_capacity(
+                DEFAULT_REQUEST_QUEUE_LEN as usize,
+            ),
             requests: BTreeMap::default(),
-            index: HashMap::default(),
+            index: HashMap::with_capacity(DEFAULT_REQUEST_QUEUE_LEN as usize),
             response_times: VecDeque::with_capacity(10),
             avg_response_time: Duration::ZERO,
             timeout_multiplier: 3.0,
-            request_start_times: HashMap::default(),
+            request_start_times: HashMap::with_capacity(
+                DEFAULT_REQUEST_QUEUE_LEN as usize,
+            ),
             limit: DEFAULT_REQUEST_QUEUE_LEN as usize,
         }
     }
@@ -203,6 +207,11 @@ impl<T: Requestable> RequestManager<T> {
         true
     }
 
+    /// Clone requests by `qnt`.
+    pub fn clone_requests(&mut self, qnt: usize) -> Vec<T> {
+        self.requests.values().flatten().take(qnt).cloned().collect::<Vec<_>>()
+    }
+
     /// Return true if the request exists, and false otherwise.
     pub fn remove_request(&mut self, block: &T) -> bool {
         let Some(pos) = self.index.remove(block) else { return false };
@@ -311,6 +320,7 @@ impl<T: Requestable> RequestManager<T> {
         self.index.contains_key(v)
     }
 
+    /// How many in-flight items there are.
     pub fn len(&self) -> usize {
         self.index.len()
     }
@@ -319,6 +329,12 @@ impl<T: Requestable> RequestManager<T> {
         self.requests.len()
     }
 
+    /// If there are no more items to request.
+    pub fn is_requests_empty(&self) -> bool {
+        self.requests.is_empty()
+    }
+
+    /// If there are no items in-flight.
     pub fn is_empty(&self) -> bool {
         self.index.is_empty()
     }

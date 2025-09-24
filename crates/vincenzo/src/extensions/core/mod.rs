@@ -38,8 +38,10 @@ pub const PSTR_LEN: usize = 19;
 pub struct Block {
     /// The index of the piece this block belongs to.
     pub index: usize,
+
     /// The zero-based byte offset into the piece.
     pub begin: usize,
+
     /// The block's data. 16 KiB most of the times,
     /// but the last block of a piece *might* be smaller.
     // pub block: Vec<u8>,
@@ -54,9 +56,11 @@ impl Block {
             .index
             .try_into()
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+
         buf.put_u32(piece_index);
         buf.put_u32(self.begin as u32);
         buf.extend_from_slice(&self.block);
+
         Ok(())
     }
 
@@ -79,8 +83,10 @@ impl Block {
 pub struct BlockInfo {
     /// The index of the piece of which this is a block.
     pub index: usize,
+
     /// The zero-based byte offset into the piece.
     pub begin: usize,
+
     /// The block's length in bytes. <= 16 KiB
     pub len: usize,
 }
@@ -119,26 +125,32 @@ impl BlockInfo {
     pub fn new(index: usize, begin: usize, len: usize) -> Self {
         Self { index, begin, len }
     }
+
     pub fn index(mut self, index: usize) -> Self {
         self.index = index;
         self
     }
+
     pub fn begin(mut self, begin: usize) -> Self {
         self.begin = begin;
         self
     }
+
     pub fn len(mut self, len: usize) -> Self {
         self.len = len;
         self
     }
+
     /// Encodes the block info in the network binary protocol's format into the
     /// given buffer.
     pub fn encode(&self, buf: &mut BytesMut) -> io::Result<()> {
         buf.put_u32(self.index as u32);
         buf.put_u32(self.begin as u32);
         buf.put_u32(self.len as u32);
+
         Ok(())
     }
+
     /// Validate the [`BlockInfo`]. Like most clients, we only support
     /// data <= 16kiB.
     pub fn is_valid(&self) -> bool {

@@ -1,5 +1,4 @@
 use futures::SinkExt;
-use speedy::{BigEndian, Readable};
 use tokio::sync::oneshot;
 
 use crate::{
@@ -28,10 +27,9 @@ impl TryFrom<ExtendedMessage> for Holepunch {
             return Err(Error::PeerIdInvalid);
         }
 
-        let holepunch =
-            Holepunch::read_from_buffer_with_ctx(BigEndian {}, &value.1)?;
+        let holepunch = Holepunch::deserialize(&value.1)?;
 
-        Ok(holepunch)
+        todo!();
     }
 }
 
@@ -75,67 +73,67 @@ impl ExtMsgHandler<Holepunch, HolepunchData> for MsgHandler {
                 // send connect to the src
                 //
                 let Some(peer_ctx) = orx.await? else {
-                    peer.state
-                        .sink
-                        .send(
-                            ExtendedMessage(
-                                remote_ext_id,
-                                msg.error(HolepunchErrorCodes::NotConnected)
-                                    .try_into()?,
-                            )
-                            .into(),
-                        )
-                        .await?;
+                    // peer.state
+                    //     .sink
+                    //     .send(
+                    //         ExtendedMessage(
+                    //             remote_ext_id,
+                    //             msg.error(HolepunchErrorCodes::NotConnected)
+                    //                 .try_into()?,
+                    //         )
+                    //         .into(),
+                    //     )
+                    //     .await?;
                     return Ok(());
                 };
 
                 // if the peer doesn't support the holepunch protocol.
                 if peer.state.ext_states.holepunch.is_none() {
-                    peer.state
-                        .sink
-                        .send(
-                            ExtendedMessage(
-                                remote_ext_id,
-                                msg.error(HolepunchErrorCodes::NoSupport)
-                                    .try_into()?,
-                            )
-                            .into(),
-                        )
-                        .await?;
+                    // peer.state
+                    //     .sink
+                    //     .send(
+                    //         ExtendedMessage(
+                    //             remote_ext_id,
+                    //             msg.error(HolepunchErrorCodes::NoSupport)
+                    //                 .try_into()?,
+                    //         )
+                    //         .into(),
+                    //     )
+                    //     .await?;
                     return Ok(());
                 }
 
-                peer.state
-                    .sink
-                    .send(
-                        ExtendedMessage(
-                            remote_ext_id,
-                            Holepunch::connect(
-                                peer_ctx.remote_addr.into(),
-                                peer_ctx.remote_addr.port(),
-                            )
-                            .try_into()?,
-                        )
-                        .into(),
-                    )
-                    .await?;
+                // peer.state
+                //     .sink
+                //     .send(
+                //         ExtendedMessage(
+                //             remote_ext_id,
+                //             Holepunch::connect(
+                //                 peer_ctx.remote_addr.into(),
+                //                 peer_ctx.remote_addr.port(),
+                //             )
+                //             .try_into()?,
+                //         )
+                //         .into(),
+                //     )
+                //     .await?;
                 //
                 // send connect to the target
                 //
-                peer.state
-                    .sink
-                    .send(
-                        ExtendedMessage(
-                            remote_ext_id,
-                            Holepunch::connect(
-                                peer.state.ctx.remote_addr.into(),
-                                peer.state.ctx.remote_addr.port(),
-                            )
-                            .try_into()?,
-                        )
-                        .into(),
-                    )
-                    .await?;
+                // peer.state
+                //     .sink
+                //     .send(
+                //         ExtendedMessage(
+                //             remote_ext_id,
+                //             Holepunch::connect(
+                //                 peer.state.ctx.remote_addr.into(),
+                //                 peer.state.ctx.remote_addr.port(),
+                //             )
+                //             .try_into()?,
+                //         )
+                //         .into(),
+                //     )
+                //     .await?;
             }
             HolepunchMsgType::Connect => {
                 // try to do handshake

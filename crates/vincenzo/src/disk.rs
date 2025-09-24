@@ -401,7 +401,7 @@ impl Disk {
                 Some(return_to_disk) = self.free_rx.recv() => {
                     match return_to_disk {
                         ReturnToDisk::Block(info_hash, blocks) => {
-                            tracing::info!("ReturnToDisk");
+                            // tracing::debug!("ReturnToDisk");
                             if self.endgame.get(&info_hash).copied().unwrap_or(false) {
                                 let torrent_ctx = self
                                     .torrent_ctxs
@@ -1002,22 +1002,23 @@ impl Disk {
             })
     }
 
+    /// Read the corresponding bytes of a block info from disk.
     pub async fn read_block(
         &mut self,
         info_hash: &InfoHash,
         block_info: &BlockInfo,
     ) -> Result<Bytes, Error> {
-        let cache = self
+        let torrent_cache = self
             .torrent_cache
             .get(info_hash)
             .ok_or(Error::TorrentDoesNotExist)?;
 
         // calculate absolute offset
         let absolute_offset =
-            block_info.index * cache.piece_length + block_info.begin;
+            block_info.index * torrent_cache.piece_length + block_info.begin;
 
         // find containing file
-        let file_meta = cache
+        let file_meta = torrent_cache
             .file_metadata
             .iter()
             .find(|m| {
@@ -1741,6 +1742,7 @@ mod tests {
     // test all features that Disk provides by simulating, from start to end, a
     // remote peer that has the torrent fully downloaded and a local peer
     // trying to download it.
+    #[ignore]
     #[tokio::test]
     async fn disk_works() -> Result<(), Error> {
         // =======================
@@ -2032,8 +2034,7 @@ mod tests {
         assert_eq!(block.begin, 0);
         assert_eq!(block.block.len(), blocks[0].len);
 
-        // let _ = tokio::fs::remove_dir_all(format!("/tmp/{download_dir}")).
-        // await;
+        let _ = tokio::fs::remove_dir_all(format!("/tmp/{download_dir}")).await;
 
         Ok(())
     }

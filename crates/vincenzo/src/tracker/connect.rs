@@ -1,11 +1,11 @@
-use speedy::{BigEndian, Readable, Writable};
-use tracing::debug;
-
-use crate::error::Error;
-
 use super::action::Action;
-
-#[derive(Debug, PartialEq, Clone, Readable, Writable)]
+use crate::error::Error;
+use rkyv::{
+    Archive, Deserialize, Serialize, api::high::to_bytes_with_alloc,
+    ser::allocator::Arena, util::AlignedVec,
+};
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize, Archive)]
+#[rkyv(compare(PartialEq), derive(Debug))]
 pub struct Request {
     pub protocol_id: u64,
     pub action: Action,
@@ -19,7 +19,7 @@ impl Default for Request {
 }
 
 impl Request {
-    pub const LENGTH: usize = 16;
+    pub const LEN: usize = 16;
     const MAGIC: u64 = 0x41727101980;
 
     pub fn new() -> Self {
@@ -30,8 +30,18 @@ impl Request {
         }
     }
 
-    pub fn serialize(&self) -> [u8; 16] {
-        tracing::trace!("sending connect request {self:#?}");
+    /// Zero-copy serialize, this takes around `484ns` in release mode while
+    /// serializing by hand takes around `1.94µs`, around 4x faster.
+    pub fn serialize(&self) -> Result<AlignedVec, Error> {
+        let mut arena = Arena::with_capacity(16);
+        Ok(to_bytes_with_alloc::<_, rkyv::rancor::Error>(
+            self,
+            arena.acquire(),
+        )?)
+    }
+
+    #[cfg(test)]
+    fn serialize_hand(&self) -> [u8; 16] {
         let mut buf = [0u8; 16];
         buf[..8].copy_from_slice(&Self::MAGIC.to_be_bytes());
         buf[8..12].copy_from_slice(&(self.action as u32).to_be_bytes());
@@ -39,19 +49,16 @@ impl Request {
         buf
     }
 
-    pub fn deserialize(buf: &[u8]) -> Result<(Self, &[u8]), Error> {
-        if buf.len() != Self::LENGTH {
+    pub fn deserialize(bytes: &[u8]) -> Result<&ArchivedRequest, Error> {
+        if bytes.len() != Self::LEN {
             return Err(Error::TrackerResponse);
         }
-
-        let req = Self::read_from_buffer_with_ctx(BigEndian {}, buf)
-            .map_err(Error::SpeedyError)?;
-
-        Ok((req, &buf[Self::LENGTH..]))
+        Ok(unsafe { rkyv::access_unchecked::<ArchivedRequest>(bytes) })
     }
 }
 
-#[derive(Debug, PartialEq, Readable, Writable)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, Archive)]
+#[rkyv(compare(PartialEq), derive(Debug))]
 pub struct Response {
     pub action: u32,
     pub transaction_id: u32,
@@ -59,10 +66,11 @@ pub struct Response {
 }
 
 impl Response {
-    pub(crate) const LENGTH: usize = 16;
+    pub(crate) const LEN: usize = 16;
 
-    pub fn deserialize(buf: &[u8]) -> Result<(Self, &[u8]), Error> {
-        if buf.len() != Self::LENGTH {
+    #[cfg(test)]
+    pub(crate) fn hand(buf: &[u8]) -> Result<Self, Error> {
+        if buf.len() != Self::LEN {
             return Err(Error::TrackerResponse);
         }
 
@@ -74,13 +82,65 @@ impl Response {
             buf[15],
         ]);
 
-        Ok((
-            Self { action, transaction_id, connection_id },
-            &buf[Self::LENGTH..],
-        ))
+        Ok(Self { action, transaction_id, connection_id })
     }
 
-    pub fn serialize(&self) -> Vec<u8> {
-        self.write_to_vec_with_ctx(BigEndian {}).unwrap()
+    pub fn deserialize(bytes: &[u8]) -> Result<&ArchivedResponse, Error> {
+        if bytes.len() != Self::LEN {
+            return Err(Error::TrackerResponse);
+        }
+        Ok(unsafe { rkyv::access_unchecked::<ArchivedResponse>(bytes) })
+    }
+
+    pub fn serialize(&self) -> Result<AlignedVec, Error> {
+        let mut arena = Arena::with_capacity(Self::LEN);
+        Ok(to_bytes_with_alloc::<_, rkyv::rancor::Error>(
+            self,
+            arena.acquire(),
+        )?)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio::time::Instant;
+
+    use super::*;
+
+    #[ignore]
+    #[test]
+    fn serialize() {
+        let n = Request::new();
+
+        let now = Instant::now();
+        let b = n.serialize_hand();
+        let time = Instant::now().duration_since(now);
+        println!("hand: {time:?}");
+
+        let now = Instant::now();
+        let c = n.serialize().unwrap();
+        let time = Instant::now().duration_since(now);
+        println!("rkyv: {time:?}");
+
+        assert_eq!(b, *c);
+    }
+
+    #[test]
+    #[ignore]
+    fn deserialize() {
+        let n = Response { action: 2, connection_id: 123, transaction_id: 987 };
+        let b = n.serialize().unwrap();
+
+        let now = Instant::now();
+        let _ = Response::hand(&b).unwrap();
+        let time = Instant::now().duration_since(now);
+        println!("hand: {time:?}");
+
+        let now = Instant::now();
+        let d = Response::deserialize(&b).unwrap();
+        let time = Instant::now().duration_since(now);
+        println!("rkyv: {time:?}");
+
+        assert_eq!(n, *d);
     }
 }

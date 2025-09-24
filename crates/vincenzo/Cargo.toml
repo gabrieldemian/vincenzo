@@ -15,6 +15,7 @@ exclude = ["tests/*", "*.log"]
 [dependencies]
 int-enum = "1.2.0"
 bincode = { workspace = true }
+rkyv = { workspace = true }
 lru = { workspace = true }
 bendy = { workspace = true }
 rayon = { workspace = true }
@@ -31,7 +32,6 @@ magnet-url = { workspace = true }
 rand = { workspace = true }
 serde = { workspace = true }
 sha1 = { workspace = true }
-speedy = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }

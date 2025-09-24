@@ -7,7 +7,6 @@ mod r#trait;
 
 // re-exports
 pub use codec::*;
-use speedy::{Context, Readable, Writable, Writer};
 pub use r#trait::*;
 
 use bendy::{
@@ -15,7 +14,7 @@ use bendy::{
     encoding::ToBencode,
 };
 
-use crate::{error::Error, extensions::Metadata};
+use crate::extensions::Metadata;
 
 /// This is the payload of the extension protocol described on:
 /// BEP 0010 - Extension Protocol
@@ -46,30 +45,6 @@ pub struct Extension {
     // pub complete_ago: Option<u8>,
     // pub ipv4: Option<u8>,
     // pub ipv6: Option<u8>,
-}
-
-impl<'a, C: Context> Readable<'a, C> for Extension {
-    fn read_from<R: speedy::Reader<'a, C>>(
-        reader: &mut R,
-    ) -> Result<Self, C::Error> {
-        let bytes = reader
-            .read_vec_until_eof::<u8>()
-            .map_err(|_| speedy::Error::custom(Error::BencodeError.to_string()))
-            .unwrap();
-        Ok(Self::from_bencode(&bytes).map_err(|_| {
-            speedy::Error::custom(Error::BencodeError.to_string())
-        })?)
-    }
-}
-
-impl<C: Context> Writable<C> for Extension {
-    fn write_to<T: ?Sized + Writer<C>>(
-        &self,
-        writer: &mut T,
-    ) -> Result<(), C::Error> {
-        let b = self.to_bencode().unwrap();
-        writer.write_bytes(&b)
-    }
 }
 
 impl Extension {
@@ -118,30 +93,6 @@ pub struct M {
 
     // BEP 0055.
     // pub ut_holepunch: Option<u8>,
-}
-
-impl<'a, C: Context> Readable<'a, C> for M {
-    fn read_from<R: speedy::Reader<'a, C>>(
-        reader: &mut R,
-    ) -> Result<Self, C::Error> {
-        let bytes = reader
-            .read_vec_until_eof::<u8>()
-            .map_err(|_| speedy::Error::custom(Error::BencodeError.to_string()))
-            .unwrap();
-        Ok(Self::from_bencode(&bytes).map_err(|_| {
-            speedy::Error::custom(Error::BencodeError.to_string())
-        })?)
-    }
-}
-
-impl<C: Context> Writable<C> for M {
-    fn write_to<T: ?Sized + Writer<C>>(
-        &self,
-        writer: &mut T,
-    ) -> Result<(), C::Error> {
-        let b = self.to_bencode().unwrap();
-        writer.write_bytes(&b)
-    }
 }
 
 impl M {
@@ -301,13 +252,13 @@ mod tests {
         let b = M::from_bencode(a).unwrap();
         println!("{b:?}");
 
-        let x = b.write_to_vec().unwrap();
+        let x = b.to_bencode().unwrap();
         println!("{x:?}");
 
-        let x = M::read_from_buffer(&x).unwrap();
+        let x = M::from_bencode(&x).unwrap();
         println!("{x:?}");
 
-        let x = b.write_to_vec().unwrap();
+        let x = b.to_bencode().unwrap();
         println!("{x:?}");
     }
 

@@ -12,7 +12,7 @@ use futures::{
     stream::{SplitSink, SplitStream, StreamExt},
 };
 use rand::{Rng, distr::Alphanumeric};
-use speedy::{Readable, Writable};
+use rkyv::{Archive, Deserialize, Serialize};
 use tokio::{
     net::TcpStream,
     sync::{
@@ -39,7 +39,10 @@ use crate::{
     torrent::{PeerBrMsg, TorrentCtx, TorrentMsg, TorrentStatus},
 };
 
-#[derive(Clone, PartialEq, Eq, Hash, Default, Readable, Writable)]
+#[derive(
+    Clone, PartialEq, Eq, Hash, Default, Serialize, Deserialize, Archive,
+)]
+#[rkyv(compare(PartialEq), derive(Debug))]
 pub struct PeerId(pub [u8; 20]);
 
 pub const DEFAULT_REQUEST_QUEUE_LEN: u16 = 250;
@@ -63,7 +66,7 @@ impl PeerId {
 }
 
 /// Only used for logging the state of the per in a compact way.
-/// am_choking, am_interested, peer_choking, peer_interested
+/// am_choking[0], am_interested[1], peer_choking[2], peer_interested[3]
 #[derive(PartialEq, Eq)]
 pub(crate) struct StateLog(pub [char; 4]);
 
@@ -200,6 +203,8 @@ pub enum PeerMsg {
 
     /// Send block infos to this peer.
     Blocks(BTreeMap<usize, Vec<BlockInfo>>),
+
+    CloneBlocks(usize, oneshot::Sender<Vec<BlockInfo>>),
 }
 
 /// Determines who initiated the connection.

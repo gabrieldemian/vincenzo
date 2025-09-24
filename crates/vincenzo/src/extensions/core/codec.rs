@@ -16,8 +16,6 @@ use crate::{
     torrent::TorrentMsg,
 };
 
-pub static MAX_MESSAGE_SIZE: usize = 2 * 1024 * 1024; // 2MB maximum message size
-
 /// State that comes with the Core protocol.
 #[derive(Clone)]
 pub struct CoreState {
@@ -55,18 +53,25 @@ impl Default for CoreState {
 }
 
 impl Core {
+    /// Calculate the length of the message in bytes.
     #[allow(clippy::len_without_is_empty)]
-    pub fn len(&self) -> usize {
+    pub fn len(&self) -> u32 {
         use Core::*;
+
         match self {
-            KeepAlive => 4,
-            Choke | Unchoke | Interested | NotInterested => 4 + 1,
-            Cancel(_) | Request(_) => 4 + 4 + 4,
-            Have(_) => 4 + 1 + 4,
-            Bitfield(b) => 4 + 1 + b.to_bitvec().len(),
-            Piece(b) => 4 + 1 + 4 + 4 + b.block.len(),
-            Extended(m) => 4 + 1 + 1 + m.1.len(),
+            KeepAlive => 0,
+            Choke | Unchoke | Interested | NotInterested => 1,
+            Cancel(_) | Request(_) => 1 + 4 + 4 + 4,
+            Have(_) => 1 + 4,
+            Bitfield(b) => 1 + (b.as_raw_slice().len() as u32),
+            Piece(b) => 1 + 4 + 4 + b.block.len() as u32,
+            Extended(m) => 1 + 1 + m.1.len() as u32,
         }
+    }
+
+    /// The len of the message with the 4 bytes at the beggining.
+    pub fn full_len(&self) -> u32 {
+        4 + self.len()
     }
 }
 
@@ -180,25 +185,25 @@ impl ExtMsgHandler<Core, CoreState> for MsgHandler {
             }
             Core::Unchoke => {
                 peer.state.ctx.peer_choking.store(false, Ordering::Relaxed);
-                peer.state_log[3] = 'u';
+                peer.state_log[2] = 'u';
                 debug!("< unchoke");
             }
             Core::Choke => {
                 debug!("< choke");
                 peer.state.ctx.peer_choking.store(true, Ordering::Relaxed);
                 peer.free_pending_blocks();
-                peer.state_log[3] = '-';
+                peer.state_log[2] = '-';
             }
             Core::Interested => {
                 // remote peer is interested the local peer
                 debug!("< interested");
                 peer.state.ctx.peer_interested.store(true, Ordering::Relaxed);
-                peer.state_log[4] = 'i';
+                peer.state_log[3] = 'i';
             }
             Core::NotInterested => {
                 debug!("< not_interested");
                 peer.state.ctx.peer_interested.store(false, Ordering::Relaxed);
-                peer.state_log[4] = '-';
+                peer.state_log[3] = '-';
             }
             Core::Have(piece) => {
                 debug!("< have {piece}");
@@ -263,34 +268,33 @@ impl Encoder<Core> for CoreCodec {
         item: Core,
         buf: &mut BytesMut,
     ) -> Result<(), Self::Error> {
+        let msg_len = item.len();
         match item {
             Core::KeepAlive => {
-                buf.put_u32(0);
+                buf.put_u32(msg_len);
             }
             Core::Bitfield(bitfield) => {
-                let v = bitfield.into_vec();
-                buf.put_u32(1 + v.len() as u32);
+                buf.put_u32(msg_len);
                 buf.put_u8(CoreId::Bitfield as u8);
-                buf.extend_from_slice(&v);
+                buf.extend_from_slice(bitfield.as_raw_slice());
             }
             Core::Choke => {
-                buf.put_u32(1);
+                buf.put_u32(msg_len);
                 buf.put_u8(CoreId::Choke as u8);
             }
             Core::Unchoke => {
-                buf.put_u32(1);
+                buf.put_u32(msg_len);
                 buf.put_u8(CoreId::Unchoke as u8);
             }
             Core::Interested => {
-                buf.put_u32(1);
+                buf.put_u32(msg_len);
                 buf.put_u8(CoreId::Interested as u8);
             }
             Core::NotInterested => {
-                buf.put_u32(1);
+                buf.put_u32(msg_len);
                 buf.put_u8(CoreId::NotInterested as u8);
             }
             Core::Have(piece_index) => {
-                let msg_len = 1 + 4;
                 buf.put_u32(msg_len);
                 buf.put_u8(CoreId::Have as u8);
                 let piece_index = piece_index.try_into().map_err(|e| {
@@ -300,15 +304,12 @@ impl Encoder<Core> for CoreCodec {
             }
             // <len=0013><id=6><index><begin><length>
             Core::Request(block) => {
-                let msg_len = 1 + 4 + 4 + 4;
                 buf.put_u32(msg_len);
                 buf.put_u8(CoreId::Request as u8);
                 block.encode(buf)?;
             }
             Core::Piece(block) => {
                 let Block { index, begin, block } = block;
-
-                let msg_len = 1 + 4 + 4 + block.len() as u32;
 
                 buf.put_u32(msg_len);
                 buf.put_u8(CoreId::Piece as u8);
@@ -322,16 +323,11 @@ impl Encoder<Core> for CoreCodec {
                 buf.put(&block[..]);
             }
             Core::Cancel(block) => {
-                let msg_len = 1 + 4 + 4 + 4;
-
                 buf.put_u32(msg_len);
                 buf.put_u8(CoreId::Cancel as u8);
-
                 block.encode(buf)?;
             }
             Core::Extended(ExtendedMessage(ext_id, payload)) => {
-                let msg_len = payload.len() as u32 + 2;
-
                 buf.put_u32(msg_len);
                 buf.put_u8(CoreId::Extended as u8);
                 buf.put_u8(ext_id);

@@ -177,7 +177,7 @@ impl Decoder for HandshakeCodec {
         let mut handshake = Handshake {
             pstr,
             pstr_len: PSTR_LEN as u8,
-            reserved: Reserved::new(reserved),
+            reserved: reserved.into(),
             info_hash: InfoHash(info_hash),
             peer_id: PeerId(peer_id),
             ext: None,

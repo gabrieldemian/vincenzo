@@ -6,10 +6,16 @@ use crate::{error::Error, extensions::ExtMsg};
 
 pub use codec::*;
 use int_enum::IntEnum;
-use speedy::{BigEndian, Readable, Writable};
+use rkyv::{
+    Archive, Deserialize, Serialize, api::high::to_bytes_with_alloc,
+    ser::allocator::Arena, util::AlignedVec,
+};
 
 #[repr(u8)]
-#[derive(PartialEq, Debug, Readable, Writable, Clone, Copy, IntEnum)]
+#[derive(
+    PartialEq, Debug, Serialize, Deserialize, Archive, Clone, Copy, IntEnum,
+)]
+#[rkyv(compare(PartialEq), derive(Debug))]
 pub enum HolepunchMsgType {
     /// Send connect messages to both the initiating peer and target peer
     Rendezvous = 0,
@@ -23,8 +29,17 @@ pub enum HolepunchMsgType {
 
 #[repr(u8)]
 #[derive(
-    PartialEq, Debug, Readable, Writable, Clone, Copy, Default, IntEnum,
+    PartialEq,
+    Debug,
+    Serialize,
+    Deserialize,
+    Archive,
+    Clone,
+    Copy,
+    Default,
+    IntEnum,
 )]
+#[rkyv(compare(PartialEq), derive(Debug))]
 pub enum HolepunchErrorCodes {
     /// No error
     #[default]
@@ -44,14 +59,18 @@ pub enum HolepunchErrorCodes {
 }
 
 #[repr(u8)]
-#[derive(PartialEq, Debug, Readable, Writable, Clone, Copy, IntEnum)]
+#[derive(
+    PartialEq, Debug, Serialize, Deserialize, Archive, Clone, Copy, IntEnum,
+)]
+#[rkyv(compare(PartialEq), derive(Debug))]
 pub enum HolepunchAddrType {
     Ipv4 = 0,
     Ipv6 = 1,
 }
 
 #[repr(u8)]
-#[derive(PartialEq, Debug, Readable, Writable, Clone, Copy)]
+#[derive(PartialEq, Debug, Serialize, Deserialize, Archive, Clone, Copy)]
+#[rkyv(compare(PartialEq), derive(Debug))]
 pub enum HolepunchAddr {
     Ipv4(u32),
     Ipv6(u128),
@@ -79,20 +98,21 @@ impl From<SocketAddr> for HolepunchAddr {
     }
 }
 
-#[derive(PartialEq, Debug, Readable, Writable, Clone)]
+#[derive(PartialEq, Debug, Serialize, Deserialize, Archive, Clone)]
+#[rkyv(compare(PartialEq), derive(Debug))]
 pub struct Holepunch {
-    pub msg_type: HolepunchMsgType,
+    pub msg_type: HolepunchMsgType, // 1 byte
 
-    pub addr_type: HolepunchAddrType,
-
-    /// big-endian
-    pub addr: HolepunchAddr,
+    pub addr_type: HolepunchAddrType, // 1 byte
 
     /// big-endian
-    pub port: u16,
+    pub addr: HolepunchAddr, // 16 bytes
+
+    /// big-endian
+    pub port: u16, // 2 bytes
 
     /// big-endian, 0 if non error messages.
-    pub err_code: HolepunchErrorCodes,
+    pub err_code: HolepunchErrorCodes, // 1 byte
 }
 
 impl ExtMsg for Holepunch {
@@ -100,6 +120,23 @@ impl ExtMsg for Holepunch {
 }
 
 impl Holepunch {
+    pub const LEN: usize = 21;
+
+    pub fn serialize(&self) -> Result<AlignedVec, Error> {
+        let mut arena = Arena::with_capacity(Self::LEN);
+        Ok(to_bytes_with_alloc::<_, rkyv::rancor::Error>(
+            self,
+            arena.acquire(),
+        )?)
+    }
+
+    pub fn deserialize(bytes: &[u8]) -> Result<&ArchivedHolepunch, Error> {
+        if bytes.len() != Self::LEN {
+            return Err(Error::TrackerResponse);
+        }
+        Ok(unsafe { rkyv::access_unchecked::<ArchivedHolepunch>(bytes) })
+    }
+
     pub fn error(self, err_code: HolepunchErrorCodes) -> Self {
         Self {
             msg_type: self.msg_type,
@@ -158,19 +195,19 @@ impl Holepunch {
     }
 }
 
-impl TryFrom<Vec<u8>> for Holepunch {
-    type Error = Error;
-    fn try_from(value: Vec<u8>) -> Result<Self, Self::Error> {
-        Ok(Self::read_from_buffer_with_ctx(BigEndian {}, &value)?)
-    }
-}
-
-impl TryInto<Vec<u8>> for Holepunch {
-    type Error = Error;
-    fn try_into(self) -> Result<Vec<u8>, Self::Error> {
-        Ok(self.write_to_vec_with_ctx(BigEndian {})?)
-    }
-}
+// impl TryFrom<Vec<u8>> for Holepunch {
+//     type Error = Error;
+//     fn try_from(value: Vec<u8>) -> Result<Self, Self::Error> {
+//         Ok(Self::read_from_buffer_with_ctx(BigEndian {}, &value)?)
+//     }
+// }
+//
+// impl TryInto<Vec<u8>> for Holepunch {
+//     type Error = Error;
+//     fn try_into(self) -> Result<Vec<u8>, Self::Error> {
+//         Ok(self.write_to_vec_with_ctx(BigEndian {})?)
+//     }
+// }
 
 // 1. The initiating peer (client) sends a rendezvous message to the relaying
 //    peer, containing the endpoint (IP address and port) of the target peer

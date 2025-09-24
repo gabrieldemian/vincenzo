@@ -21,7 +21,6 @@ rand = { workspace = true }
 ratatui = { workspace = true }
 serde = { workspace = true }
 sha1 = { workspace = true }
-speedy = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }

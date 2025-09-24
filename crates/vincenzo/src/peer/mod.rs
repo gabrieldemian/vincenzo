@@ -8,7 +8,7 @@ mod request_manager;
 pub use request_manager::RequestManager;
 
 use futures::{SinkExt, StreamExt};
-use std::{sync::atomic::Ordering, time::Duration};
+use std::{collections::BTreeMap, sync::atomic::Ordering, time::Duration};
 use tokio::{
     select,
     sync::oneshot,
@@ -38,6 +38,7 @@ use crate::{
 #[derive(Default, PartialEq, Eq)]
 pub struct Peer<S: PeerState> {
     pub state: S,
+    /// am_choking[0], am_interested[1], peer_choking[2], peer_interested[3]
     pub(crate) state_log: StateLog,
 }
 
@@ -51,7 +52,7 @@ impl Peer<Connected> {
     /// on the peer wire protocol.
     #[tracing::instrument(name = "peer", skip_all,
         fields(
-            state = %self.state_log,
+            state = %self.state_log(),
             addr = %self.state.ctx.remote_addr,
         )
     )]
@@ -92,7 +93,7 @@ impl Peer<Connected> {
                     self.rerequest_metadata().await?;
                 }
                 _ = block_interval.tick(), if self.can_request() => {
-                    self.request_blocks().await?;
+                    self.request_blocks_disk().await?;
                     self.rerequest_blocks().await?;
                 }
                 _ = interested_interval.tick(),
@@ -178,7 +179,7 @@ impl Peer<Connected> {
                 Ok(msg) = brx.recv() => {
                     match msg {
                         PeerBrMsg::NewPeer(ctx) => {
-                            if self.state.in_endgame {
+                            if self.state.in_endgame && self.can_request() {
                                 let blocks = self.state.req_man_block.get_requests();
                                 let _ = ctx.tx.send(PeerMsg::Blocks(blocks)).await;
                             }
@@ -213,11 +214,7 @@ impl Peer<Connected> {
                             self.state.is_paused = false;
                         }
                         PeerBrMsg::Seedonly => {
-                            debug!("seed_only");
-                            self.state.seed_only = true;
-                            self.state.ctx.tx.send(PeerMsg::Unchoke).await?;
-                            self.state.req_man_meta.clear();
-                            self.state.req_man_block.clear();
+                            self.seed_only().await?;
                         }
                         PeerBrMsg::Quit => {
                             debug!("quit");
@@ -232,8 +229,12 @@ impl Peer<Connected> {
                 }
                 Some(msg) = self.state.rx.recv() => {
                     match msg {
+                        PeerMsg::CloneBlocks(qnt, tx) => {
+                            let reqs = self.state.req_man_block.clone_requests(qnt);
+                            let _ = tx.send(reqs);
+                        }
                         PeerMsg::Blocks(blocks) => {
-                            self.state.req_man_block.extend(blocks);
+                            self.request_blocks(blocks).await?;
                         }
                         PeerMsg::NotInterested => {
                             debug!("> not_interested");
@@ -263,6 +264,27 @@ impl Peer<Connected> {
                 }
             }
         }
+    }
+
+    const fn state_log(&self) -> &StateLog {
+        &self.state_log
+    }
+
+    /// Enter seed only mode and send Cancel's for in-flight block infos.
+    pub async fn seed_only(&mut self) -> Result<(), Error> {
+        debug!("seed_only");
+        self.state.seed_only = true;
+        self.state.ctx.tx.send(PeerMsg::Unchoke).await?;
+
+        for block in
+            self.state.req_man_block.drain().into_iter().flat_map(|v| v.1)
+        {
+            self.send(Core::Cancel(block)).await?;
+        }
+
+        self.state.req_man_meta.clear();
+
+        Ok(())
     }
 
     /// Check if we can request new blocks, if:
@@ -330,7 +352,7 @@ impl Peer<Connected> {
     pub fn free_pending_blocks(&mut self) {
         let blocks = self.state.req_man_block.drain();
 
-        tracing::info!(
+        tracing::debug!(
             "returning {} blocks",
             blocks.iter().fold(0, |acc, v| acc + v.1.len())
         );
@@ -354,16 +376,52 @@ impl Peer<Connected> {
         }
     }
 
-    /// Request new block infos to this Peer.
+    pub async fn request_blocks(
+        &mut self,
+        blocks: BTreeMap<usize, Vec<BlockInfo>>,
+    ) -> Result<(), Error> {
+        for block in blocks
+            .values()
+            .flatten()
+            .take(self.state.req_man_block.get_available_request_len())
+        {
+            if self.state.req_man_block.add_request(block.clone()) {
+                self.feed(Core::Request(block.clone())).await?;
+            }
+        }
+        self.state.sink.flush().await?;
+        Ok(())
+    }
+
+    /// Request block infos by requesting to the Disk.
     /// Must be used after checking that the Peer is able to send blocks with
     /// [`Self::can_request`].
-    pub async fn request_blocks(&mut self) -> Result<(), Error> {
+    pub async fn request_blocks_disk(&mut self) -> Result<(), Error> {
         // max available requests for this peer at the current moment
         let qnt = self.state.req_man_block.get_available_request_len();
 
         if qnt == 0 {
             return Ok(());
         };
+
+        // if the torrent is downloading and the peer is out of block infos to
+        // request, the peer will request more. This usually happens for fast
+        // peers at the end of the download.
+        let is_idle = self.state.req_man_block.is_requests_empty()
+            && self.state.req_man_block.downloaded_count > 0
+            && self.state.req_man_block.req_count > 0;
+
+        if is_idle {
+            self.state
+                .ctx
+                .torrent_ctx
+                .tx
+                .send(TorrentMsg::CloneBlockInfosToPeer(
+                    qnt,
+                    self.state.ctx.tx.clone(),
+                ))
+                .await?;
+        }
 
         // get a list of block_infos from the Disk,
         // these are blocks that the Peer has on it's bitfield, and that the
@@ -504,14 +562,14 @@ impl Peer<Connected> {
     /// Send a message to sink and record upload rate, but the sink is not
     /// flushed.
     pub async fn feed(&mut self, core: Core) -> Result<(), Error> {
-        self.state.ctx.counter.record_upload(core.len() as u64);
+        self.state.ctx.counter.record_upload(core.full_len() as u64);
         self.state.sink.feed(core).await?;
         Ok(())
     }
 
     /// Send a message to sink and record upload rate and flush.
     pub async fn send(&mut self, core: Core) -> Result<(), Error> {
-        self.state.ctx.counter.record_upload(core.len() as u64);
+        self.state.ctx.counter.record_upload(core.full_len() as u64);
         self.state.sink.send(core).await?;
         Ok(())
     }

@@ -62,6 +62,9 @@ pub enum Error {
     #[error("Join error: {0}")]
     JoinError(#[from] JoinError),
 
+    #[error("Rkyv error: {0}")]
+    Rkyv(#[from] rkyv::rancor::Error),
+
     #[error("Failed to send a connect request to the tracker")]
     MagnetError(#[from] magnet_url::MagnetError),
 
@@ -120,9 +123,6 @@ pub enum Error {
 
     #[error("Could not connect to the UDP socket of the tracker")]
     TrackerSocketConnect,
-
-    #[error("Error when serializing/deserializing")]
-    SpeedyError(#[from] speedy::Error),
 
     #[error("Error while trying to load configuration: `{0}")]
     FromConfigError(#[from] config::ConfigError),

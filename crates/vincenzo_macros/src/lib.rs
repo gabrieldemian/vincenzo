@@ -72,7 +72,7 @@ impl Parse for ExtArgs {
 
 /// Implement ExtensionTrait on the struct.
 /// Usage:
-/// ```
+/// ```ignore
 /// #[derive(Extension)]
 /// #[extension(id = 3, codec = MetadataCodec)]
 /// pub struct MetadataExt;

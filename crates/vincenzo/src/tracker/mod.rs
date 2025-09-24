@@ -14,7 +14,7 @@ use std::{
 use crate::{
     error::Error,
     peer::PeerId,
-    torrent::{InfoHash, TorrentMsg},
+    torrent::{InfoHash, Stats, TorrentMsg},
 };
 use tokio::{
     net::{ToSocketAddrs, UdpSocket},
@@ -42,9 +42,7 @@ static ANNOUNCE_RES_BUF_LEN: usize = 8192;
 pub trait TrackerTrait: Sized {
     /// Before doing an `announce`, a client must perform a connect
     /// exchange, to obtain a connection_id.
-    fn connect(
-        &mut self,
-    ) -> impl Future<Output = Result<connect::Response, Error>> + Send;
+    fn connect(&mut self) -> impl Future<Output = Result<(), Error>> + Send;
 
     /// An announce is the communication of the local peer to the tracker, for
     /// example:
@@ -61,7 +59,7 @@ pub trait TrackerTrait: Sized {
         downloaded: u64,
         uploaded: u64,
         left: u64,
-    ) -> impl Future<Output = Result<(announce::Response, Vec<u8>), Error>>;
+    ) -> impl Future<Output = Result<(Stats, Vec<SocketAddr>), Error>>;
 
     /// Support for BEP23
     fn parse_compact_peer_list(
@@ -98,12 +96,12 @@ pub enum TrackerMsg {
 }
 
 impl TrackerTrait for Tracker<Udp> {
-    async fn connect(&mut self) -> Result<connect::Response, Error> {
+    async fn connect(&mut self) -> Result<(), Error> {
         let req = connect::Request::new();
-        let mut buf = [0u8; connect::Response::LENGTH];
+        let mut buf = [0u8; connect::Response::LEN];
         let mut len: usize = 0;
 
-        self.state.socket.send(&req.serialize()).await?;
+        self.state.socket.send(&req.serialize()?).await?;
 
         let mut retransmit = 30;
 
@@ -128,7 +126,7 @@ impl TrackerTrait for Tracker<Udp> {
                         "tracker connect request was lost, trying again in \
                          {retransmit}s"
                     );
-                    self.state.socket.send(&req.serialize()).await?;
+                    self.state.socket.send(&req.serialize()?).await?;
                 }
             }
         }
@@ -137,7 +135,7 @@ impl TrackerTrait for Tracker<Udp> {
             return Err(Error::TrackerResponse);
         }
 
-        let (res, _) = connect::Response::deserialize(&buf)?;
+        let res = connect::Response::deserialize(&buf)?;
 
         tracing::trace!("received res from tracker {res:#?}");
 
@@ -148,9 +146,9 @@ impl TrackerTrait for Tracker<Udp> {
             return Err(Error::TrackerResponse);
         }
 
-        self.connection_id = res.connection_id;
+        self.connection_id = res.connection_id.into();
 
-        Ok(res)
+        Ok(())
     }
 
     async fn announce(
@@ -159,7 +157,7 @@ impl TrackerTrait for Tracker<Udp> {
         downloaded: u64,
         uploaded: u64,
         left: u64,
-    ) -> Result<(announce::Response, Vec<u8>), Error> {
+    ) -> Result<(Stats, Vec<SocketAddr>), Error> {
         tracing::trace!("announcing {event:#?} to tracker");
 
         let req = announce::Request {
@@ -178,7 +176,7 @@ impl TrackerTrait for Tracker<Udp> {
         let mut res = [0u8; ANNOUNCE_RES_BUF_LEN];
         let mut retransmit = 30;
 
-        self.state.socket.send(&req.serialize()).await?;
+        self.state.socket.send(&req.serialize()?).await?;
 
         for i in 1..=7 {
             match timeout(
@@ -201,7 +199,7 @@ impl TrackerTrait for Tracker<Udp> {
                         "tracker announce request was lost, trying again in \
                          {retransmit}s"
                     );
-                    self.state.socket.send(&req.serialize()).await?;
+                    self.state.socket.send(&req.serialize()?).await?;
                 }
             }
         }
@@ -215,9 +213,17 @@ impl TrackerTrait for Tracker<Udp> {
             return Err(Error::TrackerResponse);
         }
 
-        self.interval = res.interval;
+        self.interval = res.interval.into();
 
-        Ok((res, payload.to_owned()))
+        let peers = self.parse_compact_peer_list(payload)?;
+
+        let stats = Stats {
+            interval: res.interval.into(),
+            seeders: res.seeders.into(),
+            leechers: res.leechers.into(),
+        };
+
+        Ok((stats, peers))
     }
 
     fn parse_compact_peer_list(
@@ -338,15 +344,13 @@ impl Tracker<Udp> {
                     self.torrent_tx.send(TorrentMsg::GetAnnounceData(otx)).await?;
                     let (downloaded, uploaded, left) = orx.await?;
 
-                    let (res, payload) = self
+                    let (stats, peers) = self
                         .announce(Event::None, downloaded, uploaded, left)
                         .await?;
 
                     interval.reset_at(
-                        Instant::now() + Duration::from_secs(res.interval as u64)
+                        Instant::now() + Duration::from_secs(stats.interval as u64)
                     );
-
-                    let peers = self.parse_compact_peer_list(payload.as_ref())?;
 
                     self.torrent_tx.send(TorrentMsg::AddIdlePeers(
                         peers.into_iter().collect()
@@ -361,15 +365,13 @@ impl Tracker<Udp> {
                             uploaded,
                             left,
                         } => {
-                            let (_res, payload) = self
+                            let (_stats, peers) = self
                                 .announce(event, downloaded, uploaded, left)
                                 .await?;
 
                             if event == Event::Stopped {
                                 return Ok(());
                             }
-
-                            let peers = self.parse_compact_peer_list(payload.as_ref())?;
 
                             self.torrent_tx.send(TorrentMsg::AddIdlePeers(
                                 peers.into_iter().collect()

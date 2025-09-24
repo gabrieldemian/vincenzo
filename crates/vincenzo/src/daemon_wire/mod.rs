@@ -344,7 +344,7 @@ mod tests {
 
         match msg {
             Message::GetTorrentState(info_hash) => {
-                assert_eq!(info_hash, [1u8; 20].into());
+                assert_eq!(info_hash.0, [1u8; 20]);
             }
             _ => panic!(),
         }

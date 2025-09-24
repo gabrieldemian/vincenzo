@@ -1,5 +1,8 @@
 use rand::Rng;
-use speedy::{BigEndian, Readable, Writable};
+use rkyv::{
+    Archive, Deserialize, Serialize, api::high::to_bytes_with_alloc,
+    ser::allocator::Arena, util::AlignedVec,
+};
 
 use crate::{
     config::CONFIG,
@@ -10,11 +13,10 @@ use crate::{
 
 use super::{action::Action, event::Event};
 
-#[derive(Debug, PartialEq, Readable, Writable)]
+#[derive(Debug, PartialEq, Archive, Serialize, Deserialize)]
+#[rkyv(compare(PartialEq), derive(Debug))]
 pub struct Request {
     pub connection_id: u64,
-    /// The documentation say this is a u32, but the request only works if this
-    /// is u64...
     pub action: Action,
     pub transaction_id: u32,
     pub info_hash: InfoHash,
@@ -52,6 +54,8 @@ impl Default for Request {
 }
 
 impl Request {
+    pub const LEN: usize = 99;
+
     pub fn from_started(
         connection_id: u64,
         info_hash: InfoHash,
@@ -79,12 +83,26 @@ impl Request {
         }
     }
 
-    pub fn serialize(&self) -> Vec<u8> {
-        self.write_to_vec_with_ctx(BigEndian {}).unwrap()
+    /// Around 5µs in release mode.
+    pub fn serialize(&self) -> Result<AlignedVec, Error> {
+        let mut arena = Arena::with_capacity(Self::LEN);
+        Ok(to_bytes_with_alloc::<_, rkyv::rancor::Error>(
+            self,
+            arena.acquire(),
+        )?)
+    }
+
+    /// Around 20ns in release mode.
+    pub fn deserialize(bytes: &[u8]) -> Result<&ArchivedRequest, Error> {
+        if bytes.len() != Self::LEN {
+            return Err(Error::TrackerResponse);
+        }
+        Ok(unsafe { rkyv::access_unchecked::<ArchivedRequest>(bytes) })
     }
 }
 
-#[derive(Debug, PartialEq, Writable, Readable)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, Archive)]
+#[rkyv(compare(PartialEq), derive(Debug))]
 pub struct Response {
     pub action: u32,
     pub transaction_id: u32,
@@ -105,15 +123,101 @@ impl From<Response> for Stats {
 }
 
 impl Response {
-    pub(crate) const MIN_LEN: usize = 20;
+    pub const MIN_LEN: usize = 20;
 
-    pub fn deserialize(buf: &[u8]) -> Result<(Self, &[u8]), Error> {
-        if buf.len() < Response::MIN_LEN {
+    /// Around 237ns in release mode.
+    pub fn serialize(&self) -> Result<AlignedVec, Error> {
+        let mut arena = Arena::with_capacity(Self::MIN_LEN);
+        Ok(to_bytes_with_alloc::<_, rkyv::rancor::Error>(
+            self,
+            arena.acquire(),
+        )?)
+    }
+
+    pub fn deserialize(
+        bytes: &[u8],
+    ) -> Result<(&ArchivedResponse, &[u8]), Error> {
+        if bytes.len() < Response::MIN_LEN {
             return Err(Error::TrackerResponseLength);
         }
+        Ok((
+            unsafe {
+                rkyv::access_unchecked::<ArchivedResponse>(
+                    &bytes[..Self::MIN_LEN],
+                )
+            },
+            &bytes[Self::MIN_LEN..],
+        ))
+    }
+}
 
-        let res = Self::read_from_buffer_with_ctx(BigEndian {}, buf)?;
+#[cfg(test)]
+mod tests {
+    use rkyv::rancor::Error;
+    use tokio::time::Instant;
 
-        Ok((res, &buf[Self::MIN_LEN..]))
+    use super::*;
+
+    // debug mode
+    // speedy:    25.356 µs
+    // rkyv high: 58.198 µs
+    // rkyv low:   3.461 µs
+    #[ignore]
+    #[test]
+    fn serialize() {
+        let original = Request {
+            connection_id: 123,
+            downloaded: 321,
+            ..Default::default()
+        };
+
+        let now = Instant::now();
+        let rkyv = rkyv::to_bytes::<rkyv::rancor::Error>(&original).unwrap();
+        let time = Instant::now().duration_since(now);
+
+        println!("rkyv high: {time:?}");
+        assert_eq!(rkyv.len(), Request::LEN);
+
+        use rkyv::{
+            api::high::to_bytes_with_alloc, rancor::*, ser::allocator::Arena,
+        };
+
+        let mut arena = Arena::with_capacity(Request::LEN);
+        let now = Instant::now();
+        let rkyv = to_bytes_with_alloc::<_, Error>(&original, arena.acquire())
+            .unwrap();
+        let time = Instant::now().duration_since(now);
+        println!("rkyv low: {time:?}");
+
+        assert_eq!(rkyv.len(), Request::LEN);
+    }
+
+    // debug mode
+    // speedy:       20.783 µs
+    // rkyv safe:    25.393 µs
+    // rkyv unsafe: 116 ns
+    #[ignore]
+    #[test]
+    fn deserialize() {
+        let original = Request {
+            connection_id: 123,
+            downloaded: 321,
+            ..Default::default()
+        };
+
+        let bytes = original.serialize().unwrap();
+
+        let now = Instant::now();
+        let _archived = rkyv::access::<ArchivedRequest, Error>(&bytes).unwrap();
+        let time = Instant::now().duration_since(now);
+        println!("rkyv safe: {time:?}");
+
+        let now = Instant::now();
+        let archived =
+            unsafe { rkyv::access_unchecked::<ArchivedRequest>(&bytes) };
+        let time = Instant::now().duration_since(now);
+        println!("rkyv unsafe: {time:?}");
+
+        assert_eq!(archived, &original);
     }
 }

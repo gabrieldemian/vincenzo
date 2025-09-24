@@ -9,9 +9,9 @@ use std::{
 use bincode::{Decode, Encode};
 use hashbrown::{HashMap, HashSet};
 use rand::Rng;
-use speedy::{Readable, Writable};
+use rkyv::{Archive, Deserialize, Serialize};
 use tokio::{
-    sync::{broadcast, oneshot},
+    sync::{broadcast, mpsc, oneshot},
     time::Interval,
 };
 
@@ -21,7 +21,7 @@ use crate::{
     extensions::core::BlockInfo,
     magnet::Magnet,
     metainfo::{Info, MetaInfo},
-    peer::{self, Peer, PeerCtx, PeerId},
+    peer::{self, Peer, PeerCtx, PeerId, PeerMsg},
     torrent::{self, Torrent},
     tracker::TrackerMsg,
 };
@@ -59,6 +59,13 @@ pub enum TorrentMsg {
     /// an entire piece. We send Have messages to peers
     /// that don't have it and update the UI with stats.
     DownloadedPiece(usize),
+
+    /// Clone block infos to the peer.
+    ///
+    /// fast downloaders usually become out of block infos during or close to
+    /// endgame mode. This message is sent by this peer to request more blocks
+    /// from another peer chosen by the torrent.
+    CloneBlockInfosToPeer(usize, mpsc::Sender<PeerMsg>),
 
     /// Sent by the tracker on periodic announces to add more peers to be
     /// connected.
@@ -128,8 +135,20 @@ pub enum TorrentMsg {
 }
 
 #[derive(
-    Clone, PartialEq, Eq, Hash, Default, Readable, Writable, Encode, Decode,
+    Eq,
+    PartialEq,
+    Clone,
+    Hash,
+    Default,
+    // Readable,
+    // Writable,
+    Encode,
+    Decode,
+    Archive,
+    Serialize,
+    Deserialize,
 )]
+#[rkyv(compare(PartialEq), derive(Debug))]
 pub struct InfoHash(pub [u8; 20]);
 
 impl InfoHash {
@@ -182,6 +201,12 @@ impl TryInto<InfoHash> for String {
 }
 
 impl From<[u8; 20]> for InfoHash {
+    fn from(value: [u8; 20]) -> Self {
+        Self(value)
+    }
+}
+
+impl From<[u8; 20]> for ArchivedInfoHash {
     fn from(value: [u8; 20]) -> Self {
         Self(value)
     }
@@ -272,9 +297,7 @@ impl<M: TorrentSource> From<&Torrent<torrent::Connected, M>> for TorrentState {
 }
 
 /// Status of the current Torrent, updated at every announce request.
-#[derive(
-    Clone, Debug, PartialEq, Default, Readable, Writable, Encode, Decode,
-)]
+#[derive(Clone, Debug, PartialEq, Default, Encode, Decode)]
 pub struct Stats {
     pub interval: u32,
     pub leechers: u32,

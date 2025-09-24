@@ -1,6 +1,5 @@
 //! Wrapper types around Bitvec.
 use bitvec::{prelude::*, ptr::Const};
-use speedy::{Context, Readable, Writable, Writer};
 
 /// Bitfield where index = piece.
 pub type Bitfield = BitVec<u8, Msb0>;
@@ -11,29 +10,13 @@ type ReservedAlias = BitArray<[u8; 8], bitvec::prelude::Msb0>;
 #[derive(Debug, Clone, Default, Copy, PartialEq, Eq)]
 pub struct Reserved(pub ReservedAlias);
 
-impl<'a, C: Context> Readable<'a, C> for Reserved {
-    fn read_from<R: speedy::Reader<'a, C>>(
-        reader: &mut R,
-    ) -> Result<Self, C::Error> {
-        let bytes: [u8; 8] = reader.read_value()?;
-        Ok(Reserved(bytes.into()))
-    }
-}
-
-impl<C: Context> Writable<C> for Reserved {
-    fn write_to<T: ?Sized + Writer<C>>(
-        &self,
-        writer: &mut T,
-    ) -> Result<(), C::Error> {
-        writer.write_bytes(self.0.as_raw_slice())
+impl From<[u8; 8]> for Reserved {
+    fn from(value: [u8; 8]) -> Self {
+        Self(ReservedAlias::from(value))
     }
 }
 
 impl Reserved {
-    pub fn new(b: [u8; 8]) -> Self {
-        Self(ReservedAlias::from(b))
-    }
-
     /// Reserved bits of protocols that the client supports.
     pub fn supported() -> Reserved {
         // we only support the `extension protocol`
