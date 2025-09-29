@@ -10,7 +10,7 @@ authors = ["Gabriel Lombardo <gabrielgcr45@gmail.com>"]
 edition = "2024"
 readme = "README.md"
 license = "MIT"
-exclude = ["tests/*", "*.log"]
+exclude = ["*.log"]
 
 [dependencies]
 int-enum = "1.2.0"
@@ -43,4 +43,4 @@ signal-hook = { workspace = true }
 signal-hook-tokio = { workspace = true }
 
 [features]
-test = []
+debug = []

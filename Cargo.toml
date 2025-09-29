@@ -10,10 +10,11 @@ strip = true
 
 [workspace]
 members = [
-  "crates/vcz_daemon",
-  "crates/vcz_ui",
-  "crates/vcz_lib",
-  "crates/vcz_macros",
+  "crates/vcz-daemon",
+  "crates/vcz-ui",
+  "crates/vcz-lib",
+  "crates/vcz-test",
+  "crates/vcz-macros",
   "crates/vcz",
   "crates/utp",
 ]
@@ -66,7 +67,24 @@ tracing-appender = "0.2.2"
 tracing-subscriber = { version = "0.3.17", features = ["time"] }
 urlencoding = "2.1.3"
 vcz = { path = "crates/vcz" }
-vcz-daemon = { path = "crates/vcz_daemon" }
-vcz-ui = { path = "crates/vcz_ui" }
-vcz-lib = { path = "crates/vcz_lib" }
-vcz-macros = { path = "crates/vcz_macros" }
+vcz-daemon = { path = "crates/vcz-daemon" }
+vcz-ui = { path = "crates/vcz-ui" }
+vcz-lib = { path = "crates/vcz-lib" }
+vcz-macros = { path = "crates/vcz-macros" }
+
+[workspace.metadata.spellcheck]
+config = "spellcheck.toml"
+
+# [workspace.lints.rust]
+# unexpected_cfgs = { level = "warn", check-cfg = [
+#   'cfg(fuzzing)',
+#   'cfg(loom)',
+#   'cfg(mio_unsupported_force_poll_poll)',
+#   'cfg(tokio_allow_from_blocking_fd)',
+#   'cfg(tokio_internal_mt_counters)',
+#   'cfg(tokio_no_parking_lot)',
+#   'cfg(tokio_no_tuning_tests)',
+#   'cfg(tokio_taskdump)',
+#   'cfg(tokio_unstable)',
+#   'cfg(target_os, values("cygwin"))',
+# ] }

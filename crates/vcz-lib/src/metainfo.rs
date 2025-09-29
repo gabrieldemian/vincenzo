@@ -121,12 +121,14 @@ pub struct Info {
 }
 
 impl Info {
-    pub fn to_meta_info(self, announce_list: Vec<String>) -> MetaInfo {
+    pub fn to_meta_info(self, announce_list: &[String]) -> MetaInfo {
+        let first_item = announce_list.first().cloned().unwrap_or_default();
+
         let announce = announce_list
             .iter()
             .find(|v| v.starts_with("udp"))
             .cloned()
-            .unwrap_or(announce_list[0].clone());
+            .unwrap_or(first_item);
 
         let mut list = vec![
             vec![], // udp
@@ -137,13 +139,13 @@ impl Info {
 
         for l in announce_list {
             if l.starts_with("udp") {
-                list[0].push(l);
+                list[0].push(l.to_owned());
             } else if l.starts_with("http") {
-                list[1].push(l);
+                list[1].push(l.to_owned());
             } else if l.starts_with("https") {
-                list[2].push(l);
+                list[2].push(l.to_owned());
             } else if l.starts_with("wss") {
-                list[3].push(l);
+                list[3].push(l.to_owned());
             }
         }
 
@@ -175,7 +177,7 @@ impl Info {
         self.piece_length.div_ceil(BLOCK_LEN)
     }
 
-    fn info_hash(buf: &[u8]) -> InfoHash {
+    pub(crate) fn info_hash(buf: &[u8]) -> InfoHash {
         let mut hasher = Sha1::new();
         hasher.update(buf);
         InfoHash(hasher.finalize().into())

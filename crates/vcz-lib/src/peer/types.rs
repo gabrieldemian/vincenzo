@@ -68,7 +68,7 @@ impl PeerId {
 /// Only used for logging the state of the per in a compact way.
 /// am_choking[0], am_interested[1], peer_choking[2], peer_interested[3]
 #[derive(PartialEq, Eq)]
-pub(crate) struct StateLog(pub [char; 4]);
+pub struct StateLog(pub [char; 4]);
 
 impl Default for StateLog {
     fn default() -> Self {

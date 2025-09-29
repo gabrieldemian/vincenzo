@@ -166,52 +166,54 @@ pub enum ReturnToDisk {
 /// - Validate hash of pieces
 pub struct Disk {
     pub tx: mpsc::Sender<DiskMsg>,
-    daemon_ctx: Arc<DaemonCtx>,
-    rx: Receiver<DiskMsg>,
+    pub daemon_ctx: Arc<DaemonCtx>,
+    pub rx: Receiver<DiskMsg>,
 
-    free_rx: mpsc::UnboundedReceiver<ReturnToDisk>,
+    pub free_rx: mpsc::UnboundedReceiver<ReturnToDisk>,
 
-    pub(crate) peer_ctxs: Vec<Arc<PeerCtx>>,
+    pub peer_ctxs: Vec<Arc<PeerCtx>>,
 
-    pub(crate) torrent_ctxs: HashMap<InfoHash, Arc<TorrentCtx>>,
+    pub torrent_ctxs: HashMap<InfoHash, Arc<TorrentCtx>>,
 
     /// The sequence in which pieces will be downloaded,
     /// based on `PieceStrategy`.
-    pub(crate) piece_order: HashMap<InfoHash, Vec<usize>>,
+    pub piece_order: HashMap<InfoHash, Vec<usize>>,
 
+    // Pieces that were requested and will be used to skip `piece_order`.
+    pub pieces_requested: HashMap<InfoHash, Bitfield>,
     /// Pieces that were requested and will be used to skip `piece_order`.
-    pub(crate) pieces_requested: HashMap<InfoHash, Bitfield>,
+    // pub pieces_requested: HashMap<InfoHash, HashMap<PeerId, Bitfield>>,
 
-    pub(crate) piece_strategy: HashMap<InfoHash, PieceStrategy>,
+    pub piece_strategy: HashMap<InfoHash, PieceStrategy>,
 
     /// How many pieces were downloaded.
-    pub(crate) downloaded_pieces: HashMap<InfoHash, u64>,
+    pub downloaded_pieces: HashMap<InfoHash, u64>,
 
-    pub(crate) endgame: HashMap<InfoHash, bool>,
+    pub endgame: HashMap<InfoHash, bool>,
 
     /// A cache of blocks, where the key is a piece. The cache will be cleared
     /// when the entire piece is downloaded and validated as it will be
     /// written to disk.
-    block_cache: HashMap<InfoHash, BTreeMap<usize, Vec<Block>>>,
+    pub block_cache: HashMap<InfoHash, BTreeMap<usize, Vec<Block>>>,
 
-    torrent_info: HashMap<InfoHash, Arc<Info>>,
+    pub torrent_info: HashMap<InfoHash, Arc<Info>>,
 
     /// The block infos of each piece of a torrent.
-    block_infos: HashMap<InfoHash, BTreeMap<usize, Vec<BlockInfo>>>,
+    pub block_infos: HashMap<InfoHash, BTreeMap<usize, Vec<BlockInfo>>>,
 
-    metadata_pieces: HashMap<InfoHash, Vec<MetadataPiece>>,
+    pub metadata_pieces: HashMap<InfoHash, Vec<MetadataPiece>>,
 
     /// A cache of torrent files with pre-computed lengths.
-    torrent_cache: HashMap<InfoHash, TorrentCache>,
+    pub torrent_cache: HashMap<InfoHash, TorrentCache>,
 
     /// Files that need to be flushed, the bitfield is relative to
     /// `torrent_cache` files.
-    dirty_files: HashMap<InfoHash, Bitfield>,
+    pub dirty_files: HashMap<InfoHash, Bitfield>,
 
     /// A LRU cache of file handles to avoid doing a sys call each time the
     /// disk needs to read or write to a file.
-    read_mmap_cache: LruCache<PathBuf, Arc<Mmap>>,
-    write_mmap_cache: LruCache<PathBuf, Arc<Mutex<MmapMut>>>,
+    pub read_mmap_cache: LruCache<PathBuf, Arc<Mmap>>,
+    pub write_mmap_cache: LruCache<PathBuf, Arc<Mutex<MmapMut>>>,
 }
 
 /// Cache capacity of files.
@@ -461,7 +463,7 @@ impl Disk {
 
         // if the client already has a .torrent file, it's a duplicate.
         let is_complete = self.is_torrent_complete(&info.name);
-        let is_incomplete = self.is_torrent_complete(&info.name);
+        let is_incomplete = self.is_torrent_incomplete(&info.name);
 
         if is_complete || is_incomplete {
             return Err(Error::NoDuplicateTorrent);
@@ -488,13 +490,13 @@ impl Disk {
     }
 
     /// Create a new torrent from a .torrent file on disk.
-    async fn new_torrent_metainfo(
+    pub async fn new_torrent_metainfo(
         &mut self,
         metainfo: MetaInfo,
     ) -> Result<Torrent<torrent::Idle, torrent::FromMetaInfo>, Error> {
         debug!("new torrent {:?}", metainfo.info.info_hash);
-        let info_hash = metainfo.info.info_hash.clone();
 
+        let info_hash = metainfo.info.info_hash.clone();
         let info = Arc::new(metainfo.info.clone());
 
         self.torrent_info.insert(info_hash.clone(), info);
@@ -510,7 +512,7 @@ impl Disk {
         self.compute_torrent_state(&info_hash, &downloaded_pieces)?;
 
         let b = downloaded_pieces.count_ones() * metainfo.info.piece_length;
-        info!("already downloaded {b} bytes {:?}", to_human_readable(b as f64));
+        info!("downloaded {b} bytes {:?}", to_human_readable(b as f64));
 
         let torrent = Torrent::new_metainfo(
             self.tx.clone(),
@@ -531,13 +533,12 @@ impl Disk {
         let mut mmaps = Vec::with_capacity(file_metadata.len());
 
         for file_meta in file_metadata {
-            let file = Self::open_file(&file_meta.path).await?;
             // if let Some(parent) = file_meta.path.parent() {
             //     tokio::fs::create_dir_all(parent).await?;
             // }
             // file.set_len(file_meta.length).await?;
+            let file = Self::open_file(&file_meta.path).await?;
             let mmap = unsafe { Mmap::map(&file)? };
-
             mmaps.push((file_meta, Arc::new(mmap)));
         }
 
@@ -614,6 +615,7 @@ impl Disk {
         info_hash: &InfoHash,
         downloaded_pieces: &Bitfield,
     ) -> Result<(), Error> {
+        // println!("dp: {downloaded_pieces:?}");
         let info = self
             .torrent_info
             .get(info_hash)
@@ -641,8 +643,8 @@ impl Disk {
 
         self.endgame.insert(info_hash.clone(), false);
 
-        let piece_strategy = PieceStrategy::default();
-        self.piece_strategy.insert(info_hash.clone(), piece_strategy);
+        let piece_strategy =
+            self.piece_strategy.entry(info_hash.clone()).or_default();
 
         // non downloaded pieces
         let mut pieces: Vec<usize> =
@@ -652,7 +654,7 @@ impl Disk {
             pieces.push(p);
         }
 
-        if piece_strategy == PieceStrategy::Random {
+        if *piece_strategy == PieceStrategy::Random {
             pieces.shuffle(&mut rand::rng());
         }
 
@@ -664,6 +666,7 @@ impl Disk {
             .len();
 
         self.piece_order.insert(info_hash.clone(), pieces);
+        // println!("order {:?}", self.piece_order);
         self.block_cache.insert(info_hash.clone(), Default::default());
         self.dirty_files
             .insert(info_hash.clone(), Bitfield::from_piece(files_count));
@@ -1441,7 +1444,7 @@ impl Disk {
         path.push(&info.name);
         path.set_extension("torrent");
 
-        let metainfo: MetaInfo = info.to_meta_info(announce_list);
+        let metainfo: MetaInfo = info.to_meta_info(&announce_list);
 
         let buff = metainfo.to_bencode()?;
         let mut file = Self::open_file(path).await?;
@@ -1588,17 +1591,17 @@ impl Disk {
                 let file_offset = read_start - file_start;
 
                 // handle out-of-bounds access
-                if file_offset >= mmap.len() {
-                    // entire segment is beyond the file - hash zeros
-                    let mut remaining_zeros = read_length;
-                    while remaining_zeros > 0 {
-                        let zero_chunk = remaining_zeros.min(ZERO_BUF.len());
-                        hasher.update(&ZERO_BUF[..zero_chunk]);
-                        remaining_zeros -= zero_chunk;
-                    }
-                    bytes_remaining -= read_length;
-                    continue;
-                }
+                // if file_offset >= mmap.len() {
+                //     // entire segment is beyond the file - hash zeros
+                //     let mut remaining_zeros = read_length;
+                //     while remaining_zeros > 0 {
+                //         let zero_chunk = remaining_zeros.min(ZERO_BUF.len());
+                //         hasher.update(&ZERO_BUF[..zero_chunk]);
+                //         remaining_zeros -= zero_chunk;
+                //     }
+                //     bytes_remaining -= read_length;
+                //     continue;
+                // }
 
                 // calculate how much we can read from the file
                 let available_bytes = read_length.min(mmap.len() - file_offset);
@@ -1611,15 +1614,15 @@ impl Disk {
                 }
 
                 // pad with zeros if needed
-                if available_bytes < read_length {
-                    let zero_bytes = read_length - available_bytes;
-                    let mut remaining_zeros = zero_bytes;
-                    while remaining_zeros > 0 {
-                        let zero_chunk = remaining_zeros.min(ZERO_BUF.len());
-                        hasher.update(&ZERO_BUF[..zero_chunk]);
-                        remaining_zeros -= zero_chunk;
-                    }
-                }
+                // if available_bytes < read_length {
+                //     let zero_bytes = read_length - available_bytes;
+                //     let mut remaining_zeros = zero_bytes;
+                //     while remaining_zeros > 0 {
+                //         let zero_chunk = remaining_zeros.min(ZERO_BUF.len());
+                //         hasher.update(&ZERO_BUF[..zero_chunk]);
+                //         remaining_zeros -= zero_chunk;
+                //     }
+                // }
 
                 bytes_remaining -= read_length;
             }
@@ -1707,7 +1710,6 @@ mod tests {
 
     use futures::StreamExt;
     use hashbrown::HashSet;
-    use rand::{Rng, distr::Alphanumeric};
     use std::{
         net::{Ipv4Addr, SocketAddrV4},
         time::Duration,
@@ -1723,13 +1725,11 @@ mod tests {
         counter::Counter,
         daemon::Daemon,
         extensions::{CoreCodec, core::BLOCK_LEN},
-        magnet::Magnet,
-        metainfo::{self, Info},
         peer::{
             self, DEFAULT_REQUEST_QUEUE_LEN, Peer, PeerMsg, RequestManager,
             StateLog,
         },
-        torrent::{Connected, FromMagnet, PeerBrMsg, Stats, Torrent},
+        torrent::{Connected, FromMetaInfo, PeerBrMsg, Stats, Torrent},
         tracker::TrackerMsg,
     };
 
@@ -1742,55 +1742,9 @@ mod tests {
     // test all features that Disk provides by simulating, from start to end, a
     // remote peer that has the torrent fully downloaded and a local peer
     // trying to download it.
-    #[ignore]
     #[tokio::test]
+    #[ignore]
     async fn disk_works() -> Result<(), Error> {
-        // =======================
-        // preparing torrent files
-        // =======================
-        let mut rng = rand::rng();
-
-        let download_dir: String =
-            (0..32).map(|_| rng.sample(Alphanumeric) as char).collect();
-
-        let torrent_dir = "bla".to_owned();
-
-        let original_hook = std::panic::take_hook();
-        std::panic::set_hook(Box::new(move |panic| {
-            let _ = std::fs::remove_dir_all("/tmp/{download_dir}");
-            original_hook(panic);
-        }));
-
-        let magnet = format!(
-            "magnet:?xt=urn:btih:ce6adfa1642b882c910f88994b60229daff4e568&\
-             dn={torrent_dir}&tr=http%3A% \
-             2F%2Fnyaa.tracker.wf%3A7777%2Fannounce&tr=udp%3A%2F%2Fopen.\
-             stealth.si%3A80% \
-             2Fannounce&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337%\
-             2Fannounce&tr=udp%3A% \
-             2F%2Fexodus.desync.com%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.\
-             torrent.eu. org%3A451%2Fannounce"
-        );
-
-        let files = vec![
-            metainfo::File {
-                length: BLOCK_LEN * 2,
-                path: vec!["foo.txt".to_owned()],
-            },
-            metainfo::File {
-                length: BLOCK_LEN * 2,
-                path: vec!["bar".to_owned(), "baz.txt".to_owned()],
-            },
-            metainfo::File {
-                length: BLOCK_LEN * 2,
-                path: vec![
-                    "bar".to_owned(),
-                    "buzz".to_owned(),
-                    "bee.txt".to_owned(),
-                ],
-            },
-        ];
-
         // =======================
         // spawning boilerplate
         // =======================
@@ -1798,13 +1752,12 @@ mod tests {
         // we will simulate a remote peer that is already connected, unchoked,
         // interested, ready to receive msgs like RequestBlocks etc.
 
-        let (disk_tx, disk_rx) = mpsc::channel::<DiskMsg>(512);
+        let torrent_name = "t";
+        let (disk_tx, disk_rx) = mpsc::channel::<DiskMsg>(10);
         let (disk_free_tx, disk_free_rx) =
             mpsc::unbounded_channel::<ReturnToDisk>();
 
         let mut daemon = Daemon::new(disk_tx.clone(), disk_free_tx.clone());
-        let magnet = Magnet::new(&magnet).unwrap();
-
         let daemon_ctx = daemon.ctx.clone();
 
         let mut disk = Disk::new(
@@ -1818,36 +1771,16 @@ mod tests {
         let free_tx = disk_free_tx;
 
         let (tracker_tx, _tracker_rx) = broadcast::channel::<TrackerMsg>(10);
-        let (torrent_tx, torrent_rx) = mpsc::channel::<TorrentMsg>(100);
+        let (torrent_tx, torrent_rx) = mpsc::channel::<TorrentMsg>(10);
 
-        let mut hasher = Sha1::new();
-        hasher.update([7u8; BLOCK_LEN]);
-        let hash = hasher.finalize();
-
-        let mut pieces = vec![];
-        for _ in 0..6 {
-            pieces.extend(hash);
-        }
-
-        let info = Info {
-            source: None,
-            cross_seed_entry: None,
-            piece_length: BLOCK_LEN,
-            pieces,
-            name: torrent_dir.clone(),
-            file_length: None,
-            files: Some(files.clone()),
-            metadata_size: 0,
-            info_hash: InfoHash::default(),
-        };
-
-        let pieces_len = info.pieces();
-
-        let info_hash = magnet.parse_xt_infohash();
-
-        let metadata_size = Some(1234);
-
-        let (btx, _brx) = broadcast::channel::<PeerBrMsg>(100);
+        let meta_info = MetaInfo::from_bencode(include_bytes!(
+            "../../../test-files/complete/t.torrent"
+        ))
+        .unwrap();
+        let pieces_len = meta_info.info.pieces();
+        let info_hash = meta_info.info.info_hash.clone();
+        let metadata_size = meta_info.info.metadata_size;
+        let (btx, _brx) = broadcast::channel::<PeerBrMsg>(10);
 
         let torrent_ctx = Arc::new(TorrentCtx {
             btx,
@@ -1857,17 +1790,17 @@ mod tests {
             info_hash: info_hash.clone(),
         });
 
-        let (peer_tx, peer_rx) = mpsc::channel::<PeerMsg>(100);
+        let (peer_tx, peer_rx) = mpsc::channel::<PeerMsg>(10);
 
         let peer_ctx = Arc::new(PeerCtx {
             torrent_ctx: torrent_ctx.clone(),
             remote_addr: SocketAddr::V4(SocketAddrV4::new(
                 Ipv4Addr::new(127, 0, 0, 1),
-                8080,
+                0000,
             )),
             local_addr: SocketAddr::V4(SocketAddrV4::new(
                 Ipv4Addr::new(127, 0, 0, 1),
-                8080,
+                0000,
             )),
             counter: Counter::default(),
             last_download_rate_update: Mutex::new(Instant::now()),
@@ -1880,16 +1813,11 @@ mod tests {
             direction: peer::Direction::Outbound,
         });
 
-        disk.piece_strategy
-            .insert(info_hash.clone(), PieceStrategy::Sequential);
-
         let listener = TcpListener::bind("0.0.0.0:0").await?;
         let local_addr = listener.local_addr()?;
-
-        let pieces = bitvec::bitvec![u8, bitvec::prelude::Msb0; 1; pieces_len];
-
+        let peer_pieces =
+            bitvec::bitvec![u8, bitvec::prelude::Msb0; 0; pieces_len];
         let peer_ctx_ = peer_ctx.clone();
-
         let stream = TcpStream::connect(local_addr).await?;
 
         // try to reconnect with errored peers
@@ -1911,14 +1839,17 @@ mod tests {
         );
 
         let mut torrent = Torrent {
-            source: FromMagnet { magnet, info: Some(Arc::new(info.clone())) },
+            source: FromMetaInfo { meta_info: meta_info.clone() },
             state: Connected {
                 reconnect_interval,
                 heartbeat_interval,
                 log_rates_interval,
                 optimistic_unchoke_interval,
                 unchoke_interval,
-                peer_pieces: HashMap::from([(peer_ctx_.id.clone(), pieces)]),
+                peer_pieces: HashMap::from([(
+                    peer_ctx_.id.clone(),
+                    peer_pieces,
+                )]),
                 size: 0,
                 counter: Counter::new(),
                 unchoked_peers: Vec::new(),
@@ -1928,36 +1859,26 @@ mod tests {
                 stats: Stats { seeders: 1, leechers: 1, interval: 1000 },
                 idle_peers: HashSet::new(),
                 tracker_tx: tracker_tx.clone(),
-                metadata_size,
+                metadata_size: Some(metadata_size),
                 connected_peers: vec![peer_ctx.clone()],
                 info_pieces: BTreeMap::new(),
             },
             bitfield: bitvec::bitvec![u8, bitvec::prelude::Msb0; 0; pieces_len ],
             ctx: torrent_ctx.clone(),
             daemon_ctx,
-            name: torrent_dir.clone(),
+            name: torrent_name.to_string(),
             rx: torrent_rx,
             status: crate::torrent::TorrentStatus::Downloading,
         };
 
+        disk.piece_strategy
+            .insert(info_hash.clone(), PieceStrategy::Sequential);
         disk.new_peer(peer_ctx.clone());
-        disk.add_torrent(torrent_ctx, Arc::new(info)).await?;
+        disk.new_torrent_metainfo(meta_info).await?;
 
-        spawn(async move {
-            let _ = disk.run().await;
-            Ok::<(), Error>(())
-        });
-
-        spawn(async move {
-            let _ = daemon.run().await;
-            Ok::<(), Error>(())
-        });
-
-        spawn(async move {
-            let _ = torrent.run().await;
-            Ok::<(), Error>(())
-        });
-
+        spawn(async move { daemon.run().await });
+        spawn(async move { disk.run().await });
+        spawn(async move { torrent.run().await });
         spawn(async move {
             let (_socket, _) = listener.accept().await.unwrap();
             let socket = Framed::new(stream, CoreCodec);
@@ -2033,8 +1954,6 @@ mod tests {
         assert_eq!(block.index, 1);
         assert_eq!(block.begin, 0);
         assert_eq!(block.block.len(), blocks[0].len);
-
-        let _ = tokio::fs::remove_dir_all(format!("/tmp/{download_dir}")).await;
 
         Ok(())
     }

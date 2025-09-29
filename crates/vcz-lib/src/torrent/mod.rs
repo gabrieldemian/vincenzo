@@ -54,8 +54,8 @@ pub struct Torrent<S: State, M: TorrentSource> {
     /// Bitfield representing the presence or absence of pieces for our local
     /// peer, where each bit is a piece.
     pub bitfield: Bitfield,
-    pub(crate) state: S,
-    pub(crate) source: M,
+    pub state: S,
+    pub source: M,
 }
 
 /// Context of [`Torrent`] that can be shared between other types

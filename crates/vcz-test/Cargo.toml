@@ -1,0 +1,17 @@
+[package]
+name = "vcz-test"
+version = "0.0.1"
+authors = ["Gabriel Lombardo <gabrielgcr45@gmail.com>"]
+edition = "2024"
+
+[dependencies]
+bendy = { workspace = true }
+bitvec = { workspace = true }
+futures = { workspace = true }
+hashbrown = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+vcz-lib = { workspace = true, features = ["debug"] }
+
+# [lints]
+# workspace = true

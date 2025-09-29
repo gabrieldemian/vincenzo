@@ -1,0 +1,37 @@
+use tokio::sync::oneshot;
+use vcz_lib::{
+    disk::DiskMsg,
+    error::Error,
+    extensions::{BLOCK_LEN, BlockInfo},
+};
+
+#[allow(unused, dead_code)]
+mod common;
+
+#[tokio::test]
+async fn request_block() -> Result<(), Error> {
+    let (disk_tx, daemon_ctx, torrent_ctx, leecher_ctx) =
+        common::setup().await?;
+
+    let (otx, orx) = oneshot::channel();
+    disk_tx
+        .send(DiskMsg::RequestBlocks {
+            peer_id: leecher_ctx.id.clone(),
+            recipient: otx,
+            qnt: 3,
+        })
+        .await?;
+
+    let blocks = orx.await?;
+
+    assert_eq!(
+        blocks,
+        vec![
+            BlockInfo { index: 0, begin: 0, len: BLOCK_LEN },
+            BlockInfo { index: 1, begin: 0, len: BLOCK_LEN },
+            BlockInfo { index: 2, begin: 0, len: BLOCK_LEN },
+        ]
+    );
+
+    Ok(())
+}

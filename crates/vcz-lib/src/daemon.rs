@@ -257,7 +257,7 @@ impl Daemon {
 
         self.local_peer_handle = Some(self.run_local_peer().await?);
 
-        #[cfg(feature = "test")]
+        #[cfg(feature = "debug")]
         self.add_test_torrents().await;
 
         let signals = Signals::new([SIGHUP, SIGTERM, SIGINT, SIGQUIT])?;
@@ -383,7 +383,7 @@ impl Daemon {
                     }
                 }
                 _ = test_interval.tick() => {
-                    #[cfg(feature = "test")]
+                    #[cfg(feature = "debug")]
                     self.tick_test().await;
                 }
                 Ok((socket, addr)) = socket.accept() => {
@@ -572,7 +572,7 @@ impl Daemon {
         Ok(())
     }
 
-    #[cfg(feature = "test")]
+    #[cfg(feature = "debug")]
     async fn add_test_torrents(&mut self) {
         use crate::torrent::Stats;
         self.torrent_states.extend([
@@ -651,7 +651,7 @@ impl Daemon {
         ]);
     }
 
-    #[cfg(feature = "test")]
+    #[cfg(feature = "debug")]
     async fn tick_test(&mut self) {
         let TorrentState {
             download_rate,

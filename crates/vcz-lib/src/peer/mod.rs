@@ -39,7 +39,7 @@ use crate::{
 pub struct Peer<S: PeerState> {
     pub state: S,
     /// am_choking[0], am_interested[1], peer_choking[2], peer_interested[3]
-    pub(crate) state_log: StateLog,
+    pub state_log: StateLog,
 }
 
 /// Handle peer messages.

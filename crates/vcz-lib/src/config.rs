@@ -89,9 +89,13 @@ pub struct Config {
     pub quit: bool,
 }
 
-pub static CONFIG: LazyLock<ResolvedConfig> = LazyLock::new(|| {
-    if cfg!(test) { Config::load_test() } else { Config::load().unwrap() }
-});
+#[cfg(not(feature = "debug"))]
+pub static CONFIG: LazyLock<ResolvedConfig> =
+    LazyLock::new(|| Config::load().unwrap());
+
+#[cfg(feature = "debug")]
+pub static CONFIG: LazyLock<ResolvedConfig> =
+    LazyLock::new(|| Config::load_test());
 
 impl Config {
     /// Try to load the configuration. Environmental variables have priviledge
@@ -103,11 +107,15 @@ impl Config {
         Ok(Self::merge(file_config, cli_config).resolve())
     }
 
-    // #[cfg(test)]
+    #[cfg(feature = "debug")]
     pub(crate) fn load_test() -> ResolvedConfig {
         ResolvedConfig {
-            download_dir: "/tmp/downloads".into(),
-            metadata_dir: "/tmp/vincenzo".into(),
+            // download_dir: "/tmp/downloads".into(),
+            // metadata_dir: "/tmp/vincenzo".into(),
+            download_dir: "/home/gabriel/code/personal/vincenzo/test-files"
+                .into(),
+            metadata_dir: "/home/gabriel/code/personal/vincenzo/test-files"
+                .into(),
             daemon_addr: Daemon::DEFAULT_LISTENER,
             local_peer_port: 51413,
             max_global_peers: 500,

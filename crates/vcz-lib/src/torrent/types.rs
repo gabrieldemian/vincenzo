@@ -3,6 +3,7 @@ use std::{
     fmt::Display,
     net::{IpAddr, SocketAddr},
     ops::Deref,
+    path::Path,
     sync::{Arc, atomic::Ordering},
 };
 
@@ -11,6 +12,7 @@ use hashbrown::{HashMap, HashSet};
 use rand::Rng;
 use rkyv::{Archive, Deserialize, Serialize};
 use tokio::{
+    io::AsyncReadExt,
     sync::{broadcast, mpsc, oneshot},
     time::Interval,
 };
@@ -18,6 +20,7 @@ use tokio::{
 use crate::{
     bitfield::Bitfield,
     counter::Counter,
+    disk::Disk,
     extensions::core::BlockInfo,
     magnet::Magnet,
     metainfo::{Info, MetaInfo},
@@ -140,8 +143,6 @@ pub enum TorrentMsg {
     Clone,
     Hash,
     Default,
-    // Readable,
-    // Writable,
     Encode,
     Decode,
     Archive,
@@ -154,6 +155,19 @@ pub struct InfoHash(pub [u8; 20]);
 impl InfoHash {
     pub fn random() -> Self {
         InfoHash(rand::rng().random())
+    }
+
+    pub(crate) async fn from_files(
+        files: &Vec<&str>,
+    ) -> Result<Self, &'static str> {
+        let mut buf: Vec<u8> = Vec::new();
+
+        for f in files {
+            let mut f = Disk::open_file(f).await.unwrap();
+            f.read_to_end(&mut buf).await.unwrap();
+        }
+
+        Ok(Info::info_hash(&buf))
     }
 }
 
@@ -436,11 +450,11 @@ pub struct Connected {
 
     pub tracker_tx: broadcast::Sender<TrackerMsg>,
 
-    pub(crate) reconnect_interval: Interval,
-    pub(crate) heartbeat_interval: Interval,
-    pub(crate) log_rates_interval: Interval,
-    pub(crate) optimistic_unchoke_interval: Interval,
-    pub(crate) unchoke_interval: Interval,
+    pub reconnect_interval: Interval,
+    pub heartbeat_interval: Interval,
+    pub log_rates_interval: Interval,
+    pub optimistic_unchoke_interval: Interval,
+    pub unchoke_interval: Interval,
 }
 
 impl State for Idle {}

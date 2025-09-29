@@ -24,10 +24,11 @@
       {
         devShells.default = mkShell {
           shellHook = ''
-            export XDG_DOWNLOAD_DIR="$HOME/downloads";
-            export XDG_CONFIG_HOME="$HOME/.config";
-            export XDG_STATE_HOME="$HOME/.local/state";
-            export XDG_DATA_HOME="$HOME/.local/share";
+              export DOWNLOAD_DIR="$HOME/vincenzo/test-files";
+            #   export XDG_DOWNLOAD_DIR="$HOME/downloads";
+            #   export XDG_CONFIG_HOME="$HOME/.config";
+            #   export XDG_STATE_HOME="$HOME/.local/state";
+            #   export XDG_DATA_HOME="$HOME/.local/share";
           '';
           buildInputs = [
             (writeShellScriptBin "writedump" ''sudo tcpdump -i CloudflareWARP -XX 'tcp and port not https' -w dump.pcap'')

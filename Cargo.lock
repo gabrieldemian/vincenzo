@@ -2139,6 +2139,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "vcz-test"
+version = "0.0.1"
+dependencies = [
+ "bendy",
+ "bitvec",
+ "futures",
+ "hashbrown 0.15.5",
+ "tokio",
+ "tokio-util",
+ "vcz-lib",
+]
+
+[[package]]
 name = "vcz-ui"
 version = "0.0.1"
 dependencies = [
