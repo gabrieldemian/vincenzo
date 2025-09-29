@@ -1,5 +1,5 @@
 [package]
-name = "vcz_ui"
+name = "vcz-ui"
 version = "0.0.1"
 edition = "2024"
 
@@ -18,7 +18,7 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
-vincenzo = { workspace = true }
+vcz-lib = { workspace = true }
 unicode-width = "=0.2.0"
 
 [features]

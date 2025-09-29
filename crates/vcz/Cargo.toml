@@ -30,5 +30,5 @@ tracing-subscriber = { workspace = true }
 urlencoding = { workspace = true }
 tracing-appender = { workspace = true }
 time = { workspace = true }
-vincenzo = { workspace = true }
-vcz_ui = { workspace = true }
+vcz-lib = { workspace = true }
+vcz-ui = { workspace = true }

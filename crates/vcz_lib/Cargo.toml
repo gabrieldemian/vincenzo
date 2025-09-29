@@ -1,5 +1,5 @@
 [package]
-name = "vincenzo"
+name = "vcz-lib"
 version = "0.0.1"
 description = "A BitTorrent protocol library that powers the Vincenzo client."
 keywords = ["distributed", "bittorrent", "torrent", "p2p", "networking"]
@@ -38,7 +38,7 @@ tokio-util = { workspace = true }
 toml = { workspace = true }
 tracing = { workspace = true }
 urlencoding = { workspace = true }
-vincenzo_macros = { workspace = true }
+vcz-macros = { workspace = true }
 signal-hook = { workspace = true }
 signal-hook-tokio = { workspace = true }
 

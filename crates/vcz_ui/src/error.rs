@@ -20,7 +20,7 @@ pub enum Error {
     IO(#[from] std::io::Error),
 
     #[error("Daemon Error")]
-    DaemonError(#[from] vincenzo::error::Error),
+    DaemonError(#[from] vcz_lib::error::Error),
 
     #[error("Could not send message to TCP socket: `{0}`")]
     SendErrorTcp(String),

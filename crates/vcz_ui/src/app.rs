@@ -9,7 +9,7 @@ use tokio::{
 };
 use tokio_util::codec::Framed;
 use tracing::debug;
-use vincenzo::{
+use vcz_lib::{
     config::CONFIG,
     daemon_wire::{DaemonCodec, Message},
 };
@@ -124,7 +124,7 @@ impl App {
     /// via mpsc [`Action`]. For example, when we receive
     /// a TorrentState message from the daemon, we forward it to ourselves.
     pub async fn listen_daemon<
-        T: Stream<Item = Result<Message, vincenzo::error::Error>> + Unpin,
+        T: Stream<Item = Result<Message, vcz_lib::error::Error>> + Unpin,
     >(
         tx: UnboundedSender<Action>,
         mut stream: T,

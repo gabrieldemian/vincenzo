@@ -2067,12 +2067,12 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "urlencoding",
- "vcz_ui",
- "vincenzo",
+ "vcz-lib",
+ "vcz-ui",
 ]
 
 [[package]]
-name = "vcz_daemon"
+name = "vcz-daemon"
 version = "0.0.1"
 dependencies = [
  "bendy",
@@ -2092,37 +2092,11 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "urlencoding",
- "vincenzo",
+ "vcz-lib",
 ]
 
 [[package]]
-name = "vcz_ui"
-version = "0.0.1"
-dependencies = [
- "clap",
- "crossterm",
- "futures",
- "hashbrown 0.15.5",
- "magnet-url",
- "rand",
- "ratatui",
- "serde",
- "thiserror 2.0.16",
- "tokio",
- "tokio-util",
- "tracing",
- "unicode-width 0.2.0",
- "vincenzo",
-]
-
-[[package]]
-name = "version_check"
-version = "0.9.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
-
-[[package]]
-name = "vincenzo"
+name = "vcz-lib"
 version = "0.0.1"
 dependencies = [
  "bendy",
@@ -2152,17 +2126,43 @@ dependencies = [
  "toml",
  "tracing",
  "urlencoding",
- "vincenzo_macros",
+ "vcz-macros",
 ]
 
 [[package]]
-name = "vincenzo_macros"
+name = "vcz-macros"
 version = "0.0.1"
 dependencies = [
  "quote",
  "syn",
  "trybuild",
 ]
+
+[[package]]
+name = "vcz-ui"
+version = "0.0.1"
+dependencies = [
+ "clap",
+ "crossterm",
+ "futures",
+ "hashbrown 0.15.5",
+ "magnet-url",
+ "rand",
+ "ratatui",
+ "serde",
+ "thiserror 2.0.16",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "unicode-width 0.2.0",
+ "vcz-lib",
+]
+
+[[package]]
+name = "version_check"
+version = "0.9.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "virtue"

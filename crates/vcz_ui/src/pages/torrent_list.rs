@@ -6,7 +6,7 @@ use ratatui::{
     },
 };
 use tokio::sync::mpsc;
-use vincenzo::{
+use vcz_lib::{
     magnet::Magnet,
     torrent::{InfoHash, TorrentState, TorrentStatus},
     utils::to_human_readable,

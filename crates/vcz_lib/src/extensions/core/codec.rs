@@ -4,7 +4,7 @@ use std::sync::atomic::Ordering;
 use tokio::{io, sync::oneshot};
 use tokio_util::codec::{Decoder, Encoder};
 use tracing::{debug, warn};
-use vincenzo_macros::Message;
+use vcz_macros::Message;
 
 use super::{Block, BlockInfo};
 use crate::{

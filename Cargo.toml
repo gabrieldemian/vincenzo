@@ -12,8 +12,8 @@ strip = true
 members = [
   "crates/vcz_daemon",
   "crates/vcz_ui",
-  "crates/vincenzo",
-  "crates/vincenzo_macros",
+  "crates/vcz_lib",
+  "crates/vcz_macros",
   "crates/vcz",
   "crates/utp",
 ]
@@ -66,7 +66,7 @@ tracing-appender = "0.2.2"
 tracing-subscriber = { version = "0.3.17", features = ["time"] }
 urlencoding = "2.1.3"
 vcz = { path = "crates/vcz" }
-vcz_daemon = { path = "crates/vcz_daemon" }
-vcz_ui = { path = "crates/vcz_ui" }
-vincenzo = { path = "crates/vincenzo" }
-vincenzo_macros = { path = "crates/vincenzo_macros" }
+vcz-daemon = { path = "crates/vcz_daemon" }
+vcz-ui = { path = "crates/vcz_ui" }
+vcz-lib = { path = "crates/vcz_lib" }
+vcz-macros = { path = "crates/vcz_macros" }

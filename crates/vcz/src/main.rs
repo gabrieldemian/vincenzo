@@ -3,7 +3,7 @@ use tokio::{spawn, sync::mpsc};
 use tracing::Level;
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::FmtSubscriber;
-use vincenzo::{
+use vcz_lib::{
     config::CONFIG,
     daemon::Daemon,
     disk::{Disk, DiskMsg, ReturnToDisk},

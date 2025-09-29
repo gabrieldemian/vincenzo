@@ -8,7 +8,7 @@ use tokio::{
 use tokio_util::codec::Framed;
 use tracing::Level;
 use tracing_subscriber::FmtSubscriber;
-use vincenzo::{
+use vcz_lib::{
     config::CONFIG,
     daemon::Daemon,
     daemon_wire::{DaemonCodec, Message},

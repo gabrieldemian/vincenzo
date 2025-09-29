@@ -1,5 +1,5 @@
 [package]
-name = "vcz_daemon"
+name = "vcz-daemon"
 version = "0.0.1"
 edition = "2024"
 
@@ -25,7 +25,7 @@ toml = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 urlencoding = { workspace = true }
-vincenzo = { workspace = true }
+vcz-lib = { workspace = true }
 
 [features]
 test = []

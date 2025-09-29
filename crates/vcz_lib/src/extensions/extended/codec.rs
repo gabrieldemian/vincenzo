@@ -13,7 +13,7 @@ use bendy::{decoding::FromBencode, encoding::ToBencode};
 use bytes::BytesMut;
 use tokio::sync::oneshot;
 use tracing::{debug, trace};
-use vincenzo_macros::Message;
+use vcz_macros::Message;
 
 use super::Extension;
 

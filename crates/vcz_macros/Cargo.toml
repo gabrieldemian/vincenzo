@@ -1,5 +1,5 @@
 [package]
-name = "vincenzo_macros"
+name = "vcz-macros"
 version = "0.0.1"
 description = "Procedural macros of Vincenzo"
 keywords = ["distributed", "bittorrent", "torrent", "p2p", "networking"]

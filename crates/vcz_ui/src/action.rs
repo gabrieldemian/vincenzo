@@ -1,4 +1,4 @@
-use vincenzo::torrent::{InfoHash, TorrentState};
+use vcz_lib::torrent::{InfoHash, TorrentState};
 
 use crate::Input;
 
