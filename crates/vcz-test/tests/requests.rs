@@ -10,13 +10,13 @@ mod common;
 
 #[tokio::test]
 async fn request_block() -> Result<(), Error> {
-    let (disk_tx, daemon_ctx, torrent_ctx, leecher_ctx) =
+    let (disk_tx, daemon_ctx, torrent_ctx, seeder_ctx) =
         common::setup().await?;
 
     let (otx, orx) = oneshot::channel();
     disk_tx
         .send(DiskMsg::RequestBlocks {
-            peer_id: leecher_ctx.id.clone(),
+            peer_id: seeder_ctx.id.clone(),
             recipient: otx,
             qnt: 3,
         })

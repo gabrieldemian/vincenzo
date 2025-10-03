@@ -16,6 +16,9 @@ impl Torrent<Connected, FromMagnet> {
             select! {
                 Some(msg) = self.rx.recv() => {
                     match msg {
+                        TorrentMsg::AddConnectedPeers(v) => {
+                            self.add_connected_peers(v);
+                        }
                         TorrentMsg::CloneBlockInfosToPeer(qnt, tx) => {
                             self.clone_block_infos_to_peer(qnt, tx).await?;
                         }

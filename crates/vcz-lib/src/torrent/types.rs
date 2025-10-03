@@ -3,7 +3,6 @@ use std::{
     fmt::Display,
     net::{IpAddr, SocketAddr},
     ops::Deref,
-    path::Path,
     sync::{Arc, atomic::Ordering},
 };
 
@@ -73,6 +72,9 @@ pub enum TorrentMsg {
     /// Sent by the tracker on periodic announces to add more peers to be
     /// connected.
     AddIdlePeers(HashSet<SocketAddr>),
+
+    /// Manually add connected Peers.
+    AddConnectedPeers(Vec<(Arc<PeerCtx>, Bitfield)>),
 
     /// downloaded, uploaded, left
     GetAnnounceData(oneshot::Sender<(u64, u64, u64)>),

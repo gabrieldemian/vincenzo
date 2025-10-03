@@ -91,9 +91,9 @@ impl<M: TorrentSource> Torrent<Idle, M> {
         let udp_trackers_len = udp_trackers.len();
         drop(org_trackers);
 
-        if udp_trackers.is_empty() {
-            return Err(Error::MagnetNoTracker);
-        }
+        // if udp_trackers.is_empty() {
+        //     return Err(Error::MagnetNoTracker);
+        // }
 
         info!("connecting to {} udp trackers", udp_trackers.len());
 
@@ -834,6 +834,16 @@ impl<M: TorrentSource> Torrent<Connected, M> {
             // optimizes this with SIMD.
             .map(|remote| !self.bitfield.clone() & remote)
             .unwrap_or_default()
+    }
+
+    pub fn add_connected_peers(
+        &mut self,
+        peers: Vec<(Arc<PeerCtx>, Bitfield)>,
+    ) {
+        for (ctx, bitfield) in peers {
+            self.state.peer_pieces.insert(ctx.id.clone(), bitfield);
+            self.state.connected_peers.push(ctx);
+        }
     }
 }
 
