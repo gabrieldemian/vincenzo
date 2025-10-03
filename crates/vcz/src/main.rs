@@ -1,10 +1,12 @@
+use std::sync::Arc;
+
 use magnet_url::Magnet;
 use tokio::{spawn, sync::mpsc};
 use tracing::Level;
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::FmtSubscriber;
 use vcz_lib::{
-    config::CONFIG,
+    config::Config,
     daemon::Daemon,
     disk::{Disk, DiskMsg, ReturnToDisk},
     error::Error,
@@ -14,6 +16,7 @@ use vcz_ui::{action::Action, app::App};
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
+    let config = Arc::new(Config::load()?);
     let tmp = std::env::temp_dir();
 
     let time = std::time::SystemTime::now();
@@ -37,13 +40,19 @@ async fn main() -> Result<(), Error> {
     tracing::subscriber::set_global_default(subscriber)
         .expect("setting default subscriber failed");
 
-    tracing::info!("config: {:?}", *CONFIG);
+    tracing::info!("config: {config:?}");
 
     let (disk_tx, disk_rx) = mpsc::channel::<DiskMsg>(512);
     let (free_tx, free_rx) = mpsc::unbounded_channel::<ReturnToDisk>();
 
-    let mut daemon = Daemon::new(disk_tx.clone(), free_tx.clone());
-    let mut disk = Disk::new(daemon.ctx.clone(), disk_tx, disk_rx, free_rx);
+    let mut daemon = Daemon::new(config.clone(), disk_tx.clone(), free_tx);
+    let mut disk = Disk::new(
+        config.clone(),
+        daemon.ctx.clone(),
+        disk_tx,
+        disk_rx,
+        free_rx,
+    );
 
     let disk_handle = spawn(async move { disk.run().await });
     let daemon_handle = spawn(async move { daemon.run().await });
@@ -52,13 +61,13 @@ async fn main() -> Result<(), Error> {
 
     // If the user passed a magnet through the CLI,
     // start this torrent immediately
-    if let Some(magnet) = &CONFIG.magnet {
+    if let Some(magnet) = &config.magnet {
         let magnet = Magnet::new(magnet)?;
         let _ = fr_tx.send(Action::NewTorrent(magnet));
     }
 
     // Start and run the terminal UI
-    let mut app = App::new(fr_tx.clone());
+    let mut app = App::new(config.clone(), fr_tx.clone());
 
     tokio::join!(daemon_handle, disk_handle, app.run(fr_rx)).0?
 }

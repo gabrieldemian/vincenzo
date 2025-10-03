@@ -15,7 +15,7 @@ use vcz_lib::daemon::DaemonCtx;
 
 use vcz_lib::{
     bitfield::{Bitfield, Reserved, VczBitfield},
-    config::CONFIG,
+    config::{Config, ResolvedConfig},
     counter::Counter,
     daemon::{Daemon, DaemonMsg},
     disk::{Disk, DiskMsg, ReturnToDisk},
@@ -43,20 +43,43 @@ use vcz_lib::{
     torrent::TorrentCtx,
 };
 
+async fn setup_complete_torrent() -> (Disk, Daemon, Arc<TorrentCtx>, usize) {
+    let mut config = Config::load_test();
+    config.key = 0;
+    setup_torrent(Arc::new(config), true).await
+}
+
+async fn setup_incomplete_torrent() -> (Disk, Daemon, Arc<TorrentCtx>, usize) {
+    let mut config = Config::load_test();
+    config.download_dir = "/tmp/fakedownload".into();
+    config.metadata_dir = "/tmp/fakemetadata".into();
+    config.key = 1;
+    setup_torrent(Arc::new(config), true).await
+}
+
 /// Setup the boilerplate of a complete torrent, disk, daemon, and torrent
 /// structs. Peers are not created and event loops not run.
 async fn setup_torrent(
+    config: Arc<ResolvedConfig>,
     is_complete: bool,
 ) -> (Disk, Daemon, Arc<TorrentCtx>, usize) {
+    let config = Arc::new(Config::load().unwrap());
+
     let name = "t".to_string();
     let (disk_tx, disk_rx) = mpsc::channel::<DiskMsg>(10);
     let (free_tx, free_rx) = mpsc::unbounded_channel::<ReturnToDisk>();
 
-    let mut daemon = Daemon::new(disk_tx.clone(), free_tx.clone());
+    let mut daemon =
+        Daemon::new(config.clone(), disk_tx.clone(), free_tx.clone());
     let daemon_ctx = daemon.ctx.clone();
 
-    let mut disk =
-        Disk::new(daemon_ctx.clone(), disk_tx.clone(), disk_rx, free_rx);
+    let mut disk = Disk::new(
+        config.clone(),
+        daemon_ctx.clone(),
+        disk_tx.clone(),
+        disk_rx,
+        free_rx,
+    );
 
     let (tracker_tx, _tracker_rx) = broadcast::channel::<TrackerMsg>(10);
     let (tx, rx) = mpsc::channel::<TorrentMsg>(10);
@@ -98,6 +121,7 @@ async fn setup_torrent(
     );
 
     let torrent = Torrent {
+        config,
         source: FromMetaInfo { meta_info: metainfo.clone() },
         state: torrent::Idle {
             metadata_size: Some(metainfo.info.metadata_size),
@@ -190,7 +214,7 @@ pub async fn setup() -> Result<
 > {
     // leecher
     let (mut leecher_disk, mut daemon, leecher_torrent_ctx, pieces_count) =
-        setup_torrent(false).await;
+        setup_complete_torrent().await;
 
     let info_hash = leecher_torrent_ctx.info_hash.clone();
     let mut leecher = setup_peer(leecher_torrent_ctx.clone()).await?;

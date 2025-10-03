@@ -5,7 +5,7 @@ use rkyv::{
 };
 
 use crate::{
-    config::CONFIG,
+    config::Config,
     error::Error,
     peer::PeerId,
     torrent::{InfoHash, Stats},
@@ -34,6 +34,7 @@ pub struct Request {
 
 impl Default for Request {
     fn default() -> Self {
+        let config = Config::load().unwrap();
         Self {
             connection_id: 0,
             action: Action::default(),
@@ -45,9 +46,9 @@ impl Default for Request {
             uploaded: 0,
             event: Event::default(),
             ip_address: 0,
-            key: CONFIG.key,
-            num_want: CONFIG.max_torrent_peers,
-            port: CONFIG.local_peer_port,
+            key: config.key,
+            num_want: config.max_torrent_peers,
+            port: config.local_peer_port,
             compact: 1,
         }
     }

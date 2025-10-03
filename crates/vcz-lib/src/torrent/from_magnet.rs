@@ -202,6 +202,7 @@ impl Torrent<Connected, FromMagnet> {
 
 impl Torrent<Idle, FromMagnet> {
     pub fn new_magnet(
+        config: Arc<ResolvedConfig>,
         disk_tx: mpsc::Sender<DiskMsg>,
         free_tx: mpsc::UnboundedSender<ReturnToDisk>,
         daemon_ctx: Arc<DaemonCtx>,
@@ -220,6 +221,7 @@ impl Torrent<Idle, FromMagnet> {
         let metadata_size = None;
 
         Self {
+            config,
             bitfield: Bitfield::default(),
             name: magnet.parse_dn(),
             source: FromMagnet { magnet, info: None },

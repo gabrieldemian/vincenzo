@@ -16,7 +16,7 @@ pub use types::*;
 
 use crate::{
     bitfield::{Bitfield, VczBitfield},
-    config::CONFIG,
+    config::ResolvedConfig,
     counter::Counter,
     daemon::{DaemonCtx, DaemonMsg},
     disk::{DiskMsg, ReturnToDisk},
@@ -47,6 +47,7 @@ use tracing::{debug, info, trace, warn};
 pub struct Torrent<S: State, M: TorrentSource> {
     pub name: String,
     pub ctx: Arc<TorrentCtx>,
+    pub config: Arc<ResolvedConfig>,
     pub daemon_ctx: Arc<DaemonCtx>,
     pub status: TorrentStatus,
     pub rx: mpsc::Receiver<TorrentMsg>,
@@ -185,6 +186,7 @@ impl<M: TorrentSource> Torrent<Idle, M> {
             interval_at(now + Duration::from_secs(10), Duration::from_secs(10));
 
         Ok(Torrent {
+            config: self.config.clone(),
             state: Connected {
                 tracker_tx,
                 reconnect_interval,
@@ -198,16 +200,16 @@ impl<M: TorrentSource> Torrent<Idle, M> {
                 unchoked_peers: Vec::with_capacity(3),
                 opt_unchoked_peer: None,
                 connecting_peers: Vec::with_capacity(
-                    CONFIG.max_torrent_peers as usize,
+                    self.config.max_torrent_peers as usize,
                 ),
                 error_peers: Vec::with_capacity(
-                    CONFIG.max_torrent_peers as usize,
+                    self.config.max_torrent_peers as usize,
                 ),
                 stats,
                 idle_peers: idle_peers.into_iter().collect(),
                 metadata_size: self.state.metadata_size,
                 connected_peers: Vec::with_capacity(
-                    CONFIG.max_torrent_peers as usize,
+                    self.config.max_torrent_peers as usize,
                 ),
                 info_pieces: BTreeMap::new(),
             },
@@ -504,8 +506,8 @@ impl<M: TorrentSource> Torrent<Connected, M> {
         let (otx, orx) = oneshot::channel();
         self.daemon_ctx.tx.send(DaemonMsg::GetConnectedPeers(otx)).await?;
         let daemon_connected_peers = orx.await?;
-        let max_global_peers = CONFIG.max_global_peers;
-        let max_torrent_peers = CONFIG.max_torrent_peers;
+        let max_global_peers = self.config.max_global_peers;
+        let max_torrent_peers = self.config.max_torrent_peers;
 
         // connecting peers will (probably) soon be connected, so we count them
         // too

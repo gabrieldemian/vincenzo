@@ -161,6 +161,7 @@ impl Torrent<Connected, FromMetaInfo> {
 
 impl Torrent<Idle, FromMetaInfo> {
     pub fn new_metainfo(
+        config: Arc<ResolvedConfig>,
         disk_tx: mpsc::Sender<DiskMsg>,
         daemon_ctx: Arc<DaemonCtx>,
         meta_info: MetaInfo,
@@ -181,6 +182,7 @@ impl Torrent<Idle, FromMetaInfo> {
         });
 
         Self {
+            config,
             bitfield,
             source: FromMetaInfo { meta_info },
             state: Idle { metadata_size },

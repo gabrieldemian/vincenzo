@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use futures::SinkExt;
 use magnet_url::Magnet;
 use tokio::{
@@ -9,7 +11,7 @@ use tokio_util::codec::Framed;
 use tracing::Level;
 use tracing_subscriber::FmtSubscriber;
 use vcz_lib::{
-    config::CONFIG,
+    config::Config,
     daemon::Daemon,
     daemon_wire::{DaemonCodec, Message},
     disk::{Disk, DiskMsg, ReturnToDisk},
@@ -18,6 +20,8 @@ use vcz_lib::{
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
+    let config = Arc::new(Config::load()?);
+
     let subscriber = FmtSubscriber::builder()
         .without_time()
         .with_target(false)
@@ -28,18 +32,19 @@ async fn main() -> Result<(), Error> {
     tracing::subscriber::set_global_default(subscriber)
         .expect("setting default subscriber failed");
 
-    tracing::info!("config: {:?}", *CONFIG);
+    tracing::info!("config: {config:?}");
 
     let is_daemon_running =
-        TcpListener::bind(CONFIG.daemon_addr).await.is_err();
+        TcpListener::bind(config.daemon_addr).await.is_err();
 
     // if the daemon is not running, run it
     if !is_daemon_running {
         let (disk_tx, disk_rx) = mpsc::channel::<DiskMsg>(512);
         let (free_tx, free_rx) = mpsc::unbounded_channel::<ReturnToDisk>();
 
-        let mut daemon = Daemon::new(disk_tx.clone(), free_tx);
-        let mut disk = Disk::new(daemon.ctx.clone(), disk_tx, disk_rx, free_rx);
+        let mut daemon = Daemon::new(config.clone(), disk_tx.clone(), free_tx);
+        let mut disk =
+            Disk::new(config.clone(), daemon.ctx.clone(), disk_tx, disk_rx, free_rx);
 
         let disk_handle = spawn(async move { disk.run().await });
         let daemon_handle = spawn(async move { daemon.run().await });
@@ -53,7 +58,7 @@ async fn main() -> Result<(), Error> {
     // to listen to these flags and send messages to Daemon.
     //
     // 1. Create a TCP connection to Daemon
-    let Ok(socket) = TcpStream::connect(CONFIG.daemon_addr).await else {
+    let Ok(socket) = TcpStream::connect(config.daemon_addr).await else {
         return Ok(());
     };
 
@@ -62,20 +67,20 @@ async fn main() -> Result<(), Error> {
     // 2. Fire the corresponding message of a CLI flag.
     //
     // add a a new torrent to Daemon
-    if let Some(magnet) = &CONFIG.magnet {
+    if let Some(magnet) = &config.magnet {
         let magnet = Magnet::new(magnet)?;
         socket.send(Message::NewTorrent(magnet)).await?;
     }
 
-    if CONFIG.stats {
+    if config.stats {
         socket.send(Message::PrintTorrentStatus).await?;
     }
 
-    if CONFIG.quit {
+    if config.quit {
         socket.send(Message::Quit).await?;
     }
 
-    if let Some(id) = &CONFIG.pause {
+    if let Some(id) = &config.pause {
         let id = hex::decode(id);
         if let Ok(id) = id {
             socket.send(Message::TogglePause(id.try_into().unwrap())).await?;

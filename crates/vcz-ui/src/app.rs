@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use futures::{SinkExt, Stream, StreamExt};
 use tokio::{
@@ -10,7 +10,7 @@ use tokio::{
 use tokio_util::codec::Framed;
 use tracing::debug;
 use vcz_lib::{
-    config::CONFIG,
+    config::ResolvedConfig,
     daemon_wire::{DaemonCodec, Message},
 };
 
@@ -24,6 +24,7 @@ use crate::{
 pub struct App {
     pub is_detached: bool,
     pub tx: UnboundedSender<Action>,
+    pub config: Arc<ResolvedConfig>,
     should_quit: bool,
     page: TorrentList<'static>,
 }
@@ -34,10 +35,13 @@ impl App {
         self
     }
 
-    pub fn new(tx: UnboundedSender<Action>) -> Self {
+    pub fn new(
+        config: Arc<ResolvedConfig>,
+        tx: UnboundedSender<Action>,
+    ) -> Self {
         let page = TorrentList::new(tx.clone());
 
-        App { should_quit: false, tx, page, is_detached: false }
+        App { config, should_quit: false, tx, page, is_detached: false }
     }
 
     pub async fn run(
@@ -49,7 +53,7 @@ impl App {
         let socket = loop {
             match timeout(
                 Duration::from_millis(100),
-                TcpStream::connect(CONFIG.daemon_addr),
+                TcpStream::connect(self.config.daemon_addr),
             )
             .await
             {
@@ -58,7 +62,7 @@ impl App {
                     i += 1;
                     if i > 10 {
                         return Err(Error::DaemonNotRunning(
-                            CONFIG.daemon_addr,
+                            self.config.daemon_addr,
                         ));
                     }
                     tokio::time::sleep(Duration::from_millis(150)).await;

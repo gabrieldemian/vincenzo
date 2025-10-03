@@ -27,7 +27,7 @@ use tokio::{
 };
 
 use crate::{
-    config::CONFIG,
+    config::ResolvedConfig,
     daemon_wire::{DaemonCodec, Message},
     disk::{DiskMsg, ReturnToDisk},
     error::Error,
@@ -57,6 +57,7 @@ pub struct Daemon {
     pub ctx: Arc<DaemonCtx>,
     pub torrent_ctxs: HashMap<InfoHash, Arc<TorrentCtx>>,
     pub metadata_sizes: HashMap<InfoHash, Option<usize>>,
+    pub config: Arc<ResolvedConfig>,
 
     /// Connected peers of all torrents
     connected_peers: u32,
@@ -120,6 +121,7 @@ impl Daemon {
 
     /// Initialize the Daemon struct with the default [`DaemonConfig`].
     pub fn new(
+        config: Arc<ResolvedConfig>,
         disk_tx: mpsc::Sender<DiskMsg>,
         free_tx: mpsc::UnboundedSender<ReturnToDisk>,
     ) -> Self {
@@ -128,6 +130,7 @@ impl Daemon {
         let local_peer_id = PeerId::generate();
 
         Self {
+            config,
             connected_peers: 0,
             metadata_sizes: HashMap::default(),
             disk_tx,
@@ -141,12 +144,12 @@ impl Daemon {
 
     pub async fn run_local_peer(&mut self) -> Result<JoinHandle<()>, Error> {
         let local_addr = SocketAddr::new(
-            if CONFIG.is_ipv6 {
+            if self.config.is_ipv6 {
                 IpAddr::V6(Ipv6Addr::UNSPECIFIED)
             } else {
                 IpAddr::V4(Ipv4Addr::UNSPECIFIED)
             },
-            CONFIG.local_peer_port,
+            self.config.local_peer_port,
         );
 
         info!("local peer listening on: {local_addr}");
@@ -250,8 +253,8 @@ impl Daemon {
     /// can also be fired internaly (via CLI flags).
     #[tracing::instrument(name = "daemon", skip_all)]
     pub async fn run(&mut self) -> Result<(), Error> {
-        let socket = TcpListener::bind(CONFIG.daemon_addr).await.unwrap();
-        info!("listening on: {}", CONFIG.daemon_addr);
+        let socket = TcpListener::bind(self.config.daemon_addr).await.unwrap();
+        info!("listening on: {}", self.config.daemon_addr);
 
         let ctx = self.ctx.clone();
 
@@ -329,7 +332,7 @@ impl Daemon {
                                 self.torrent_states.push(torrent_state);
                             }
 
-                            if CONFIG.quit_after_complete
+                            if self.config.quit_after_complete
                                 &&
                                 self.torrent_states
                                     .iter()
@@ -530,6 +533,7 @@ impl Daemon {
         self.torrent_states.push(torrent_state);
 
         let torrent = Torrent::new_magnet(
+            self.config.clone(),
             self.disk_tx.clone(),
             self.ctx.free_tx.clone(),
             self.ctx.clone(),

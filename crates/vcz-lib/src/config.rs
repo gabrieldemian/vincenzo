@@ -89,14 +89,6 @@ pub struct Config {
     pub quit: bool,
 }
 
-#[cfg(not(feature = "debug"))]
-pub static CONFIG: LazyLock<ResolvedConfig> =
-    LazyLock::new(|| Config::load().unwrap());
-
-#[cfg(feature = "debug")]
-pub static CONFIG: LazyLock<ResolvedConfig> =
-    LazyLock::new(|| Config::load_test());
-
 impl Config {
     /// Try to load the configuration. Environmental variables have priviledge
     /// over values from the configuration file. If both are not set, it will
@@ -108,10 +100,8 @@ impl Config {
     }
 
     #[cfg(feature = "debug")]
-    pub(crate) fn load_test() -> ResolvedConfig {
+    pub fn load_test() -> ResolvedConfig {
         ResolvedConfig {
-            // download_dir: "/tmp/downloads".into(),
-            // metadata_dir: "/tmp/vincenzo".into(),
             download_dir: "/home/gabriel/code/personal/vincenzo/test-files"
                 .into(),
             metadata_dir: "/home/gabriel/code/personal/vincenzo/test-files"

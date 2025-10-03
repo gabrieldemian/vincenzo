@@ -42,7 +42,7 @@ use tracing::{debug, info, warn};
 
 use crate::{
     bitfield::{Bitfield, VczBitfield},
-    config::CONFIG,
+    config::ResolvedConfig,
     daemon::{DaemonCtx, DaemonMsg},
     error::Error,
     extensions::{
@@ -165,6 +165,7 @@ pub enum ReturnToDisk {
 /// - Store block infos of all torrents
 /// - Validate hash of pieces
 pub struct Disk {
+    pub config: Arc<ResolvedConfig>,
     pub tx: mpsc::Sender<DiskMsg>,
     pub daemon_ctx: Arc<DaemonCtx>,
     pub rx: Receiver<DiskMsg>,
@@ -220,12 +221,14 @@ static FILE_CACHE_CAPACITY: usize = 512;
 
 impl Disk {
     pub fn new(
+        config: Arc<ResolvedConfig>,
         daemon_ctx: Arc<DaemonCtx>,
         tx: mpsc::Sender<DiskMsg>,
         rx: mpsc::Receiver<DiskMsg>,
         free_rx: mpsc::UnboundedReceiver<ReturnToDisk>,
     ) -> Self {
         Self {
+            config,
             dirty_files: HashMap::new(),
             daemon_ctx,
             free_rx,
@@ -517,6 +520,7 @@ impl Disk {
         info!("downloaded {b} bytes {:?}", to_human_readable(b as f64));
 
         let torrent = Torrent::new_metainfo(
+            self.config.clone(),
             self.tx.clone(),
             self.daemon_ctx.clone(),
             metainfo,
@@ -1353,7 +1357,7 @@ impl Disk {
     /// Which is always "download_dir/name_of_torrent".
     pub fn base_path(&self, info_hash: &InfoHash) -> PathBuf {
         let info = self.torrent_info.get(info_hash).unwrap();
-        let mut base = CONFIG.download_dir.clone();
+        let mut base = self.config.download_dir.clone();
         base.push(&info.name);
         base
     }
@@ -1412,13 +1416,13 @@ impl Disk {
     }
 
     fn complete_torrents_path(&self) -> PathBuf {
-        let mut path = CONFIG.metadata_dir.clone();
+        let mut path = self.config.metadata_dir.clone();
         path.push("complete");
         path
     }
 
     fn incomplete_torrents_path(&self) -> PathBuf {
-        let mut path = CONFIG.metadata_dir.clone();
+        let mut path = self.config.metadata_dir.clone();
         path.push("incomplete");
         path
     }
@@ -1718,261 +1722,6 @@ impl Disk {
             }
             PieceStrategy::Rarest => {}
         }
-
-        Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    use futures::StreamExt;
-    use hashbrown::HashSet;
-    use std::{
-        net::{Ipv4Addr, SocketAddrV4},
-        time::Duration,
-    };
-    use tokio::{
-        sync::{Mutex, broadcast},
-        time::{Instant, interval, interval_at},
-    };
-    use tokio_util::codec::Framed;
-
-    use crate::{
-        bitfield::Reserved,
-        counter::Counter,
-        daemon::Daemon,
-        extensions::{CoreCodec, core::BLOCK_LEN},
-        peer::{
-            self, DEFAULT_REQUEST_QUEUE_LEN, Peer, PeerMsg, RequestManager,
-            StateLog,
-        },
-        torrent::{Connected, FromMetaInfo, PeerBrMsg, Stats, Torrent},
-        tracker::TrackerMsg,
-    };
-
-    use tokio::{
-        net::{TcpListener, TcpStream},
-        spawn,
-        sync::mpsc,
-    };
-
-    // test all features that Disk provides by simulating, from start to end, a
-    // remote peer that has the torrent fully downloaded and a local peer
-    // trying to download it.
-    #[tokio::test]
-    #[ignore]
-    async fn disk_works() -> Result<(), Error> {
-        // =======================
-        // spawning boilerplate
-        // =======================
-        //
-        // we will simulate a remote peer that is already connected, unchoked,
-        // interested, ready to receive msgs like RequestBlocks etc.
-
-        let torrent_name = "t";
-        let (disk_tx, disk_rx) = mpsc::channel::<DiskMsg>(10);
-        let (disk_free_tx, disk_free_rx) =
-            mpsc::unbounded_channel::<ReturnToDisk>();
-
-        let mut daemon = Daemon::new(disk_tx.clone(), disk_free_tx.clone());
-        let daemon_ctx = daemon.ctx.clone();
-
-        let mut disk = Disk::new(
-            daemon_ctx.clone(),
-            disk_tx.clone(),
-            disk_rx,
-            disk_free_rx,
-        );
-
-        let disk_tx = disk.tx.clone();
-        let free_tx = disk_free_tx;
-
-        let (tracker_tx, _tracker_rx) = broadcast::channel::<TrackerMsg>(10);
-        let (torrent_tx, torrent_rx) = mpsc::channel::<TorrentMsg>(10);
-
-        let meta_info = MetaInfo::from_bencode(include_bytes!(
-            "../../../test-files/complete/t.torrent"
-        ))
-        .unwrap();
-        let pieces_len = meta_info.info.pieces();
-        let info_hash = meta_info.info.info_hash.clone();
-        let metadata_size = meta_info.info.metadata_size;
-        let (btx, _brx) = broadcast::channel::<PeerBrMsg>(10);
-
-        let torrent_ctx = Arc::new(TorrentCtx {
-            btx,
-            free_tx: free_tx.clone(),
-            disk_tx: disk_tx.clone(),
-            tx: torrent_tx,
-            info_hash: info_hash.clone(),
-        });
-
-        let (peer_tx, peer_rx) = mpsc::channel::<PeerMsg>(10);
-
-        let peer_ctx = Arc::new(PeerCtx {
-            torrent_ctx: torrent_ctx.clone(),
-            remote_addr: SocketAddr::V4(SocketAddrV4::new(
-                Ipv4Addr::new(127, 0, 0, 1),
-                0000,
-            )),
-            local_addr: SocketAddr::V4(SocketAddrV4::new(
-                Ipv4Addr::new(127, 0, 0, 1),
-                0000,
-            )),
-            counter: Counter::default(),
-            last_download_rate_update: Mutex::new(Instant::now()),
-            tx: peer_tx.clone(),
-            peer_interested: true.into(),
-            id: PeerId::generate(),
-            am_interested: true.into(),
-            am_choking: false.into(),
-            peer_choking: false.into(),
-            direction: peer::Direction::Outbound,
-        });
-
-        let listener = TcpListener::bind("0.0.0.0:0").await?;
-        let local_addr = listener.local_addr()?;
-        let peer_pieces =
-            bitvec::bitvec![u8, bitvec::prelude::Msb0; 0; pieces_len];
-        let peer_ctx_ = peer_ctx.clone();
-        let stream = TcpStream::connect(local_addr).await?;
-
-        // try to reconnect with errored peers
-        let reconnect_interval = interval(Duration::from_secs(2));
-
-        // send state to the frontend, if connected.
-        let heartbeat_interval = interval(Duration::from_secs(1));
-
-        let log_rates_interval = interval(Duration::from_secs(5));
-
-        // unchoke the slowest interested peer.
-        let optimistic_unchoke_interval = interval(Duration::from_secs(30));
-
-        // unchoke algorithm:
-        // - choose the best 3 interested uploaders and unchoke them.
-        let unchoke_interval = interval_at(
-            Instant::now() + Duration::from_secs(10),
-            Duration::from_secs(10),
-        );
-
-        let mut torrent = Torrent {
-            source: FromMetaInfo { meta_info: meta_info.clone() },
-            state: Connected {
-                reconnect_interval,
-                heartbeat_interval,
-                log_rates_interval,
-                optimistic_unchoke_interval,
-                unchoke_interval,
-                peer_pieces: HashMap::from([(
-                    peer_ctx_.id.clone(),
-                    peer_pieces,
-                )]),
-                size: 0,
-                counter: Counter::new(),
-                unchoked_peers: Vec::new(),
-                opt_unchoked_peer: None,
-                connecting_peers: Vec::new(),
-                error_peers: Vec::new(),
-                stats: Stats { seeders: 1, leechers: 1, interval: 1000 },
-                idle_peers: HashSet::new(),
-                tracker_tx: tracker_tx.clone(),
-                metadata_size: Some(metadata_size),
-                connected_peers: vec![peer_ctx.clone()],
-                info_pieces: BTreeMap::new(),
-            },
-            bitfield: bitvec::bitvec![u8, bitvec::prelude::Msb0; 0; pieces_len ],
-            ctx: torrent_ctx.clone(),
-            daemon_ctx,
-            name: torrent_name.to_string(),
-            rx: torrent_rx,
-            status: crate::torrent::TorrentStatus::Downloading,
-        };
-
-        disk.piece_strategy
-            .insert(info_hash.clone(), PieceStrategy::Sequential);
-        disk.new_peer(peer_ctx.clone());
-        disk.new_torrent_metainfo(meta_info).await?;
-
-        spawn(async move { daemon.run().await });
-        spawn(async move { disk.run().await });
-        spawn(async move { torrent.run().await });
-        spawn(async move {
-            let (_socket, _) = listener.accept().await.unwrap();
-            let socket = Framed::new(stream, CoreCodec);
-            let (sink, stream) = socket.split();
-
-            let mut peer = Peer::<peer::Connected> {
-                state_log: StateLog::default(),
-                state: peer::Connected {
-                    free_tx,
-                    is_paused: false,
-                    ctx: peer_ctx_,
-                    ext_states: peer::ExtStates::default(),
-                    have_info: true,
-                    in_endgame: false,
-                    incoming_requests: Vec::new(),
-                    req_man_meta: RequestManager::new(),
-                    req_man_block: RequestManager::new(),
-                    reserved: Reserved::default(),
-                    rx: peer_rx,
-                    seed_only: false,
-                    sink,
-                    stream,
-                    target_request_queue_len: DEFAULT_REQUEST_QUEUE_LEN,
-                },
-            };
-
-            let _ = peer.run().await;
-        });
-
-        let (otx, orx) = oneshot::channel();
-        disk_tx
-            .send(DiskMsg::RequestBlocks {
-                peer_id: peer_ctx.id.clone(),
-                recipient: otx,
-                qnt: 3,
-            })
-            .await?;
-
-        let blocks = orx.await?;
-
-        assert_eq!(
-            blocks,
-            vec![
-                BlockInfo { index: 0, begin: 0, len: BLOCK_LEN },
-                BlockInfo { index: 1, begin: 0, len: BLOCK_LEN },
-                BlockInfo { index: 2, begin: 0, len: BLOCK_LEN },
-            ]
-        );
-
-        disk_tx
-            .send(DiskMsg::WriteBlock {
-                info_hash: info_hash.clone(),
-                block: Block {
-                    index: 1,
-                    begin: 0,
-                    block: vec![7u8; BLOCK_LEN].into(),
-                },
-            })
-            .await?;
-
-        let (otx, orx) = oneshot::channel();
-
-        disk_tx
-            .send(DiskMsg::ReadBlock {
-                info_hash: info_hash.clone(),
-                recipient: otx,
-                block_info: BlockInfo { index: 1, begin: 0, len: BLOCK_LEN },
-            })
-            .await?;
-
-        let block = Block { index: 1, begin: 0, block: orx.await? };
-
-        assert_eq!(block.index, 1);
-        assert_eq!(block.begin, 0);
-        assert_eq!(block.block.len(), blocks[0].len);
 
         Ok(())
     }
