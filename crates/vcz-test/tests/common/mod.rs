@@ -43,13 +43,15 @@ use vcz_lib::{
     torrent::TorrentCtx,
 };
 
-async fn setup_complete_torrent() -> (Disk, Daemon, Arc<TorrentCtx>, usize) {
+async fn setup_complete_torrent()
+-> (Disk, Daemon, Arc<TorrentCtx>, usize, impl AsyncFnOnce()) {
     let mut config = Config::load_test();
     config.key = 0;
     setup_torrent(Arc::new(config), true).await
 }
 
-async fn setup_incomplete_torrent() -> (Disk, Daemon, Arc<TorrentCtx>, usize) {
+async fn setup_incomplete_torrent()
+-> (Disk, Daemon, Arc<TorrentCtx>, usize, impl AsyncFnOnce()) {
     let mut config = Config::load_test();
     config.download_dir = "/tmp/fakedownload".into();
     config.metadata_dir = "/tmp/fakemetadata".into();
@@ -57,15 +59,19 @@ async fn setup_incomplete_torrent() -> (Disk, Daemon, Arc<TorrentCtx>, usize) {
     setup_torrent(Arc::new(config), true).await
 }
 
+pub async fn cleanup(config: Arc<ResolvedConfig>) {
+    let _ = tokio::fs::remove_dir_all(&config.download_dir).await;
+    let _ = tokio::fs::remove_dir_all(&config.metadata_dir).await;
+}
+
 /// Setup the boilerplate of a complete torrent, disk, daemon, and torrent
 /// structs. Peers are not created and event loops not run.
 async fn setup_torrent(
     config: Arc<ResolvedConfig>,
     is_complete: bool,
-) -> (Disk, Daemon, Arc<TorrentCtx>, usize) {
-    let config = Arc::new(Config::load().unwrap());
-
+) -> (Disk, Daemon, Arc<TorrentCtx>, usize, impl AsyncFnOnce()) {
     let name = "t".to_string();
+
     let (disk_tx, disk_rx) = mpsc::channel::<DiskMsg>(10);
     let (free_tx, free_rx) = mpsc::unbounded_channel::<ReturnToDisk>();
 
@@ -120,6 +126,7 @@ async fn setup_torrent(
         Duration::from_secs(10),
     );
 
+    let cc = config.clone();
     let torrent = Torrent {
         config,
         source: FromMetaInfo { meta_info: metainfo.clone() },
@@ -142,7 +149,7 @@ async fn setup_torrent(
     disk.new_torrent_metainfo(metainfo).await.unwrap();
     disk.daemon_ctx.tx.send(DaemonMsg::AddTorrentMetaInfo(torrent)).await;
 
-    (disk, daemon, torrent_ctx, pieces_count)
+    (disk, daemon, torrent_ctx, pieces_count, move || cleanup(cc))
 }
 
 async fn setup_peer(
@@ -209,12 +216,23 @@ async fn setup_peer(
 /// and will also create 5 peers.
 #[cfg(test)]
 pub async fn setup() -> Result<
-    (mpsc::Sender<DiskMsg>, Arc<DaemonCtx>, Arc<TorrentCtx>, Arc<PeerCtx>),
+    (
+        mpsc::Sender<DiskMsg>,
+        Arc<DaemonCtx>,
+        Arc<TorrentCtx>,
+        Arc<PeerCtx>,
+        impl AsyncFnOnce(),
+    ),
     Error,
 > {
     // leecher
-    let (mut leecher_disk, mut daemon, leecher_torrent_ctx, pieces_count) =
-        setup_complete_torrent().await;
+    let (
+        mut leecher_disk,
+        mut daemon,
+        leecher_torrent_ctx,
+        pieces_count,
+        cleanup,
+    ) = setup_incomplete_torrent().await;
 
     let info_hash = leecher_torrent_ctx.info_hash.clone();
     let mut leecher = setup_peer(leecher_torrent_ctx.clone()).await?;
@@ -242,5 +260,5 @@ pub async fn setup() -> Result<
 
     // seeder
 
-    Ok((disk_tx, daemon_ctx, leecher_torrent_ctx, leecher_ctx))
+    Ok((disk_tx, daemon_ctx, leecher_torrent_ctx, leecher_ctx, cleanup))
 }

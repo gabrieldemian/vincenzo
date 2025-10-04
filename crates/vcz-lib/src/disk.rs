@@ -267,10 +267,10 @@ impl Disk {
         tokio::fs::create_dir_all(self.complete_torrents_path()).await?;
 
         // load .torrent files into the client.
-        #[cfg(not(feature = "debug"))]
+        // #[cfg(not(feature = "debug"))]
         self.read_incomplete_torrents().await?;
 
-        #[cfg(not(feature = "debug"))]
+        // #[cfg(not(feature = "debug"))]
         self.read_complete_torrents().await?;
 
         'outer: loop {
@@ -508,9 +508,6 @@ impl Disk {
 
         self.compute_torrent_cache(&metainfo.info);
 
-        // create folders, files, and preallocate them.
-        self.preallocate_files(&info_hash).await?;
-
         let downloaded_pieces =
             self.compute_downloaded_pieces(&metainfo.info).await?;
 
@@ -529,6 +526,9 @@ impl Disk {
 
         self.torrent_ctxs.insert(info_hash.clone(), torrent.ctx.clone());
 
+        // create folders, files, and preallocate them with zeroes.
+        self.preallocate_files(&info_hash).await?;
+
         Ok(torrent)
     }
 
@@ -539,11 +539,9 @@ impl Disk {
         let mut mmaps = Vec::with_capacity(file_metadata.len());
 
         for file_meta in file_metadata {
-            // if let Some(parent) = file_meta.path.parent() {
-            //     tokio::fs::create_dir_all(parent).await?;
-            // }
-            // file.set_len(file_meta.length).await?;
-            let file = Self::open_file(&file_meta.path).await?;
+            let Ok(file) = Self::open_file(&file_meta.path).await else {
+                continue;
+            };
             let mmap = unsafe { Mmap::map(&file)? };
             mmaps.push((file_meta, Arc::new(mmap)));
         }
@@ -573,8 +571,6 @@ impl Disk {
         let piece_length = info.piece_length;
         let total_size = torrent_cache.total_size;
 
-        // will also create missing files, and pad the files with null bytes,
-        // if missing.
         let file_handles =
             self.preopen_files(&torrent_cache.file_metadata).await?;
 
@@ -946,9 +942,6 @@ impl Disk {
 
         // must be both missing and not requested
         missing_pieces &= pieces_non_requested.clone();
-
-        println!("missing_pieces {missing_pieces:?}");
-        println!("non req pieces {pieces_non_requested:?}");
 
         let piece_order = self
             .piece_order
@@ -1591,16 +1584,8 @@ impl Disk {
                 // calculate file offset
                 let file_offset = read_start - file_start;
 
-                // handle out-of-bounds access
+                // todo: handle out-of-bounds access
                 // if file_offset >= mmap.len() {
-                //     // entire segment is beyond the file - hash zeros
-                //     let mut remaining_zeros = read_length;
-                //     while remaining_zeros > 0 {
-                //         let zero_chunk = remaining_zeros.min(ZERO_BUF.len());
-                //         hasher.update(&ZERO_BUF[..zero_chunk]);
-                //         remaining_zeros -= zero_chunk;
-                //     }
-                //     bytes_remaining -= read_length;
                 //     continue;
                 // }
 
@@ -1613,17 +1598,6 @@ impl Disk {
                         &mmap[file_offset..file_offset + available_bytes];
                     hasher.update(data);
                 }
-
-                // pad with zeros if needed
-                // if available_bytes < read_length {
-                //     let zero_bytes = read_length - available_bytes;
-                //     let mut remaining_zeros = zero_bytes;
-                //     while remaining_zeros > 0 {
-                //         let zero_chunk = remaining_zeros.min(ZERO_BUF.len());
-                //         hasher.update(&ZERO_BUF[..zero_chunk]);
-                //         remaining_zeros -= zero_chunk;
-                //     }
-                // }
 
                 bytes_remaining -= read_length;
             }
