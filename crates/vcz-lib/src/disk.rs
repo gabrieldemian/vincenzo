@@ -55,9 +55,6 @@ use crate::{
     utils::to_human_readable,
 };
 
-// 64KB zero buffer
-static ZERO_BUF: [u8; 65536] = [0; 65536];
-
 #[derive(Debug)]
 pub enum DiskMsg {
     /// Sent by the frontend or CLI flag to add a new torrent from a magnet,

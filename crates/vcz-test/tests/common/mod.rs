@@ -1,3 +1,18 @@
+//! Module to share types for integration tests.
+//!
+//! An integration test is essentially a whole vcz client running (daemon, disk,
+//! torrent, peers, tracker), sice many features are not possible to test in
+//! isolation.
+//!
+//! Each integration test will have a "perfect" simulation of the state of a vcz
+//! client: [`Daemon`], [`Disk`], etc.
+//!
+//! By "perfect" I mean that the setup functions will create a vcz client with
+//! the exact same funtions, in the exact same way, that happens in production,
+//! when the code is run "for real".
+//!
+//! With that being said, a tracker mock is still missing.
+
 use bendy::decoding::FromBencode;
 use futures::StreamExt;
 use std::{
@@ -30,6 +45,7 @@ use vcz_lib::{
 /// Setup a torrent that is fully downloaded on disk.
 async fn setup_complete_torrent()
 -> Result<(Disk, Daemon, Arc<TorrentCtx>, usize, impl AsyncFnOnce()), Error> {
+    // `load_test` points to the complete location
     let mut config = Config::load_test();
     config.key = 0;
     setup_torrent(Arc::new(config), true).await
@@ -39,6 +55,7 @@ async fn setup_complete_torrent()
 async fn setup_incomplete_torrent()
 -> Result<(Disk, Daemon, Arc<TorrentCtx>, usize, impl AsyncFnOnce()), Error> {
     let mut config = Config::load_test();
+    // points to a place that doesn't exist
     config.download_dir = "/tmp/fakedownload".into();
     config.metadata_dir = "/tmp/fakemetadata".into();
     config.key = 1;
@@ -63,11 +80,8 @@ async fn setup_torrent(
     config: Arc<ResolvedConfig>,
     is_complete: bool,
 ) -> Result<(Disk, Daemon, Arc<TorrentCtx>, usize, impl AsyncFnOnce()), Error> {
-    let name = "t".to_string();
-
     let (disk_tx, disk_rx) = mpsc::channel::<DiskMsg>(10);
     let (free_tx, free_rx) = mpsc::unbounded_channel::<ReturnToDisk>();
-
     let daemon = Daemon::new(config.clone(), disk_tx.clone(), free_tx.clone());
     let daemon_ctx = daemon.ctx.clone();
 
@@ -83,7 +97,6 @@ async fn setup_torrent(
         "../../../../test-files/complete/t.torrent"
     ))?;
 
-    let pieces_count = metainfo.info.pieces();
     let info_hash = metainfo.info.info_hash.clone();
     let (btx, _brx) = broadcast::channel::<PeerBrMsg>(10);
     let (tx, rx) = mpsc::channel::<TorrentMsg>(10);
@@ -97,6 +110,8 @@ async fn setup_torrent(
     });
 
     let cc = config.clone();
+    let pieces_count = metainfo.info.pieces();
+
     let torrent = Torrent {
         config,
         source: FromMetaInfo { meta_info: metainfo.clone() },
@@ -110,7 +125,7 @@ async fn setup_torrent(
         },
         ctx: torrent_ctx.clone(),
         daemon_ctx,
-        name,
+        name: "t".into(),
         rx,
         status: torrent::TorrentStatus::Downloading,
     };

@@ -123,7 +123,7 @@ Options:
 ```toml
 download_dir = "$XDG_DOWNLOAD_DIR"
 daemon_addr = "0.0.0.0:51411"
-max_global_peers = 200
+max_global_peers = 500
 max_torrent_peers = 50
 local_peer_port = 51413
 is_ipv6 = false
