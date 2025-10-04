@@ -5,15 +5,19 @@ use vcz_lib::{
     extensions::{BLOCK_LEN, BlockInfo},
 };
 
-#[allow(unused, dead_code)]
 mod common;
 
+/// Simulate a local leecher requesting blocks from a seeder.
+///
+/// The torrent has 6 block infos, the disk must send unique block infos for
+/// each request.
 #[tokio::test]
 async fn request_block() -> Result<(), Error> {
-    let (disk_tx, _daemon_ctx, _torrent_ctx, seeder_ctx, cleanup) =
-        common::setup().await?;
+    let (seeder_ctx, cleanup) = common::setup().await?;
+    let disk_tx = &seeder_ctx.torrent_ctx.disk_tx;
 
     let (otx, orx) = oneshot::channel();
+
     disk_tx
         .send(DiskMsg::RequestBlocks {
             peer_id: seeder_ctx.id.clone(),
@@ -64,7 +68,10 @@ async fn request_block() -> Result<(), Error> {
 
     let blocks = orx.await?;
 
-    assert!(blocks.is_empty());
+    assert!(
+        blocks.is_empty(),
+        "disk must not have any more block infos to be requested"
+    );
 
     cleanup().await;
 

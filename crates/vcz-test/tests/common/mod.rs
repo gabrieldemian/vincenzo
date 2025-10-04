@@ -1,82 +1,74 @@
+use bendy::decoding::FromBencode;
 use futures::StreamExt;
-use hashbrown::HashSet;
 use std::{
-    net::{Ipv4Addr, SocketAddrV4},
-    time::Duration,
+    net::{Ipv4Addr, SocketAddr, SocketAddrV4},
+    sync::Arc,
 };
-
 use tokio::{
-    sync::{Mutex, broadcast},
-    time::{Instant, interval, interval_at},
+    net::{TcpListener, TcpStream},
+    spawn,
+    sync::{Mutex, broadcast, mpsc},
+    time::Instant,
 };
 use tokio_util::codec::Framed;
-#[cfg(test)]
-use vcz_lib::daemon::DaemonCtx;
-
 use vcz_lib::{
     bitfield::{Bitfield, Reserved, VczBitfield},
     config::{Config, ResolvedConfig},
     counter::Counter,
     daemon::{Daemon, DaemonMsg},
-    disk::{Disk, DiskMsg, ReturnToDisk},
-    extensions::{CoreCodec, core::BLOCK_LEN},
-    peer::{self, DEFAULT_REQUEST_QUEUE_LEN, Peer, PeerMsg, RequestManager},
-    torrent::{
-        self, Connected, FromMetaInfo, PeerBrMsg, Stats, Torrent, TorrentMsg,
-    },
-    tracker::TrackerMsg,
-};
-
-use bendy::decoding::FromBencode;
-use hashbrown::HashMap;
-use std::{collections::BTreeMap, net::SocketAddr, sync::Arc};
-use tokio::{
-    net::{TcpListener, TcpStream},
-    spawn,
-    sync::mpsc,
-};
-use vcz_lib::{
-    disk::PieceStrategy,
+    disk::{Disk, DiskMsg, PieceStrategy, ReturnToDisk},
     error::Error,
+    extensions::CoreCodec,
     metainfo::MetaInfo,
-    peer::{PeerCtx, PeerId},
-    torrent::TorrentCtx,
+    peer::{
+        self, DEFAULT_REQUEST_QUEUE_LEN, Peer, PeerCtx, PeerId, PeerMsg,
+        RequestManager,
+    },
+    torrent::{self, FromMetaInfo, PeerBrMsg, Torrent, TorrentCtx, TorrentMsg},
 };
 
+/// Setup a torrent that is fully downloaded on disk.
 async fn setup_complete_torrent()
--> (Disk, Daemon, Arc<TorrentCtx>, usize, impl AsyncFnOnce()) {
+-> Result<(Disk, Daemon, Arc<TorrentCtx>, usize, impl AsyncFnOnce()), Error> {
     let mut config = Config::load_test();
     config.key = 0;
     setup_torrent(Arc::new(config), true).await
 }
 
+/// Setup a torrent that doesn't have any files from the torrent.
 async fn setup_incomplete_torrent()
--> (Disk, Daemon, Arc<TorrentCtx>, usize, impl AsyncFnOnce()) {
+-> Result<(Disk, Daemon, Arc<TorrentCtx>, usize, impl AsyncFnOnce()), Error> {
     let mut config = Config::load_test();
     config.download_dir = "/tmp/fakedownload".into();
     config.metadata_dir = "/tmp/fakemetadata".into();
     config.key = 1;
-    setup_torrent(Arc::new(config), true).await
+    setup_torrent(Arc::new(config), false).await
 }
 
-pub async fn cleanup(config: Arc<ResolvedConfig>) {
+/// Delete download and metadata dirs.
+///
+/// This is necessary to be more deterministic, as [`Disk`] has a side effect of
+/// creating the structure of the torrent and pre-allocating files with zero
+/// bytes.
+async fn cleanup(config: Arc<ResolvedConfig>) {
     let _ = tokio::fs::remove_dir_all(&config.download_dir).await;
     let _ = tokio::fs::remove_dir_all(&config.metadata_dir).await;
 }
 
-/// Setup the boilerplate of a complete torrent, disk, daemon, and torrent
-/// structs. Peers are not created and event loops not run.
+/// Setup the boilerplate of a torrent.
+///
+/// The event loops for [`Disk`], [`Daemon`] and [`Torrent`] (through Daemon)
+/// are run. But there are no peers and no trackers.
 async fn setup_torrent(
     config: Arc<ResolvedConfig>,
     is_complete: bool,
-) -> (Disk, Daemon, Arc<TorrentCtx>, usize, impl AsyncFnOnce()) {
+) -> Result<(Disk, Daemon, Arc<TorrentCtx>, usize, impl AsyncFnOnce()), Error> {
     let name = "t".to_string();
 
     let (disk_tx, disk_rx) = mpsc::channel::<DiskMsg>(10);
     let (free_tx, free_rx) = mpsc::unbounded_channel::<ReturnToDisk>();
 
-    let mut daemon =
-        Daemon::new(config.clone(), disk_tx.clone(), free_tx.clone());
+    let daemon = Daemon::new(config.clone(), disk_tx.clone(), free_tx.clone());
     let daemon_ctx = daemon.ctx.clone();
 
     let mut disk = Disk::new(
@@ -87,18 +79,14 @@ async fn setup_torrent(
         free_rx,
     );
 
-    let (tracker_tx, _tracker_rx) = broadcast::channel::<TrackerMsg>(10);
-    let (tx, rx) = mpsc::channel::<TorrentMsg>(10);
-
     let metainfo = MetaInfo::from_bencode(include_bytes!(
         "../../../../test-files/complete/t.torrent"
-    ))
-    .unwrap();
+    ))?;
 
     let pieces_count = metainfo.info.pieces();
     let info_hash = metainfo.info.info_hash.clone();
-    let metadata_size = metainfo.info.metadata_size;
     let (btx, _brx) = broadcast::channel::<PeerBrMsg>(10);
+    let (tx, rx) = mpsc::channel::<TorrentMsg>(10);
 
     let torrent_ctx = Arc::new(TorrentCtx {
         btx,
@@ -108,24 +96,6 @@ async fn setup_torrent(
         info_hash,
     });
 
-    // try to reconnect with errored peers
-    let reconnect_interval = interval(Duration::from_secs(2));
-
-    // send state to the frontend, if connected.
-    let heartbeat_interval = interval(Duration::from_secs(1));
-
-    let log_rates_interval = interval(Duration::from_secs(5));
-
-    // unchoke the slowest interested peer.
-    let optimistic_unchoke_interval = interval(Duration::from_secs(30));
-
-    // unchoke algorithm:
-    // - choose the best 3 interested uploaders and unchoke them.
-    let unchoke_interval = interval_at(
-        Instant::now() + Duration::from_secs(10),
-        Duration::from_secs(10),
-    );
-
     let cc = config.clone();
     let torrent = Torrent {
         config,
@@ -134,9 +104,9 @@ async fn setup_torrent(
             metadata_size: Some(metainfo.info.metadata_size),
         },
         bitfield: if is_complete {
-            Bitfield::from_piece(pieces_count)
-        } else {
             !Bitfield::from_piece(pieces_count)
+        } else {
+            Bitfield::from_piece(pieces_count)
         },
         ctx: torrent_ctx.clone(),
         daemon_ctx,
@@ -146,12 +116,14 @@ async fn setup_torrent(
     };
 
     let torrent_ctx = torrent.ctx.clone();
-    disk.new_torrent_metainfo(metainfo).await.unwrap();
-    disk.daemon_ctx.tx.send(DaemonMsg::AddTorrentMetaInfo(torrent)).await;
+    disk.new_torrent_metainfo(metainfo).await?;
+    let _ =
+        disk.daemon_ctx.tx.send(DaemonMsg::AddTorrentMetaInfo(torrent)).await;
 
-    (disk, daemon, torrent_ctx, pieces_count, move || cleanup(cc))
+    Ok((disk, daemon, torrent_ctx, pieces_count, move || cleanup(cc)))
 }
 
+/// Create a [`Peer`] belonging to the provided torrent.
 async fn setup_peer(
     torrent_ctx: Arc<TorrentCtx>,
 ) -> Result<Peer<peer::Connected>, Error> {
@@ -183,11 +155,11 @@ async fn setup_peer(
     let local_addr = listener.local_addr()?;
     let stream = TcpStream::connect(local_addr).await?;
 
-    let (_socket, _) = listener.accept().await.unwrap();
+    // let (socket, _) = listener.accept().await?;
     let socket = Framed::new(stream, CoreCodec);
     let (sink, stream) = socket.split();
 
-    let mut peer = Peer::<peer::Connected> {
+    let peer = Peer::<peer::Connected> {
         state_log: Default::default(),
         state: peer::Connected {
             free_tx,
@@ -211,54 +183,40 @@ async fn setup_peer(
     Ok(peer)
 }
 
-/// Setup boilerplate for testing,
-/// this will load the torrent of `t.torrent`. Disk, Daemon, and Torrent structs
-/// and will also create 5 peers.
+/// Setup boilerplate for testing.
+///
+/// Simulate a local leecher peer connected with a seeder peer.
 #[cfg(test)]
-pub async fn setup() -> Result<
-    (
-        mpsc::Sender<DiskMsg>,
-        Arc<DaemonCtx>,
-        Arc<TorrentCtx>,
-        Arc<PeerCtx>,
-        impl AsyncFnOnce(),
-    ),
-    Error,
-> {
-    // leecher
+pub async fn setup() -> Result<(Arc<PeerCtx>, impl AsyncFnOnce()), Error> {
+    // remote seeder
     let (
-        mut leecher_disk,
+        mut seeder_disk,
         mut daemon,
-        leecher_torrent_ctx,
+        seeder_torrent_ctx,
         pieces_count,
         cleanup,
-    ) = setup_incomplete_torrent().await;
+    ) = setup_incomplete_torrent().await?;
 
-    let info_hash = leecher_torrent_ctx.info_hash.clone();
-    let mut leecher = setup_peer(leecher_torrent_ctx.clone()).await?;
-    let leecher_ctx = leecher.state.ctx.clone();
-    let leecher_pieces = !Bitfield::from_piece(pieces_count);
+    let info_hash = seeder_torrent_ctx.info_hash.clone();
+    let seeder = setup_peer(seeder_torrent_ctx.clone()).await?;
+    let seeder_ctx = seeder.state.ctx.clone();
+    let seeder_pieces = !Bitfield::from_piece(pieces_count);
 
-    leecher_torrent_ctx
+    seeder_torrent_ctx
         .tx
         .send(TorrentMsg::AddConnectedPeers(vec![(
-            leecher.state.ctx.clone(),
-            leecher_pieces,
+            seeder.state.ctx.clone(),
+            seeder_pieces,
         )]))
         .await?;
-    leecher_disk.new_peer(leecher.state.ctx.clone());
-    leecher_disk.set_piece_strategy(&info_hash, PieceStrategy::Sequential);
-
-    let disk_tx = leecher_disk.tx.clone();
-    let daemon_ctx = daemon.ctx.clone();
+    seeder_disk.new_peer(seeder.state.ctx.clone());
+    seeder_disk.set_piece_strategy(&info_hash, PieceStrategy::Sequential)?;
 
     spawn(async move { daemon.run().await });
-    spawn(async move { leecher_disk.run().await });
+    spawn(async move { seeder_disk.run().await });
     // spawn(async move {
-    //     let _ = leecher.run().await;
+    //     let _ = seeder.run().await;
     // });
 
-    // seeder
-
-    Ok((disk_tx, daemon_ctx, leecher_torrent_ctx, leecher_ctx, cleanup))
+    Ok((seeder_ctx, cleanup))
 }
