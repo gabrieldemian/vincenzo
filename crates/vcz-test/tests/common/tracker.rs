@@ -1,9 +1,12 @@
 //! Mock of a tracker.
 
 use hashbrown::HashMap;
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use tokio::net::UdpSocket;
 use vcz_lib::{error::Error, peer::PeerId, torrent::InfoHash, tracker};
+
+pub static DEFAULT_ADDR: SocketAddr =
+    SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 1337);
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Clone)]
 pub(crate) struct PeerInfo {
@@ -27,7 +30,7 @@ pub(crate) struct MockTracker {
 
 impl MockTracker {
     pub async fn new() -> Result<Self, Error> {
-        let socket = UdpSocket::bind("0.0.0.0:0").await?;
+        let socket = UdpSocket::bind(DEFAULT_ADDR).await?;
         Ok(Self {
             socket,
             peers: Default::default(),
@@ -42,6 +45,13 @@ impl MockTracker {
             let (len, who) = self.socket.recv_from(&mut buf).await?;
             let _ = self.handle_packet(&buf[..len], who).await;
         }
+    }
+
+    pub fn url(&self) -> String {
+        let s = self.socket.local_addr().unwrap();
+        let ip = s.ip();
+        let port = s.port();
+        format!("udp%3A%2F%2F{ip:?}%3A{port}%2Fannounce")
     }
 
     pub fn insert_seeder(&mut self, seeder: (PeerId, PeerInfo)) {
@@ -62,7 +72,7 @@ impl MockTracker {
         let peer_conn = self.peers.get(&who);
 
         match (peer_conn, buf.len()) {
-            // if this is a new connection
+            // handle new connection
             (None, tracker::connect::Request::LEN) => {
                 let req = tracker::connect::Request::deserialize(buf)?;
                 let connection_id = rand::random();
@@ -146,7 +156,7 @@ impl MockTracker {
                 Ok(())
             }
 
-            // ignore duplicate connection
+            // ignore duplicate connections
             (Some(_conn), tracker::connect::Request::LEN) => Ok(()),
             (_, _) => Err(Error::TrackerResponse),
         }
@@ -190,7 +200,6 @@ mod tests {
         //
         // announce
         //
-
         // add a fake seeder just to see if it works
         let fake = "127.0.0.1:5678".parse().unwrap();
         let fake_id = PeerId::generate();

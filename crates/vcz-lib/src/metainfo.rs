@@ -39,6 +39,7 @@ impl MetaInfo {
         let mut list = vec![self.announce.clone()];
 
         if let Some(l) = self.announce_list.clone() {
+            list.pop();
             list.extend(l.into_iter().flatten());
         }
 

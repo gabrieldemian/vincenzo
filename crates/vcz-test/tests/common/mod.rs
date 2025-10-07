@@ -96,6 +96,8 @@ async fn setup_torrent(
         free_rx,
     );
 
+    let tracker = MockTracker::new().await?;
+
     let metainfo = MetaInfo::from_bencode(include_bytes!(
         "../../../../test-files/complete/t.torrent"
     ))?;
