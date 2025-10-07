@@ -264,10 +264,7 @@ impl Disk {
         tokio::fs::create_dir_all(self.complete_torrents_path()).await?;
 
         // load .torrent files into the client.
-        // #[cfg(not(feature = "debug"))]
         self.read_incomplete_torrents().await?;
-
-        // #[cfg(not(feature = "debug"))]
         self.read_complete_torrents().await?;
 
         'outer: loop {

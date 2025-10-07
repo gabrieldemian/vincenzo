@@ -105,7 +105,7 @@ impl Request {
 #[derive(Debug, PartialEq, Serialize, Deserialize, Archive)]
 #[rkyv(compare(PartialEq), derive(Debug))]
 pub struct Response {
-    pub action: u32,
+    pub action: Action,
     pub transaction_id: u32,
     pub interval: u32,
     pub leechers: u32,

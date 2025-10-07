@@ -21,6 +21,7 @@ impl Default for Request {
 impl Request {
     pub const LEN: usize = 16;
     const MAGIC: u64 = 0x41727101980;
+    const MAGIC_BUF: [u8; 8] = Self::MAGIC.to_be_bytes();
 
     pub fn new() -> Self {
         Self {
@@ -53,6 +54,9 @@ impl Request {
         if bytes.len() != Self::LEN {
             return Err(Error::TrackerResponse);
         }
+        if bytes[0..8] != Self::MAGIC_BUF {
+            return Err(Error::TrackerResponse);
+        }
         Ok(unsafe { rkyv::access_unchecked::<ArchivedRequest>(bytes) })
     }
 }
@@ -60,13 +64,13 @@ impl Request {
 #[derive(Debug, PartialEq, Serialize, Deserialize, Archive)]
 #[rkyv(compare(PartialEq), derive(Debug))]
 pub struct Response {
-    pub action: u32,
+    pub action: Action,
     pub transaction_id: u32,
     pub connection_id: u64,
 }
 
 impl Response {
-    pub(crate) const LEN: usize = 16;
+    pub const LEN: usize = 16;
 
     #[cfg(test)]
     pub(crate) fn hand(buf: &[u8]) -> Result<Self, Error> {
@@ -74,7 +78,11 @@ impl Response {
             return Err(Error::TrackerResponse);
         }
 
-        let action = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]);
+        // let action = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]);
+        let action: Action =
+            u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]])
+                .try_into()
+                .unwrap();
         let transaction_id =
             u32::from_be_bytes([buf[4], buf[5], buf[6], buf[7]]);
         let connection_id = u64::from_be_bytes([
@@ -107,6 +115,16 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn new_and_default() {
+        let n = Request::new();
+        assert_eq!(n.action, Action::Connect);
+        assert_eq!(n.protocol_id, Request::MAGIC);
+        let d = Request::default();
+        assert_eq!(d.action, Action::Connect);
+        assert_eq!(d.protocol_id, Request::MAGIC);
+    }
+
     #[ignore]
     #[test]
     fn serialize() {
@@ -128,7 +146,11 @@ mod tests {
     #[test]
     #[ignore]
     fn deserialize() {
-        let n = Response { action: 2, connection_id: 123, transaction_id: 987 };
+        let n = Response {
+            action: Action::Scrape,
+            connection_id: 123,
+            transaction_id: 987,
+        };
         let b = n.serialize().unwrap();
 
         let now = Instant::now();

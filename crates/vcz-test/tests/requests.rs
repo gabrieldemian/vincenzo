@@ -1,3 +1,5 @@
+#![feature(ip_as_octets)]
+
 use tokio::sync::oneshot;
 use vcz_lib::{
     disk::DiskMsg,

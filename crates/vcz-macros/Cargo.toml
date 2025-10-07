@@ -19,8 +19,8 @@ proc-macro = true
 name = "tests"
 # path = "tests/progress.rs"
 
-[dev-dependencies]
-trybuild = { version = "1.0.49", features = ["diff"] }
+# [dev-dependencies]
+# trybuild = { version = "1.0.49", features = ["diff"] }
 
 [dependencies]
 # vincenzo = { workspace = true }

@@ -14,6 +14,18 @@ pub enum Action {
     Scrape = 2,
 }
 
+impl TryFrom<u32> for Action {
+    type Error = u32;
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        Ok(match value {
+            0 => Action::Connect,
+            1 => Action::Announce,
+            2 => Action::Scrape,
+            _ => return Err(value),
+        })
+    }
+}
+
 #[derive(CheckBytes, Portable, Debug, PartialEq)]
 #[bytecheck(crate = rkyv::bytecheck, verify)]
 #[repr(C)]

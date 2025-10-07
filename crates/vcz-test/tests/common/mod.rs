@@ -13,6 +13,9 @@
 //!
 //! With that being said, a tracker mock is still missing.
 
+mod tracker;
+use tracker::*;
+
 use bendy::decoding::FromBencode;
 use futures::StreamExt;
 use std::{

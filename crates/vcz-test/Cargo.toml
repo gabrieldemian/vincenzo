@@ -5,6 +5,7 @@ authors = ["Gabriel Lombardo <gabrielgcr45@gmail.com>"]
 edition = "2024"
 
 [dependencies]
+rand = { workspace = true }
 bendy = { workspace = true }
 bitvec = { workspace = true }
 futures = { workspace = true }

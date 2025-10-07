@@ -36,7 +36,7 @@ pub struct Http;
 impl Protocol for Udp {}
 impl Protocol for Http {}
 
-static ANNOUNCE_RES_BUF_LEN: usize = 8192;
+pub static ANNOUNCE_RES_BUF_LEN: usize = 2_usize.pow(11);
 
 /// Trait that all [`Tracker`]s must implement.
 pub trait TrackerTrait: Sized {
@@ -139,8 +139,7 @@ impl TrackerTrait for Tracker<Udp> {
 
         tracing::trace!("received res from tracker {res:#?}");
 
-        if res.transaction_id != req.transaction_id
-            || res.action != req.action as u32
+        if res.transaction_id != req.transaction_id || res.action != req.action
         {
             error!("response is not valid {res:?}");
             return Err(Error::TrackerResponse);
@@ -207,8 +206,7 @@ impl TrackerTrait for Tracker<Udp> {
         let res = &res[..len];
         let (res, payload) = announce::Response::deserialize(res)?;
 
-        if res.transaction_id != req.transaction_id
-            || res.action != req.action as u32
+        if res.transaction_id != req.transaction_id || res.action != req.action
         {
             return Err(Error::TrackerResponse);
         }
@@ -230,44 +228,8 @@ impl TrackerTrait for Tracker<Udp> {
         &self,
         buf: &[u8],
     ) -> Result<Vec<SocketAddr>, Error> {
-        let mut peer_list = Vec::<SocketAddr>::with_capacity(50);
         let is_ipv6 = self.tracker_addr.is_ipv6();
-
-        // in ipv4 the addresses come in packets of 6 bytes,
-        // first 4 for ip and 2 for port
-        // in ipv6 its 16 bytes for port and 2 for port
-        let stride = if is_ipv6 { 18 } else { 6 };
-
-        let chunks = buf.chunks_exact(stride);
-        if !chunks.remainder().is_empty() {
-            return Err(Error::TrackerCompactPeerList);
-        }
-
-        for hostpost in chunks {
-            let (ip, port) = hostpost.split_at(stride - 2);
-            let ip = if is_ipv6 {
-                let octets: [u8; 16] = ip[0..16]
-                    .try_into()
-                    .expect("iterator guarantees bounds are OK");
-                IpAddr::from(std::net::Ipv6Addr::from(octets))
-            } else {
-                IpAddr::from(std::net::Ipv4Addr::new(
-                    ip[0], ip[1], ip[2], ip[3],
-                ))
-            };
-
-            let port = u16::from_be_bytes(
-                port.try_into().expect("iterator guarantees bounds are OK"),
-            );
-
-            peer_list.push((ip, port).into());
-        }
-
-        tracing::trace!("peers count: {}", peer_list.len());
-        tracing::trace!("{} ips of peers {peer_list:?}", peer_list.len());
-        let peers: Vec<SocketAddr> = peer_list.into_iter().collect();
-
-        Ok(peers)
+        self::parse_compact_peer_list(is_ipv6, buf)
     }
 
     /// Bind UDP socket and send a connect handshake,
@@ -383,4 +345,41 @@ impl Tracker<Udp> {
             }
         }
     }
+}
+
+pub fn parse_compact_peer_list(
+    is_ipv6: bool,
+    buf: &[u8],
+) -> Result<Vec<SocketAddr>, Error> {
+    let mut peer_list = Vec::<SocketAddr>::with_capacity(50);
+
+    // in ipv4 the addresses come in packets of 6 bytes,
+    // first 4 for ip and 2 for port
+    // in ipv6 its 16 bytes for port and 2 for port
+    let stride = if is_ipv6 { 18 } else { 6 };
+
+    let chunks = buf.chunks_exact(stride);
+    if !chunks.remainder().is_empty() {
+        return Err(Error::TrackerCompactPeerList);
+    }
+
+    for hostpost in chunks {
+        let (ip, port) = hostpost.split_at(stride - 2);
+        let ip = if is_ipv6 {
+            let octets: [u8; 16] = ip[0..16]
+                .try_into()
+                .expect("iterator guarantees bounds are OK");
+            IpAddr::from(std::net::Ipv6Addr::from(octets))
+        } else {
+            IpAddr::from(std::net::Ipv4Addr::new(ip[0], ip[1], ip[2], ip[3]))
+        };
+
+        let port = u16::from_be_bytes(
+            port.try_into().expect("iterator guarantees bounds are OK"),
+        );
+
+        peer_list.push((ip, port).into());
+    }
+    let peers: Vec<SocketAddr> = peer_list.into_iter().collect();
+    Ok(peers)
 }

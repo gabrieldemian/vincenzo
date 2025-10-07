@@ -7,9 +7,8 @@ edition = "2024"
 tokio = { workspace = true }
 hashbrown = { workspace = true }
 tokio-util = { workspace = true }
-bitvec = { workspace = true }
 rand = { workspace = true }
 int-enum = { workspace = true }
 
-[dev-dependencies]
-futures = { workspace = true }
+# [dev-dependencies]
+# futures = { workspace = true }
