@@ -21,7 +21,7 @@ use crate::{
     daemon::{DaemonCtx, DaemonMsg},
     disk::{DiskMsg, ReturnToDisk},
     error::Error,
-    extensions::BlockInfo,
+    extensions::{BLOCK_LEN, BlockInfo},
     metainfo::MetaInfo,
     peer::{self, Peer, PeerCtx, PeerId, PeerMsg},
     torrent,
@@ -92,9 +92,9 @@ impl<M: TorrentSource> Torrent<Idle, M> {
         let udp_trackers_len = udp_trackers.len();
         drop(org_trackers);
 
-        // if udp_trackers.is_empty() {
-        //     return Err(Error::MagnetNoTracker);
-        // }
+        if udp_trackers.is_empty() {
+            return Err(Error::MagnetNoTracker);
+        }
 
         info!("connecting to {} udp trackers", udp_trackers.len());
 
@@ -105,6 +105,7 @@ impl<M: TorrentSource> Torrent<Idle, M> {
         let local_peer_id = self.daemon_ctx.local_peer_id.clone();
         let torrent_tx = self.ctx.tx.clone();
         let size = self.source.size();
+        let downloaded = self.bitfield.count_ones() as u64 * BLOCK_LEN as u64;
 
         let (first_response_tx, mut first_response_rx) = mpsc::channel(1);
 
@@ -113,7 +114,7 @@ impl<M: TorrentSource> Torrent<Idle, M> {
             let local_peer_id_clone = local_peer_id.clone();
             let torrent_tx_clone = torrent_tx.clone();
             let tracker_tx_clone = tracker_tx.clone();
-
+            let config = self.config.clone();
             let first_response_tx = first_response_tx.clone();
 
             tracker_tasks.push(tokio::spawn(async move {
@@ -124,6 +125,8 @@ impl<M: TorrentSource> Torrent<Idle, M> {
                     torrent_tx_clone.clone(),
                     tracker_tx_clone.subscribe(),
                     size,
+                    config,
+                    downloaded,
                 )
                 .await
                 {
@@ -234,6 +237,8 @@ impl<M: TorrentSource, S: torrent::State> Torrent<S, M> {
         tx: mpsc::Sender<TorrentMsg>,
         tracker_rx: broadcast::Receiver<TrackerMsg>,
         size: u64,
+        config: Arc<ResolvedConfig>,
+        downloaded: u64,
     ) -> Result<(Stats, Vec<SocketAddr>), Error> {
         let mut tracker = Tracker::connect_to_tracker(
             tracker,
@@ -241,10 +246,14 @@ impl<M: TorrentSource, S: torrent::State> Torrent<S, M> {
             local_peer_id,
             tracker_rx,
             tx,
+            config,
         )
         .await?;
 
-        let res = tracker.announce(Event::Started, 0, 0, size).await?;
+        let left = size.saturating_sub(downloaded as u64);
+
+        // calc downloaded uploaded and left
+        let res = tracker.announce(Event::Started, downloaded, 0, left).await?;
 
         spawn(async move {
             tracker.run().await?;
@@ -448,6 +457,7 @@ impl<M: TorrentSource> Torrent<Connected, M> {
     }
 
     async fn peer_connected(&mut self, ctx: Arc<PeerCtx>) {
+        println!("peer_connected {:?}", ctx.remote_addr);
         self.state.connected_peers.push(ctx.clone());
         self.state.connecting_peers.retain(|v| *v != ctx.remote_addr);
         self.state.error_peers.retain(|v| v.state.addr != ctx.remote_addr);
@@ -458,6 +468,7 @@ impl<M: TorrentSource> Torrent<Connected, M> {
         let _ = ctx.torrent_ctx.btx.send(PeerBrMsg::NewPeer(ctx.clone()));
         let _ =
             self.daemon_ctx.tx.send(DaemonMsg::IncrementConnectedPeers).await;
+        println!("idle? {:?}", self.state.idle_peers);
     }
 
     fn toggle_pause(&mut self) {
@@ -587,6 +598,11 @@ impl<M: TorrentSource> Torrent<Connected, M> {
         let metadata_size = self.state.metadata_size;
         let is_seed_only = self.status == TorrentStatus::Seeding;
 
+        println!(
+            "{:?} connecting to {to_request} of {:?}",
+            self.config.local_peer_port, self.state.idle_peers,
+        );
+
         for peer in self.state.idle_peers.iter().take(to_request).cloned() {
             let ctx = ctx.clone();
             let daemon_ctx = daemon_ctx.clone();
@@ -599,6 +615,7 @@ impl<M: TorrentSource> Torrent<Connected, M> {
                 {
                     Ok(Ok(socket)) => {
                         let idle_peer = Peer::<peer::Idle>::new();
+                        println!("ok {:?}", socket.peer_addr()?);
 
                         let Ok(mut connected_peer) = idle_peer
                             .outbound_handshake(
@@ -626,7 +643,8 @@ impl<M: TorrentSource> Torrent<Connected, M> {
                             return Err(r);
                         }
                     }
-                    Ok(Err(_)) => {
+                    Ok(Err(e)) => {
+                        println!("err {e:?}");
                         ctx.tx.send(TorrentMsg::PeerError(peer)).await?;
                     }
                     // timeout

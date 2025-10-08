@@ -488,11 +488,12 @@ impl Disk {
         Ok(())
     }
 
-    /// Create a new torrent from a .torrent file on disk.
+    /// Create a new torrent from a [`MetaInfo`] and send a
+    /// [`DaemonMsg::AddTorrentMetaInfo`].
     pub async fn new_torrent_metainfo(
         &mut self,
         metainfo: MetaInfo,
-    ) -> Result<Torrent<torrent::Idle, torrent::FromMetaInfo>, Error> {
+    ) -> Result<(), Error> {
         debug!("new torrent {:?}", metainfo.info.info_hash);
 
         let info_hash = metainfo.info.info_hash.clone();
@@ -523,7 +524,9 @@ impl Disk {
         // create folders, files, and preallocate them with zeroes.
         self.preallocate_files(&info_hash).await?;
 
-        Ok(torrent)
+        self.daemon_ctx.tx.send(DaemonMsg::AddTorrentMetaInfo(torrent)).await?;
+
+        Ok(())
     }
 
     async fn preopen_files<'a>(
@@ -593,6 +596,10 @@ impl Disk {
         for (piece_index, result) in piece_results.into_iter().enumerate() {
             downloaded_pieces.set(piece_index, result);
         }
+        println!(
+            "port: {} computed: {downloaded_pieces}",
+            self.config.local_peer_port
+        );
 
         info!(
             "computed {} pieces, {} downloaded",
@@ -1506,12 +1513,7 @@ impl Disk {
                 continue;
             }
 
-            let torrent = self.new_torrent_metainfo(metainfo).await?;
-
-            self.daemon_ctx
-                .tx
-                .send(DaemonMsg::AddTorrentMetaInfo(torrent))
-                .await?;
+            self.new_torrent_metainfo(metainfo).await?;
         }
 
         Ok(())
@@ -1540,12 +1542,7 @@ impl Disk {
                 continue;
             }
 
-            let torrent = self.new_torrent_metainfo(metainfo).await?;
-
-            self.daemon_ctx
-                .tx
-                .send(DaemonMsg::AddTorrentMetaInfo(torrent))
-                .await?;
+            self.new_torrent_metainfo(metainfo).await?;
         }
 
         Ok(())

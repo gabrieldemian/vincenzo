@@ -1,7 +1,7 @@
 //! Mock of a tracker.
 
 use hashbrown::HashMap;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
 use tokio::net::UdpSocket;
 use vcz_lib::{error::Error, peer::PeerId, torrent::InfoHash, tracker};
 
@@ -10,9 +10,9 @@ pub static DEFAULT_ADDR: SocketAddr =
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Clone)]
 pub(crate) struct PeerInfo {
-    connection_id: u64,
-    key: u32,
-    addr: SocketAddr,
+    pub connection_id: u64,
+    pub key: u32,
+    pub addr: SocketAddr,
 }
 
 pub(crate) struct MockTracker {
@@ -39,6 +39,16 @@ impl MockTracker {
         })
     }
 
+    pub async fn new_from(addr: SocketAddr) -> Result<Self, Error> {
+        let socket = UdpSocket::bind(addr).await?;
+        Ok(Self {
+            socket,
+            peers: Default::default(),
+            leechers: Default::default(),
+            seeders: Default::default(),
+        })
+    }
+
     pub async fn run(&mut self) -> Result<(), Error> {
         let mut buf = [0u8; 99];
         loop {
@@ -54,14 +64,14 @@ impl MockTracker {
         format!("udp%3A%2F%2F{ip:?}%3A{port}%2Fannounce")
     }
 
-    pub fn insert_seeder(&mut self, seeder: (PeerId, PeerInfo)) {
-        self.peers.insert(seeder.1.addr, seeder.1.connection_id);
-        self.seeders.insert(seeder.0, seeder.1);
+    pub fn insert_seeder(&mut self, v: (PeerId, PeerInfo)) {
+        self.peers.insert(v.1.addr, v.1.connection_id);
+        self.seeders.insert(v.0, v.1);
     }
 
-    pub fn insert_leecher(&mut self, leecher: (PeerId, PeerInfo)) {
-        self.peers.insert(leecher.1.addr, leecher.1.connection_id);
-        self.leechers.insert(leecher.0, leecher.1);
+    pub fn insert_leecher(&mut self, v: (PeerId, PeerInfo)) {
+        self.peers.insert(v.1.addr, v.1.connection_id);
+        self.leechers.insert(v.0, v.1);
     }
 
     pub async fn handle_packet(
@@ -74,11 +84,13 @@ impl MockTracker {
         match (peer_conn, buf.len()) {
             // handle new connection
             (None, tracker::connect::Request::LEN) => {
+                let peer_conn = self.peers.get(&who).cloned();
                 let req = tracker::connect::Request::deserialize(buf)?;
-                let connection_id = rand::random();
+                let connection_id = peer_conn.unwrap_or(rand::random());
+
                 let res = tracker::connect::Response {
                     action: req.action.to_native(),
-                    transaction_id: rand::random(),
+                    transaction_id: req.transaction_id.to_native(),
                     connection_id,
                 };
 
@@ -95,24 +107,26 @@ impl MockTracker {
                     return Err(Error::TrackerResponse);
                 }
 
+                let (id, info) = (
+                    PeerId(req.peer_id.0),
+                    PeerInfo {
+                        connection_id: conn,
+                        key: req.key.to_native(),
+                        addr: {
+                            let v = req.ip_address.to_native().to_be_bytes();
+
+                            SocketAddr::V4(SocketAddrV4::new(
+                                Ipv4Addr::new(v[0], v[1], v[2], v[3]),
+                                req.port.to_native(),
+                            ))
+                        },
+                    },
+                );
+
                 if req.left == 0 {
-                    self.seeders.insert(
-                        PeerId(req.peer_id.0),
-                        PeerInfo {
-                            connection_id: conn,
-                            key: req.key.to_native(),
-                            addr: who,
-                        },
-                    );
+                    self.seeders.insert(id, info);
                 } else {
-                    self.leechers.insert(
-                        PeerId(req.peer_id.0),
-                        PeerInfo {
-                            connection_id: conn,
-                            key: req.key.to_native(),
-                            addr: who,
-                        },
-                    );
+                    self.leechers.insert(id, info);
                 }
 
                 let res = tracker::announce::Response {
@@ -127,6 +141,9 @@ impl MockTracker {
                     Vec::with_capacity(req.num_want.to_native() as usize);
 
                 let to_take = req.num_want.to_native() as usize / 2;
+
+                println!("{who} conn {conn} seeders: {:#?}", self.seeders);
+                println!("{who} conn {conn} leechers: {:#?}", self.leechers);
 
                 for peer in self
                     .seeders
@@ -183,7 +200,12 @@ mod tests {
         let mut buf = [0u8; tracker::connect::Response::LEN];
         let info_hash = InfoHash::random();
         let req = tracker::connect::Request::default();
-        let mut mock = MockTracker::new().await.unwrap();
+        let mut mock = MockTracker::new_from(SocketAddr::new(
+            IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+            1338,
+        ))
+        .await
+        .unwrap();
         let mock_addr = mock.socket.local_addr().unwrap();
         let mysocket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let addr = mysocket.local_addr().unwrap();
@@ -197,6 +219,7 @@ mod tests {
 
         assert_eq!(res.connection_id, *mock.peers.get(&addr).unwrap());
         assert_eq!(res.action, req.action);
+        assert_eq!(res.transaction_id, req.transaction_id);
         //
         // announce
         //

@@ -245,9 +245,10 @@ impl peer::Peer<Idle> {
         metadata_size: Option<usize>,
     ) -> Result<peer::Peer<Connected>, Error> {
         let remote = socket.peer_addr()?;
-        torrent_ctx.tx.send(TorrentMsg::PeerConnecting(remote)).await?;
-
         let local = socket.local_addr()?;
+
+        // torrent_ctx.tx.send(TorrentMsg::PeerConnecting(remote)).await?;
+
         let mut socket = Framed::new(socket, HandshakeCodec);
         let info_hash = &torrent_ctx.info_hash;
 
@@ -437,7 +438,7 @@ impl peer::Peer<Idle> {
             return Err(Error::TorrentDoesNotExist);
         };
 
-        torrent_ctx.tx.send(TorrentMsg::PeerConnecting(remote)).await?;
+        // torrent_ctx.tx.send(TorrentMsg::PeerConnecting(remote)).await?;
 
         debug!("sending inbound handshake");
         socket.send(our_handshake).await?;

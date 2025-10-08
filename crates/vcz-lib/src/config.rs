@@ -102,10 +102,12 @@ impl Config {
     #[cfg(feature = "debug")]
     pub fn load_test() -> ResolvedConfig {
         ResolvedConfig {
-            download_dir: "../../../test-files".into(),
-            metadata_dir: "../../../test-files".into(),
-            daemon_addr: Daemon::DEFAULT_LISTENER,
-            local_peer_port: 51413,
+            // download_dir: "../../../test-files".into(),
+            // metadata_dir: "../../../test-files".into(),
+            download_dir: "/home/gabriel/code/personal/vincenzo/test-files".into(),
+            metadata_dir: "/home/gabriel/code/personal/vincenzo/test-files".into(),
+            daemon_addr: "0.0.0.0:0".parse().unwrap(),
+            local_peer_port: rand::random_range(49152..65535),
             max_global_peers: 500,
             max_torrent_peers: 50,
             is_ipv6: false,

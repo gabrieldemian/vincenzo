@@ -368,6 +368,7 @@ pub trait State {}
 pub trait TorrentSource {
     fn organize_trackers(&self) -> HashMap<&str, Vec<String>>;
     fn info_hash(&self) -> InfoHash;
+    /// Get torrent size
     fn size(&self) -> u64;
 }
 

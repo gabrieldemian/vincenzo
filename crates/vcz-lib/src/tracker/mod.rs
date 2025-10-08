@@ -8,10 +8,12 @@ use std::{
     fmt::Debug,
     future::Future,
     net::{IpAddr, SocketAddr},
+    sync::Arc,
     time::Duration,
 };
 
 use crate::{
+    config::ResolvedConfig,
     error::Error,
     peer::PeerId,
     torrent::{InfoHash, Stats, TorrentMsg},
@@ -74,6 +76,7 @@ pub trait TrackerTrait: Sized {
         local_peer_id: PeerId,
         rx: broadcast::Receiver<TrackerMsg>,
         torrent_tx: mpsc::Sender<TorrentMsg>,
+        config: Arc<ResolvedConfig>,
     ) -> impl Future<Output = Result<Self, Error>>;
 }
 
@@ -87,6 +90,7 @@ pub struct Tracker<P: Protocol> {
     pub connection_id: u64,
     pub interval: u32,
     pub torrent_tx: mpsc::Sender<TorrentMsg>,
+    config: Arc<ResolvedConfig>,
     state: P,
 }
 
@@ -102,7 +106,6 @@ impl TrackerTrait for Tracker<Udp> {
         let mut len: usize = 0;
 
         self.state.socket.send(&req.serialize()?).await?;
-
         let mut retransmit = 30;
 
         for i in 1..=7 {
@@ -167,7 +170,13 @@ impl TrackerTrait for Tracker<Udp> {
             left,
             uploaded,
             event,
-            ..Default::default()
+            action: action::Action::Announce,
+            transaction_id: rand::random(),
+            ip_address: 0,
+            key: self.config.key,
+            num_want: self.config.max_torrent_peers,
+            port: self.config.local_peer_port,
+            compact: 1,
         };
         debug!("{req:?}");
 
@@ -241,6 +250,7 @@ impl TrackerTrait for Tracker<Udp> {
         local_peer_id: PeerId,
         rx: broadcast::Receiver<TrackerMsg>,
         torrent_tx: mpsc::Sender<TorrentMsg>,
+        config: Arc<ResolvedConfig>,
     ) -> Result<Self, Error> {
         let socket = match Self::new_udp_socket(tracker).await {
             Ok(socket) => socket,
@@ -259,6 +269,7 @@ impl TrackerTrait for Tracker<Udp> {
             state: Udp { socket },
             torrent_tx,
             rx,
+            config,
         };
 
         if Tracker::connect(&mut tracker).await.is_ok() {

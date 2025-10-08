@@ -17,52 +17,36 @@ mod tracker;
 use tracker::*;
 
 use bendy::decoding::FromBencode;
-use futures::StreamExt;
 use std::{
     net::{Ipv4Addr, SocketAddr, SocketAddrV4},
     sync::Arc,
 };
-use tokio::{
-    net::{TcpListener, TcpStream},
-    spawn,
-    sync::{Mutex, broadcast, mpsc},
-    time::Instant,
-};
-use tokio_util::codec::Framed;
+use tokio::{spawn, sync::mpsc};
 use vcz_lib::{
-    bitfield::{Bitfield, Reserved, VczBitfield},
     config::{Config, ResolvedConfig},
-    counter::Counter,
-    daemon::{Daemon, DaemonMsg},
+    daemon::Daemon,
     disk::{Disk, DiskMsg, PieceStrategy, ReturnToDisk},
     error::Error,
-    extensions::CoreCodec,
     metainfo::MetaInfo,
-    peer::{
-        self, DEFAULT_REQUEST_QUEUE_LEN, Peer, PeerCtx, PeerId, PeerMsg,
-        RequestManager,
-    },
-    torrent::{self, FromMetaInfo, PeerBrMsg, Torrent, TorrentCtx, TorrentMsg},
+    peer::PeerId,
 };
 
 /// Setup a torrent that is fully downloaded on disk.
-async fn setup_complete_torrent()
--> Result<(Disk, Daemon, Arc<TorrentCtx>, usize, impl AsyncFnOnce()), Error> {
+async fn setup_complete_torrent() -> Result<(Disk, Daemon, MetaInfo), Error> {
     // `load_test` points to the complete location
     let mut config = Config::load_test();
-    config.key = 0;
-    setup_torrent(Arc::new(config), true).await
+    config.key = rand::random();
+    setup_torrent(Arc::new(config)).await
 }
 
 /// Setup a torrent that doesn't have any files from the torrent.
-async fn setup_incomplete_torrent()
--> Result<(Disk, Daemon, Arc<TorrentCtx>, usize, impl AsyncFnOnce()), Error> {
+async fn setup_incomplete_torrent() -> Result<(Disk, Daemon, MetaInfo), Error> {
     let mut config = Config::load_test();
     // points to a place that doesn't exist
     config.download_dir = "/tmp/fakedownload".into();
     config.metadata_dir = "/tmp/fakemetadata".into();
-    config.key = 1;
-    setup_torrent(Arc::new(config), false).await
+    config.key = rand::random();
+    setup_torrent(Arc::new(config)).await
 }
 
 /// Delete download and metadata dirs.
@@ -81,14 +65,17 @@ async fn cleanup(config: Arc<ResolvedConfig>) {
 /// are run. But there are no peers and no trackers.
 async fn setup_torrent(
     config: Arc<ResolvedConfig>,
-    is_complete: bool,
-) -> Result<(Disk, Daemon, Arc<TorrentCtx>, usize, impl AsyncFnOnce()), Error> {
+) -> Result<(Disk, Daemon, MetaInfo), Error> {
+    //
+    // manually add peers to the tracker mock
+    //
     let (disk_tx, disk_rx) = mpsc::channel::<DiskMsg>(10);
     let (free_tx, free_rx) = mpsc::unbounded_channel::<ReturnToDisk>();
+
     let daemon = Daemon::new(config.clone(), disk_tx.clone(), free_tx.clone());
     let daemon_ctx = daemon.ctx.clone();
 
-    let mut disk = Disk::new(
+    let disk = Disk::new(
         config.clone(),
         daemon_ctx.clone(),
         disk_tx.clone(),
@@ -96,147 +83,91 @@ async fn setup_torrent(
         free_rx,
     );
 
-    let tracker = MockTracker::new().await?;
-
     let metainfo = MetaInfo::from_bencode(include_bytes!(
         "../../../../test-files/complete/t.torrent"
     ))?;
 
-    let info_hash = metainfo.info.info_hash.clone();
-    let (btx, _brx) = broadcast::channel::<PeerBrMsg>(10);
-    let (tx, rx) = mpsc::channel::<TorrentMsg>(10);
-
-    let torrent_ctx = Arc::new(TorrentCtx {
-        btx,
-        free_tx,
-        disk_tx: disk.tx.clone(),
-        tx,
-        info_hash,
-    });
-
-    let cc = config.clone();
-    let pieces_count = metainfo.info.pieces();
-
-    let torrent = Torrent {
-        config,
-        source: FromMetaInfo { meta_info: metainfo.clone() },
-        state: torrent::Idle {
-            metadata_size: Some(metainfo.info.metadata_size),
-        },
-        bitfield: if is_complete {
-            !Bitfield::from_piece(pieces_count)
-        } else {
-            Bitfield::from_piece(pieces_count)
-        },
-        ctx: torrent_ctx.clone(),
-        daemon_ctx,
-        name: "t".into(),
-        rx,
-        status: torrent::TorrentStatus::Downloading,
-    };
-
-    let torrent_ctx = torrent.ctx.clone();
-    disk.new_torrent_metainfo(metainfo).await?;
-    let _ =
-        disk.daemon_ctx.tx.send(DaemonMsg::AddTorrentMetaInfo(torrent)).await;
-
-    Ok((disk, daemon, torrent_ctx, pieces_count, move || cleanup(cc)))
+    Ok((disk, daemon, metainfo))
 }
 
 /// Create a [`Peer`] belonging to the provided torrent.
 async fn setup_peer(
-    torrent_ctx: Arc<TorrentCtx>,
-) -> Result<Peer<peer::Connected>, Error> {
-    let (tx, rx) = mpsc::channel::<PeerMsg>(10);
-    let free_tx = torrent_ctx.free_tx.clone();
-
-    let peer_ctx = Arc::new(PeerCtx {
-        torrent_ctx,
-        remote_addr: SocketAddr::V4(SocketAddrV4::new(
-            Ipv4Addr::new(127, 0, 0, 1),
-            0000,
-        )),
-        local_addr: SocketAddr::V4(SocketAddrV4::new(
-            Ipv4Addr::new(127, 0, 0, 1),
-            0000,
-        )),
-        counter: Counter::default(),
-        last_download_rate_update: Mutex::new(Instant::now()),
-        tx,
-        peer_interested: true.into(),
-        id: PeerId::generate(),
-        am_interested: true.into(),
-        am_choking: false.into(),
-        peer_choking: false.into(),
-        direction: peer::Direction::Outbound,
-    });
-
-    let listener = TcpListener::bind("0.0.0.0:0").await?;
-    let local_addr = listener.local_addr()?;
-    let stream = TcpStream::connect(local_addr).await?;
-
-    // let (socket, _) = listener.accept().await?;
-    let socket = Framed::new(stream, CoreCodec);
-    let (sink, stream) = socket.split();
-
-    let peer = Peer::<peer::Connected> {
-        state_log: Default::default(),
-        state: peer::Connected {
-            free_tx,
-            is_paused: false,
-            ctx: peer_ctx.clone(),
-            ext_states: peer::ExtStates::default(),
-            have_info: true,
-            in_endgame: false,
-            incoming_requests: Vec::with_capacity(10),
-            req_man_meta: RequestManager::new(),
-            req_man_block: RequestManager::new(),
-            reserved: Reserved::default(),
-            rx,
-            seed_only: false,
-            sink,
-            stream,
-            target_request_queue_len: DEFAULT_REQUEST_QUEUE_LEN,
-        },
+    tracker: &mut MockTracker,
+    is_seeder: bool,
+) -> Result<PeerId, Error> {
+    let (mut disk, mut daemon, metainfo) = if is_seeder {
+        setup_complete_torrent().await?
+    } else {
+        setup_incomplete_torrent().await?
     };
 
-    Ok(peer)
+    let peer_id = daemon.ctx.local_peer_id.clone();
+    let port = daemon.config.local_peer_port;
+    let addr =
+        SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), port));
+
+    let p = (
+        peer_id.clone(),
+        PeerInfo { connection_id: rand::random(), key: rand::random(), addr },
+    );
+
+    println!("seeder conn: {}", p.1.connection_id);
+    if is_seeder {
+        tracker.insert_seeder(p);
+    } else {
+        tracker.insert_leecher(p);
+    }
+
+    println!("seeder port: {}", disk.config.local_peer_port);
+    disk.set_piece_strategy(
+        &metainfo.info.info_hash,
+        PieceStrategy::Sequential,
+    )?;
+    spawn(async move { daemon.run().await });
+    spawn(async move { disk.run().await });
+
+    Ok(peer_id)
 }
 
 /// Setup boilerplate for testing.
 ///
 /// Simulate a local leecher peer connected with a seeder peer.
 #[cfg(test)]
-pub async fn setup() -> Result<(Arc<PeerCtx>, impl AsyncFnOnce()), Error> {
-    // remote seeder
-    let (
-        mut seeder_disk,
-        mut daemon,
-        seeder_torrent_ctx,
-        pieces_count,
-        cleanup,
-    ) = setup_incomplete_torrent().await?;
+pub async fn setup()
+-> Result<(mpsc::Sender<DiskMsg>, PeerId, impl AsyncFnOnce()), Error> {
+    use std::time::Duration;
+    use tokio::time::sleep;
 
-    let info_hash = seeder_torrent_ctx.info_hash.clone();
-    let seeder = setup_peer(seeder_torrent_ctx.clone()).await?;
-    let seeder_ctx = seeder.state.ctx.clone();
-    let seeder_pieces = !Bitfield::from_piece(pieces_count);
+    let mut tracker = MockTracker::new().await?;
 
-    seeder_torrent_ctx
-        .tx
-        .send(TorrentMsg::AddConnectedPeers(vec![(
-            seeder.state.ctx.clone(),
-            seeder_pieces,
-        )]))
-        .await?;
-    seeder_disk.new_peer(seeder.state.ctx.clone());
-    seeder_disk.set_piece_strategy(&info_hash, PieceStrategy::Sequential)?;
+    //
+    // this is the local peer, which is a leecher
+    //
+    let (mut disk, mut daemon, metainfo) = setup_incomplete_torrent().await?;
 
+    println!("local port: {}", disk.config.local_peer_port);
+
+    let disk_tx = disk.tx.clone();
+    disk.set_piece_strategy(
+        &metainfo.info.info_hash,
+        PieceStrategy::Sequential,
+    )?;
+    let seeder_id = setup_peer(&mut tracker, true).await?;
+
+    // simulate the local peer manually adding the torrent, as the folder of the
+    // local peer is empty and there are no files to read.
+    disk.new_torrent_metainfo(metainfo).await?;
+
+    spawn(async move { tracker.run().await });
     spawn(async move { daemon.run().await });
-    spawn(async move { seeder_disk.run().await });
-    // spawn(async move {
-    //     let _ = seeder.run().await;
-    // });
+    spawn(async move { disk.run().await });
 
-    Ok((seeder_ctx, cleanup))
+    let mut cc = Config::load_test();
+    cc.download_dir = "/tmp/fakedownload".into();
+    cc.metadata_dir = "/tmp/fakemetadata".into();
+
+    // wait for the peers to handshake
+    sleep(Duration::from_millis(200)).await;
+
+    Ok((disk_tx, seeder_id, move || cleanup(Arc::new(cc))))
 }
