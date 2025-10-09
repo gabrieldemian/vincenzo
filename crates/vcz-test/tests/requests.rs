@@ -28,7 +28,6 @@ async fn request_block() -> Result<(), Error> {
 
     let blocks = orx.await?;
 
-    cleanup().await;
     assert_eq!(
         blocks,
         vec![
@@ -73,6 +72,8 @@ async fn request_block() -> Result<(), Error> {
         blocks.is_empty(),
         "disk must not have any more block infos to be requested"
     );
+
+    cleanup();
 
     Ok(())
 }

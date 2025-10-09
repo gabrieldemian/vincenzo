@@ -202,9 +202,9 @@ impl<M: TorrentSource> Torrent<Idle, M> {
                 size,
                 unchoked_peers: Vec::with_capacity(3),
                 opt_unchoked_peer: None,
-                connecting_peers: Vec::with_capacity(
-                    self.config.max_torrent_peers as usize,
-                ),
+                // connecting_peers: Vec::with_capacity(
+                //     self.config.max_torrent_peers as usize,
+                // ),
                 error_peers: Vec::with_capacity(
                     self.config.max_torrent_peers as usize,
                 ),
@@ -250,7 +250,7 @@ impl<M: TorrentSource, S: torrent::State> Torrent<S, M> {
         )
         .await?;
 
-        let left = size.saturating_sub(downloaded as u64);
+        let left = size.saturating_sub(downloaded);
 
         // calc downloaded uploaded and left
         let res = tracker.announce(Event::Started, downloaded, 0, left).await?;
@@ -320,10 +320,9 @@ impl<M: TorrentSource> Torrent<Connected, M> {
         let upload_rate = self.state.counter.upload_rate();
 
         debug!(
-            "idle {} connected {} connecting {} error {}",
+            "idle {} connected {} error {}",
             self.state.idle_peers.len(),
             self.state.connected_peers.len(),
-            self.state.connecting_peers.len(),
             self.state.error_peers.len(),
         );
 
@@ -441,7 +440,7 @@ impl<M: TorrentSource> Torrent<Connected, M> {
         self.state.error_peers.push(Peer::<peer::PeerError>::new(addr));
         self.state.connected_peers.retain(|v| v.remote_addr != addr);
         self.state.unchoked_peers.retain(|v| v.remote_addr != addr);
-        self.state.connecting_peers.retain(|v| *v != addr);
+        // self.state.connecting_peers.retain(|v| *v != addr);
         self.state.idle_peers.remove(&addr);
 
         if let Some(opt_addr) =
@@ -457,9 +456,8 @@ impl<M: TorrentSource> Torrent<Connected, M> {
     }
 
     async fn peer_connected(&mut self, ctx: Arc<PeerCtx>) {
-        println!("peer_connected {:?}", ctx.remote_addr);
         self.state.connected_peers.push(ctx.clone());
-        self.state.connecting_peers.retain(|v| *v != ctx.remote_addr);
+        // self.state.connecting_peers.retain(|v| *v != ctx.remote_addr);
         self.state.error_peers.retain(|v| v.state.addr != ctx.remote_addr);
         self.state.idle_peers.remove(&ctx.remote_addr);
 
@@ -468,7 +466,6 @@ impl<M: TorrentSource> Torrent<Connected, M> {
         let _ = ctx.torrent_ctx.btx.send(PeerBrMsg::NewPeer(ctx.clone()));
         let _ =
             self.daemon_ctx.tx.send(DaemonMsg::IncrementConnectedPeers).await;
-        println!("idle? {:?}", self.state.idle_peers);
     }
 
     fn toggle_pause(&mut self) {
@@ -520,10 +517,9 @@ impl<M: TorrentSource> Torrent<Connected, M> {
         let max_global_peers = self.config.max_global_peers;
         let max_torrent_peers = self.config.max_torrent_peers;
 
-        // connecting peers will (probably) soon be connected, so we count them
-        // too
-        let currently_active = self.state.connected_peers.len()
-            + self.state.connecting_peers.len();
+        // let currently_active = self.state.connected_peers.len()
+        //     + self.state.connecting_peers.len();
+        let currently_active = self.state.connected_peers.len();
 
         if currently_active >= max_torrent_peers as usize
             || daemon_connected_peers >= max_global_peers
@@ -598,11 +594,6 @@ impl<M: TorrentSource> Torrent<Connected, M> {
         let metadata_size = self.state.metadata_size;
         let is_seed_only = self.status == TorrentStatus::Seeding;
 
-        println!(
-            "{:?} connecting to {to_request} of {:?}",
-            self.config.local_peer_port, self.state.idle_peers,
-        );
-
         for peer in self.state.idle_peers.iter().take(to_request).cloned() {
             let ctx = ctx.clone();
             let daemon_ctx = daemon_ctx.clone();
@@ -615,7 +606,6 @@ impl<M: TorrentSource> Torrent<Connected, M> {
                 {
                     Ok(Ok(socket)) => {
                         let idle_peer = Peer::<peer::Idle>::new();
-                        println!("ok {:?}", socket.peer_addr()?);
 
                         let Ok(mut connected_peer) = idle_peer
                             .outbound_handshake(
@@ -643,8 +633,7 @@ impl<M: TorrentSource> Torrent<Connected, M> {
                             return Err(r);
                         }
                     }
-                    Ok(Err(e)) => {
-                        println!("err {e:?}");
+                    Ok(Err(_e)) => {
                         ctx.tx.send(TorrentMsg::PeerError(peer)).await?;
                     }
                     // timeout
@@ -854,16 +843,6 @@ impl<M: TorrentSource> Torrent<Connected, M> {
             // optimizes this with SIMD.
             .map(|remote| !self.bitfield.clone() & remote)
             .unwrap_or_default()
-    }
-
-    pub fn add_connected_peers(
-        &mut self,
-        peers: Vec<(Arc<PeerCtx>, Bitfield)>,
-    ) {
-        for (ctx, bitfield) in peers {
-            self.state.peer_pieces.insert(ctx.id.clone(), bitfield);
-            self.state.connected_peers.push(ctx);
-        }
     }
 }
 

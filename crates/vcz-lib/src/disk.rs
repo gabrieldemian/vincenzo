@@ -51,7 +51,7 @@ use crate::{
     },
     metainfo::{Info, MetaInfo},
     peer::{PeerCtx, PeerId},
-    torrent::{self, InfoHash, Torrent, TorrentCtx, TorrentMsg},
+    torrent::{InfoHash, Torrent, TorrentCtx, TorrentMsg},
     utils::to_human_readable,
 };
 
@@ -255,7 +255,7 @@ impl Disk {
     #[tracing::instrument(name = "disk", skip_all)]
     pub async fn run(&mut self) -> Result<(), Error> {
         // only for debugging
-        let mut disk_interval = interval(Duration::from_secs(3));
+        // let mut disk_interval = interval(Duration::from_secs(3));
         let mut flush_interval = interval(Duration::from_millis(1000));
         let mut dirty_count_history = Vec::with_capacity(10);
 

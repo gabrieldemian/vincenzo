@@ -11,7 +11,6 @@ use hashbrown::{HashMap, HashSet};
 use rand::Rng;
 use rkyv::{Archive, Deserialize, Serialize};
 use tokio::{
-    io::AsyncReadExt,
     sync::{broadcast, mpsc, oneshot},
     time::Interval,
 };
@@ -19,7 +18,6 @@ use tokio::{
 use crate::{
     bitfield::Bitfield,
     counter::Counter,
-    disk::Disk,
     extensions::core::BlockInfo,
     magnet::Magnet,
     metainfo::{Info, MetaInfo},
@@ -72,9 +70,6 @@ pub enum TorrentMsg {
     /// Sent by the tracker on periodic announces to add more peers to be
     /// connected.
     AddIdlePeers(HashSet<SocketAddr>),
-
-    /// Manually add connected Peers.
-    AddConnectedPeers(Vec<(Arc<PeerCtx>, Bitfield)>),
 
     /// downloaded, uploaded, left
     GetAnnounceData(oneshot::Sender<(u64, u64, u64)>),
@@ -157,19 +152,6 @@ pub struct InfoHash(pub [u8; 20]);
 impl InfoHash {
     pub fn random() -> Self {
         InfoHash(rand::rng().random())
-    }
-
-    pub(crate) async fn from_files(
-        files: &Vec<&str>,
-    ) -> Result<Self, &'static str> {
-        let mut buf: Vec<u8> = Vec::new();
-
-        for f in files {
-            let mut f = Disk::open_file(f).await.unwrap();
-            f.read_to_end(&mut buf).await.unwrap();
-        }
-
-        Ok(Info::info_hash(&buf))
     }
 }
 
@@ -430,10 +412,8 @@ pub struct Connected {
     /// request more peers to the tracker.
     pub idle_peers: HashSet<SocketAddr>,
 
-    /// Idle peers being handshaked and soon moved to `connected_peer`.
-    pub connecting_peers: Vec<SocketAddr>,
-
-    /// Connected peers, removed from `peers`.
+    // Idle peers being handshaked and soon moved to `connected_peer`.
+    // pub connecting_peers: Vec<SocketAddr>,
     pub connected_peers: Vec<Arc<PeerCtx>>,
 
     /// Maximum of 3 unchoked peers as per the protocol + the optimistically
@@ -452,7 +432,6 @@ pub struct Connected {
     pub peer_pieces: HashMap<PeerId, Bitfield>,
 
     pub tracker_tx: broadcast::Sender<TrackerMsg>,
-
     pub reconnect_interval: Interval,
     pub heartbeat_interval: Interval,
     pub log_rates_interval: Interval,

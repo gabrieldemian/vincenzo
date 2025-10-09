@@ -30,16 +30,10 @@ pub(crate) struct MockTracker {
 
 impl MockTracker {
     pub async fn new() -> Result<Self, Error> {
-        let socket = UdpSocket::bind(DEFAULT_ADDR).await?;
-        Ok(Self {
-            socket,
-            peers: Default::default(),
-            leechers: Default::default(),
-            seeders: Default::default(),
-        })
+        Self::from(DEFAULT_ADDR).await
     }
 
-    pub async fn new_from(addr: SocketAddr) -> Result<Self, Error> {
+    pub async fn from(addr: SocketAddr) -> Result<Self, Error> {
         let socket = UdpSocket::bind(addr).await?;
         Ok(Self {
             socket,
@@ -55,13 +49,6 @@ impl MockTracker {
             let (len, who) = self.socket.recv_from(&mut buf).await?;
             let _ = self.handle_packet(&buf[..len], who).await;
         }
-    }
-
-    pub fn url(&self) -> String {
-        let s = self.socket.local_addr().unwrap();
-        let ip = s.ip();
-        let port = s.port();
-        format!("udp%3A%2F%2F{ip:?}%3A{port}%2Fannounce")
     }
 
     pub fn insert_seeder(&mut self, v: (PeerId, PeerInfo)) {
@@ -113,7 +100,12 @@ impl MockTracker {
                         connection_id: conn,
                         key: req.key.to_native(),
                         addr: {
-                            let v = req.ip_address.to_native().to_be_bytes();
+                            // some trackers ignore the `ip_addr` from the req
+                            // and just use the addr
+                            // of the socket.
+                            // let v = req.ip_address.to_native().to_be_bytes();
+                            let v = who.ip();
+                            let v = v.as_octets();
 
                             SocketAddr::V4(SocketAddrV4::new(
                                 Ipv4Addr::new(v[0], v[1], v[2], v[3]),
@@ -141,9 +133,6 @@ impl MockTracker {
                     Vec::with_capacity(req.num_want.to_native() as usize);
 
                 let to_take = req.num_want.to_native() as usize / 2;
-
-                println!("{who} conn {conn} seeders: {:#?}", self.seeders);
-                println!("{who} conn {conn} leechers: {:#?}", self.leechers);
 
                 for peer in self
                     .seeders
@@ -200,7 +189,9 @@ mod tests {
         let mut buf = [0u8; tracker::connect::Response::LEN];
         let info_hash = InfoHash::random();
         let req = tracker::connect::Request::default();
-        let mut mock = MockTracker::new_from(SocketAddr::new(
+
+        // from instead of new to avoid conflicts with other tests
+        let mut mock = MockTracker::from(SocketAddr::new(
             IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
             1338,
         ))

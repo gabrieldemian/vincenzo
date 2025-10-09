@@ -174,11 +174,6 @@ impl Daemon {
                             let mut connected_peer =
                                 idle_peer.inbound_handshake(socket, daemon_ctx).await?;
 
-                            println!(
-                                "seeder peer dir: {:#?}",
-                                connected_peer.state.ctx.direction
-                            );
-
                             if let Err(r) = connected_peer.run().await {
                                 debug!(
                                     "{} peer loop stopped due to an error: {r:?}",

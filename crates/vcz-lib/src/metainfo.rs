@@ -63,24 +63,6 @@ impl MetaInfo {
 
         hashmap
     }
-
-    pub(crate) fn get_info_from_slice(
-        buf: &[u8],
-    ) -> Result<Option<&[u8]>, bendy::decoding::Error> {
-        let mut dict_decoder = Decoder::new(buf);
-        let mut obj =
-            dict_decoder.next_object()?.unwrap().try_into_dictionary()?;
-
-        while let Some(pair) = obj.next_pair()? {
-            if let (b"info", value) = pair {
-                let dict = value.try_into_dictionary()?;
-                let b = dict.into_raw()?;
-                return Ok(Some(b));
-            }
-        }
-
-        Ok(None)
-    }
 }
 
 /// File related information (Single-file format)
@@ -1002,21 +984,6 @@ mod tests {
                 length: 222,
             }
         );
-
-        Ok(())
-    }
-
-    #[test]
-    fn info_from_slice() -> Result<(), Error> {
-        let metainfo_bytes = include_bytes!("../../../test-files/book.torrent");
-        let slice =
-            MetaInfo::get_info_from_slice(metainfo_bytes).unwrap().unwrap();
-
-        let info_hash = Info::info_hash(slice);
-        println!("{info_hash:?}");
-
-        // let info = Info::from_bencode(slice).unwrap();
-        // println!("{:?}", info.name);
 
         Ok(())
     }

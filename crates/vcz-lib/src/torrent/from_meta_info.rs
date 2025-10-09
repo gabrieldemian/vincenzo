@@ -43,9 +43,6 @@ impl Torrent<Connected, FromMetaInfo> {
             select! {
                 Some(msg) = self.rx.recv() => {
                     match msg {
-                        TorrentMsg::AddConnectedPeers(v) => {
-                            self.add_connected_peers(v);
-                        }
                         TorrentMsg::CloneBlockInfosToPeer(qnt, tx) => {
                             self.clone_block_infos_to_peer(qnt, tx).await?;
                         }
@@ -111,7 +108,7 @@ impl Torrent<Connected, FromMetaInfo> {
                         }
                         TorrentMsg::PeerConnecting(addr) => {
                             self.state.idle_peers.remove(&addr);
-                            self.state.connecting_peers.push(addr);
+                            // self.state.connecting_peers.push(addr);
                         }
                         TorrentMsg::PeerError(addr) => {
                             self.peer_error(addr).await;
