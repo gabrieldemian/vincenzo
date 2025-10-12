@@ -20,8 +20,8 @@ use tracing::{debug, trace};
 use crate::{
     disk::ReturnToDisk,
     extensions::{
-        ExtMsg, ExtMsgHandler, Extended, ExtendedMessage, Extension, Metadata,
-        MetadataData, MetadataPiece,
+        ExtMsg, ExtMsgHandler, ExtendedMessage, Extension, Metadata,
+        MetadataPiece,
     },
     torrent::PeerBrMsg,
 };
@@ -52,7 +52,7 @@ impl Peer<Connected> {
     /// on the peer wire protocol.
     #[tracing::instrument(name = "peer", skip_all,
         fields(
-            state = %self.state_log(),
+            state = %self.state_log,
             addr = %self.state.ctx.remote_addr,
         )
     )]
@@ -149,8 +149,8 @@ impl Peer<Connected> {
                         Core::Extended(msg @ ExtendedMessage(ext_id, _)) => {
                             // todo: reduce this repetition somehow
                             match ext_id {
-                                <Extended as ExtMsg>::ID => {
-                                    let msg: Extended = msg.try_into()?;
+                                <Extension as ExtMsg>::ID => {
+                                    let msg: Extension = msg.try_into()?;
 
                                     MsgHandler.handle_msg(
                                         self,
@@ -270,6 +270,7 @@ impl Peer<Connected> {
         &self.state_log
     }
 
+    #[inline]
     /// Enter seed only mode and send Cancel's for in-flight block infos.
     pub async fn seed_only(&mut self) -> Result<(), Error> {
         debug!("seed_only");
@@ -293,6 +294,7 @@ impl Peer<Connected> {
     /// - We have the downloaded the info of the torrent
     /// - The torrent is not fully downloaded (peer is not in seed-only mode)
     /// - The capacity of inflight blocks is not full (len of outgoing_requests)
+    #[inline]
     pub fn can_request(&self) -> bool {
         let am_interested =
             self.state.ctx.am_interested.load(Ordering::Relaxed);
@@ -309,6 +311,7 @@ impl Peer<Connected> {
     }
 
     /// Handle a block sent by the core codec.
+    #[inline]
     pub async fn handle_block(&mut self, block: Block) -> Result<(), Error> {
         let block_info = BlockInfo::from(&block);
 
@@ -376,6 +379,7 @@ impl Peer<Connected> {
         }
     }
 
+    #[inline]
     pub async fn request_blocks(
         &mut self,
         blocks: BTreeMap<usize, Vec<BlockInfo>>,
@@ -396,6 +400,7 @@ impl Peer<Connected> {
     /// Request block infos by requesting to the Disk.
     /// Must be used after checking that the Peer is able to send blocks with
     /// [`Self::can_request`].
+    #[inline]
     pub async fn request_blocks_disk(&mut self) -> Result<(), Error> {
         // max available requests for this peer at the current moment
         let qnt = self.state.req_man_block.get_available_request_len();
@@ -476,12 +481,8 @@ impl Peer<Connected> {
 
     /// Request available metadata pieces.
     pub async fn request_metadata(&mut self) -> Result<(), Error> {
-        let Some(ut_metadata) = self
-            .state
-            .ext_states
-            .extension
-            .as_ref()
-            .and_then(|v| v.m.ut_metadata)
+        let Some(ut_metadata) =
+            self.state.extension.as_ref().and_then(|v| v.m.ut_metadata)
         else {
             return Ok(());
         };
@@ -524,12 +525,8 @@ impl Peer<Connected> {
 
     /// Check for timedout metadata requests and request them again.
     pub async fn rerequest_metadata(&mut self) -> Result<(), Error> {
-        let Some(ut_metadata) = self
-            .state
-            .ext_states
-            .extension
-            .as_ref()
-            .and_then(|v| v.m.ut_metadata)
+        let Some(ut_metadata) =
+            self.state.extension.as_ref().and_then(|v| v.m.ut_metadata)
         else {
             return Ok(());
         };
@@ -584,9 +581,9 @@ impl Peer<Connected> {
         self.state.req_man_block.set_limit(n as usize);
 
         // set the peer's extensions
-        if ext.m.ut_metadata.is_some() {
-            self.state.ext_states.metadata = Some(MetadataData());
-        }
+        // if ext.m.ut_metadata.is_some() {
+        //     self.state.ext_states.metadata = Some(MetadataData());
+        // }
 
         if let Some(meta_size) = ext.metadata_size {
             self.state
@@ -597,7 +594,7 @@ impl Peer<Connected> {
                 .await?;
         }
 
-        self.state.ext_states.extension = Some(ext);
+        self.state.extension = Some(ext);
 
         Ok(())
     }

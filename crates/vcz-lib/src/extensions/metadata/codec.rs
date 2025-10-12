@@ -1,51 +1,25 @@
 //! Types for the metadata protocol codec.
 
+use super::{Metadata, MetadataMsgType};
 use crate::{
     error::Error,
-    extensions::{
-        ExtData, ExtMsg, ExtMsgHandler, ExtendedMessage, MetadataPiece,
-    },
+    extensions::{ExtMsgHandler, ExtendedMessage, MetadataPiece},
     peer::{self, MsgHandler},
     torrent::TorrentMsg,
 };
-use bendy::{decoding::FromBencode, encoding::ToBencode};
+use bendy::encoding::ToBencode;
 use futures::SinkExt;
 use tokio::sync::oneshot;
 use tracing::{debug, warn};
 
-use super::{Metadata, MetadataMsgType};
-
-#[derive(Clone)]
-pub struct MetadataData();
-
-impl ExtData for MetadataData {}
-
-impl TryFrom<ExtendedMessage> for Metadata {
-    type Error = Error;
-
-    fn try_from(value: ExtendedMessage) -> Result<Self, Self::Error> {
-        if value.0 != Self::ID {
-            return Err(Error::PeerIdInvalid);
-        }
-
-        let dict = Metadata::from_bencode(&value.1)?;
-
-        Ok(dict)
-    }
-}
-
-impl ExtMsgHandler<Metadata, MetadataData> for MsgHandler {
+impl ExtMsgHandler<Metadata> for MsgHandler {
     async fn handle_msg(
         &self,
         peer: &mut peer::Peer<peer::Connected>,
         msg: Metadata,
     ) -> Result<(), Error> {
-        let Some(remote_ext_id) = peer
-            .state
-            .ext_states
-            .extension
-            .as_ref()
-            .and_then(|v| v.m.ut_metadata)
+        let Some(remote_ext_id) =
+            peer.state.extension.as_ref().and_then(|v| v.m.ut_metadata)
         else {
             warn!(
                 "{} received extended msg but the peer doesnt support the \

@@ -1,146 +1,74 @@
 mod utils;
 
+use darling::FromDeriveInput;
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::{
-    DeriveInput, Ident, Token,
-    parse::{Parse, ParseStream},
-    parse_macro_input,
-    punctuated::Punctuated,
-    token::Comma,
+    DeriveInput, Token, parse::Parse, parse_macro_input,
+    punctuated::Punctuated, token::Comma,
 };
 
-#[proc_macro_derive(Message)]
-pub fn derive_msg(input: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(input as DeriveInput);
-
-    // name of the struct
-    let _name = &input.ident;
-
-    let expanded = quote! {};
-
-    TokenStream::from(expanded)
-}
-
-#[derive(Debug)]
+#[derive(FromDeriveInput)]
+#[darling(attributes(extension))]
 struct ExtArgs {
-    _id_name: syn::Ident,
-    _eq1: Token![=],
-    id_value: syn::LitInt,
-    _comma1: Token![,],
-    _codec_name: syn::Ident,
-    _eq2: Token![=],
-    codec_value: syn::Type,
-    _comma2: Token![,],
-    _msg_name: syn::Ident,
-    _eq3: Token![=],
-    msg_value: syn::Type,
-}
-
-impl Parse for ExtArgs {
-    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
-        Ok(ExtArgs {
-            _id_name: input.parse().and_then(|v: Ident| {
-                if v != *"id" {
-                    return Err(syn::Error::new(v.span(), "Expected `id`"));
-                }
-                Ok(v)
-            })?,
-            _eq1: input.parse()?,
-            id_value: input.parse()?,
-            _comma1: input.parse()?,
-            _codec_name: input.parse().and_then(|v: Ident| {
-                if v != *"codec" {
-                    return Err(syn::Error::new(v.span(), "Expected `codec`"));
-                }
-                Ok(v)
-            })?,
-            _eq2: input.parse()?,
-            codec_value: input.parse()?,
-            _comma2: input.parse()?,
-            _msg_name: input.parse().and_then(|v: Ident| {
-                if v != *"msg" {
-                    return Err(syn::Error::new(v.span(), "Expected `msg`"));
-                }
-                Ok(v)
-            })?,
-            _eq3: input.parse()?,
-            msg_value: input.parse()?,
-        })
-    }
+    ident: syn::Ident,
+    id: syn::LitInt,
+    #[darling(default)]
+    bencoded: bool,
 }
 
 /// Implement ExtensionTrait on the struct.
 /// Usage:
-/// ```ignore
+/// ```
 /// #[derive(Extension)]
-/// #[extension(id = 3, codec = MetadataCodec)]
+/// #[extension(id = 3)]
 /// pub struct MetadataExt;
 /// ```
 #[proc_macro_derive(Extension, attributes(extension))]
 pub fn derive_extension(input: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(input as DeriveInput);
+    let input: DeriveInput = parse_macro_input!(input);
+    let args = match ExtArgs::from_derive_input(&input) {
+        Ok(args) => args,
+        Err(e) => return e.write_errors().into(),
+    };
 
     // name of the extension
-    let name = &input.ident;
+    let name = args.ident;
+    let id = args.id;
 
-    let Some(attrs) = input.attrs.get(0..1) else {
-        return syn::Error::new(
-            name.span(),
-            "Expected attribute `extension(id = `...`, codec = `...`, msg = \
-             `...`)`",
-        )
-        .to_compile_error()
-        .into();
+    let ser_type = if args.bencoded {
+        quote! {
+           impl core::convert::TryFrom<crate::extensions::ExtendedMessage> for #name {
+               type Error = crate::error::Error;
+               fn try_from(value: crate::extensions::ExtendedMessage) -> Result<Self, Self::Error> {
+                   if value.0 != #id {
+                        // todo: change error
+                       return Err(Error::PeerIdInvalid);
+                   }
+                   #name::from_bencode(&value.1).map_err(|e| e.into())
+               }
+           }
+        }
+    } else {
+        quote! {}
     };
-
-    let Ok(parsed) = attrs[0].parse_args::<ExtArgs>() else {
-        return syn::Error::new(
-            name.span(),
-            "Available values: `id`, `codec` and `msg`",
-        )
-        .to_compile_error()
-        .into();
-    };
-    let _id = parsed.id_value;
-    let _codec = parsed.codec_value;
-    let _msg = parsed.msg_value;
 
     let expanded = quote! {
-        use crate::extensions::*;
-
-        // impl extended::MsgTrait for #msg {
-            // fn extension(&self) -> impl extended::ExtensionTrait {
-            //     #name
-            // }
-        // }
-
-        // impl From<#msg> for core::ExtendedMessage {
-        //     fn from(val: #msg) -> Self {
-        //         let payload: bytes::BytesMut = val.into();
-        //         ExtendedMessage(MetadataExt.id(), payload.to_vec())
-        //     }
-        // }
-
-        // impl extended::ExtensionTrait for #name {
-            // type Msg = #msg;
-            //
-            // fn id(&self) -> u8 {
-            //     #id
-            // }
-            //
-            // fn codec(
-            //     &self
-            // ) -> impl CodecTrait<Self::Msg>
-            // // impl
-            // //     tokio_util::codec::Encoder<Self::Msg, Error = crate::error::Error> +
-            // //     tokio_util::codec::Decoder<Item = Self::Msg, Error = crate::error::Error>
-            // {
-            //     Box::new(#codec)
-            // }
-        // }
+        impl crate::extensions::ExtMsg for #name {
+            const ID: u8 = #id;
+        }
+        #ser_type
     };
 
+    TokenStream::from(expanded)
+}
+
+#[proc_macro_derive(Message)]
+pub fn derive_msg(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    // name of the struct
+    let _name = &input.ident;
+    let expanded = quote! {};
     TokenStream::from(expanded)
 }
 

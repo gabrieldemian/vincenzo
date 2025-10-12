@@ -2,26 +2,24 @@
 //!
 //! <http://www.bittorrent.org/beps/bep_0010.html>
 
-pub mod codec;
-mod r#trait;
-
-// re-exports
-pub use codec::*;
-pub use r#trait::*;
-
+use crate::{error::Error, extensions::Metadata};
 use bendy::{
     decoding::{FromBencode, Object, ResultExt},
     encoding::ToBencode,
 };
+pub mod codec;
+mod r#trait;
 
-use crate::extensions::Metadata;
+// re-exports
+pub use r#trait::*;
 
 /// This is the payload of the extension protocol described on:
 /// BEP 0010 - Extension Protocol
 /// <http://www.bittorrent.org/beps/bep_0010.html>
 ///
 /// Other protocols may add new fields to this struct.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Default, vcz_macros::Extension)]
+#[extension(id = 0, bencoded)]
 pub struct Extension {
     /// messages (dictionary of supported extensions)
     pub m: M,
@@ -45,19 +43,6 @@ pub struct Extension {
     // pub complete_ago: Option<u8>,
     // pub ipv4: Option<u8>,
     // pub ipv6: Option<u8>,
-}
-
-impl Extension {
-    pub const SIZE: usize = M::SIZE + 2 + 14 + 2 + 8;
-}
-
-impl ExtData for Extension {}
-
-impl TryInto<Vec<u8>> for Extension {
-    type Error = bendy::encoding::Error;
-    fn try_into(self) -> Result<Vec<u8>, Self::Error> {
-        self.to_bencode()
-    }
 }
 
 impl Extension {
@@ -93,10 +78,6 @@ pub struct M {
 
     // BEP 0055.
     // pub ut_holepunch: Option<u8>,
-}
-
-impl M {
-    pub const SIZE: usize = 1;
 }
 
 impl ToBencode for M {

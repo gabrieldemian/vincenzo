@@ -1,23 +1,15 @@
-use futures::SinkExt;
-use tokio::sync::oneshot;
-
 use crate::{
     error::Error,
     extensions::{
-        ExtData, ExtMsg, ExtMsgHandler, ExtendedMessage, Holepunch,
-        HolepunchErrorCodes, HolepunchMsgType,
+        ExtMsg, ExtMsgHandler, ExtendedMessage, Holepunch, HolepunchMsgType,
     },
     peer::MsgHandler,
     torrent::TorrentMsg,
 };
+use tokio::sync::oneshot;
 
 #[derive(Debug, Clone)]
 pub struct HolepunchCodec;
-
-#[derive(Clone)]
-pub struct HolepunchData();
-
-impl ExtData for HolepunchData {}
 
 impl TryFrom<ExtendedMessage> for Holepunch {
     type Error = Error;
@@ -27,28 +19,21 @@ impl TryFrom<ExtendedMessage> for Holepunch {
             return Err(Error::PeerIdInvalid);
         }
 
-        let holepunch = Holepunch::deserialize(&value.1)?;
+        let _holepunch = Holepunch::deserialize(&value.1)?;
 
         todo!();
     }
 }
 
-impl ExtMsgHandler<Holepunch, HolepunchData> for MsgHandler {
+impl ExtMsgHandler<Holepunch> for MsgHandler {
     async fn handle_msg(
         &self,
         peer: &mut crate::peer::Peer<crate::peer::Connected>,
         msg: Holepunch,
     ) -> Result<(), Error> {
-        let remote_ext_id = 2;
-        // let Some(remote_ext_id) = peer
-        //     .state
-        //     .ext_states
-        //     .extension
-        //     .as_ref()
-        //     .and_then(|v| v.m.ut_holepunch)
-        // else {
-        //     return Ok(());
-        // };
+        let Some(_remote_ext_id) = peer.state.extension.as_ref() else {
+            return Ok(());
+        };
 
         match msg.msg_type {
             HolepunchMsgType::Rendezvous => {
@@ -72,7 +57,7 @@ impl ExtMsgHandler<Holepunch, HolepunchData> for MsgHandler {
                 //
                 // send connect to the src
                 //
-                let Some(peer_ctx) = orx.await? else {
+                let Some(_peer_ctx) = orx.await? else {
                     // peer.state
                     //     .sink
                     //     .send(
@@ -88,20 +73,20 @@ impl ExtMsgHandler<Holepunch, HolepunchData> for MsgHandler {
                 };
 
                 // if the peer doesn't support the holepunch protocol.
-                if peer.state.ext_states.holepunch.is_none() {
-                    // peer.state
-                    //     .sink
-                    //     .send(
-                    //         ExtendedMessage(
-                    //             remote_ext_id,
-                    //             msg.error(HolepunchErrorCodes::NoSupport)
-                    //                 .try_into()?,
-                    //         )
-                    //         .into(),
-                    //     )
-                    //     .await?;
-                    return Ok(());
-                }
+                // if peer.state.ext_states.holepunch.is_none() {
+                // peer.state
+                //     .sink
+                //     .send(
+                //         ExtendedMessage(
+                //             remote_ext_id,
+                //             msg.error(HolepunchErrorCodes::NoSupport)
+                //                 .try_into()?,
+                //         )
+                //         .into(),
+                //     )
+                //     .await?;
+                // return Ok(());
+                // }
 
                 // peer.state
                 //     .sink

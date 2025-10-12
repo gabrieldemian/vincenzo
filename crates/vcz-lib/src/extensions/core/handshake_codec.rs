@@ -15,7 +15,7 @@ use tokio_util::codec::{Decoder, Encoder};
 
 use crate::{
     bitfield::Reserved,
-    extensions::{CoreId, ExtMsg, Extended, Extension, PSTR_LEN, core::PSTR},
+    extensions::{CoreId, ExtMsg, Extension, PSTR_LEN, core::PSTR},
     peer::PeerId,
     torrent::InfoHash,
 };
@@ -124,7 +124,7 @@ impl Encoder<Handshake> for HandshakeCodec {
 
         buf.put_u32(2 + bencoded_ext.len() as u32);
         buf.put_u8(CoreId::Extended.into());
-        buf.put_u8(Extended::ID);
+        buf.put_u8(Extension::ID);
         buf.extend_from_slice(&bencoded_ext);
 
         Ok(())
@@ -208,7 +208,7 @@ impl Decoder for HandshakeCodec {
         }
 
         // if not an extended handshake, return
-        if ext_buf[4] != CoreId::Extended as u8 || ext_buf[5] != Extended::ID {
+        if ext_buf[4] != CoreId::Extended as u8 || ext_buf[5] != Extension::ID {
             return Ok(Some(handshake));
         }
 

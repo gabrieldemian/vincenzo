@@ -4,40 +4,24 @@
 
 mod codec;
 
-// re-exports
-pub use codec::*;
-
+use super::super::error;
+use crate::error::Error;
 use bendy::{
     decoding::{self, Decoder, FromBencode, Object, ResultExt},
     encoding::{Encoder, ToBencode},
 };
 use int_enum::IntEnum;
-
-use crate::{error::Error, extensions::ExtMsg};
-
-use super::super::error;
+use vcz_macros::Extension;
 
 /// Metadata dict used in the Metadata protocol messages,
 /// this dict is used to request, reject, and send data (info).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Extension)]
+#[extension(id = 3, bencoded)]
 pub struct Metadata {
     pub msg_type: MetadataMsgType,
     pub piece: u64,
     pub total_size: Option<usize>,
     pub payload: Vec<u8>,
-}
-
-impl ExtMsg for Metadata {
-    /// This is the ID of the client for the metadata extension.
-    const ID: u8 = 3;
-}
-
-impl TryInto<Vec<u8>> for Metadata {
-    type Error = bendy::encoding::Error;
-
-    fn try_into(self) -> Result<Vec<u8>, Self::Error> {
-        self.to_bencode()
-    }
 }
 
 #[derive(Clone, Debug, Copy, Ord, PartialOrd, Eq, PartialEq, Hash, Default)]

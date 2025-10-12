@@ -5,7 +5,7 @@ description = "Procedural macros of Vincenzo"
 keywords = ["distributed", "bittorrent", "torrent", "p2p", "networking"]
 categories = ["network-programming"]
 repository = "https://github.com/gabrieldemian/vincenzo"
-homepage = "https://vincenzo.rs"
+# homepage = "https://vincenzo.rs"
 authors = ["Gabriel Lombardo <gabrielgcr45@gmail.com>"]
 edition = "2024"
 readme = "README.md"
@@ -24,5 +24,6 @@ name = "tests"
 
 [dependencies]
 # vincenzo = { workspace = true }
-quote = { workspace = true }
-syn = { workspace = true, features = ["extra-traits"] }
+quote = "1.0.41"
+syn = "2.0.106"
+darling = "0.21.3"

@@ -25,9 +25,7 @@ resolver = "2"
 int-enum = "1.2.0"
 rkyv = { version = "0.8.11", features = ["unaligned", "big_endian"] }
 bincode = { version = "=2.0.1" }
-quote = "1.0.36"
 lru = "0.16.0"
-syn = "2.0.74"
 bendy = { version = "0.5.0", features = ["std", "serde"] }
 bitvec = "1.0.1"
 bytes = "1.4.0"

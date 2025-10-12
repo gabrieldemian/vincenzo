@@ -32,8 +32,8 @@ use crate::{
     disk::{DiskMsg, ReturnToDisk},
     error::Error,
     extensions::{
-        Core, CoreCodec, Extension, Handshake, HandshakeCodec, HolepunchData,
-        MetadataData, MetadataPiece, core::BlockInfo,
+        Core, CoreCodec, Extension, Handshake, HandshakeCodec, MetadataPiece,
+        core::BlockInfo,
     },
     peer::{self, RequestManager},
     torrent::{PeerBrMsg, TorrentCtx, TorrentMsg, TorrentStatus},
@@ -324,7 +324,7 @@ impl peer::Peer<Idle> {
                 seed_only: false,
                 target_request_queue_len: DEFAULT_REQUEST_QUEUE_LEN,
                 ctx,
-                ext_states: ExtStates::default(),
+                extension: None,
                 sink,
                 stream,
                 incoming_requests: Vec::with_capacity(
@@ -476,7 +476,7 @@ impl peer::Peer<Idle> {
                 seed_only: false,
                 target_request_queue_len: DEFAULT_REQUEST_QUEUE_LEN,
                 ctx: Arc::new(ctx),
-                ext_states: ExtStates::default(),
+                extension: None,
                 sink,
                 stream,
                 incoming_requests: Vec::with_capacity(50),
@@ -538,21 +538,18 @@ impl peer::Peer<Idle> {
     }
 }
 
-/// States of peer protocols state, including Core.
-/// After a peer handshake, these values may be set if the peer supports them.
-#[derive(Default, Clone)]
-pub struct ExtStates {
-    // BEP02 : The BitTorrent Protocol Specification
-    // pub core: CoreState,
-    /// BEP10 : Extension Protocol
-    pub extension: Option<Extension>,
-
-    /// BEP09 : Extension for Peers to Send Metadata Files
-    pub metadata: Option<MetadataData>,
-
-    /// BEP055 : Holepunch extension
-    pub holepunch: Option<HolepunchData>,
-}
+// States of peer protocols state, including Core.
+// After a peer handshake, these values may be set if the peer supports them.
+// #[derive(Default, Clone)]
+// pub struct ExtStates {
+//     // BEP02 : The BitTorrent Protocol Specification
+//     // pub core: CoreState,
+//     // BEP10 : Extension Protocol
+//     // BEP09 : Extension for Peers to Send Metadata Files
+//     pub metadata: Option<MetadataData>,
+//     // BEP055 : Holepunch extension
+//     pub holepunch: Option<HolepunchData>,
+// }
 
 /// Peer is downloading / uploading and working well
 pub struct Connected {
@@ -560,10 +557,8 @@ pub struct Connected {
     pub sink: SplitSink<Framed<TcpStream, CoreCodec>, Core>,
     pub reserved: Reserved,
     pub rx: Receiver<PeerMsg>,
-
     pub free_tx: mpsc::UnboundedSender<ReturnToDisk>,
-
-    pub ext_states: ExtStates,
+    pub extension: Option<Extension>,
 
     /// Context of the Peer which is shared for anyone who needs it.
     pub ctx: Arc<PeerCtx>,
@@ -585,16 +580,16 @@ pub struct Connected {
     /// before the disk read is done, the read block is dropped.
     pub incoming_requests: Vec<BlockInfo>,
 
+    /// The target request queue size is the number of block requests we keep
+    /// outstanding
+    pub target_request_queue_len: u16,
+
     /// This is a cache of have_info on Torrent
     /// to avoid using locks or atomics.
     pub have_info: bool,
 
     /// Whether we're in endgame mode.
     pub in_endgame: bool,
-
-    /// The target request queue size is the number of block requests we keep
-    /// outstanding
-    pub target_request_queue_len: u16,
 
     /// If the torrent was fully downloaded, all peers will become seed only.
     /// They will only seed but not download anything anymore.

@@ -4,53 +4,17 @@ use std::sync::atomic::Ordering;
 use tokio::{io, sync::oneshot};
 use tokio_util::codec::{Decoder, Encoder};
 use tracing::{debug, warn};
-use vcz_macros::Message;
+use vcz_macros::{Extension, Message};
 
 use super::{Block, BlockInfo};
 use crate::{
     bitfield::Bitfield,
     disk::DiskMsg,
     error::Error,
-    extensions::{ExtData, ExtMsg, ExtMsgHandler},
+    extensions::ExtMsgHandler,
     peer::{self, MsgHandler},
     torrent::TorrentMsg,
 };
-
-/// State that comes with the Core protocol.
-#[derive(Clone)]
-pub struct CoreState {
-    /// If we're choked, peer doesn't allow us to download pieces from them.
-    pub am_choking: bool,
-
-    /// If we're interested, peer has pieces that we don't have.
-    pub am_interested: bool,
-
-    /// If peer is choked, we don't allow them to download pieces from us.
-    pub peer_choking: bool,
-
-    /// If peer is interested in us, they mean to download pieces that we have.
-    pub peer_interested: bool,
-}
-
-impl ExtMsg for Core {
-    // not really used since core does not use this.
-    const ID: u8 = u8::MAX;
-}
-
-impl ExtData for CoreState {}
-
-impl Default for CoreState {
-    /// By default, both sides of the connection start off as choked and not
-    /// interested in the other.
-    fn default() -> Self {
-        Self {
-            am_choking: true,
-            am_interested: false,
-            peer_choking: true,
-            peer_interested: false,
-        }
-    }
-}
 
 impl Core {
     /// Calculate the length of the message in bytes.
@@ -98,7 +62,9 @@ impl From<ExtendedMessage> for Core {
 /// Core messages exchanged after a successful handshake.
 /// These are from the vanilla protocol, with no extensions.
 #[repr(u8)]
-#[derive(Debug, Clone, PartialEq, Message)]
+#[derive(Debug, Clone, PartialEq, Message, Extension)]
+// not really used since core does not use this.
+#[extension(id = 255)]
 pub enum Core {
     Choke = 0,
     Unchoke = 1,
@@ -135,26 +101,7 @@ pub struct CoreCodec;
 #[derive(Clone, Debug, Copy)]
 pub struct CoreExt;
 
-impl TryInto<Vec<u8>> for Core {
-    type Error = Error;
-
-    fn try_into(self) -> Result<Vec<u8>, Error> {
-        let mut dst = BytesMut::new();
-        let mut codec = CoreCodec;
-        codec.encode(self, &mut dst)?;
-        Ok(dst.into())
-    }
-}
-
-impl From<Core> for BytesMut {
-    fn from(val: Core) -> Self {
-        let mut dst = BytesMut::new();
-        let _ = CoreCodec.encode(val, &mut dst);
-        dst
-    }
-}
-
-impl ExtMsgHandler<Core, CoreState> for MsgHandler {
+impl ExtMsgHandler<Core> for MsgHandler {
     async fn handle_msg(
         &self,
         peer: &mut peer::Peer<peer::Connected>,
@@ -482,7 +429,9 @@ impl Decoder for CoreCodec {
 
 #[cfg(test)]
 mod tests {
-    use crate::extensions::{Metadata, MetadataMsgType, core::BLOCK_LEN};
+    use crate::extensions::{
+        ExtMsg, Metadata, MetadataMsgType, core::BLOCK_LEN,
+    };
 
     use super::*;
     use bitvec::{bitvec, prelude::Msb0};
