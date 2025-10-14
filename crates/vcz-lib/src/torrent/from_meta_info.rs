@@ -1,6 +1,5 @@
-use bendy::encoding::ToBencode;
-
 use crate::extensions::BLOCK_LEN;
+use bendy::encoding::ToBencode;
 
 use super::*;
 

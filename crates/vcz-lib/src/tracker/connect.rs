@@ -4,6 +4,7 @@ use rkyv::{
     Archive, Deserialize, Serialize, api::high::to_bytes_with_alloc,
     ser::allocator::Arena, util::AlignedVec,
 };
+
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize, Archive)]
 #[rkyv(compare(PartialEq), derive(Debug))]
 pub struct Request {

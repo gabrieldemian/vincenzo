@@ -1,14 +1,14 @@
 //! Framed messages sent to/from Daemon
-use bytes::{Buf, BufMut, BytesMut};
-use int_enum::IntEnum;
-use tokio_util::codec::{Decoder, Encoder};
-use tracing::warn;
 
 use crate::{
     config::CONFIG_BINCODE,
     error::Error,
     torrent::{InfoHash, TorrentState},
 };
+use bytes::{Buf, BufMut, BytesMut};
+use int_enum::IntEnum;
+use tokio_util::codec::{Decoder, Encoder};
+use tracing::warn;
 
 /// Messages of [`DaemonCodec`], check the struct documentation
 /// to read how to send messages.

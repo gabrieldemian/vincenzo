@@ -1,19 +1,18 @@
 //! Metainfo is a .torrent file with information abouthe Torrent.
 //! From the magnet link, we get the Metainfo from other peers.
-use std::collections::BTreeMap;
-
-use bendy::{
-    decoding::{self, Decoder, FromBencode, Object, ResultExt},
-    encoding::{self, AsString, Error, SingleItemEncoder, ToBencode},
-};
-use hashbrown::HashMap;
-use sha1::{Digest, Sha1};
 
 use crate::{
     error,
     extensions::core::{BLOCK_LEN, BlockInfo},
     torrent::InfoHash,
 };
+use bendy::{
+    decoding::{self, Decoder, FromBencode, Object, ResultExt},
+    encoding::{self, AsString, Error, SingleItemEncoder, ToBencode},
+};
+use hashbrown::HashMap;
+use sha1::{Digest, Sha1};
+use std::collections::BTreeMap;
 
 /// Metainfo is a .torrent file with information about the Torrent.
 /// From the magnet link, we get the Metainfo from other peers.

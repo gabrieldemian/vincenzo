@@ -1,15 +1,15 @@
 mod codec;
 
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+// re-exports
+pub use codec::*;
 
 use crate::{error::Error, extensions::ExtMsg};
-
-pub use codec::*;
 use int_enum::IntEnum;
 use rkyv::{
     Archive, Deserialize, Serialize, api::high::to_bytes_with_alloc,
     ser::allocator::Arena, util::AlignedVec,
 };
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 #[repr(u8)]
 #[derive(

@@ -1,5 +1,6 @@
 //! Utility functions
 /// transform bytes into a human readable format.
+
 pub fn to_human_readable(mut n: f64) -> String {
     let units = ["B", "KB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB"];
     let delimiter = 1000_f64;

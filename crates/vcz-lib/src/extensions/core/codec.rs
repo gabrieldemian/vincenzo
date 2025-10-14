@@ -1,11 +1,3 @@
-use bytes::{Buf, BufMut, BytesMut};
-use int_enum::IntEnum;
-use std::sync::atomic::Ordering;
-use tokio::{io, sync::oneshot};
-use tokio_util::codec::{Decoder, Encoder};
-use tracing::{debug, warn};
-use vcz_macros::{Extension, Message};
-
 use super::{Block, BlockInfo};
 use crate::{
     bitfield::Bitfield,
@@ -15,6 +7,13 @@ use crate::{
     peer::{self, MsgHandler},
     torrent::TorrentMsg,
 };
+use bytes::{Buf, BufMut, BytesMut};
+use int_enum::IntEnum;
+use std::sync::atomic::Ordering;
+use tokio::{io, sync::oneshot};
+use tokio_util::codec::{Decoder, Encoder};
+use tracing::{debug, warn};
+use vcz_macros::{Extension, Message};
 
 impl Core {
     /// Calculate the length of the message in bytes.
@@ -179,9 +178,12 @@ impl ExtMsgHandler<Core> for MsgHandler {
                     return Ok(());
                 }
 
-                let (tx, rx) = oneshot::channel();
+                if !b.is_valid() {
+                    return Ok(());
+                }
 
                 peer.state.incoming_requests.push(b.clone());
+                let (tx, rx) = oneshot::channel();
 
                 peer.state
                     .ctx
@@ -253,7 +255,9 @@ impl Encoder<Core> for CoreCodec {
             Core::Request(block) => {
                 buf.put_u32(msg_len);
                 buf.put_u8(CoreId::Request as u8);
-                block.encode(buf)?;
+                buf.put_u32(block.index as u32);
+                buf.put_u32(block.begin as u32);
+                buf.put_u32(block.len as u32);
             }
             Core::Piece(block) => {
                 let Block { index, begin, block } = block;
@@ -272,7 +276,9 @@ impl Encoder<Core> for CoreCodec {
             Core::Cancel(block) => {
                 buf.put_u32(msg_len);
                 buf.put_u8(CoreId::Cancel as u8);
-                block.encode(buf)?;
+                buf.put_u32(block.index as u32);
+                buf.put_u32(block.begin as u32);
+                buf.put_u32(block.len as u32);
             }
             Core::Extended(ExtendedMessage(ext_id, payload)) => {
                 buf.put_u32(msg_len);

@@ -1,4 +1,4 @@
-//! Mock of a tracker.
+//! Mock of an UDP tracker.
 
 use hashbrown::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
@@ -19,12 +19,13 @@ pub(crate) struct MockTracker {
     socket: UdpSocket,
 
     /// Peers that are connected, but could be not announced.
-    // key: connection_id
+    // socket_addr -> connection_id
     peers: HashMap<SocketAddr, u64>,
 
-    /// Peers that are both announced and connected.
-    // key: connection_id
+    /// Leechers that are both announced and connected.
     leechers: HashMap<PeerId, PeerInfo>,
+
+    /// Seeders that are both announced and connected.
     seeders: HashMap<PeerId, PeerInfo>,
 }
 

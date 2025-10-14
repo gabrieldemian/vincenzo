@@ -1,30 +1,3 @@
-use std::{
-    collections::BTreeMap,
-    fmt::Display,
-    net::SocketAddr,
-    ops::{Deref, DerefMut},
-    sync::{Arc, atomic::AtomicBool},
-    time::Duration,
-};
-
-use futures::{
-    SinkExt,
-    stream::{SplitSink, SplitStream, StreamExt},
-};
-use rand::{Rng, distr::Alphanumeric};
-use rkyv::{Archive, Deserialize, Serialize};
-use tokio::{
-    net::TcpStream,
-    sync::{
-        Mutex,
-        mpsc::{self, Receiver},
-        oneshot,
-    },
-    time::{Instant, timeout},
-};
-use tokio_util::codec::{Framed, FramedParts};
-use tracing::debug;
-
 use crate::{
     bitfield::Reserved,
     counter::Counter,
@@ -38,6 +11,31 @@ use crate::{
     peer::{self, RequestManager},
     torrent::{PeerBrMsg, TorrentCtx, TorrentMsg, TorrentStatus},
 };
+use futures::{
+    SinkExt,
+    stream::{SplitSink, SplitStream, StreamExt},
+};
+use rand::{Rng, distr::Alphanumeric};
+use rkyv::{Archive, Deserialize, Serialize};
+use std::{
+    collections::BTreeMap,
+    fmt::Display,
+    net::SocketAddr,
+    ops::{Deref, DerefMut},
+    sync::{Arc, atomic::AtomicBool},
+    time::Duration,
+};
+use tokio::{
+    net::TcpStream,
+    sync::{
+        Mutex,
+        mpsc::{self, Receiver},
+        oneshot,
+    },
+    time::{Instant, timeout},
+};
+use tokio_util::codec::{Framed, FramedParts};
+use tracing::debug;
 
 #[derive(
     Clone, PartialEq, Eq, Hash, Default, Serialize, Deserialize, Archive,

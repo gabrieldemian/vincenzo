@@ -1,45 +1,5 @@
 //! Disk is responsible for file I/O of all torrents.
 
-use bytes::Bytes;
-use futures::future::join_all;
-use memmap2::{Mmap, MmapMut};
-use rayon::{
-    iter::{IntoParallelRefIterator, ParallelIterator},
-    slice::ParallelSliceMut,
-};
-use sha1::Digest;
-
-use std::{
-    collections::BTreeMap,
-    net::SocketAddr,
-    path::{Path, PathBuf},
-    sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    },
-    time::Duration,
-};
-
-use bendy::{decoding::FromBencode, encoding::ToBencode};
-use hashbrown::HashMap;
-use lru::LruCache;
-use rand::seq::SliceRandom;
-use rayon::iter::IntoParallelIterator;
-use sha1::Sha1;
-use std::num::NonZeroUsize;
-use tokio::{
-    fs::{File, OpenOptions},
-    io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
-    select,
-    sync::{
-        Mutex,
-        mpsc::{self, Receiver},
-        oneshot::{self, Sender},
-    },
-    time::interval,
-};
-use tracing::{debug, info, warn};
-
 use crate::{
     bitfield::{Bitfield, VczBitfield},
     config::ResolvedConfig,
@@ -54,6 +14,41 @@ use crate::{
     torrent::{InfoHash, Torrent, TorrentCtx, TorrentMsg},
     utils::to_human_readable,
 };
+use bendy::{decoding::FromBencode, encoding::ToBencode};
+use bytes::Bytes;
+use futures::future::join_all;
+use hashbrown::HashMap;
+use lru::LruCache;
+use memmap2::{Mmap, MmapMut};
+use rand::seq::SliceRandom;
+use rayon::{
+    iter::{IntoParallelIterator, IntoParallelRefIterator, ParallelIterator},
+    slice::ParallelSliceMut,
+};
+use sha1::{Digest, Sha1};
+use std::{
+    collections::BTreeMap,
+    net::SocketAddr,
+    num::NonZeroUsize,
+    path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
+use tokio::{
+    fs::{File, OpenOptions},
+    io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
+    select,
+    sync::{
+        Mutex,
+        mpsc::{self, Receiver},
+        oneshot::{self, Sender},
+    },
+    time::interval,
+};
+use tracing::{debug, info, warn};
 
 #[derive(Debug)]
 pub enum DiskMsg {

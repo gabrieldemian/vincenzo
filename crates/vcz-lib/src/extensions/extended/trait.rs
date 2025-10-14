@@ -1,11 +1,10 @@
 //! Types for extensions of the peer protocol.
 
-use std::future::Future;
-
 use crate::{
     error::Error,
     peer::{self, Peer},
 };
+use std::future::Future;
 
 /// Messages of the extension, usually an enum.
 /// The ID const is the local peer's. The IDs of the remote peers are shared on

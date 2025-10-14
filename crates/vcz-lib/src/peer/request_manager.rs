@@ -4,12 +4,11 @@ use std::{
     time::Duration,
 };
 
+use crate::{extensions::BlockInfo, peer::DEFAULT_REQUEST_QUEUE_LEN};
 use bitvec::{bitvec, order::Msb0};
 use hashbrown::HashMap;
 use std::cmp::Reverse;
 use tokio::time::Instant;
-
-use crate::{extensions::BlockInfo, peer::DEFAULT_REQUEST_QUEUE_LEN};
 
 /// A type that can be requested.
 /// The `Into<usize>` bound refers to the ability of a requestable type to have

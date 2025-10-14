@@ -1,6 +1,7 @@
 //! Types for the Extended protocol codec.
 //! BEP 10 https://www.bittorrent.org/beps/bep_0010.html
 
+use super::Extension;
 use crate::{
     error::Error,
     extensions::{ExtMsg, ExtMsgHandler, ExtendedMessage},
@@ -10,8 +11,6 @@ use crate::{
 use bendy::encoding::ToBencode;
 use tokio::sync::oneshot;
 use tracing::{debug, trace};
-
-use super::Extension;
 
 impl ExtMsgHandler<Extension> for MsgHandler {
     async fn handle_msg(

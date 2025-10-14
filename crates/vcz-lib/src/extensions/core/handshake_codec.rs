@@ -7,22 +7,17 @@
 //! should be switched to [`PeerCodec`], but care should be taken not to
 //! discard the underlying receive and send buffers.
 
-use bendy::{decoding::FromBencode, encoding::ToBencode};
-use tracing::warn;
-
-use bytes::{BufMut, BytesMut};
-use tokio_util::codec::{Decoder, Encoder};
-
 use crate::{
     bitfield::Reserved,
+    error::Error,
     extensions::{CoreId, ExtMsg, Extension, PSTR_LEN, core::PSTR},
     peer::PeerId,
     torrent::InfoHash,
 };
-
-use bytes::Buf;
-
-use crate::error::Error;
+use bendy::{decoding::FromBencode, encoding::ToBencode};
+use bytes::{Buf, BufMut, BytesMut};
+use tokio_util::codec::{Decoder, Encoder};
+use tracing::warn;
 
 /// pstrlen = dec 19, hex 0x13
 /// pstr = "BitTorrent protocol"
@@ -66,6 +61,8 @@ pub struct Handshake {
 }
 
 impl Handshake {
+    pub const MIN_LEN: usize = 68;
+
     pub fn new(info_hash: InfoHash, peer_id: PeerId) -> Self {
         Self {
             pstr_len: PSTR_LEN as u8,
@@ -146,13 +143,13 @@ impl Decoder for HandshakeCodec {
         &mut self,
         buf: &mut BytesMut,
     ) -> Result<Option<Handshake>, Self::Error> {
-        // minimum handshake size check (68 bytes)
-        if buf.len() < 68 {
+        // minimum handshake size check
+        if buf.len() < Handshake::MIN_LEN {
             return Ok(None);
         }
 
-        let mut handshake_buf = &buf[0..68];
-        let mut ext_buf = &buf[68..];
+        let mut handshake_buf = &buf[0..Handshake::MIN_LEN];
+        let mut ext_buf = &buf[Handshake::MIN_LEN..];
 
         if handshake_buf.get_u8() as usize != PSTR_LEN {
             return Err(Error::HandshakeInvalid);

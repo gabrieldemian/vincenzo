@@ -4,19 +4,19 @@ pub mod announce;
 pub mod connect;
 pub mod event;
 
+use self::event::Event;
+use crate::{
+    config::ResolvedConfig,
+    error::Error,
+    peer::PeerId,
+    torrent::{InfoHash, Stats, TorrentMsg},
+};
 use std::{
     fmt::Debug,
     future::Future,
     net::{IpAddr, SocketAddr},
     sync::Arc,
     time::Duration,
-};
-
-use crate::{
-    config::ResolvedConfig,
-    error::Error,
-    peer::PeerId,
-    torrent::{InfoHash, Stats, TorrentMsg},
 };
 use tokio::{
     net::{ToSocketAddrs, UdpSocket},
@@ -25,8 +25,6 @@ use tokio::{
     time::{Instant, interval_at, timeout},
 };
 use tracing::{debug, error};
-
-use self::event::Event;
 
 pub trait Protocol {}
 

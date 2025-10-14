@@ -1,12 +1,22 @@
 //! A remote peer in the network that downloads and uploads data
+mod request_manager;
 mod types;
 
-use bendy::encoding::ToBencode;
 // re-exports
-pub use types::*;
-mod request_manager;
 pub use request_manager::RequestManager;
+pub use types::*;
 
+use crate::{
+    disk::{DiskMsg, ReturnToDisk},
+    error::Error,
+    extensions::{
+        ExtMsg, ExtMsgHandler, ExtendedMessage, Extension, Metadata,
+        MetadataPiece,
+        core::{Block, BlockInfo, Core},
+    },
+    torrent::{PeerBrMsg, TorrentMsg},
+};
+use bendy::encoding::ToBencode;
 use futures::{SinkExt, StreamExt};
 use std::{collections::BTreeMap, sync::atomic::Ordering, time::Duration};
 use tokio::{
@@ -14,24 +24,7 @@ use tokio::{
     sync::oneshot,
     time::{Instant, interval, interval_at},
 };
-
 use tracing::{debug, trace};
-
-use crate::{
-    disk::ReturnToDisk,
-    extensions::{
-        ExtMsg, ExtMsgHandler, ExtendedMessage, Extension, Metadata,
-        MetadataPiece,
-    },
-    torrent::PeerBrMsg,
-};
-
-use crate::{
-    disk::DiskMsg,
-    error::Error,
-    extensions::core::{Block, BlockInfo, Core},
-    torrent::TorrentMsg,
-};
 
 /// Data about a remote Peer that the client is connected to,
 /// but the client itself does not have a Peer struct.
@@ -264,10 +257,6 @@ impl Peer<Connected> {
                 }
             }
         }
-    }
-
-    const fn state_log(&self) -> &StateLog {
-        &self.state_log
     }
 
     #[inline]

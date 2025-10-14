@@ -1,20 +1,3 @@
-use std::{
-    collections::BTreeMap,
-    fmt::Display,
-    net::{IpAddr, SocketAddr},
-    ops::Deref,
-    sync::{Arc, atomic::Ordering},
-};
-
-use bincode::{Decode, Encode};
-use hashbrown::{HashMap, HashSet};
-use rand::Rng;
-use rkyv::{Archive, Deserialize, Serialize};
-use tokio::{
-    sync::{broadcast, mpsc, oneshot},
-    time::Interval,
-};
-
 use crate::{
     bitfield::Bitfield,
     counter::Counter,
@@ -24,6 +7,21 @@ use crate::{
     peer::{self, Peer, PeerCtx, PeerId, PeerMsg},
     torrent::{self, Torrent},
     tracker::TrackerMsg,
+};
+use bincode::{Decode, Encode};
+use hashbrown::{HashMap, HashSet};
+use rand::Rng;
+use rkyv::{Archive, Deserialize, Serialize};
+use std::{
+    collections::BTreeMap,
+    fmt::Display,
+    net::{IpAddr, SocketAddr},
+    ops::Deref,
+    sync::{Arc, atomic::Ordering},
+};
+use tokio::{
+    sync::{broadcast, mpsc, oneshot},
+    time::Interval,
 };
 
 /// Broadcasted messages for all peers in a torrent.

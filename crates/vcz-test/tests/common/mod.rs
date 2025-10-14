@@ -11,8 +11,10 @@
 //! the exact same funtions, in the exact same way, that happens in production,
 //! when the code is run "for real".
 
+mod peer;
 mod tracker;
-use tracker::*;
+pub(crate) use peer::*;
+pub(crate) use tracker::*;
 
 use bendy::decoding::FromBencode;
 use std::{
@@ -63,7 +65,7 @@ fn cleanup() {
 /// Setup the boilerplate of a client.
 ///
 /// Create a [`Disk`] and [`Daemon`] and the [`MetaInfo`] of the test torrent
-/// but doesn't do anything.
+/// but doesn't spawn any event loops or send any messages.
 async fn setup_client(
     config: Arc<ResolvedConfig>,
 ) -> Result<(Disk, Daemon, MetaInfo), Error> {
@@ -79,56 +81,6 @@ async fn setup_client(
     ))?;
 
     Ok((disk, daemon, metainfo))
-}
-
-/// Create and setup a peer belonging to the provided tracker,
-/// the torrent is the one in `setup_*_torrent`.
-///
-/// A peer in this case is a simulation of an entire vcz client, with disk,
-/// daemon, etc.
-async fn setup_peer(
-    tracker: &mut MockTracker,
-    is_seeder: bool,
-) -> Result<(PeerId, mpsc::Sender<DiskMsg>), Error> {
-    // todo: craete a peer builder
-    let (mut disk, mut daemon, metainfo) = if is_seeder {
-        setup_complete_torrent().await?
-    } else {
-        setup_incomplete_torrent().await?
-    };
-
-    let peer_id = daemon.ctx.local_peer_id.clone();
-    let port = daemon.config.local_peer_port;
-    let addr =
-        SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), port));
-
-    let p = (
-        peer_id.clone(),
-        PeerInfo { connection_id: rand::random(), key: rand::random(), addr },
-    );
-
-    if is_seeder {
-        tracker.insert_seeder(p);
-    } else {
-        tracker.insert_leecher(p);
-    }
-
-    // can only test properly with deterministic piece order.
-    disk.set_piece_strategy(
-        &metainfo.info.info_hash,
-        PieceStrategy::Sequential,
-    )?;
-    let disk_tx = disk.tx.clone();
-    spawn(async move { daemon.run().await });
-
-    // simulate the leecher manually adding the torrent.
-    if !is_seeder {
-        disk.new_torrent_metainfo(metainfo).await?;
-    }
-
-    spawn(async move { disk.run().await });
-
-    Ok((peer_id, disk_tx))
 }
 
 /// Setup boilerplate for testing.
@@ -147,8 +99,8 @@ pub async fn setup()
     let mut tracker = MockTracker::new().await?;
 
     // this is the local peer, which is a leecher
-    let (_leecher_id, disk_tx) = setup_peer(&mut tracker, false).await?;
-    let (seeder_id, _) = setup_peer(&mut tracker, true).await?;
+    let (_leecher_id, disk_tx) = PeerBuilder::new().build(&mut tracker).await?;
+    let (seeder_id, _) = PeerBuilder::new_seeder().build(&mut tracker).await?;
 
     spawn(async move { tracker.run().await });
 

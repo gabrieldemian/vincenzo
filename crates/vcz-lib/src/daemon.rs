@@ -1,30 +1,5 @@
 //! A daemon that runs on the background and handles everything
 //! that is not the UI.
-use futures::{
-    SinkExt,
-    stream::{SplitSink, StreamExt},
-};
-use hashbrown::HashMap;
-use signal_hook::consts::signal::*;
-use signal_hook_tokio::Signals;
-use std::{
-    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
-    sync::Arc,
-    time::Duration,
-};
-use tokio_util::{codec::Framed, sync::CancellationToken};
-use tracing::{debug, info, warn};
-
-use tokio::{
-    net::{TcpListener, TcpStream},
-    select, spawn,
-    sync::{
-        mpsc,
-        oneshot::{self},
-    },
-    task::JoinHandle,
-    time::interval,
-};
 
 use crate::{
     config::ResolvedConfig,
@@ -39,6 +14,30 @@ use crate::{
     },
     utils::to_human_readable,
 };
+use futures::{
+    SinkExt,
+    stream::{SplitSink, StreamExt},
+};
+use hashbrown::HashMap;
+use signal_hook::consts::signal::*;
+use signal_hook_tokio::Signals;
+use std::{
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+    sync::Arc,
+    time::Duration,
+};
+use tokio::{
+    net::{TcpListener, TcpStream},
+    select, spawn,
+    sync::{
+        mpsc,
+        oneshot::{self},
+    },
+    task::JoinHandle,
+    time::interval,
+};
+use tokio_util::{codec::Framed, sync::CancellationToken};
+use tracing::{debug, info, warn};
 
 /// The daemon is the highest-level entity in the library.
 /// It owns [`Disk`] and [`Torrent`]s, which owns Peers.

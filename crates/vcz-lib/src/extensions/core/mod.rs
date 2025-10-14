@@ -8,8 +8,7 @@ mod handshake_codec;
 pub use codec::*;
 pub use handshake_codec::*;
 
-use bytes::{BufMut, Bytes, BytesMut};
-use tokio::io;
+use bytes::Bytes;
 
 /// The default block_len that most clients support, some clients drop
 /// the connection on blocks larger than this value.
@@ -44,28 +43,13 @@ pub struct Block {
 
     /// The block's data. 16 KiB most of the times,
     /// but the last block of a piece *might* be smaller.
-    // pub block: Vec<u8>,
     pub block: Bytes,
 }
 
 impl Block {
-    /// Encodes the block info in the network binary protocol's format into the
-    /// given buffer.
-    pub fn encode(&self, buf: &mut BytesMut) -> io::Result<()> {
-        let piece_index = self
-            .index
-            .try_into()
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
-
-        buf.put_u32(piece_index);
-        buf.put_u32(self.begin as u32);
-        buf.extend_from_slice(&self.block);
-
-        Ok(())
-    }
-
     /// Validate the [`Block`]. Like most clients, we only support
     /// data <= 16kiB.
+    #[inline]
     pub fn is_valid(&self) -> bool {
         self.block.len() <= BLOCK_LEN && self.begin <= BLOCK_LEN
     }
@@ -97,21 +81,9 @@ impl From<&BlockInfo> for usize {
     }
 }
 
-impl From<BlockInfo> for usize {
-    fn from(val: BlockInfo) -> Self {
-        val.index
-    }
-}
-
 impl Default for BlockInfo {
     fn default() -> Self {
         Self { index: 0, begin: 0, len: BLOCK_LEN }
-    }
-}
-
-impl From<Block> for BlockInfo {
-    fn from(val: Block) -> Self {
-        BlockInfo { index: val.index, begin: val.begin, len: val.block.len() }
     }
 }
 
@@ -126,34 +98,10 @@ impl BlockInfo {
         Self { index, begin, len }
     }
 
-    pub fn index(mut self, index: usize) -> Self {
-        self.index = index;
-        self
-    }
-
-    pub fn begin(mut self, begin: usize) -> Self {
-        self.begin = begin;
-        self
-    }
-
-    pub fn len(mut self, len: usize) -> Self {
-        self.len = len;
-        self
-    }
-
-    /// Encodes the block info in the network binary protocol's format into the
-    /// given buffer.
-    pub fn encode(&self, buf: &mut BytesMut) -> io::Result<()> {
-        buf.put_u32(self.index as u32);
-        buf.put_u32(self.begin as u32);
-        buf.put_u32(self.len as u32);
-
-        Ok(())
-    }
-
     /// Validate the [`BlockInfo`]. Like most clients, we only support
     /// data <= 16kiB.
+    #[inline]
     pub fn is_valid(&self) -> bool {
-        self.len <= BLOCK_LEN && self.begin <= BLOCK_LEN && self.len > 0
+        self.len > 0 && self.len <= BLOCK_LEN && self.begin <= BLOCK_LEN
     }
 }

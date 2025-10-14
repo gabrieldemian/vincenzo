@@ -1,9 +1,8 @@
+use crate::utils::to_human_readable;
 use std::{
     sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
-
-use crate::utils::to_human_readable;
 
 /// Exponential Moving Average (EMA) smoothing factor
 /// Higher values = more responsive to changes, lower values = smoother

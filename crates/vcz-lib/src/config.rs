@@ -4,12 +4,10 @@
 //!
 //! Environment --overrides--> CLI Flags --overrides--> File
 
-use std::{net::SocketAddr, path::PathBuf, sync::LazyLock};
-
+use crate::{daemon::Daemon, error::Error};
 use clap::Parser;
 use serde::Deserialize;
-
-use crate::{daemon::Daemon, error::Error};
+use std::{net::SocketAddr, path::PathBuf, sync::LazyLock};
 
 #[derive(Deserialize, Debug, Clone, Parser, Default)]
 #[clap(name = "Vincenzo", author = "Gabriel Lombardo")]
@@ -104,8 +102,10 @@ impl Config {
         ResolvedConfig {
             // download_dir: "../../../test-files".into(),
             // metadata_dir: "../../../test-files".into(),
-            download_dir: "/home/gabriel/code/personal/vincenzo/test-files".into(),
-            metadata_dir: "/home/gabriel/code/personal/vincenzo/test-files".into(),
+            download_dir: "/home/gabriel/code/personal/vincenzo/test-files"
+                .into(),
+            metadata_dir: "/home/gabriel/code/personal/vincenzo/test-files"
+                .into(),
             daemon_addr: "0.0.0.0:0".parse().unwrap(),
             local_peer_port: rand::random_range(49152..65535),
             max_global_peers: 500,

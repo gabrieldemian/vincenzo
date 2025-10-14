@@ -1,11 +1,3 @@
-use std::{collections::BTreeMap, io, path::PathBuf};
-
-use thiserror::Error;
-use tokio::{
-    sync::{mpsc, oneshot},
-    task::JoinError,
-};
-
 use crate::{
     daemon::DaemonMsg,
     disk::DiskMsg,
@@ -13,6 +5,12 @@ use crate::{
     peer::{PeerId, PeerMsg},
     torrent::TorrentMsg,
     tracker::TrackerMsg,
+};
+use std::{collections::BTreeMap, io, path::PathBuf};
+use thiserror::Error;
+use tokio::{
+    sync::{mpsc, oneshot},
+    task::JoinError,
 };
 
 impl From<bendy::decoding::Error> for Error {

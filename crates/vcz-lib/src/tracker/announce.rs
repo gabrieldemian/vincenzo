@@ -1,15 +1,13 @@
-use rkyv::{
-    Archive, Deserialize, Serialize, api::high::to_bytes_with_alloc,
-    ser::allocator::Arena, util::AlignedVec,
-};
-
+use super::{action::Action, event::Event};
 use crate::{
     error::Error,
     peer::PeerId,
     torrent::{InfoHash, Stats},
 };
-
-use super::{action::Action, event::Event};
+use rkyv::{
+    Archive, Deserialize, Serialize, api::high::to_bytes_with_alloc,
+    ser::allocator::Arena, util::AlignedVec,
+};
 
 #[derive(Debug, PartialEq, Archive, Serialize, Deserialize)]
 #[rkyv(compare(PartialEq), derive(Debug))]
