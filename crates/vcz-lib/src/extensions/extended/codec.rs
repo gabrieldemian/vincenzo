@@ -5,26 +5,24 @@ use super::Extension;
 use crate::{
     error::Error,
     extensions::{ExtMsg, ExtMsgHandler, ExtendedMessage},
-    peer::{self, Direction, MsgHandler},
+    peer::{self, Direction, Peer},
     torrent::TorrentMsg,
 };
 use bendy::encoding::ToBencode;
 use tokio::sync::oneshot;
 use tracing::{debug, trace};
 
-impl ExtMsgHandler<Extension> for MsgHandler {
-    async fn handle_msg(
-        &self,
-        peer: &mut peer::Peer<peer::Connected>,
-        msg: Extension,
-    ) -> Result<(), Error> {
+impl ExtMsgHandler<Extension> for Peer<peer::Connected> {
+    type Error = Error;
+
+    async fn handle_msg(&mut self, msg: Extension) -> Result<(), Self::Error> {
         debug!("{msg:?}");
 
         // send ours extended msg if outbound
-        if peer.state.ctx.direction == Direction::Outbound {
+        if self.state.ctx.direction == Direction::Outbound {
             let metadata_size = {
                 let (otx, orx) = oneshot::channel();
-                peer.state
+                self.state
                     .ctx
                     .torrent_ctx
                     .tx
@@ -36,10 +34,10 @@ impl ExtMsgHandler<Extension> for MsgHandler {
             let ext = Extension::supported(metadata_size).to_bencode()?;
 
             trace!("sending my extended handshake {:?}", ext);
-            peer.feed(ExtendedMessage(Extension::ID, ext).into()).await?;
+            self.feed(ExtendedMessage(Extension::ID, ext).into()).await?;
         }
 
-        peer.handle_ext(msg).await?;
+        self.handle_ext(msg).await?;
 
         Ok(())
     }

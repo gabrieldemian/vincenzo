@@ -3,7 +3,7 @@ use crate::{
     extensions::{
         ExtMsg, ExtMsgHandler, ExtendedMessage, Holepunch, HolepunchMsgType,
     },
-    peer::MsgHandler,
+    peer::{self, Peer},
     torrent::TorrentMsg,
 };
 use tokio::sync::oneshot;
@@ -25,13 +25,14 @@ impl TryFrom<ExtendedMessage> for Holepunch {
     }
 }
 
-impl ExtMsgHandler<Holepunch> for MsgHandler {
+impl ExtMsgHandler<Holepunch> for Peer<peer::Connected> {
+    type Error = Error;
+
     async fn handle_msg(
-        &self,
-        peer: &mut crate::peer::Peer<crate::peer::Connected>,
+        &mut self,
         msg: Holepunch,
     ) -> Result<(), Error> {
-        let Some(_remote_ext_id) = peer.state.extension.as_ref() else {
+        let Some(_remote_ext_id) = self.state.extension.as_ref() else {
             return Ok(());
         };
 
@@ -43,7 +44,7 @@ impl ExtMsgHandler<Holepunch> for MsgHandler {
 
                 let (otx, orx) = oneshot::channel();
 
-                peer.state
+                self.state
                     .ctx
                     .torrent_ctx
                     .tx

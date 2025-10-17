@@ -43,6 +43,12 @@ impl From<Option<BTreeMap<u32, Block>>> for Error {
     }
 }
 
+impl From<std::convert::Infallible> for Error {
+    fn from(value: std::convert::Infallible) -> Self {
+        match value {}
+    }
+}
+
 #[derive(Error, Debug)]
 pub enum Error {
     #[error("Failed to send a connect request to the tracker")]

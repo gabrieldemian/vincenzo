@@ -4,7 +4,7 @@ use crate::{
     disk::DiskMsg,
     error::Error,
     extensions::ExtMsgHandler,
-    peer::{self, MsgHandler},
+    peer::{self, Peer},
     torrent::TorrentMsg,
 };
 use bytes::{Buf, BufMut, BytesMut};
@@ -13,7 +13,7 @@ use std::sync::atomic::Ordering;
 use tokio::{io, sync::oneshot};
 use tokio_util::codec::{Decoder, Encoder};
 use tracing::{debug, warn};
-use vcz_macros::{Extension, Message};
+use vcz_macros::Extension;
 
 impl Core {
     /// Calculate the length of the message in bytes.
@@ -38,7 +38,7 @@ impl Core {
     }
 }
 
-/// The first value is decided when the peer sends its extension header, in the
+/// The first value is decided when the self.sends its extension header, in the
 /// m field.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExtendedMessage(pub u8, pub Vec<u8>);
@@ -61,7 +61,7 @@ impl From<ExtendedMessage> for Core {
 /// Core messages exchanged after a successful handshake.
 /// These are from the vanilla protocol, with no extensions.
 #[repr(u8)]
-#[derive(Debug, Clone, PartialEq, Message, Extension)]
+#[derive(Debug, Clone, PartialEq, Extension)]
 // not really used since core does not use this.
 #[extension(id = 255)]
 pub enum Core {
@@ -100,12 +100,10 @@ pub struct CoreCodec;
 #[derive(Clone, Debug, Copy)]
 pub struct CoreExt;
 
-impl ExtMsgHandler<Core> for MsgHandler {
-    async fn handle_msg(
-        &self,
-        peer: &mut peer::Peer<peer::Connected>,
-        msg: Core,
-    ) -> Result<(), Error> {
+impl ExtMsgHandler<Core> for Peer<peer::Connected> {
+    type Error = Error;
+
+    async fn handle_msg(&mut self, msg: Core) -> Result<(), Self::Error> {
         match msg {
             // handled by the extended messages
             Core::Extended(_) => {}
@@ -119,62 +117,62 @@ impl ExtMsgHandler<Core> for MsgHandler {
                     bitfield.count_ones()
                 );
 
-                peer.state
+                self.state
                     .ctx
                     .torrent_ctx
                     .tx
                     .send(TorrentMsg::SetPeerBitfield(
-                        peer.state.ctx.id.clone(),
+                        self.state.ctx.id.clone(),
                         bitfield.clone(),
                     ))
                     .await?;
             }
             Core::Unchoke => {
-                peer.state.ctx.peer_choking.store(false, Ordering::Relaxed);
-                peer.state_log[2] = 'u';
+                self.state.ctx.peer_choking.store(false, Ordering::Relaxed);
+                self.state_log[2] = 'u';
                 debug!("< unchoke");
             }
             Core::Choke => {
                 debug!("< choke");
-                peer.state.ctx.peer_choking.store(true, Ordering::Relaxed);
-                peer.free_pending_blocks();
-                peer.state_log[2] = '-';
+                self.state.ctx.peer_choking.store(true, Ordering::Relaxed);
+                self.free_pending_blocks();
+                self.state_log[2] = '-';
             }
             Core::Interested => {
-                // remote peer is interested the local peer
+                // remote self.is interested the local peer
                 debug!("< interested");
-                peer.state.ctx.peer_interested.store(true, Ordering::Relaxed);
-                peer.state_log[3] = 'i';
+                self.state.ctx.peer_interested.store(true, Ordering::Relaxed);
+                self.state_log[3] = 'i';
             }
             Core::NotInterested => {
                 debug!("< not_interested");
-                peer.state.ctx.peer_interested.store(false, Ordering::Relaxed);
-                peer.state_log[3] = '-';
+                self.state.ctx.peer_interested.store(false, Ordering::Relaxed);
+                self.state_log[3] = '-';
             }
             Core::Have(piece) => {
                 debug!("< have {piece}");
 
-                peer.state
+                self.state
                     .ctx
                     .torrent_ctx
                     .tx
                     .send(TorrentMsg::PeerHave(
-                        peer.state.ctx.id.clone(),
+                        self.state.ctx.id.clone(),
                         piece,
                     ))
                     .await?;
             }
             Core::Piece(block) => {
-                peer.handle_block(block).await?;
+                self.handle_block(block).await?;
             }
             Core::Cancel(block_info) => {
                 debug!("< cancel {block_info:?}");
-                peer.state.incoming_requests.retain(|v| *v != block_info);
+                self.state.incoming_requests.retain(|v| *v != block_info);
             }
             Core::Request(b @ BlockInfo { index, begin, .. }) => {
                 debug!("< request {b:?}");
 
-                if peer.state.ctx.peer_choking.load(Ordering::Relaxed) {
+                if self.state.ctx.peer_choking.load(Ordering::Relaxed) {
                     return Ok(());
                 }
 
@@ -182,21 +180,21 @@ impl ExtMsgHandler<Core> for MsgHandler {
                     return Ok(());
                 }
 
-                peer.state.incoming_requests.push(b.clone());
+                self.state.incoming_requests.push(b.clone());
                 let (tx, rx) = oneshot::channel();
 
-                peer.state
+                self.state
                     .ctx
                     .torrent_ctx
                     .disk_tx
                     .send(DiskMsg::ReadBlock {
                         block_info: b,
                         recipient: tx,
-                        info_hash: peer.state.ctx.torrent_ctx.info_hash.clone(),
+                        info_hash: self.state.ctx.torrent_ctx.info_hash.clone(),
                     })
                     .await?;
 
-                peer.send(Core::Piece(Block {
+                self.send(Core::Piece(Block {
                     index,
                     begin,
                     block: rx.await?,
@@ -699,16 +697,16 @@ mod tests {
 //
 // am_choking = 1
 // am_interested = 0
-// peer_choking = 1
-// peer_interested = 0
+// self.choking = 1
+// self.interested = 0
 //
 // A block is downloaded by the client,
-// when the client is interested in a peer,
-// and that peer is not choking the client.
+// when the client is interested in a self.
+// and that self.is not choking the client.
 //
 // A block is uploaded by a client,
-// when the client is not choking a peer,
-// and that peer is interested in the client.
+// when the client is not choking a self.
+// and that self.is interested in the client.
 //
 // c <-handshake-> p
 // c <-extended (if supported)->p
@@ -734,44 +732,44 @@ mod tests {
 
 // Choke
 // <len=0001><id=0>
-// Choke the peer, letting them know that the may _not_ download any pieces.
+// Choke the self. letting them know that the may _not_ download any pieces.
 
 // Unchoke
 // <len=0001><id=1>
-// Unchoke the peer, letting them know that the may download.
+// Unchoke the self. letting them know that the may download.
 
 // Interested
 // <len=0001><id=2>
-// Let the peer know that we are interested in the pieces that it has
+// Let the self.know that we are interested in the pieces that it has
 // available.
 
 // Not Interested
 // <len=0001><id=3>
-// Let the peer know that we are _not_ interested in the pieces that it has
+// Let the self.know that we are _not_ interested in the pieces that it has
 // available because we also have those pieces.
 
 // Have
 // <len=0005><id=4><piece index>
-// This messages is sent when the peer wishes to announce that they downloaded a
+// This messages is sent when the self.wishes to announce that they downloaded a
 // new piece. This is only sent if the piece's hash verification checked out.
 
 // Bitfield
 // <len=0001+X><id=5><bitfield>
 // Only ever sent as the first message after the handshake. The payload of this
 // message is a bitfield whose indices represent the file pieces in the torrent
-// and is used to tell the other peer which pieces the sender has available
+// and is used to tell the other self.which pieces the sender has available
 // (each available piece's bitfield value is 1). Byte 0 corresponds to indices
 // 0-7, from most significant bit to least significant bit, respectively, byte 1
 // corresponds to indices 8-15, and so on. E.g. given the first byte
 // `0b1100'0001` in the bitfield means we have pieces 0, 1, and 7.
 //
-// If a peer doesn't have any pieces downloaded, they need not send
+// If a self.doesn't have any pieces downloaded, they need not send
 // this message.
 
 // Request
 // <len=0013><id=6><index><begin><length>
 // This message is sent when a downloader requests a chunk of a file piece from
-// its peer. It specifies the piece index, the offset into that piece, and the
+// its self. It specifies the piece index, the offset into that piece, and the
 // length of the block. As noted above, due to nearly all clients in the wild
 // reject requests that are not 16 KiB, we can assume the length field to always
 // be 16 KiB.

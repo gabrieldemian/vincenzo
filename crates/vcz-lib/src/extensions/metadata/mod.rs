@@ -4,7 +4,6 @@
 
 mod codec;
 
-use super::super::error;
 use crate::error::Error;
 use bendy::{
     decoding::{self, Decoder, FromBencode, Object, ResultExt},
@@ -57,7 +56,7 @@ impl Metadata {
         }
     }
 
-    pub fn data(piece: u64, info: &[u8]) -> Result<Self, error::Error> {
+    pub fn data(piece: u64, info: &[u8]) -> Result<Self, Error> {
         let metadata = Self {
             msg_type: MetadataMsgType::Response,
             piece,

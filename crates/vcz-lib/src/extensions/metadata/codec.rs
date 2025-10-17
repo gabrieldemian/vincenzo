@@ -4,7 +4,7 @@ use super::{Metadata, MetadataMsgType};
 use crate::{
     error::Error,
     extensions::{ExtMsgHandler, ExtendedMessage, MetadataPiece},
-    peer::{self, MsgHandler},
+    peer::{self, Peer},
     torrent::TorrentMsg,
 };
 use bendy::encoding::ToBencode;
@@ -12,19 +12,17 @@ use futures::SinkExt;
 use tokio::sync::oneshot;
 use tracing::{debug, warn};
 
-impl ExtMsgHandler<Metadata> for MsgHandler {
-    async fn handle_msg(
-        &self,
-        peer: &mut peer::Peer<peer::Connected>,
-        msg: Metadata,
-    ) -> Result<(), Error> {
+impl ExtMsgHandler<Metadata> for Peer<peer::Connected> {
+    type Error = Error;
+
+    async fn handle_msg(&mut self, msg: Metadata) -> Result<(), Self::Error> {
         let Some(remote_ext_id) =
-            peer.state.extension.as_ref().and_then(|v| v.m.ut_metadata)
+            self.state.extension.as_ref().and_then(|v| v.m.ut_metadata)
         else {
             warn!(
                 "{} received extended msg but the peer doesnt support the \
                  extended protocol or extended metadata protocol {}",
-                peer.state.ctx.local_addr, peer.state.ctx.remote_addr
+                self.state.ctx.local_addr, self.state.ctx.remote_addr
             );
             return Ok(());
         };
@@ -33,11 +31,11 @@ impl ExtMsgHandler<Metadata> for MsgHandler {
             MetadataMsgType::Response => {
                 debug!("< metadata res piece {}", msg.piece);
 
-                peer.state
+                self.state
                     .req_man_meta
                     .remove_request(&MetadataPiece(msg.piece as usize));
 
-                peer.state
+                self.state
                     .ctx
                     .torrent_ctx
                     .tx
@@ -53,7 +51,7 @@ impl ExtMsgHandler<Metadata> for MsgHandler {
 
                 let (tx, rx) = oneshot::channel();
 
-                peer.state
+                self.state
                     .ctx
                     .torrent_ctx
                     .tx
@@ -65,14 +63,14 @@ impl ExtMsgHandler<Metadata> for MsgHandler {
                         debug!("sending data with piece {:?}", msg.piece);
                         debug!(
                             "{} sending data with piece {} {}",
-                            peer.state.ctx.local_addr,
-                            peer.state.ctx.remote_addr,
+                            self.state.ctx.local_addr,
+                            self.state.ctx.remote_addr,
                             msg.piece
                         );
 
                         let msg = Metadata::data(msg.piece, &info_slice)?;
 
-                        peer.state
+                        self.state
                             .sink
                             .send(
                                 ExtendedMessage(
@@ -86,13 +84,13 @@ impl ExtMsgHandler<Metadata> for MsgHandler {
                     None => {
                         debug!(
                             "{} sending reject {}",
-                            peer.state.ctx.local_addr,
-                            peer.state.ctx.remote_addr
+                            self.state.ctx.local_addr,
+                            self.state.ctx.remote_addr
                         );
 
                         let r = Metadata::reject(msg.piece).to_bencode()?;
 
-                        peer.state
+                        self.state
                             .sink
                             .send(ExtendedMessage(remote_ext_id, r).into())
                             .await?;

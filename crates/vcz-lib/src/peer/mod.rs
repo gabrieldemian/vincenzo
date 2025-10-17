@@ -10,8 +10,7 @@ use crate::{
     disk::{DiskMsg, ReturnToDisk},
     error::Error,
     extensions::{
-        ExtMsg, ExtMsgHandler, ExtendedMessage, Extension, Metadata,
-        MetadataPiece,
+        ExtMsgHandler, ExtendedMessage, Extension, Metadata, MetadataPiece,
         core::{Block, BlockInfo, Core},
     },
     torrent::{PeerBrMsg, TorrentMsg},
@@ -28,17 +27,13 @@ use tracing::{debug, trace};
 
 /// Data about a remote Peer that the client is connected to,
 /// but the client itself does not have a Peer struct.
-#[derive(Default, PartialEq, Eq)]
+#[derive(Default, PartialEq, Eq, vcz_macros::Peer)]
+#[extensions(Core, Metadata, Extension)]
 pub struct Peer<S: PeerState> {
     pub state: S,
     /// am_choking[0], am_interested[1], peer_choking[2], peer_interested[3]
     pub state_log: StateLog,
 }
-
-/// Handle peer messages.
-/// Each extension will use this type to implement a trait to handle messages of
-/// its extension.
-pub struct MsgHandler;
 
 impl Peer<Connected> {
     /// Start the event loop of the Peer, listen to messages sent by others
@@ -138,36 +133,8 @@ impl Peer<Connected> {
                     self.send(Core::KeepAlive).await?;
                 }
                 Some(Ok(msg)) = self.state.stream.next() => {
-                    match msg {
-                        Core::Extended(msg @ ExtendedMessage(ext_id, _)) => {
-                            // todo: reduce this repetition somehow
-                            match ext_id {
-                                <Extension as ExtMsg>::ID => {
-                                    let msg: Extension = msg.try_into()?;
-
-                                    MsgHandler.handle_msg(
-                                        self,
-                                        msg,
-                                    ).await?;
-                                }
-                                <Metadata as ExtMsg>::ID => {
-                                    let msg: Metadata = msg.try_into()?;
-
-                                    MsgHandler.handle_msg(
-                                        self,
-                                        msg,
-                                    ).await?;
-                                }
-                                _ => {}
-                            }
-                        }
-                        _ => {
-                            MsgHandler.handle_msg(
-                                self,
-                                msg,
-                            ).await?;
-                        }
-                    }
+                    // created by Peer macro in [`vcz_macros`]
+                    let _ = self.handle_message(msg).await;
                 }
                 Ok(msg) = brx.recv() => {
                     match msg {
@@ -568,11 +535,6 @@ impl Peer<Connected> {
         self.state.target_request_queue_len = n;
         self.state.req_man_meta.set_limit(n as usize);
         self.state.req_man_block.set_limit(n as usize);
-
-        // set the peer's extensions
-        // if ext.m.ut_metadata.is_some() {
-        //     self.state.ext_states.metadata = Some(MetadataData());
-        // }
 
         if let Some(meta_size) = ext.metadata_size {
             self.state
