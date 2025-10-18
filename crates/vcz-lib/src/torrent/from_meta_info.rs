@@ -1,7 +1,6 @@
+use super::*;
 use crate::extensions::BLOCK_LEN;
 use bendy::encoding::ToBencode;
-
-use super::*;
 
 impl Torrent<Connected, FromMetaInfo> {
     /// Run the Torrent main event loop to listen to internal [`TorrentMsg`].
@@ -13,10 +12,12 @@ impl Torrent<Connected, FromMetaInfo> {
 
         self.status = TorrentStatus::Downloading;
 
-        let is_seed_only = self.bitfield.count_ones() >= self.bitfield.len();
-
-        if is_seed_only {
-            self.status = TorrentStatus::Seeding;
+        {
+            let is_seed_only =
+                self.bitfield.count_ones() >= self.bitfield.len();
+            if is_seed_only {
+                self.status = TorrentStatus::Seeding;
+            }
         }
 
         self.state.size = self.source.meta_info.info.get_torrent_size() as u64;
@@ -104,10 +105,6 @@ impl Torrent<Connected, FromMetaInfo> {
                         }
                         TorrentMsg::DownloadedPiece(piece) => {
                             self.downloaded_piece(piece).await;
-                        }
-                        TorrentMsg::PeerConnecting(addr) => {
-                            self.state.idle_peers.remove(&addr);
-                            // self.state.connecting_peers.push(addr);
                         }
                         TorrentMsg::PeerError(addr) => {
                             self.peer_error(addr).await;

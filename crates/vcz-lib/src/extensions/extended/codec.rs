@@ -10,14 +10,11 @@ use crate::{
 };
 use bendy::encoding::ToBencode;
 use tokio::sync::oneshot;
-use tracing::{debug, trace};
 
 impl ExtMsgHandler<Extension> for Peer<peer::Connected> {
     type Error = Error;
 
     async fn handle_msg(&mut self, msg: Extension) -> Result<(), Self::Error> {
-        debug!("{msg:?}");
-
         // send ours extended msg if outbound
         if self.state.ctx.direction == Direction::Outbound {
             let metadata_size = {
@@ -30,10 +27,7 @@ impl ExtMsgHandler<Extension> for Peer<peer::Connected> {
                     .await?;
                 orx.await?
             };
-
             let ext = Extension::supported(metadata_size).to_bencode()?;
-
-            trace!("sending my extended handshake {:?}", ext);
             self.feed(ExtendedMessage(Extension::ID, ext).into()).await?;
         }
 

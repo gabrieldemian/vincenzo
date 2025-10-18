@@ -133,7 +133,7 @@ impl TrackerTrait for Tracker<Udp> {
         }
 
         if len == 0 {
-            return Err(Error::TrackerResponse);
+            return Err(Error::ResponseLen);
         }
 
         let res = connect::Response::deserialize(&buf)?;
@@ -241,7 +241,6 @@ impl TrackerTrait for Tracker<Udp> {
 
     /// Bind UDP socket and send a connect handshake,
     /// to one of the trackers.
-    // todo: announce again if download is stale
     async fn connect_to_tracker(
         tracker: &str,
         info_hash: InfoHash,
@@ -369,7 +368,7 @@ pub fn parse_compact_peer_list(
 
     let chunks = buf.chunks_exact(stride);
     if !chunks.remainder().is_empty() {
-        return Err(Error::TrackerCompactPeerList);
+        return Err(Error::CompactPeerListRemainder);
     }
 
     for hostpost in chunks {

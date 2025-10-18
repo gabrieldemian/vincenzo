@@ -18,8 +18,8 @@ struct ExtArgs {
 ///
 /// Usage:
 ///
-/// ```
-/// #[derive(Extension)]
+/// ```ignore
+/// #[derive(vcz_macros::Extension)]
 /// #[extension(id = 3)]
 /// pub struct MetadataMsg;
 /// ```
@@ -27,8 +27,8 @@ struct ExtArgs {
 /// can also implement `TryFrom<ExtendedMessage>` for this type
 /// if it implements  `bendy::FromBencode`
 ///
-/// ```
-/// #[derive(Extension)]
+/// ```ignore
+/// #[derive(vcz_macros::Extension)]
 /// #[extension(id = 2, bencoded)]
 /// pub struct BencodedMsg;
 /// ```
@@ -48,10 +48,17 @@ pub fn derive_extension(input: TokenStream) -> TokenStream {
         quote! {
            impl core::convert::TryFrom<crate::extensions::ExtendedMessage> for #name {
                type Error = crate::error::Error;
-               fn try_from(value: crate::extensions::ExtendedMessage) -> Result<Self, Self::Error> {
+
+               fn try_from(value: crate::extensions::ExtendedMessage)
+                -> std::result::Result<Self, Self::Error>
+               {
                    if value.0 != #id {
-                        // todo: change error
-                       return Err(Error::PeerIdInvalid);
+                        return std::result::Result::Err(
+                            crate::error::Error::WrongExtensionId {
+                                local: #id,
+                                received: value.0,
+                            },
+                        );
                    }
                    #name::from_bencode(&value.1).map_err(|e| e.into())
                }
@@ -105,21 +112,15 @@ pub fn derive_peer_extensions(input: TokenStream) -> TokenStream {
                             #(
                                 <#exts as crate::extensions::ExtMsg>::ID => {
                                     let msg: #exts = msg.try_into()?;
-                                    self.handle_msg(
-                                        msg,
-                                    ).await?;
+                                    self.handle_msg(msg).await?;
                                 }
                             )*
                             _ => {}
                         }
                     }
-                    _ => {
-                        self.handle_msg(
-                            msg,
-                        ).await?;
-                    }
+                    _ => self.handle_msg(msg).await?
                 }
-                Ok(())
+                std::result::Result::Ok(())
             }
         }
     };

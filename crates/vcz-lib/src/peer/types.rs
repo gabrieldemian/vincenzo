@@ -244,9 +244,6 @@ impl peer::Peer<Idle> {
     ) -> Result<peer::Peer<Connected>, Error> {
         let remote = socket.peer_addr()?;
         let local = socket.local_addr()?;
-
-        // torrent_ctx.tx.send(TorrentMsg::PeerConnecting(remote)).await?;
-
         let mut socket = Framed::new(socket, HandshakeCodec);
         let info_hash = &torrent_ctx.info_hash;
 
@@ -436,8 +433,6 @@ impl peer::Peer<Idle> {
             return Err(Error::TorrentDoesNotExist);
         };
 
-        // torrent_ctx.tx.send(TorrentMsg::PeerConnecting(remote)).await?;
-
         debug!("sending inbound handshake");
         socket.send(our_handshake).await?;
 
@@ -600,7 +595,7 @@ pub struct Connected {
 
 /// Tried to do an oubound connection but peer couldn't be reached.
 // todo:
-// Right now a peer is only converted to this state when we try an outbound
+// right now a peer is only converted to this state when we try an outbound
 // connection and it doesn't work, if the peer is connected and returns an
 // error, we should maybe use another type with more information about why it
 // failed, such as a peer being malicious.

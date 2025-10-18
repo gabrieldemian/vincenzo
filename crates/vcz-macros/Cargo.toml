@@ -5,7 +5,6 @@ description = "Procedural macros of Vincenzo"
 keywords = ["distributed", "bittorrent", "torrent", "p2p", "networking"]
 categories = ["network-programming"]
 repository = "https://github.com/gabrieldemian/vincenzo"
-# homepage = "https://vincenzo.rs"
 authors = ["Gabriel Lombardo <gabrielgcr45@gmail.com>"]
 edition = "2024"
 readme = "README.md"
@@ -17,13 +16,8 @@ proc-macro = true
 
 [[test]]
 name = "tests"
-# path = "tests/progress.rs"
-
-# [dev-dependencies]
-# trybuild = { version = "1.0.49", features = ["diff"] }
 
 [dependencies]
-# vincenzo = { workspace = true }
 quote = "1.0.41"
 syn = "2.0.106"
 darling = "0.21.3"

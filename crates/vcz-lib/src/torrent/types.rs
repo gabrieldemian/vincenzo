@@ -94,8 +94,6 @@ pub enum TorrentMsg {
     /// Sent when the peer is acting as a relay for the holepunch protocol.
     ReadPeerByIp(IpAddr, u16, oneshot::Sender<Option<Arc<PeerCtx>>>),
 
-    PeerConnecting(SocketAddr),
-
     GetConnectedPeers(oneshot::Sender<Vec<Arc<PeerCtx>>>),
 
     PeerConnected(Arc<PeerCtx>),

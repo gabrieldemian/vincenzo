@@ -43,7 +43,7 @@ impl Request {
     /// Around 20ns in release mode.
     pub fn deserialize(bytes: &[u8]) -> Result<&ArchivedRequest, Error> {
         if bytes.len() != Self::LEN {
-            return Err(Error::TrackerResponse);
+            return Err(Error::ResponseLen);
         }
         Ok(unsafe { rkyv::access_unchecked::<ArchivedRequest>(bytes) })
     }
@@ -86,7 +86,7 @@ impl Response {
         bytes: &[u8],
     ) -> Result<(&ArchivedResponse, &[u8]), Error> {
         if bytes.len() < Response::MIN_LEN {
-            return Err(Error::TrackerResponseLength);
+            return Err(Error::ResponseLen);
         }
         Ok((
             unsafe {

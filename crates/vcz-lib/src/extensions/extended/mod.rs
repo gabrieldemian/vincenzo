@@ -2,7 +2,7 @@
 //!
 //! <http://www.bittorrent.org/beps/bep_0010.html>
 
-use crate::{error::Error, extensions::Metadata};
+use crate::extensions::Metadata;
 use bendy::{
     decoding::{FromBencode, Object, ResultExt},
     encoding::ToBencode,

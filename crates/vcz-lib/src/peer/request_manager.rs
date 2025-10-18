@@ -108,7 +108,7 @@ impl<T: Requestable> RequestManager<T> {
 
         let timeout = self.avg_response_time.mul_f32(self.timeout_multiplier);
 
-        // todo: if the timeout is higher than the maximum (10 seconds)
+        // if the timeout is higher than the maximum (10 seconds)
         // what should the client do? choke the peer?
 
         timeout.clamp(Duration::from_millis(100), Duration::from_secs(10))

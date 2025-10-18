@@ -10,11 +10,10 @@ use bendy::{
     encoding::{Encoder, ToBencode},
 };
 use int_enum::IntEnum;
-use vcz_macros::Extension;
 
 /// Metadata dict used in the Metadata protocol messages,
 /// this dict is used to request, reject, and send data (info).
-#[derive(Debug, Clone, PartialEq, Extension)]
+#[derive(Debug, Clone, PartialEq, vcz_macros::Extension)]
 #[extension(id = 3, bencoded)]
 pub struct Metadata {
     pub msg_type: MetadataMsgType,

@@ -53,10 +53,10 @@ impl Request {
 
     pub fn deserialize(bytes: &[u8]) -> Result<&ArchivedRequest, Error> {
         if bytes.len() != Self::LEN {
-            return Err(Error::TrackerResponse);
+            return Err(Error::ResponseLen);
         }
         if bytes[0..8] != Self::MAGIC_BUF {
-            return Err(Error::TrackerResponse);
+            return Err(Error::ResponseLen);
         }
         Ok(unsafe { rkyv::access_unchecked::<ArchivedRequest>(bytes) })
     }
@@ -76,7 +76,7 @@ impl Response {
     #[cfg(test)]
     pub(crate) fn hand(buf: &[u8]) -> Result<Self, Error> {
         if buf.len() != Self::LEN {
-            return Err(Error::TrackerResponse);
+            return Err(Error::ResponseLen);
         }
 
         // let action = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]);
@@ -96,7 +96,7 @@ impl Response {
 
     pub fn deserialize(bytes: &[u8]) -> Result<&ArchivedResponse, Error> {
         if bytes.len() != Self::LEN {
-            return Err(Error::TrackerResponse);
+            return Err(Error::ResponseLen);
         }
         Ok(unsafe { rkyv::access_unchecked::<ArchivedResponse>(bytes) })
     }

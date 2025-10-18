@@ -16,7 +16,10 @@ impl TryFrom<ExtendedMessage> for Holepunch {
 
     fn try_from(value: ExtendedMessage) -> Result<Self, Self::Error> {
         if value.0 != Self::ID {
-            return Err(Error::PeerIdInvalid);
+            return Err(crate::error::Error::WrongExtensionId {
+                local: Self::ID,
+                received: value.0,
+            });
         }
 
         let _holepunch = Holepunch::deserialize(&value.1)?;
@@ -28,10 +31,7 @@ impl TryFrom<ExtendedMessage> for Holepunch {
 impl ExtMsgHandler<Holepunch> for Peer<peer::Connected> {
     type Error = Error;
 
-    async fn handle_msg(
-        &mut self,
-        msg: Holepunch,
-    ) -> Result<(), Error> {
+    async fn handle_msg(&mut self, msg: Holepunch) -> Result<(), Error> {
         let Some(_remote_ext_id) = self.state.extension.as_ref() else {
             return Ok(());
         };

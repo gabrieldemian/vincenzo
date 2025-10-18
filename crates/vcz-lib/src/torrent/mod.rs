@@ -8,9 +8,6 @@ mod from_magnet;
 mod from_meta_info;
 mod types;
 
-use hashbrown::{HashMap, HashSet};
-use rand::Rng;
-
 // re-exports
 pub use types::*;
 
@@ -28,6 +25,8 @@ use crate::{
     tracker::{Tracker, TrackerMsg, TrackerTrait, event::Event},
     utils::to_human_readable,
 };
+use hashbrown::{HashMap, HashSet};
+use rand::Rng;
 use std::{
     collections::BTreeMap,
     net::{IpAddr, SocketAddr},
@@ -93,7 +92,7 @@ impl<M: TorrentSource> Torrent<Idle, M> {
         drop(org_trackers);
 
         if udp_trackers.is_empty() {
-            return Err(Error::MagnetNoTracker);
+            return Err(Error::NoUDPTracker);
         }
 
         info!("connecting to {} udp trackers", udp_trackers.len());
@@ -202,9 +201,6 @@ impl<M: TorrentSource> Torrent<Idle, M> {
                 size,
                 unchoked_peers: Vec::with_capacity(3),
                 opt_unchoked_peer: None,
-                // connecting_peers: Vec::with_capacity(
-                //     self.config.max_torrent_peers as usize,
-                // ),
                 error_peers: Vec::with_capacity(
                     self.config.max_torrent_peers as usize,
                 ),
@@ -516,9 +512,6 @@ impl<M: TorrentSource> Torrent<Connected, M> {
         let daemon_connected_peers = orx.await?;
         let max_global_peers = self.config.max_global_peers;
         let max_torrent_peers = self.config.max_torrent_peers;
-
-        // let currently_active = self.state.connected_peers.len()
-        //     + self.state.connecting_peers.len();
         let currently_active = self.state.connected_peers.len();
 
         if currently_active >= max_torrent_peers as usize
