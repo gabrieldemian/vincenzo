@@ -28,7 +28,8 @@ use vcz_lib::{
     disk::{Disk, DiskMsg, PieceStrategy, ReturnToDisk},
     error::Error,
     metainfo::MetaInfo,
-    peer::PeerId,
+    peer::{PeerCtx, PeerId, PeerMsg},
+    torrent::TorrentMsg,
 };
 
 /// Setup a torrent that is fully downloaded on disk.
@@ -83,14 +84,20 @@ async fn setup_client(
     Ok((disk, daemon, metainfo))
 }
 
+pub struct SetupRes {
+    pub l1:
+        (PeerId, mpsc::Sender<DiskMsg>, mpsc::Sender<TorrentMsg>, Arc<PeerCtx>),
+    pub s1:
+        (PeerId, mpsc::Sender<DiskMsg>, mpsc::Sender<TorrentMsg>, Arc<PeerCtx>),
+}
+
 /// Setup boilerplate for testing.
 ///
 /// Simulate a local leecher peer connected with a seeder peer.
 #[cfg(test)]
-pub async fn setup()
--> Result<(mpsc::Sender<DiskMsg>, PeerId, impl FnOnce()), Error> {
+pub async fn setup() -> Result<(SetupRes, impl FnOnce()), Error> {
     use std::{panic, time::Duration};
-    use tokio::time::sleep;
+    use tokio::{sync::oneshot, time::sleep};
 
     panic::set_hook(Box::new(|_| {
         cleanup();
@@ -98,14 +105,30 @@ pub async fn setup()
 
     let mut tracker = MockTracker::new().await?;
 
-    // this is the local peer, which is a leecher
-    let (_leecher_id, disk_tx) = PeerBuilder::new().build(&mut tracker).await?;
-    let (seeder_id, _) = PeerBuilder::new_seeder().build(&mut tracker).await?;
+    let l1 = PeerBuilder::new().build(&mut tracker).await?;
+    let s1 = PeerBuilder::new_seeder().build(&mut tracker).await?;
 
     spawn(async move { tracker.run().await });
 
     // wait for the peers to handshake
-    sleep(Duration::from_millis(200)).await;
+    sleep(Duration::from_millis(100)).await;
 
-    Ok((disk_tx, seeder_id, || cleanup()))
+    let (otx, orx) = oneshot::channel();
+    let _ = l1
+        .1
+        .send(DiskMsg::GetPeerCtx { peer_id: s1.0.clone(), recipient: otx })
+        .await;
+    let l1tx = orx.await?.unwrap();
+
+    let (otx, orx) = oneshot::channel();
+    let _ = s1
+        .1
+        .send(DiskMsg::GetPeerCtx { peer_id: l1.0.clone(), recipient: otx })
+        .await;
+    let s1tx = orx.await?.unwrap();
+
+    let res =
+        SetupRes { l1: (l1.0, l1.1, l1.2, l1tx), s1: (s1.0, s1.1, s1.2, s1tx) };
+
+    Ok((res, || cleanup()))
 }

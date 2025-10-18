@@ -15,10 +15,12 @@ mod common;
 /// each request.
 #[tokio::test]
 async fn request_block() -> Result<(), Error> {
-    let (disk_tx, seeder_id, cleanup) = common::setup().await?;
+    let (res, cleanup) = common::setup().await?;
     let (otx, orx) = oneshot::channel();
+    let (_, ldisk_tx, ..) = res.l1;
+    let (seeder_id, ..) = res.s1;
 
-    disk_tx
+    ldisk_tx
         .send(DiskMsg::RequestBlocks {
             peer_id: seeder_id.clone(),
             recipient: otx,
@@ -38,7 +40,7 @@ async fn request_block() -> Result<(), Error> {
     );
 
     let (otx, orx) = oneshot::channel();
-    disk_tx
+    ldisk_tx
         .send(DiskMsg::RequestBlocks {
             peer_id: seeder_id.clone(),
             recipient: otx,
@@ -58,7 +60,7 @@ async fn request_block() -> Result<(), Error> {
     );
 
     let (otx, orx) = oneshot::channel();
-    disk_tx
+    ldisk_tx
         .send(DiskMsg::RequestBlocks {
             peer_id: seeder_id.clone(),
             recipient: otx,

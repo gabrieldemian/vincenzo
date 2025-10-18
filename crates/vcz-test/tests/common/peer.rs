@@ -1,5 +1,7 @@
 //! Helpers to build Peers.
 
+use vcz_lib::torrent::TorrentMsg;
+
 use super::*;
 use std::marker::PhantomData;
 
@@ -19,7 +21,8 @@ impl PeerBuilder<Leecher> {
     pub(crate) async fn build(
         self,
         tr: &mut MockTracker,
-    ) -> Result<(PeerId, mpsc::Sender<DiskMsg>), Error> {
+    ) -> Result<(PeerId, mpsc::Sender<DiskMsg>, mpsc::Sender<TorrentMsg>), Error>
+    {
         let (mut disk, mut daemon, metainfo) =
             setup_incomplete_torrent().await?;
         let p = get_p(&daemon);
@@ -30,9 +33,11 @@ impl PeerBuilder<Leecher> {
         )?;
         let disk_tx = disk.tx.clone();
         spawn(async move { daemon.run().await });
+        let info_hash = metainfo.info.info_hash.clone();
         disk.new_torrent_metainfo(metainfo).await?;
+        let torrent_tx = disk.torrent_ctxs.get(&info_hash).unwrap().tx.clone();
         spawn(async move { disk.run().await });
-        Ok((p.0, disk_tx))
+        Ok((p.0, disk_tx, torrent_tx))
     }
 
     pub(crate) fn new() -> PeerBuilder<Leecher> {
@@ -44,7 +49,8 @@ impl PeerBuilder<Seeder> {
     pub(crate) async fn build(
         self,
         tr: &mut MockTracker,
-    ) -> Result<(PeerId, mpsc::Sender<DiskMsg>), Error> {
+    ) -> Result<(PeerId, mpsc::Sender<DiskMsg>, mpsc::Sender<TorrentMsg>), Error>
+    {
         let (mut disk, mut daemon, metainfo) = setup_complete_torrent().await?;
         let p = get_p(&daemon);
         tr.insert_seeder(p.clone());
@@ -54,8 +60,10 @@ impl PeerBuilder<Seeder> {
         )?;
         let disk_tx = disk.tx.clone();
         spawn(async move { daemon.run().await });
+        let torrent_tx =
+            disk.torrent_ctxs.get(&metainfo.info.info_hash).unwrap().tx.clone();
         spawn(async move { disk.run().await });
-        Ok((p.0, disk_tx))
+        Ok((p.0, disk_tx, torrent_tx))
     }
 
     pub(crate) fn new_seeder() -> PeerBuilder<Seeder> {

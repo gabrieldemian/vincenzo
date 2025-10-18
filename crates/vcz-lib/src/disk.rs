@@ -108,6 +108,11 @@ pub enum DiskMsg {
         qnt: usize,
     },
 
+    GetPeerCtx {
+        peer_id: PeerId,
+        recipient: Sender<Option<Arc<PeerCtx>>>,
+    },
+
     Quit,
 }
 
@@ -161,11 +166,8 @@ pub struct Disk {
     pub tx: mpsc::Sender<DiskMsg>,
     pub daemon_ctx: Arc<DaemonCtx>,
     pub rx: Receiver<DiskMsg>,
-
     pub free_rx: mpsc::UnboundedReceiver<ReturnToDisk>,
-
     pub peer_ctxs: Vec<Arc<PeerCtx>>,
-
     pub torrent_ctxs: HashMap<InfoHash, Arc<TorrentCtx>>,
 
     /// The sequence in which pieces will be downloaded,
@@ -267,6 +269,10 @@ impl Disk {
                 biased;
                 Some(msg) = self.rx.recv() => {
                     match msg {
+                        DiskMsg::GetPeerCtx { peer_id, recipient } => {
+                            let p = self.peer_ctxs.iter().find(|p| p.id == peer_id).cloned();
+                            let _ = recipient.send(p);
+                        }
                         DiskMsg::DeleteTorrent(info_hash) => {
                             let path = self.get_metainfo_path(&info_hash)?;
                             tokio::fs::remove_file(path).await?;

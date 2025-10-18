@@ -272,7 +272,7 @@ impl<M: TorrentSource> Torrent<Connected, M> {
 
     async fn unchoke_interval(&mut self) {
         trace!("unchoke_interval");
-        let best = self.get_best_interested_downloaders(3);
+        let best = self.get_best_interested_downloaders();
 
         // choke peers no longer in top 3
         for peer in &self.state.unchoked_peers {
@@ -642,45 +642,9 @@ impl<M: TorrentSource> Torrent<Connected, M> {
         Ok(())
     }
 
-    /// Get the best n downloaders.
-    pub fn get_best_downloaders(&self, n: usize) -> Vec<Arc<PeerCtx>> {
-        self.sort_peers_by_rate(n, false, false, true)
-    }
-
     /// Get the best n downloaders that are interested in the client.
-    pub fn get_best_interested_downloaders(
-        &self,
-        n: usize,
-    ) -> Vec<Arc<PeerCtx>> {
-        self.sort_peers_by_rate(n, false, true, true)
-    }
-
-    /// Get the best n uploaders that are interested in the client.
-    pub fn get_best_interested_uploaders(&self, n: usize) -> Vec<Arc<PeerCtx>> {
-        self.sort_peers_by_rate(n, true, true, true)
-    }
-
-    /// Get the worst n downloaders.
-    pub fn get_worst_downloaders(&self, n: usize) -> Vec<Arc<PeerCtx>> {
-        self.sort_peers_by_rate(n, false, false, false)
-    }
-
-    /// Get the worst n downloaders that are interested in the client.
-    pub fn get_worst_interested_downloaders(
-        &self,
-        n: usize,
-    ) -> Vec<Arc<PeerCtx>> {
-        self.sort_peers_by_rate(n, false, true, false)
-    }
-
-    /// Get the best n uploaders.
-    pub fn get_best_uploaders(&self, n: usize) -> Vec<Arc<PeerCtx>> {
-        self.sort_peers_by_rate(n, true, false, true)
-    }
-
-    /// Get the worst n uploaders.
-    pub fn get_worst_uploaders(&self, n: usize) -> Vec<Arc<PeerCtx>> {
-        self.sort_peers_by_rate(n, true, false, false)
+    pub fn get_best_interested_downloaders(&self) -> Vec<Arc<PeerCtx>> {
+        self.sort_peers_by_rate(false, true, true)
     }
 
     pub fn get_next_opt_unchoked_peer(&self) -> Option<Arc<PeerCtx>> {
@@ -717,20 +681,18 @@ impl<M: TorrentSource> Torrent<Connected, M> {
     ///   relaxed read is just a add/mov so no performance impact.
     fn sort_peers_by_rate(
         &self,
-        n: usize,
         get_uploaded: bool,
         skip_uninterested: bool,
         is_asc: bool,
     ) -> Vec<Arc<PeerCtx>> {
         let peers = &self.state.connected_peers;
 
-        if n == 0 || peers.is_empty() {
+        if peers.is_empty() {
             return Vec::new();
         }
 
-        // constrain n to min(10, peers.len())
-        let n = n.min(peers.len()).min(10);
-        let mut buffer = [(u64::MIN, usize::MIN); 10];
+        let n = peers.len().min(3);
+        let mut buffer = [(u64::MIN, usize::MIN); 3];
         let mut len = 0;
 
         for (index, peer) in peers.iter().enumerate() {
@@ -788,7 +750,7 @@ impl<M: TorrentSource> Torrent<Connected, M> {
         let mut candidates = Vec::new();
 
         for peer in &self.state.connected_peers {
-            // Skip already unchoked peers (regular or optimistic)
+            // skip already unchoked peers (regular or optimistic)
             if self.state.unchoked_peers.iter().any(|p| p.id == peer.id)
                 || self.state.opt_unchoked_peer.as_ref().map(|p| &p.id)
                     == Some(&peer.id)
@@ -796,7 +758,7 @@ impl<M: TorrentSource> Torrent<Connected, M> {
                 continue;
             }
 
-            // Only consider interested peers
+            // only consider interested peers
             if peer.peer_interested.load(Ordering::Relaxed) {
                 candidates.push(peer.clone());
             }
@@ -836,148 +798,5 @@ impl<M: TorrentSource> Torrent<Connected, M> {
             // optimizes this with SIMD.
             .map(|remote| !self.bitfield.clone() & remote)
             .unwrap_or_default()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    };
-
-    #[test]
-    fn test_get_top_uploaders() {
-        #[derive(Debug)]
-        struct PeerCtx {
-            uploaded: AtomicU64,
-            downloaded: AtomicU64,
-        }
-        fn get_top_uploaders(
-            peers: Vec<Arc<PeerCtx>>,
-            x: usize,
-            is_uploaders: bool,
-            is_asc: bool,
-        ) -> Vec<Arc<PeerCtx>> {
-            // Handle edge cases
-            if x == 0 || peers.is_empty() {
-                return Vec::new();
-            }
-
-            let x = x.min(peers.len()).min(10);
-            let mut buffer = [(u64::MIN, usize::MIN); 10];
-            let mut len = 0;
-
-            for (index, peer) in peers.iter().enumerate() {
-                // Relaxed ordering sufficient for snapshot value
-                let uploaded_or_downloaded = if is_uploaders {
-                    peer.uploaded.load(Ordering::Relaxed)
-                } else {
-                    peer.downloaded.load(Ordering::Relaxed)
-                };
-
-                if len < x {
-                    // Insert new element
-                    buffer[len] = (uploaded_or_downloaded, index);
-                    let mut pos = len;
-
-                    // Bubble up to maintain descending order
-                    while pos > 0
-                        && if is_asc {
-                            buffer[pos].0 > buffer[pos - 1].0
-                        } else {
-                            buffer[pos].0 < buffer[pos - 1].0
-                        }
-                    {
-                        buffer.swap(pos, pos - 1);
-                        pos -= 1;
-                    }
-                    len += 1;
-                } else if if is_asc {
-                    uploaded_or_downloaded > buffer[x - 1].0
-                } else {
-                    uploaded_or_downloaded < buffer[x - 1].0
-                } {
-                    // Replace smallest element in top list
-                    buffer[x - 1] = (uploaded_or_downloaded, index);
-                    let mut pos = x - 1;
-
-                    // Bubble up to maintain descending order
-                    while pos > 0 && buffer[pos].0 > buffer[pos - 1].0 {
-                        buffer.swap(pos, pos - 1);
-                        pos -= 1;
-                    }
-                }
-            }
-
-            // Extract results (only x clones performed)
-            buffer[..x].iter().map(|&(_, idx)| peers[idx].clone()).collect()
-        }
-
-        let r = get_top_uploaders(
-            vec![
-                Arc::new(PeerCtx { uploaded: 9.into(), downloaded: 0.into() }),
-                Arc::new(PeerCtx { uploaded: 8.into(), downloaded: 0.into() }),
-                Arc::new(PeerCtx { uploaded: 7.into(), downloaded: 0.into() }),
-                Arc::new(PeerCtx { uploaded: 6.into(), downloaded: 0.into() }),
-                Arc::new(PeerCtx { uploaded: 5.into(), downloaded: 0.into() }),
-                Arc::new(PeerCtx { uploaded: 4.into(), downloaded: 0.into() }),
-                Arc::new(PeerCtx { uploaded: 3.into(), downloaded: 0.into() }),
-                Arc::new(PeerCtx { uploaded: 2.into(), downloaded: 0.into() }),
-                Arc::new(PeerCtx { uploaded: 1.into(), downloaded: 0.into() }),
-                Arc::new(PeerCtx { uploaded: 0.into(), downloaded: 0.into() }),
-            ],
-            4,
-            true,
-            true,
-        );
-        assert_eq!(r[0].uploaded.load(Ordering::Relaxed), 9);
-        assert_eq!(r[1].uploaded.load(Ordering::Relaxed), 8);
-        assert_eq!(r[2].uploaded.load(Ordering::Relaxed), 7);
-        assert_eq!(r[3].uploaded.load(Ordering::Relaxed), 6);
-
-        let r = get_top_uploaders(
-            vec![
-                Arc::new(PeerCtx { uploaded: 9.into(), downloaded: 1.into() }),
-                Arc::new(PeerCtx { uploaded: 8.into(), downloaded: 2.into() }),
-                Arc::new(PeerCtx { uploaded: 7.into(), downloaded: 3.into() }),
-                Arc::new(PeerCtx { uploaded: 6.into(), downloaded: 4.into() }),
-                Arc::new(PeerCtx { uploaded: 5.into(), downloaded: 5.into() }),
-                Arc::new(PeerCtx { uploaded: 4.into(), downloaded: 9.into() }),
-                Arc::new(PeerCtx { uploaded: 3.into(), downloaded: 8.into() }),
-                Arc::new(PeerCtx { uploaded: 2.into(), downloaded: 7.into() }),
-                Arc::new(PeerCtx { uploaded: 1.into(), downloaded: 6.into() }),
-                Arc::new(PeerCtx { uploaded: 0.into(), downloaded: 5.into() }),
-            ],
-            4,
-            false,
-            true,
-        );
-        assert_eq!(r[0].downloaded.load(Ordering::Relaxed), 9);
-        assert_eq!(r[1].downloaded.load(Ordering::Relaxed), 8);
-        assert_eq!(r[2].downloaded.load(Ordering::Relaxed), 7);
-        assert_eq!(r[3].downloaded.load(Ordering::Relaxed), 6);
-
-        let r = get_top_uploaders(
-            vec![
-                Arc::new(PeerCtx { uploaded: 9.into(), downloaded: 1.into() }),
-                Arc::new(PeerCtx { uploaded: 8.into(), downloaded: 2.into() }),
-                Arc::new(PeerCtx { uploaded: 7.into(), downloaded: 3.into() }),
-                Arc::new(PeerCtx { uploaded: 6.into(), downloaded: 4.into() }),
-                Arc::new(PeerCtx { uploaded: 5.into(), downloaded: 5.into() }),
-                Arc::new(PeerCtx { uploaded: 4.into(), downloaded: 9.into() }),
-                Arc::new(PeerCtx { uploaded: 3.into(), downloaded: 8.into() }),
-                Arc::new(PeerCtx { uploaded: 2.into(), downloaded: 7.into() }),
-                Arc::new(PeerCtx { uploaded: 1.into(), downloaded: 6.into() }),
-                Arc::new(PeerCtx { uploaded: 0.into(), downloaded: 5.into() }),
-            ],
-            4,
-            false,
-            false,
-        );
-        assert_eq!(r[0].downloaded.load(Ordering::Relaxed), 1);
-        assert_eq!(r[1].downloaded.load(Ordering::Relaxed), 2);
-        assert_eq!(r[2].downloaded.load(Ordering::Relaxed), 3);
-        assert_eq!(r[3].downloaded.load(Ordering::Relaxed), 4);
     }
 }

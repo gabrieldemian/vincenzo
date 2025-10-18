@@ -168,8 +168,6 @@ pub struct PeerCtx {
     /// Counter for upload and download rates, in the local peer perspective.
     pub counter: Counter,
 
-    pub last_download_rate_update: Mutex<Instant>,
-
     /// Client is choking the peer.
     pub am_choking: AtomicBool,
 
@@ -292,7 +290,6 @@ impl peer::Peer<Idle> {
 
         let ctx = Arc::new(PeerCtx {
             torrent_ctx,
-            last_download_rate_update: Mutex::new(Instant::now()),
             counter: Counter::default(),
             am_interested: false.into(),
             am_choking: true.into(),
@@ -446,7 +443,6 @@ impl peer::Peer<Idle> {
 
         let ctx = PeerCtx {
             torrent_ctx,
-            last_download_rate_update: Mutex::new(Instant::now()),
             counter: Counter::default(),
             am_interested: false.into(),
             am_choking: true.into(),
