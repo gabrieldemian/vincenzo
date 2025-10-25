@@ -56,6 +56,8 @@ pub enum DiskMsg {
     /// just after the metainfo was downloaded.
     AddTorrent(Arc<TorrentCtx>, Arc<Info>),
 
+    GetTorrentCtx(InfoHash, oneshot::Sender<Option<Arc<TorrentCtx>>>),
+
     MetadataSize(InfoHash, usize),
 
     /// The Peer does not have an ID until the handshake, when that happens,
@@ -269,6 +271,10 @@ impl Disk {
                 biased;
                 Some(msg) = self.rx.recv() => {
                     match msg {
+                        DiskMsg::GetTorrentCtx(info_hash, sender) => {
+                            let v = self.torrent_ctxs.get(&info_hash).cloned();
+                            let _ = sender.send(v);
+                        }
                         DiskMsg::GetPeerCtx { peer_id, recipient } => {
                             let p = self.peer_ctxs.iter().find(|p| p.id == peer_id).cloned();
                             let _ = recipient.send(p);

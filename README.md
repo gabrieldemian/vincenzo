@@ -17,7 +17,7 @@ The official UI runs on the terminal with vim-like keybindings.
 
 - [vcz](crates/vcz) - Main binary with both UI and daemon together.
 - [vcz-ui](crates/vcz-ui) - UI binary (connects to daemon remotely).
-- [vczd](crates/vcz-daemon) - Daemon binary.
+- [vcz-daemon](crates/vcz-daemon) - Daemon binary.
 - [vcz-lib](crates/vcz-lib) - Library.
 
 > [!WARNING]

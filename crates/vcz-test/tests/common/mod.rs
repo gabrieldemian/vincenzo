@@ -28,7 +28,7 @@ use vcz_lib::{
     disk::{Disk, DiskMsg, PieceStrategy, ReturnToDisk},
     error::Error,
     metainfo::MetaInfo,
-    peer::{PeerCtx, PeerId, PeerMsg},
+    peer::{PeerCtx, PeerId},
     torrent::TorrentMsg,
 };
 
@@ -85,10 +85,8 @@ async fn setup_client(
 }
 
 pub struct SetupRes {
-    pub l1:
-        (PeerId, mpsc::Sender<DiskMsg>, mpsc::Sender<TorrentMsg>, Arc<PeerCtx>),
-    pub s1:
-        (PeerId, mpsc::Sender<DiskMsg>, mpsc::Sender<TorrentMsg>, Arc<PeerCtx>),
+    pub l1: (mpsc::Sender<DiskMsg>, mpsc::Sender<TorrentMsg>, Arc<PeerCtx>),
+    pub s1: (mpsc::Sender<DiskMsg>, mpsc::Sender<TorrentMsg>, Arc<PeerCtx>),
 }
 
 /// Setup boilerplate for testing.
@@ -118,17 +116,18 @@ pub async fn setup() -> Result<(SetupRes, impl FnOnce()), Error> {
         .1
         .send(DiskMsg::GetPeerCtx { peer_id: s1.0.clone(), recipient: otx })
         .await;
-    let l1tx = orx.await?.unwrap();
-
+    let s1ctx = orx.await?.unwrap();
     let (otx, orx) = oneshot::channel();
     let _ = s1
         .1
         .send(DiskMsg::GetPeerCtx { peer_id: l1.0.clone(), recipient: otx })
         .await;
-    let s1tx = orx.await?.unwrap();
+    let l1ctx = orx.await?.unwrap();
 
-    let res =
-        SetupRes { l1: (l1.0, l1.1, l1.2, l1tx), s1: (s1.0, s1.1, s1.2, s1tx) };
+    assert_eq!(s1ctx.id, s1.0);
+    assert_eq!(l1ctx.id, l1.0);
+
+    let res = SetupRes { l1: (l1.1, l1.2, l1ctx), s1: (s1.1, s1.2, s1ctx) };
 
     Ok((res, || cleanup()))
 }

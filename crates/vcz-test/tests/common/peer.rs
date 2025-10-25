@@ -1,5 +1,6 @@
 //! Helpers to build Peers.
 
+use tokio::sync::oneshot;
 use vcz_lib::torrent::TorrentMsg;
 
 use super::*;
@@ -60,10 +61,13 @@ impl PeerBuilder<Seeder> {
         )?;
         let disk_tx = disk.tx.clone();
         spawn(async move { daemon.run().await });
-        let torrent_tx =
-            disk.torrent_ctxs.get(&metainfo.info.info_hash).unwrap().tx.clone();
         spawn(async move { disk.run().await });
-        Ok((p.0, disk_tx, torrent_tx))
+        let (otx, orx) = oneshot::channel();
+        disk_tx
+            .send(DiskMsg::GetTorrentCtx(metainfo.info.info_hash.clone(), otx))
+            .await?;
+        let torrent_ctx = orx.await?.unwrap();
+        Ok((p.0, disk_tx, torrent_ctx.tx.clone()))
     }
 
     pub(crate) fn new_seeder() -> PeerBuilder<Seeder> {

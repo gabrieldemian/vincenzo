@@ -17,12 +17,12 @@ mod common;
 async fn request_block() -> Result<(), Error> {
     let (res, cleanup) = common::setup().await?;
     let (otx, orx) = oneshot::channel();
-    let (_, ldisk_tx, ..) = res.l1;
-    let (seeder_id, ..) = res.s1;
+    let (ldisk_tx, ..) = res.l1;
+    let (.., sctx) = res.s1;
 
     ldisk_tx
         .send(DiskMsg::RequestBlocks {
-            peer_id: seeder_id.clone(),
+            peer_id: sctx.id.clone(),
             recipient: otx,
             qnt: 3,
         })
@@ -42,7 +42,7 @@ async fn request_block() -> Result<(), Error> {
     let (otx, orx) = oneshot::channel();
     ldisk_tx
         .send(DiskMsg::RequestBlocks {
-            peer_id: seeder_id.clone(),
+            peer_id: sctx.id.clone(),
             recipient: otx,
             qnt: 3,
         })
@@ -62,7 +62,7 @@ async fn request_block() -> Result<(), Error> {
     let (otx, orx) = oneshot::channel();
     ldisk_tx
         .send(DiskMsg::RequestBlocks {
-            peer_id: seeder_id.clone(),
+            peer_id: sctx.id.clone(),
             recipient: otx,
             qnt: 3,
         })
