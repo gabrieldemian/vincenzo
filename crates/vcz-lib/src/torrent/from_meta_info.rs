@@ -43,6 +43,22 @@ impl Torrent<Connected, FromMetaInfo> {
             select! {
                 Some(msg) = self.rx.recv() => {
                     match msg {
+                        TorrentMsg::GetPeer(peer_id, sender) => {
+                            let _ =
+                                sender.send(
+                                    self.state.connected_peers
+                                        .iter().find(|p| p.id == peer_id).cloned()
+                                );
+                        }
+                        TorrentMsg::GetUnchokedPeers(sender) => {
+                            let _ = sender.send(self.state.unchoked_peers.clone());
+                        }
+                        TorrentMsg::UnchokeAlgorithm => {
+                            self.unchoke().await;
+                        }
+                        TorrentMsg::OptUnchokeAlgorithm => {
+                            self.optimistic_unchoke().await;
+                        }
                         TorrentMsg::CloneBlockInfosToPeer(qnt, tx) => {
                             self.clone_block_infos_to_peer(qnt, tx).await?;
                         }
@@ -140,12 +156,12 @@ impl Torrent<Connected, FromMetaInfo> {
                     self.log_rates_interval();
                 }
                 _ = self.state.optimistic_unchoke_interval.tick() => {
-                    self.optimistic_unchoke_interval().await;
+                    self.optimistic_unchoke().await;
                 }
                 // for the unchoke algorithm, the local client is interested in the best
                 // uploaders (from their perspctive) (tit-for-tat)
                 _ = self.state.unchoke_interval.tick() => {
-                    self.unchoke_interval().await;
+                    self.unchoke().await;
                 }
             }
         }

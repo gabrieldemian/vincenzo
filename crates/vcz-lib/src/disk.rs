@@ -39,7 +39,7 @@ use std::{
 };
 use tokio::{
     fs::{File, OpenOptions},
-    io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
+    io::{AsyncReadExt, AsyncWriteExt},
     select,
     sync::{
         Mutex,
@@ -947,6 +947,7 @@ impl Disk {
             .await?;
 
         let mut missing_pieces = orx.await?;
+        println!("missing {missing_pieces:?}");
 
         // must be both missing and not requested
         missing_pieces &= pieces_non_requested.clone();
@@ -957,7 +958,8 @@ impl Disk {
             .ok_or(Error::TorrentDoesNotExist)?;
 
         for piece in piece_order {
-            if !missing_pieces.get(*piece).unwrap() {
+            let Some(bitref) = missing_pieces.get(*piece) else { continue };
+            if !*bitref {
                 continue;
             };
 
@@ -1277,61 +1279,6 @@ impl Disk {
         }
 
         Ok(piece_buffer)
-    }
-
-    async fn write_piece_direct_io(
-        &mut self,
-        info_hash: &InfoHash,
-        piece_index: usize,
-    ) -> Result<(), Error> {
-        let piece_buffer = self.get_piece_buffer(info_hash, piece_index)?;
-
-        let write_ops =
-            self.calculate_write_ops(info_hash, piece_index, &piece_buffer)?;
-
-        // group writes by file
-        let mut file_ops: HashMap<
-            PathBuf,
-            Vec<(usize, std::ops::Range<usize>)>,
-        > = HashMap::new();
-
-        for (path, file_offset, data_range, ..) in write_ops {
-            file_ops.entry(path).or_default().push((file_offset, data_range));
-        }
-
-        // write to each file using direct I/O
-        for (path, ops) in file_ops {
-            let mut file = Self::open_file(path).await?;
-
-            // get file metadata to check if we're writing to the end
-            let metadata = file.metadata().await?;
-            let file_len = metadata.len();
-
-            // sort operations by offset for sequential writes
-            let mut ops = ops;
-            ops.sort_by_key(|(offset, _)| *offset);
-
-            let mut needs_sync = false;
-
-            for (file_offset, data_range) in ops {
-                let data = &piece_buffer[data_range];
-
-                file.seek(std::io::SeekFrom::Start(file_offset as u64)).await?;
-
-                file.write_all(data).await?;
-
-                // check if this write reaches the end of the file
-                if file_offset as u64 + data.len() as u64 == file_len {
-                    needs_sync = true;
-                }
-            }
-
-            if needs_sync {
-                file.sync_data().await?;
-            }
-        }
-
-        Ok(())
     }
 
     /// Get the correct piece size, the last piece of a torrent

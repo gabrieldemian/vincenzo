@@ -7,8 +7,7 @@ use std::{
 /// Exponential Moving Average (EMA) smoothing factor
 /// Higher values = more responsive to changes, lower values = smoother
 static EMA_ALPHA: f64 = 0.3;
-
-static EMA_ALPHA_COMPLIMENT: f64 = 0.7; // 1.0 - 0.3
+static EMA_ALPHA_COMPLIMENT: f64 = 1.0 - EMA_ALPHA;
 
 /// Counter of rates, used in downloaded and uploaded.
 #[derive(Debug)]

@@ -21,7 +21,10 @@ use std::{
     net::{Ipv4Addr, SocketAddr, SocketAddrV4},
     sync::Arc,
 };
-use tokio::{spawn, sync::mpsc};
+use tokio::{
+    spawn,
+    sync::{mpsc, oneshot},
+};
 use vcz_lib::{
     config::{Config, ResolvedConfig},
     daemon::Daemon,
@@ -87,15 +90,19 @@ async fn setup_client(
 pub struct SetupRes {
     pub l1: (mpsc::Sender<DiskMsg>, mpsc::Sender<TorrentMsg>, Arc<PeerCtx>),
     pub s1: (mpsc::Sender<DiskMsg>, mpsc::Sender<TorrentMsg>, Arc<PeerCtx>),
+    pub s2: (mpsc::Sender<DiskMsg>, mpsc::Sender<TorrentMsg>, Arc<PeerCtx>),
+    pub s3: (mpsc::Sender<DiskMsg>, mpsc::Sender<TorrentMsg>, Arc<PeerCtx>),
+    pub s4: (mpsc::Sender<DiskMsg>, mpsc::Sender<TorrentMsg>, Arc<PeerCtx>),
 }
 
 /// Setup boilerplate for testing.
 ///
-/// Simulate a local leecher peer connected with a seeder peer.
+/// Simulate a local leecher peer connected with 4 seeders.
 #[cfg(test)]
-pub async fn setup() -> Result<(SetupRes, impl FnOnce()), Error> {
+pub async fn setup_leecher_client() -> Result<(SetupRes, impl FnOnce()), Error>
+{
     use std::{panic, time::Duration};
-    use tokio::{sync::oneshot, time::sleep};
+    use tokio::time::sleep;
 
     panic::set_hook(Box::new(|_| {
         cleanup();
@@ -103,31 +110,45 @@ pub async fn setup() -> Result<(SetupRes, impl FnOnce()), Error> {
 
     let mut tracker = MockTracker::new().await?;
 
-    let l1 = PeerBuilder::new().build(&mut tracker).await?;
-    let s1 = PeerBuilder::new_seeder().build(&mut tracker).await?;
+    let l1 = PeerBuilder::new().build().await?;
+    let s1 = PeerBuilder::new_seeder().build().await?;
+    let s2 = PeerBuilder::new_seeder().build().await?;
+    let s3 = PeerBuilder::new_seeder().build().await?;
+    let s4 = PeerBuilder::new_seeder().build().await?;
 
     spawn(async move { tracker.run().await });
 
     // wait for the peers to handshake
     sleep(Duration::from_millis(100)).await;
 
-    let (otx, orx) = oneshot::channel();
-    let _ = l1
-        .1
-        .send(DiskMsg::GetPeerCtx { peer_id: s1.0.clone(), recipient: otx })
-        .await;
-    let s1ctx = orx.await?.unwrap();
-    let (otx, orx) = oneshot::channel();
-    let _ = s1
-        .1
-        .send(DiskMsg::GetPeerCtx { peer_id: l1.0.clone(), recipient: otx })
-        .await;
-    let l1ctx = orx.await?.unwrap();
+    let s1ctx = get_peer_ctx(&l1.1, s1.0.clone()).await;
+    let s2ctx = get_peer_ctx(&l1.1, s2.0.clone()).await;
+    let s3ctx = get_peer_ctx(&l1.1, s3.0.clone()).await;
+    let s4ctx = get_peer_ctx(&l1.1, s4.0.clone()).await;
+    let l1ctx = get_peer_ctx(&s1.1, l1.0.clone()).await;
 
     assert_eq!(s1ctx.id, s1.0);
+    assert_eq!(s2ctx.id, s2.0);
+    assert_eq!(s3ctx.id, s3.0);
+    assert_eq!(s4ctx.id, s4.0);
     assert_eq!(l1ctx.id, l1.0);
 
-    let res = SetupRes { l1: (l1.1, l1.2, l1ctx), s1: (s1.1, s1.2, s1ctx) };
+    let res = SetupRes {
+        l1: (l1.1, l1.2, l1ctx),
+        s1: (s1.1, s1.2, s1ctx),
+        s2: (s2.1, s2.2, s2ctx),
+        s3: (s3.1, s3.2, s3ctx),
+        s4: (s4.1, s4.2, s4ctx),
+    };
 
     Ok((res, || cleanup()))
+}
+
+async fn get_peer_ctx(
+    tx: &mpsc::Sender<DiskMsg>,
+    peer_id: PeerId,
+) -> Arc<PeerCtx> {
+    let (otx, orx) = oneshot::channel();
+    let _ = tx.send(DiskMsg::GetPeerCtx { peer_id, recipient: otx }).await;
+    orx.await.unwrap().unwrap()
 }

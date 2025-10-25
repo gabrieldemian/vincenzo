@@ -21,13 +21,11 @@ pub(crate) struct PeerBuilder<S: PeerBuilderState> {
 impl PeerBuilder<Leecher> {
     pub(crate) async fn build(
         self,
-        tr: &mut MockTracker,
     ) -> Result<(PeerId, mpsc::Sender<DiskMsg>, mpsc::Sender<TorrentMsg>), Error>
     {
         let (mut disk, mut daemon, metainfo) =
             setup_incomplete_torrent().await?;
         let p = get_p(&daemon);
-        tr.insert_leecher(p.clone());
         disk.set_piece_strategy(
             &metainfo.info.info_hash,
             PieceStrategy::Sequential,
@@ -49,12 +47,10 @@ impl PeerBuilder<Leecher> {
 impl PeerBuilder<Seeder> {
     pub(crate) async fn build(
         self,
-        tr: &mut MockTracker,
     ) -> Result<(PeerId, mpsc::Sender<DiskMsg>, mpsc::Sender<TorrentMsg>), Error>
     {
         let (mut disk, mut daemon, metainfo) = setup_complete_torrent().await?;
         let p = get_p(&daemon);
-        tr.insert_seeder(p.clone());
         disk.set_piece_strategy(
             &metainfo.info.info_hash,
             PieceStrategy::Sequential,

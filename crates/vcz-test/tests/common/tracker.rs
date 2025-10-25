@@ -116,10 +116,13 @@ impl MockTracker {
                     },
                 );
 
-                if req.left == 0 {
-                    self.seeders.insert(id, info);
-                } else {
-                    self.leechers.insert(id, info);
+                let is_seed_dup = self.seeders.contains_key(&id);
+                let is_leecher_dup = self.leechers.contains_key(&id);
+
+                if req.left == 0 && !is_seed_dup {
+                    self.seeders.insert(id.clone(), info);
+                } else if req.left != 0 && !is_leecher_dup {
+                    self.leechers.insert(id.clone(), info);
                 }
 
                 let res = tracker::announce::Response {
@@ -135,15 +138,19 @@ impl MockTracker {
 
                 let to_take = req.num_want.to_native() as usize / 2;
 
-                for peer in self
+                for (_, peer) in self
                     .seeders
-                    .values()
-                    .filter(|v| v.connection_id != conn)
+                    .iter()
+                    .filter(|(peer_id, v)| {
+                        v.connection_id != conn && id != **peer_id
+                    })
                     .take(to_take)
                     .chain(
                         self.leechers
-                            .values()
-                            .filter(|v| v.connection_id != conn)
+                            .iter()
+                            .filter(|(peer_id, v)| {
+                                v.connection_id != conn && id != **peer_id
+                            })
                             .take(to_take),
                     )
                 {

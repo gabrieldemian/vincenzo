@@ -1,6 +1,8 @@
 #![feature(ip_as_octets)]
 
-use tokio::sync::oneshot;
+use std::time::Duration;
+
+use tokio::{sync::oneshot, time::sleep};
 use vcz_lib::{
     disk::DiskMsg,
     error::Error,
@@ -15,10 +17,12 @@ mod common;
 /// each request.
 #[tokio::test]
 async fn request_block() -> Result<(), Error> {
-    let (res, cleanup) = common::setup().await?;
+    let (res, cleanup) = common::setup_leecher_client().await?;
     let (otx, orx) = oneshot::channel();
     let (ldisk_tx, ..) = res.l1;
     let (.., sctx) = res.s1;
+
+    sleep(Duration::from_millis(100)).await;
 
     ldisk_tx
         .send(DiskMsg::RequestBlocks {

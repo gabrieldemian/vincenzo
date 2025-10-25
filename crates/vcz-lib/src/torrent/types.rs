@@ -20,7 +20,7 @@ use std::{
     sync::{Arc, atomic::Ordering},
 };
 use tokio::{
-    sync::{broadcast, mpsc, oneshot},
+    sync::{Mutex, broadcast, mpsc, oneshot},
     time::Interval,
 };
 
@@ -53,6 +53,17 @@ pub enum PeerBrMsg {
 /// Messages used to control the local peer or the state of the torrent.
 #[derive(Debug)]
 pub enum TorrentMsg {
+    /// Make the torrent run the unchoke algorithm.
+    UnchokeAlgorithm,
+
+    /// Make the torrent run the optimistic unchoke algorithm.
+    OptUnchokeAlgorithm,
+
+    GetUnchokedPeers(oneshot::Sender<Vec<Arc<PeerCtx>>>),
+
+    /// Get the peer's context.
+    GetPeer(PeerId, oneshot::Sender<Option<Arc<PeerCtx>>>),
+
     /// Message when one of the peers have downloaded
     /// an entire piece. We send Have messages to peers
     /// that don't have it and update the UI with stats.
