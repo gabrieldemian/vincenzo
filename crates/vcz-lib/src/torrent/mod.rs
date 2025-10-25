@@ -261,7 +261,7 @@ impl<M: TorrentSource, S: torrent::State> Torrent<S, M> {
 }
 
 impl<M: TorrentSource> Torrent<Connected, M> {
-    async fn reconnect_interval(&mut self) {
+    async fn reconnect_peers(&mut self) {
         trace!(
             "reconnect_interval connected_peers: {} error_peers: {}",
             self.state.connected_peers.len(),
@@ -270,29 +270,41 @@ impl<M: TorrentSource> Torrent<Connected, M> {
         let _ = self.reconnect_errored_peers().await;
     }
 
-    async fn unchoke_interval(&mut self) {
-        trace!("unchoke_interval");
+    async fn unchoke(&mut self) {
         let best = self.get_best_interested_downloaders();
 
+        let mut to_delete: Vec<usize> = Vec::with_capacity(3);
+
         // choke peers no longer in top 3
-        for peer in &self.state.unchoked_peers {
+        for (i, peer) in self.state.unchoked_peers.iter().enumerate() {
             if !best.iter().any(|p| p.id == peer.id) {
-                trace!("choking peer {:?}", peer.id);
                 let _ = peer.tx.send(PeerMsg::Choke).await;
+                to_delete.push(i);
             }
         }
 
-        for uploader in &best {
-            if !self.state.unchoked_peers.iter().any(|p| p.id == uploader.id) {
-                trace!("unchoking peer {:?}", uploader.id);
-
-                let _ = uploader.tx.send(PeerMsg::Unchoke).await;
-                self.state.unchoked_peers.push(uploader.clone());
-            }
+        for i in to_delete {
+            self.state.unchoked_peers.swap_remove(i);
         }
+
+        println!("connected len {}", self.state.connected_peers.len());
+        let x: Vec<&PeerId> = best.iter().map(|v| &v.id).collect();
+        println!("best {x:#?}");
+
+        for peer in &best {
+            // skip peers that are still the best from the previous run
+            if self.state.unchoked_peers.iter().any(|p| p.id == peer.id) {
+                continue;
+            }
+            self.state.unchoked_peers.push(peer.clone());
+            let _ = peer.tx.send(PeerMsg::Unchoke).await;
+        }
+        self.state.unchoked_peers.sort_by(|a, b| {
+            b.counter.total_download().cmp(&a.counter.total_download())
+        });
     }
 
-    async fn optimistic_unchoke_interval(&mut self) {
+    async fn optimistic_unchoke(&mut self) {
         if let Some(old_opt) = self.state.opt_unchoked_peer.take() {
             // only choke if not in top 3
             if !self.state.unchoked_peers.iter().any(|p| p.id == old_opt.id) {
@@ -644,7 +656,7 @@ impl<M: TorrentSource> Torrent<Connected, M> {
 
     /// Get the best n downloaders that are interested in the client.
     pub fn get_best_interested_downloaders(&self) -> Vec<Arc<PeerCtx>> {
-        self.sort_peers_by_rate(false, true, true)
+        self.sort_peers_by_rate(false, false, true)
     }
 
     pub fn get_next_opt_unchoked_peer(&self) -> Option<Arc<PeerCtx>> {

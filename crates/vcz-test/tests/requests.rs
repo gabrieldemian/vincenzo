@@ -16,10 +16,10 @@ mod common;
 #[tokio::test]
 async fn request_block() -> Result<(), Error> {
     let (res, cleanup) = common::setup().await?;
-    let (otx, orx) = oneshot::channel();
     let (ldisk_tx, ..) = res.l1;
     let (.., sctx) = res.s1;
 
+    let (otx, orx) = oneshot::channel();
     ldisk_tx
         .send(DiskMsg::RequestBlocks {
             peer_id: sctx.id.clone(),

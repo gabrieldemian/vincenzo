@@ -15,6 +15,7 @@ use crate::{
     utils::to_human_readable,
 };
 use bendy::{decoding::FromBencode, encoding::ToBencode};
+use bitvec::ptr::BitRef;
 use bytes::Bytes;
 use futures::future::join_all;
 use hashbrown::HashMap;
@@ -947,6 +948,7 @@ impl Disk {
             .await?;
 
         let mut missing_pieces = orx.await?;
+        println!("missing {missing_pieces:?}");
 
         // must be both missing and not requested
         missing_pieces &= pieces_non_requested.clone();
@@ -957,7 +959,8 @@ impl Disk {
             .ok_or(Error::TorrentDoesNotExist)?;
 
         for piece in piece_order {
-            if !missing_pieces.get(*piece).unwrap() {
+            let Some(bitref) = missing_pieces.get(*piece) else { continue };
+            if *bitref {
                 continue;
             };
 

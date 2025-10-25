@@ -218,7 +218,8 @@ impl Peer<Connected> {
                             debug!("> unchoke");
                             self.state.ctx.am_choking.store(false, Ordering::Relaxed);
                             self.state_log[0] = 'u';
-                            self.send(Core::Unchoke).await?;
+                            let r = self.send(Core::Unchoke).await;
+                            println!("r {r:?}");
                         }
                     }
                 }
@@ -281,6 +282,7 @@ impl Peer<Connected> {
             return Ok(());
         }
 
+        // `downloaded` in the perspective of the local peer.
         self.state.ctx.counter.record_download(block_info.len as u64);
 
         // if in endgame, send cancels to all other peers

@@ -160,6 +160,9 @@ pub enum Error {
     #[error("You cannot add a duplicate torrent, only 1 is allowed")]
     NoDuplicateTorrent,
 
+    #[error("Can't have duplicate peers")]
+    NoDuplicatePeer,
+
     #[error("No peers in the torrent")]
     NoPeers,
 }

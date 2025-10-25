@@ -28,15 +28,15 @@ use std::{
 use tokio::{
     net::TcpStream,
     sync::{
-        Mutex,
         mpsc::{self, Receiver},
         oneshot,
     },
-    time::{Instant, timeout},
+    time::timeout,
 };
 use tokio_util::codec::{Framed, FramedParts};
 use tracing::debug;
 
+/// The ID of a Peer.
 #[derive(
     Clone, PartialEq, Eq, Hash, Default, Serialize, Deserialize, Archive,
 )]
@@ -149,14 +149,9 @@ impl TryFrom<Vec<u8>> for PeerId {
 /// Ctx that is shared with Torrent and Disk;
 #[derive(Debug)]
 pub struct PeerCtx {
-    /// Who initiated the connection, the local peer or remote.
-    pub direction: Direction,
-
     pub tx: mpsc::Sender<PeerMsg>,
-
     pub torrent_ctx: Arc<TorrentCtx>,
-
-    /// Id of the remote peer.
+    pub direction: Direction,
     pub id: PeerId,
 
     /// Remote addr of this peer.
@@ -430,6 +425,21 @@ impl peer::Peer<Idle> {
             return Err(Error::TorrentDoesNotExist);
         };
 
+        // check for duplicate peers, if a peer with the given ID is already
+        // connected, don't do anything.
+        let (otx, orx) = oneshot::channel();
+        torrent_ctx
+            .tx
+            .send(TorrentMsg::IsPeerDuplicate(
+                peer_handshake.peer_id.clone(),
+                remote,
+                otx,
+            ))
+            .await?;
+        if orx.await? {
+            return Err(Error::NoDuplicatePeer);
+        }
+
         debug!("sending inbound handshake");
         socket.send(our_handshake).await?;
 
@@ -527,19 +537,6 @@ impl peer::Peer<Idle> {
     }
 }
 
-// States of peer protocols state, including Core.
-// After a peer handshake, these values may be set if the peer supports them.
-// #[derive(Default, Clone)]
-// pub struct ExtStates {
-//     // BEP02 : The BitTorrent Protocol Specification
-//     // pub core: CoreState,
-//     // BEP10 : Extension Protocol
-//     // BEP09 : Extension for Peers to Send Metadata Files
-//     pub metadata: Option<MetadataData>,
-//     // BEP055 : Holepunch extension
-//     pub holepunch: Option<HolepunchData>,
-// }
-
 /// Peer is downloading / uploading and working well
 pub struct Connected {
     pub stream: SplitStream<Framed<TcpStream, CoreCodec>>,
@@ -620,10 +617,3 @@ impl PeerState for PeerError {}
 impl PeerState for Connected {}
 impl PeerState for Connecting {}
 impl PeerState for Idle {}
-
-// impl<S: PeerState> PeerState for Peer<S> {}
-// impl Drop for Peer<Connected> {
-//     fn drop(&mut self) {
-//         self.free_pending_blocks();
-//     }
-// }

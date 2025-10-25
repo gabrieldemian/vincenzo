@@ -58,6 +58,14 @@ pub enum TorrentMsg {
     /// that don't have it and update the UI with stats.
     DownloadedPiece(usize),
 
+    /// Make the torrent run the unchoke algorithm.
+    UnchokeAlgorithm,
+
+    /// Make the torrent run the optimistic unchoke algorithm.
+    OptUnchokeAlgorithm,
+
+    GetUnchokedPeers(oneshot::Sender<Vec<Arc<PeerCtx>>>),
+
     /// Clone block infos to the peer.
     ///
     /// fast downloaders usually become out of block infos during or close to
@@ -112,6 +120,11 @@ pub enum TorrentMsg {
 
     /// Clone the peer's bitfield.
     GetPeerBitfield(PeerId, oneshot::Sender<Option<Bitfield>>),
+
+    /// Get the peer's context.
+    GetPeer(PeerId, oneshot::Sender<Option<Arc<PeerCtx>>>),
+
+    IsPeerDuplicate(PeerId, SocketAddr, oneshot::Sender<bool>),
 
     /// Set a piece of the peer's bitfield to true
     PeerHave(PeerId, usize),
