@@ -210,9 +210,7 @@ pub async fn setup_pair() -> Result<
     spawn(async move { tracker.run().await });
 
     let s = PeerBuilder::seeder().build().await?;
-    sleep(Duration::from_millis(30)).await;
     let l = PeerBuilder::leecher().build().await?;
-    sleep(Duration::from_millis(30)).await;
 
     // wait for the peers to handshake
     sleep(Duration::from_millis(50)).await;

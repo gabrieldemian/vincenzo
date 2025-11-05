@@ -603,10 +603,6 @@ impl Disk {
         for (piece_index, result) in piece_results.into_iter().enumerate() {
             downloaded_pieces.set(piece_index, result);
         }
-        println!(
-            "port: {} computed: {downloaded_pieces}",
-            self.config.local_peer_port
-        );
 
         info!(
             "computed {} pieces, {} downloaded",

@@ -131,13 +131,6 @@ impl ExtMsgHandler<Core> for Peer<peer::Connected> {
                 self.state.ctx.peer_choking.store(false, Ordering::Release);
                 self.state_log[2] = 'u';
                 debug!("< unchoke");
-                println!(
-                    "< unchoke l {:?} r {:?} d {:?} id {:?}",
-                    self.state.ctx.local_addr.port(),
-                    self.state.ctx.remote_addr.port(),
-                    self.state.ctx.direction,
-                    self.state.ctx.id,
-                );
             }
             Core::Choke => {
                 debug!("< choke");
@@ -146,11 +139,7 @@ impl ExtMsgHandler<Core> for Peer<peer::Connected> {
                 self.state_log[2] = '-';
             }
             Core::Interested => {
-                println!(
-                    "< interested l: {} r: {}",
-                    self.state.ctx.local_addr.port(),
-                    self.state.ctx.remote_addr.port(),
-                );
+                debug!("< interested",);
                 self.state.ctx.peer_interested.store(true, Ordering::Release);
                 self.state_log[3] = 'i';
             }

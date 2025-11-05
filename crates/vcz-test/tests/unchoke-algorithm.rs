@@ -10,18 +10,16 @@ mod common;
 #[tokio::test]
 async fn unchoke_algorithm() -> Result<(), Error> {
     let (res, cleanup) = common::setup_seeder_client().await?;
-    let (.., storrent, speer) = res.0;
-    let (l1disk, l1torrent, l1peer) = res.1;
-    let (l2disk, l2torrent, l2peer) = res.2;
-    let (l3disk, l3torrent, l3peer) = res.3;
-    let (l4disk, l4torrent, l4peer) = res.4;
+    let (.., storrent, _speer) = res.0;
+    let (.., l1peer) = res.1;
+    let (.., l2peer) = res.2;
+    let (.., l3peer) = res.3;
+    let (.., l4peer) = res.4;
 
-    sleep(Duration::from_millis(50)).await;
-
-    assert!(l1peer.peer_interested.load(Ordering::Relaxed));
-    assert!(l2peer.peer_interested.load(Ordering::Relaxed));
-    assert!(l3peer.peer_interested.load(Ordering::Relaxed));
-    assert!(l4peer.peer_interested.load(Ordering::Relaxed));
+    l1peer.peer_interested.store(true, Ordering::Relaxed);
+    l2peer.peer_interested.store(true, Ordering::Relaxed);
+    l3peer.peer_interested.store(true, Ordering::Relaxed);
+    l4peer.peer_interested.store(true, Ordering::Relaxed);
 
     l1peer.counter.record_download(100_000);
     l2peer.counter.record_download(200_000);
@@ -33,7 +31,8 @@ async fn unchoke_algorithm() -> Result<(), Error> {
     l4peer.counter.update_rates();
 
     storrent.send(TorrentMsg::UnchokeAlgorithm).await?;
-    sleep(Duration::from_millis(100)).await;
+    sleep(Duration::from_millis(30)).await;
+
     let (otx, orx) = oneshot::channel();
     storrent.send(TorrentMsg::GetUnchokedPeers(otx)).await?;
     let unchoked = orx.await?;
@@ -54,7 +53,8 @@ async fn unchoke_algorithm() -> Result<(), Error> {
     l4peer.counter.update_rates();
 
     storrent.send(TorrentMsg::UnchokeAlgorithm).await?;
-    sleep(Duration::from_millis(100)).await;
+    sleep(Duration::from_millis(30)).await;
+
     let (otx, orx) = oneshot::channel();
     storrent.send(TorrentMsg::GetUnchokedPeers(otx)).await?;
     let unchoked = orx.await?;

@@ -151,8 +151,6 @@ impl Daemon {
             self.config.local_peer_port,
         );
 
-        // println!("local peer listening on: {local_addr}");
-
         let local_socket = TcpListener::bind(local_addr).await?;
         let daemon_ctx = self.ctx.clone();
 

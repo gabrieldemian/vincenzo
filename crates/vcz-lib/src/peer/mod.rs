@@ -73,14 +73,6 @@ impl Peer<Connected> {
         );
 
         let mut brx = self.state.ctx.torrent_ctx.btx.subscribe();
-        // println!(
-        //     "sending keepalive l {:?} r {:?} d {:?} id {:?}",
-        //     self.state.ctx.local_addr.port(),
-        //     self.state.ctx.remote_addr.port(),
-        //     self.state.ctx.direction,
-        //     self.state.ctx.id,
-        // );
-        // self.state.sink.send(Core::KeepAlive).await?;
 
         loop {
             select! {
@@ -93,7 +85,7 @@ impl Peer<Connected> {
                     self.rerequest_metadata().await?;
                 }
                 _ = block_interval.tick(), if self.can_request() => {
-                    // some intervals are only ran in production (not debug) 
+                    // some intervals are only ran in production (not debug)
                     // because I want to run this deterministically
                     // and manually in integration tests.
                     #[cfg(not(feature = "debug"))]
@@ -194,7 +186,6 @@ impl Peer<Connected> {
                         }
                         PeerMsg::Unchoke => {
                             debug!("> unchoke");
-                            println!("> unchoke {:?} l {:?} r {:?}", self.state.ctx.id, self.state.ctx.local_addr.port(), self.state.ctx.remote_addr.port());
                             self.state.ctx.am_choking.store(false, Ordering::Release);
                             self.state_log[0] = 'u';
                             self.send(Core::Unchoke).await?;
@@ -235,15 +226,8 @@ impl Peer<Connected> {
 
         let am_interested =
             self.state.ctx.am_interested.load(Ordering::Acquire);
-        println!("am int {am_interested} should {should_be_interested:?}");
 
         if should_be_interested.is_some() && !am_interested {
-            println!(
-                "> interested l: {} r: {} d: {:?}",
-                self.state.ctx.local_addr.port(),
-                self.state.ctx.remote_addr.port(),
-                self.state.ctx.direction
-            );
             self.state.ctx.am_interested.store(true, Ordering::Release);
             self.state_log[1] = 'i';
             self.send(Core::Interested).await?;
@@ -251,7 +235,6 @@ impl Peer<Connected> {
 
         // sorry, you're not the problem, it's me.
         if should_be_interested.is_none() && am_interested {
-            println!("> not_interested");
             self.state.ctx.am_interested.store(false, Ordering::Release);
             self.state_log[1] = '-';
             self.state.sink.send(Core::NotInterested).await?;
@@ -450,6 +433,7 @@ impl Peer<Connected> {
     }
 
     /// Check for timed out block requests and request them again.
+    #[allow(dead_code)]
     async fn rerequest_blocks(&mut self) -> Result<(), Error> {
         let blocks = self.state.req_man_block.get_timeout_blocks_and_update();
         trace!("rerequesting {} blocks", blocks.len());

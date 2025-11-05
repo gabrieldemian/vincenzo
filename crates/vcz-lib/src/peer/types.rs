@@ -1,5 +1,5 @@
 use crate::{
-    bitfield::{Bitfield, Reserved, VczBitfield},
+    bitfield::Reserved,
     counter::Counter,
     daemon::{DaemonCtx, DaemonMsg},
     disk::{DiskMsg, ReturnToDisk},
@@ -33,7 +33,7 @@ use tokio::{
     },
     time::timeout,
 };
-use tokio_util::codec::{Framed, FramedParts};
+use tokio_util::codec::Framed;
 use tracing::debug;
 
 /// The ID of a Peer.
