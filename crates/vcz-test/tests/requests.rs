@@ -1,12 +1,13 @@
 #![feature(ip_as_octets)]
 
-use std::time::Duration;
-
+use std::{sync::atomic::Ordering, time::Duration};
 use tokio::{sync::oneshot, time::sleep};
 use vcz_lib::{
     disk::DiskMsg,
     error::Error,
     extensions::{BLOCK_LEN, BlockInfo},
+    peer::PeerMsg,
+    torrent::TorrentMsg,
 };
 
 mod common;
@@ -17,16 +18,30 @@ mod common;
 /// each request.
 #[tokio::test]
 async fn request_block() -> Result<(), Error> {
-    let (res, cleanup) = common::setup_leecher_client().await?;
+    let (leecher, seeder, cleanup) = common::setup_pair().await?;
     let (otx, orx) = oneshot::channel();
-    let (ldisk_tx, ..) = res.l1;
-    let (.., sctx) = res.s1;
+    let (ldisk_tx, _ltorrent, leecher) = leecher;
+    let (_sdisk_tx, storrent, seeder) = seeder;
 
-    sleep(Duration::from_millis(100)).await;
+    // ! leecher and seeder are in switched perspectives.
+    // but the torrent txs are in the right perspective.
+
+    // the leecher will run the interested allgorithm.
+    seeder.tx.send(PeerMsg::InterestedAlgorithm).await?;
+    sleep(Duration::from_millis(20)).await;
+
+    storrent.send(TorrentMsg::UnchokeAlgorithm).await?;
+    sleep(Duration::from_millis(20)).await;
+
+    // seeder is not choking the leecher
+    assert!(!leecher.am_choking.load(Ordering::Acquire));
+    assert!(!leecher.am_interested.load(Ordering::Acquire));
+    assert!(!seeder.peer_choking.load(Ordering::Acquire));
+    assert!(seeder.am_interested.load(Ordering::Acquire));
 
     ldisk_tx
         .send(DiskMsg::RequestBlocks {
-            peer_id: sctx.id.clone(),
+            peer_id: seeder.id.clone(),
             recipient: otx,
             qnt: 3,
         })
@@ -46,7 +61,7 @@ async fn request_block() -> Result<(), Error> {
     let (otx, orx) = oneshot::channel();
     ldisk_tx
         .send(DiskMsg::RequestBlocks {
-            peer_id: sctx.id.clone(),
+            peer_id: seeder.id.clone(),
             recipient: otx,
             qnt: 3,
         })
@@ -66,7 +81,7 @@ async fn request_block() -> Result<(), Error> {
     let (otx, orx) = oneshot::channel();
     ldisk_tx
         .send(DiskMsg::RequestBlocks {
-            peer_id: sctx.id.clone(),
+            peer_id: seeder.id.clone(),
             recipient: otx,
             qnt: 3,
         })

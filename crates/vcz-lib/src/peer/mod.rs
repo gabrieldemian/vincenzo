@@ -73,68 +73,43 @@ impl Peer<Connected> {
         );
 
         let mut brx = self.state.ctx.torrent_ctx.btx.subscribe();
+        // println!(
+        //     "sending keepalive l {:?} r {:?} d {:?} id {:?}",
+        //     self.state.ctx.local_addr.port(),
+        //     self.state.ctx.remote_addr.port(),
+        //     self.state.ctx.direction,
+        //     self.state.ctx.id,
+        // );
+        // self.state.sink.send(Core::KeepAlive).await?;
 
         loop {
             select! {
+                Some(Ok(msg)) = self.state.stream.next() => {
+                    // created by Peer macro in [`vcz_macros`]
+                    let _ = self.handle_message(msg).await;
+                }
                 _ = metadata_interval.tick(), if !self.state.have_info => {
                     self.request_metadata().await?;
                     self.rerequest_metadata().await?;
                 }
                 _ = block_interval.tick(), if self.can_request() => {
+                    // some intervals are only ran in production (not debug) 
+                    // because I want to run this deterministically
+                    // and manually in integration tests.
+                    #[cfg(not(feature = "debug"))]
                     self.request_blocks_disk().await?;
+
+                    #[cfg(not(feature = "debug"))]
                     self.rerequest_blocks().await?;
                 }
                 _ = interested_interval.tick(),
                     if !self.state.seed_only && !self.state.is_paused
                 => {
-                    if !self.state.ctx.peer_choking.load(Ordering::Relaxed)
-                        &&
-                        self.state.ctx.am_interested.load(Ordering::Relaxed)
-                    {
-                        tracing::debug!(
-                            "b {} d {} t {:?} avg {:?}",
-                            self.state.req_man_block.len(),
-                            self.state.req_man_block.downloaded_count,
-                            self.state.req_man_block.get_timeout(),
-                            self.state.req_man_block.get_avg(),
-                        );
-                    }
-                    let (otx, orx) = oneshot::channel();
-
-                    self.state.ctx.torrent_ctx.tx.send(
-                        TorrentMsg::PeerHasPieceNotInLocal(self.state.ctx.id.clone(), otx)
-                    ).await?;
-
-                    let should_be_interested = orx.await?;
-
-                    trace!("should_be_interested {should_be_interested:?}");
-
-                    if should_be_interested.is_some() &&
-                        !self.state.ctx.am_interested.load(Ordering::Relaxed)
-                    {
-                        debug!("> interested");
-                        self.state.ctx.am_interested.store(true, Ordering::Relaxed);
-                        self.state_log[1] = 'i';
-                        self.send(Core::Interested).await?;
-                    }
-
-                    // sorry, you're not the problem, it's me.
-                    if should_be_interested.is_none()
-                        &&
-                        self.state.ctx.am_interested.load(Ordering::Relaxed)
-                    {
-                        debug!("> not_interested");
-                        self.state.ctx.am_interested.store(false, Ordering::Relaxed);
-                        self.state_log[1] = '-';
-                        self.send(Core::NotInterested).await?;
-                    }
+                    #[cfg(not(feature = "debug"))]
+                    self.interested().await?;
                 }
                 _ = keep_alive_interval.tick() => {
                     self.send(Core::KeepAlive).await?;
-                }
-                Some(Ok(msg)) = self.state.stream.next() => {
-                    // created by Peer macro in [`vcz_macros`]
-                    let _ = self.handle_message(msg).await;
                 }
                 Ok(msg) = brx.recv() => {
                     match msg {
@@ -189,6 +164,9 @@ impl Peer<Connected> {
                 }
                 Some(msg) = self.state.rx.recv() => {
                     match msg {
+                        PeerMsg::InterestedAlgorithm => {
+                            self.interested().await?;
+                        }
                         PeerMsg::CloneBlocks(qnt, tx) => {
                             let reqs = self.state.req_man_block.clone_requests(qnt);
                             let _ = tx.send(reqs);
@@ -198,25 +176,26 @@ impl Peer<Connected> {
                         }
                         PeerMsg::NotInterested => {
                             debug!("> not_interested");
-                            self.state.ctx.am_interested.store(false, Ordering::Relaxed);
+                            self.state.ctx.am_interested.store(false, Ordering::Release);
                             self.state_log[1] = '-';
                             self.send(Core::NotInterested).await?;
                         }
                         PeerMsg::Interested => {
                             debug!("> interested");
-                            self.state.ctx.am_interested.store(true, Ordering::Relaxed);
+                            self.state.ctx.am_interested.store(true, Ordering::Release);
                             self.state_log[1] = 'i';
                             self.send(Core::Interested).await?;
                         }
                         PeerMsg::Choke => {
                             debug!("> choke");
-                            self.state.ctx.am_choking.store(true, Ordering::Relaxed);
+                            self.state.ctx.am_choking.store(true, Ordering::Release);
                             self.state_log[0] = '-';
                             self.send(Core::Choke).await?;
                         }
                         PeerMsg::Unchoke => {
                             debug!("> unchoke");
-                            self.state.ctx.am_choking.store(false, Ordering::Relaxed);
+                            println!("> unchoke {:?} l {:?} r {:?}", self.state.ctx.id, self.state.ctx.local_addr.port(), self.state.ctx.remote_addr.port());
+                            self.state.ctx.am_choking.store(false, Ordering::Release);
                             self.state_log[0] = 'u';
                             self.send(Core::Unchoke).await?;
                         }
@@ -224,6 +203,60 @@ impl Peer<Connected> {
                 }
             }
         }
+    }
+
+    /// Run interested algorithm.
+    #[inline]
+    pub async fn interested(&mut self) -> Result<(), Error> {
+        if !self.state.ctx.peer_choking.load(Ordering::Acquire)
+            && self.state.ctx.am_interested.load(Ordering::Acquire)
+        {
+            tracing::debug!(
+                "b {} d {} t {:?} avg {:?}",
+                self.state.req_man_block.len(),
+                self.state.req_man_block.downloaded_count,
+                self.state.req_man_block.get_timeout(),
+                self.state.req_man_block.get_avg(),
+            );
+        }
+        let (otx, orx) = oneshot::channel();
+
+        self.state
+            .ctx
+            .torrent_ctx
+            .tx
+            .send(TorrentMsg::PeerHasPieceNotInLocal(
+                self.state.ctx.id.clone(),
+                otx,
+            ))
+            .await?;
+
+        let should_be_interested = orx.await?;
+
+        let am_interested =
+            self.state.ctx.am_interested.load(Ordering::Acquire);
+        println!("am int {am_interested} should {should_be_interested:?}");
+
+        if should_be_interested.is_some() && !am_interested {
+            println!(
+                "> interested l: {} r: {} d: {:?}",
+                self.state.ctx.local_addr.port(),
+                self.state.ctx.remote_addr.port(),
+                self.state.ctx.direction
+            );
+            self.state.ctx.am_interested.store(true, Ordering::Release);
+            self.state_log[1] = 'i';
+            self.send(Core::Interested).await?;
+        }
+
+        // sorry, you're not the problem, it's me.
+        if should_be_interested.is_none() && am_interested {
+            println!("> not_interested");
+            self.state.ctx.am_interested.store(false, Ordering::Release);
+            self.state_log[1] = '-';
+            self.state.sink.send(Core::NotInterested).await?;
+        }
+        Ok(())
     }
 
     #[inline]
@@ -253,8 +286,8 @@ impl Peer<Connected> {
     #[inline]
     pub fn can_request(&self) -> bool {
         let am_interested =
-            self.state.ctx.am_interested.load(Ordering::Relaxed);
-        let peer_choking = self.state.ctx.peer_choking.load(Ordering::Relaxed);
+            self.state.ctx.am_interested.load(Ordering::Acquire);
+        let peer_choking = self.state.ctx.peer_choking.load(Ordering::Acquire);
         let have_capacity = self.state.req_man_block.len()
             < self.state.target_request_queue_len as usize;
 
@@ -507,6 +540,7 @@ impl Peer<Connected> {
     /// Start endgame mode. This will take the few pending block infos
     /// and request them to all downloading peers of the torrent. When the block
     /// arrives, send Cancel messages to all other peers.
+    #[inline]
     pub async fn start_endgame(&mut self) {
         self.state.in_endgame = true;
         let blocks = self.state.req_man_block.get_requests();
@@ -515,6 +549,7 @@ impl Peer<Connected> {
 
     /// Send a message to sink and record upload rate, but the sink is not
     /// flushed.
+    #[inline]
     pub async fn feed(&mut self, core: Core) -> Result<(), Error> {
         self.state.ctx.counter.record_upload(core.full_len() as u64);
         self.state.sink.feed(core).await?;
@@ -522,6 +557,7 @@ impl Peer<Connected> {
     }
 
     /// Send a message to sink and record upload rate and flush.
+    #[inline]
     pub async fn send(&mut self, core: Core) -> Result<(), Error> {
         self.state.ctx.counter.record_upload(core.full_len() as u64);
         self.state.sink.send(core).await?;
@@ -530,6 +566,7 @@ impl Peer<Connected> {
 
     /// Mutate the peer based on his [`Extension`], should be called after an
     /// extended handshake.
+    #[inline]
     pub async fn handle_ext(&mut self, ext: Extension) -> Result<(), Error> {
         let n = ext.reqq.unwrap_or(DEFAULT_REQUEST_QUEUE_LEN);
 

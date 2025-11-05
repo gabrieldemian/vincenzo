@@ -98,6 +98,7 @@ pub fn derive_peer_extensions(input: TokenStream) -> TokenStream {
 
     let expanded = quote! {
         impl #ident<crate::peer::types::Connected> {
+            #[inline]
             pub async fn handle_message(
                 &mut self,
                 msg: crate::extensions::Core,

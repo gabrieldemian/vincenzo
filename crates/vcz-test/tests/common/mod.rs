@@ -19,11 +19,14 @@ pub(crate) use tracker::*;
 use bendy::decoding::FromBencode;
 use std::{
     net::{Ipv4Addr, SocketAddr, SocketAddrV4},
+    panic,
     sync::Arc,
+    time::Duration,
 };
 use tokio::{
     spawn,
     sync::{mpsc, oneshot},
+    time::sleep,
 };
 use vcz_lib::{
     config::{Config, ResolvedConfig},
@@ -87,13 +90,13 @@ async fn setup_client(
     Ok((disk, daemon, metainfo))
 }
 
-pub struct SetupRes {
-    pub l1: (mpsc::Sender<DiskMsg>, mpsc::Sender<TorrentMsg>, Arc<PeerCtx>),
-    pub s1: (mpsc::Sender<DiskMsg>, mpsc::Sender<TorrentMsg>, Arc<PeerCtx>),
-    pub s2: (mpsc::Sender<DiskMsg>, mpsc::Sender<TorrentMsg>, Arc<PeerCtx>),
-    pub s3: (mpsc::Sender<DiskMsg>, mpsc::Sender<TorrentMsg>, Arc<PeerCtx>),
-    pub s4: (mpsc::Sender<DiskMsg>, mpsc::Sender<TorrentMsg>, Arc<PeerCtx>),
-}
+pub struct SetupRes(
+    pub (mpsc::Sender<DiskMsg>, mpsc::Sender<TorrentMsg>, Arc<PeerCtx>),
+    pub (mpsc::Sender<DiskMsg>, mpsc::Sender<TorrentMsg>, Arc<PeerCtx>),
+    pub (mpsc::Sender<DiskMsg>, mpsc::Sender<TorrentMsg>, Arc<PeerCtx>),
+    pub (mpsc::Sender<DiskMsg>, mpsc::Sender<TorrentMsg>, Arc<PeerCtx>),
+    pub (mpsc::Sender<DiskMsg>, mpsc::Sender<TorrentMsg>, Arc<PeerCtx>),
+);
 
 /// Setup boilerplate for testing.
 ///
@@ -101,25 +104,25 @@ pub struct SetupRes {
 #[cfg(test)]
 pub async fn setup_leecher_client() -> Result<(SetupRes, impl FnOnce()), Error>
 {
-    use std::{panic, time::Duration};
-    use tokio::time::sleep;
-
     panic::set_hook(Box::new(|_| {
         cleanup();
     }));
 
     let mut tracker = MockTracker::new().await?;
-
-    let l1 = PeerBuilder::new().build().await?;
-    let s1 = PeerBuilder::new_seeder().build().await?;
-    let s2 = PeerBuilder::new_seeder().build().await?;
-    let s3 = PeerBuilder::new_seeder().build().await?;
-    let s4 = PeerBuilder::new_seeder().build().await?;
-
     spawn(async move { tracker.run().await });
 
+    let s1 = PeerBuilder::seeder().build().await?;
+    sleep(Duration::from_millis(30)).await;
+    let s2 = PeerBuilder::seeder().build().await?;
+    sleep(Duration::from_millis(30)).await;
+    let s3 = PeerBuilder::seeder().build().await?;
+    sleep(Duration::from_millis(30)).await;
+    let s4 = PeerBuilder::seeder().build().await?;
+    sleep(Duration::from_millis(30)).await;
+    let l1 = PeerBuilder::leecher().build().await?;
+
     // wait for the peers to handshake
-    sleep(Duration::from_millis(100)).await;
+    sleep(Duration::from_millis(50)).await;
 
     let s1ctx = get_peer_ctx(&l1.1, s1.0.clone()).await;
     let s2ctx = get_peer_ctx(&l1.1, s2.0.clone()).await;
@@ -133,15 +136,94 @@ pub async fn setup_leecher_client() -> Result<(SetupRes, impl FnOnce()), Error>
     assert_eq!(s4ctx.id, s4.0);
     assert_eq!(l1ctx.id, l1.0);
 
-    let res = SetupRes {
-        l1: (l1.1, l1.2, l1ctx),
-        s1: (s1.1, s1.2, s1ctx),
-        s2: (s2.1, s2.2, s2ctx),
-        s3: (s3.1, s3.2, s3ctx),
-        s4: (s4.1, s4.2, s4ctx),
-    };
+    let res = SetupRes(
+        (l1.1, l1.2, l1ctx),
+        (s1.1, s1.2, s1ctx),
+        (s2.1, s2.2, s2ctx),
+        (s3.1, s3.2, s3ctx),
+        (s4.1, s4.2, s4ctx),
+    );
 
     Ok((res, || cleanup()))
+}
+
+/// Setup boilerplate for testing.
+///
+/// Simulate a local seeder peer connected with 4 leechers.
+#[cfg(test)]
+pub async fn setup_seeder_client() -> Result<(SetupRes, impl FnOnce()), Error> {
+    panic::set_hook(Box::new(|_| {
+        cleanup();
+    }));
+
+    let mut tracker = MockTracker::new().await?;
+
+    let s1 = PeerBuilder::seeder().build().await?;
+    let l1 = PeerBuilder::leecher().build().await?;
+    let l2 = PeerBuilder::leecher().build().await?;
+    let l3 = PeerBuilder::leecher().build().await?;
+    let l4 = PeerBuilder::leecher().build().await?;
+
+    spawn(async move { tracker.run().await });
+
+    // wait for the peers to handshake
+    sleep(Duration::from_millis(50)).await;
+
+    let l1ctx = get_peer_ctx(&s1.1, l1.0.clone()).await;
+    let l2ctx = get_peer_ctx(&s1.1, l2.0.clone()).await;
+    let l3ctx = get_peer_ctx(&s1.1, l3.0.clone()).await;
+    let l4ctx = get_peer_ctx(&s1.1, l4.0.clone()).await;
+    let s1ctx = get_peer_ctx(&l1.1, s1.0.clone()).await;
+
+    assert_eq!(l1ctx.id, l1.0);
+    assert_eq!(l2ctx.id, l2.0);
+    assert_eq!(l3ctx.id, l3.0);
+    assert_eq!(l4ctx.id, l4.0);
+    assert_eq!(s1ctx.id, s1.0);
+
+    let res = SetupRes(
+        (s1.1, s1.2, s1ctx),
+        (l1.1, l1.2, l1ctx),
+        (l2.1, l2.2, l2ctx),
+        (l3.1, l3.2, l3ctx),
+        (l4.1, l4.2, l4ctx),
+    );
+
+    Ok((res, || cleanup()))
+}
+
+/// From the perspective of the leecher
+#[cfg(test)]
+pub async fn setup_pair() -> Result<
+    (
+        (mpsc::Sender<DiskMsg>, mpsc::Sender<TorrentMsg>, Arc<PeerCtx>),
+        (mpsc::Sender<DiskMsg>, mpsc::Sender<TorrentMsg>, Arc<PeerCtx>),
+        impl FnOnce(),
+    ),
+    Error,
+> {
+    panic::set_hook(Box::new(|_| {
+        cleanup();
+    }));
+
+    let mut tracker = MockTracker::new().await?;
+    spawn(async move { tracker.run().await });
+
+    let s = PeerBuilder::seeder().build().await?;
+    sleep(Duration::from_millis(30)).await;
+    let l = PeerBuilder::leecher().build().await?;
+    sleep(Duration::from_millis(30)).await;
+
+    // wait for the peers to handshake
+    sleep(Duration::from_millis(50)).await;
+
+    let sctx = get_peer_ctx(&l.1, s.0.clone()).await;
+    let lctx = get_peer_ctx(&s.1, l.0.clone()).await;
+
+    assert_eq!(sctx.id, s.0);
+    assert_eq!(lctx.id, l.0);
+
+    Ok(((l.1, l.2, lctx), (s.1, s.2, sctx), || cleanup()))
 }
 
 async fn get_peer_ctx(

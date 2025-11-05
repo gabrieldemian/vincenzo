@@ -151,14 +151,14 @@ impl Daemon {
             self.config.local_peer_port,
         );
 
-        info!("local peer listening on: {local_addr}");
+        // println!("local peer listening on: {local_addr}");
 
         let local_socket = TcpListener::bind(local_addr).await?;
         let daemon_ctx = self.ctx.clone();
 
         // accept connections from other peers
         Ok(spawn(async move {
-            debug!("accepting requests in {local_socket:?}");
+            info!("accepting requests in {local_socket:?}");
 
             loop {
                 select! {

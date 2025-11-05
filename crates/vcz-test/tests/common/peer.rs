@@ -39,7 +39,7 @@ impl PeerBuilder<Leecher> {
         Ok((p.0, disk_tx, torrent_tx))
     }
 
-    pub(crate) fn new() -> PeerBuilder<Leecher> {
+    pub(crate) fn leecher() -> PeerBuilder<Leecher> {
         PeerBuilder { s: PhantomData }
     }
 }
@@ -66,7 +66,7 @@ impl PeerBuilder<Seeder> {
         Ok((p.0, disk_tx, torrent_ctx.tx.clone()))
     }
 
-    pub(crate) fn new_seeder() -> PeerBuilder<Seeder> {
+    pub(crate) fn seeder() -> PeerBuilder<Seeder> {
         PeerBuilder { s: PhantomData }
     }
 }

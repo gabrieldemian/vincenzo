@@ -128,25 +128,35 @@ impl ExtMsgHandler<Core> for Peer<peer::Connected> {
                     .await?;
             }
             Core::Unchoke => {
-                self.state.ctx.peer_choking.store(false, Ordering::Relaxed);
+                self.state.ctx.peer_choking.store(false, Ordering::Release);
                 self.state_log[2] = 'u';
                 debug!("< unchoke");
+                println!(
+                    "< unchoke l {:?} r {:?} d {:?} id {:?}",
+                    self.state.ctx.local_addr.port(),
+                    self.state.ctx.remote_addr.port(),
+                    self.state.ctx.direction,
+                    self.state.ctx.id,
+                );
             }
             Core::Choke => {
                 debug!("< choke");
-                self.state.ctx.peer_choking.store(true, Ordering::Relaxed);
+                self.state.ctx.peer_choking.store(true, Ordering::Release);
                 self.free_pending_blocks();
                 self.state_log[2] = '-';
             }
             Core::Interested => {
-                // remote self.is interested the local peer
-                debug!("< interested");
-                self.state.ctx.peer_interested.store(true, Ordering::Relaxed);
+                println!(
+                    "< interested l: {} r: {}",
+                    self.state.ctx.local_addr.port(),
+                    self.state.ctx.remote_addr.port(),
+                );
+                self.state.ctx.peer_interested.store(true, Ordering::Release);
                 self.state_log[3] = 'i';
             }
             Core::NotInterested => {
                 debug!("< not_interested");
-                self.state.ctx.peer_interested.store(false, Ordering::Relaxed);
+                self.state.ctx.peer_interested.store(false, Ordering::Release);
                 self.state_log[3] = '-';
             }
             Core::Have(piece) => {
@@ -172,7 +182,7 @@ impl ExtMsgHandler<Core> for Peer<peer::Connected> {
             Core::Request(b @ BlockInfo { index, begin, .. }) => {
                 debug!("< request {b:?}");
 
-                if self.state.ctx.peer_choking.load(Ordering::Relaxed) {
+                if self.state.ctx.peer_choking.load(Ordering::Acquire) {
                     return Ok(());
                 }
 
@@ -691,107 +701,3 @@ mod tests {
         assert!(support_extension_protocol)
     }
 }
-
-// Client connections start out as "choked" and "not interested".
-// In other words:
-//
-// am_choking = 1
-// am_interested = 0
-// self.choking = 1
-// self.interested = 0
-//
-// A block is downloaded by the client,
-// when the client is interested in a self.
-// and that self.is not choking the client.
-//
-// A block is uploaded by a client,
-// when the client is not choking a self.
-// and that self.is interested in the client.
-//
-// c <-handshake-> p
-// c <-extended (if supported)->p
-// c <-(optional) bitfield-> p
-// c -interested-> p
-// c <-unchoke- p
-// c <-have- p
-// c -request-> p
-// ~ download starts here ~
-// ~ piece contains a block of data ~
-// c <-piece- p
-
-//  KeepAlive
-//
-//  All of the remaining messages in the protocol
-//  take the form of: (except for a few)
-//  <length prefix><message ID><payload>.
-//  The length prefix is a four byte big-endian value.
-//  The message ID is a single decimal byte.
-//  The payload is message dependent.
-//
-// <len=0000>
-
-// Choke
-// <len=0001><id=0>
-// Choke the self. letting them know that the may _not_ download any pieces.
-
-// Unchoke
-// <len=0001><id=1>
-// Unchoke the self. letting them know that the may download.
-
-// Interested
-// <len=0001><id=2>
-// Let the self.know that we are interested in the pieces that it has
-// available.
-
-// Not Interested
-// <len=0001><id=3>
-// Let the self.know that we are _not_ interested in the pieces that it has
-// available because we also have those pieces.
-
-// Have
-// <len=0005><id=4><piece index>
-// This messages is sent when the self.wishes to announce that they downloaded a
-// new piece. This is only sent if the piece's hash verification checked out.
-
-// Bitfield
-// <len=0001+X><id=5><bitfield>
-// Only ever sent as the first message after the handshake. The payload of this
-// message is a bitfield whose indices represent the file pieces in the torrent
-// and is used to tell the other self.which pieces the sender has available
-// (each available piece's bitfield value is 1). Byte 0 corresponds to indices
-// 0-7, from most significant bit to least significant bit, respectively, byte 1
-// corresponds to indices 8-15, and so on. E.g. given the first byte
-// `0b1100'0001` in the bitfield means we have pieces 0, 1, and 7.
-//
-// If a self.doesn't have any pieces downloaded, they need not send
-// this message.
-
-// Request
-// <len=0013><id=6><index><begin><length>
-// This message is sent when a downloader requests a chunk of a file piece from
-// its self. It specifies the piece index, the offset into that piece, and the
-// length of the block. As noted above, due to nearly all clients in the wild
-// reject requests that are not 16 KiB, we can assume the length field to always
-// be 16 KiB.
-//
-// Whether we should also reject requests for different values is an
-// open-ended question, as only allowing 16 KiB blocks allows for certain
-// optimizations.
-// <len=0009+X><id=7><index><begin><block>
-// `piece` messages are the responses to `request` messages, containing the
-// request block's payload. It is possible for an unexpected piece to arrive if
-// choke and unchoke messages are sent in quick succession, if transfer is going
-// slowly, or both.
-
-// Cancel
-// <len=0013><id=8><index><begin><length>
-// Used to cancel an outstanding download request. Generally used towards the
-// end of a download in `endgame mode`.
-//
-// When a download is almost complete, there's a tendency for the last few
-// pieces to all be downloaded off a single hosed modem line, taking a very long
-// time. To make sure the last few pieces come in quickly, once requests for all
-// pieces a given downloader doesn't have yet are currently pending, it sends
-// requests for everything to everyone it's downloading from. To keep this from
-// becoming horribly inefficient, it sends cancels to everyone else every time a
-// piece arrives.

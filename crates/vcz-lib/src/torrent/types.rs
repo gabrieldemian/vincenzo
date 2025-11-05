@@ -20,7 +20,7 @@ use std::{
     sync::{Arc, atomic::Ordering},
 };
 use tokio::{
-    sync::{Mutex, broadcast, mpsc, oneshot},
+    sync::{broadcast, mpsc, oneshot},
     time::Interval,
 };
 

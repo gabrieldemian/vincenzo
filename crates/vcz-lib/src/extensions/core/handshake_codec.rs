@@ -148,28 +148,25 @@ impl Decoder for HandshakeCodec {
             return Ok(None);
         }
 
-        let mut handshake_buf = &buf[0..Handshake::MIN_LEN];
-        let mut ext_buf = &buf[Handshake::MIN_LEN..];
-
-        if handshake_buf.get_u8() as usize != PSTR_LEN {
+        if buf.get_u8() as usize != PSTR_LEN {
             return Err(Error::HandshakeInvalid);
         }
 
         // protocol string
         let mut pstr = [0; 19];
-        handshake_buf.copy_to_slice(&mut pstr);
+        buf.copy_to_slice(&mut pstr);
 
         // reserved field
         let mut reserved = [0; 8];
-        handshake_buf.copy_to_slice(&mut reserved);
+        buf.copy_to_slice(&mut reserved);
 
         // info hash
         let mut info_hash = [0; 20];
-        handshake_buf.copy_to_slice(&mut info_hash);
+        buf.copy_to_slice(&mut info_hash);
 
         // peer id
         let mut peer_id = [0; 20];
-        handshake_buf.copy_to_slice(&mut peer_id);
+        buf.copy_to_slice(&mut peer_id);
 
         let mut handshake = Handshake {
             pstr,
@@ -185,36 +182,33 @@ impl Decoder for HandshakeCodec {
         // The next 8 bits are the extension protocol id = 20
         // The next 8 bits are the extended msg id = 0 ext handshake.
 
-        // the cursor here is in size
-
         // need at least 6 bytes: size + core_id + msg_id
-        if ext_buf.len() < 6 {
+        if buf.len() < 6 {
             // if buf is < 6 this cannot be an extended handshake, don't touch
             // the buffer and just return.
             return Ok(Some(handshake));
         }
 
         // don't advance cursor
-        let size = u32::from_be_bytes([
-            ext_buf[0], ext_buf[1], ext_buf[2], ext_buf[3],
-        ]) as usize;
+        let size =
+            u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
 
         // incomplete message, wait for more bytes.
-        if ext_buf.len() < size + 4 {
+        if buf.len() < size + 4 {
             return Ok(None);
         }
 
         // if not an extended handshake, return
-        if ext_buf[4] != CoreId::Extended as u8 || ext_buf[5] != Extension::ID {
+        if buf[4] != CoreId::Extended as u8 || buf[5] != Extension::ID {
             return Ok(Some(handshake));
         }
 
         // advance cursor past the size and the 2 ids, into the payload.
-        ext_buf.advance(6); // 4 (length) + core_id (1) + ext_id (1)
+        buf.advance(6); // 4 (length) + core_id (1) + ext_id (1)
 
         // get only the chunk of the current message.
         // -2 because the size includes the size of the 2 messages.
-        let payload = ext_buf.copy_to_bytes(size - 2);
+        let payload = buf.copy_to_bytes(size - 2);
 
         let ext_handshake = Extension::from_bencode(&payload);
 
@@ -224,8 +218,8 @@ impl Decoder for HandshakeCodec {
             warn!("peer sent corrupted extension");
         }
 
-        let n = BytesMut::from(ext_buf);
-        *buf = n;
+        // the cursor is at the beggining of other messages handled by the core
+        // codec.
 
         Ok(Some(handshake))
     }

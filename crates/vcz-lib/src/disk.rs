@@ -947,7 +947,6 @@ impl Disk {
             .await?;
 
         let mut missing_pieces = orx.await?;
-        println!("missing {missing_pieces:?}");
 
         // must be both missing and not requested
         missing_pieces &= pieces_non_requested.clone();

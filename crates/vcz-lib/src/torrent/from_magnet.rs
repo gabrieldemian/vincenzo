@@ -133,6 +133,7 @@ impl Torrent<Connected, FromMagnet> {
                 // for the unchoke algorithm, the local client is interested in the best
                 // uploaders (from their perspctive) (tit-for-tat)
                 _ = self.state.unchoke_interval.tick() => {
+                    #[cfg(not(feature = "debug"))]
                     self.unchoke().await;
                 }
             }

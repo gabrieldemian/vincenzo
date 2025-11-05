@@ -271,6 +271,16 @@ impl<M: TorrentSource> Torrent<Connected, M> {
 
     async fn unchoke(&mut self) {
         let best = self.get_best_interested_downloaders();
+        println!("connected_peers of {:?}", self.daemon_ctx.local_peer_id);
+        for p in &self.state.connected_peers {
+            println!(
+                "l {:?} r {:?} id {:?}",
+                p.local_addr.port(),
+                p.remote_addr.port(),
+                p.id
+            );
+        }
+        println!("------");
 
         // choke peers no longer in top 3
         for peer in &self.state.unchoked_peers {
@@ -282,7 +292,7 @@ impl<M: TorrentSource> Torrent<Connected, M> {
         self.state.unchoked_peers = best;
 
         for peer in &self.state.unchoked_peers {
-            if peer.am_choking.load(Ordering::Relaxed) {
+            if peer.am_choking.load(Ordering::Acquire) {
                 let _ = peer.tx.send(PeerMsg::Unchoke).await;
             }
         }
@@ -582,11 +592,7 @@ impl<M: TorrentSource> Torrent<Connected, M> {
         let to_request = self.available_connections().await?;
         let metadata_size = self.state.metadata_size;
         let is_seed_only = self.status == TorrentStatus::Seeding;
-
-        println!(
-            "spawning outbound {:?} {:#?}",
-            self.config.local_peer_port, self.state.idle_peers
-        );
+        println!("peer list: {:#?}", self.state.idle_peers);
 
         for peer in self.state.idle_peers.iter().take(to_request).cloned() {
             let ctx = ctx.clone();
@@ -600,6 +606,11 @@ impl<M: TorrentSource> Torrent<Connected, M> {
                 {
                     Ok(Ok(socket)) => {
                         let idle_peer = Peer::<peer::Idle>::new();
+                        // println!(
+                        //     "outbound l: {} r: {}",
+                        //     socket.local_addr().unwrap().port(),
+                        //     socket.peer_addr().unwrap().port(),
+                        // );
 
                         let Ok(mut connected_peer) = idle_peer
                             .outbound_handshake(
@@ -645,7 +656,7 @@ impl<M: TorrentSource> Torrent<Connected, M> {
 
     /// Get the best n downloaders that are interested in the client.
     pub fn get_best_interested_downloaders(&self) -> Vec<Arc<PeerCtx>> {
-        self.sort_peers_by_rate(false, false)
+        self.sort_peers_by_rate(true, false)
     }
 
     pub fn get_next_opt_unchoked_peer(&self) -> Option<Arc<PeerCtx>> {
@@ -697,7 +708,7 @@ impl<M: TorrentSource> Torrent<Connected, M> {
 
         for (index, peer) in peers.iter().enumerate() {
             if skip_uninterested
-                && !peer.peer_interested.load(Ordering::Relaxed)
+                && !peer.peer_interested.load(Ordering::Acquire)
             {
                 continue;
             }
@@ -761,7 +772,7 @@ impl<M: TorrentSource> Torrent<Connected, M> {
             }
 
             // only consider interested peers
-            if peer.peer_interested.load(Ordering::Relaxed) {
+            if peer.peer_interested.load(Ordering::Acquire) {
                 candidates.push(peer.clone());
             }
         }
@@ -781,10 +792,14 @@ impl<M: TorrentSource> Torrent<Connected, M> {
         peer_id: &PeerId,
     ) -> Option<usize> {
         let local = &self.bitfield;
-        if !local.any() {
+
+        // if local has no pieces, return the first piece that remote has
+        if local.count_ones() == 0 {
             return Some(0);
         };
+
         let remote = self.state.peer_pieces.get(peer_id)?;
+
         remote
             .iter_ones()
             .find(|&piece_index| !unsafe { *local.get_unchecked(piece_index) })

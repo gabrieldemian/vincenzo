@@ -1,5 +1,5 @@
 use crate::{
-    bitfield::Reserved,
+    bitfield::{Bitfield, Reserved, VczBitfield},
     counter::Counter,
     daemon::{DaemonCtx, DaemonMsg},
     disk::{DiskMsg, ReturnToDisk},
@@ -38,9 +38,17 @@ use tracing::debug;
 
 /// The ID of a Peer.
 #[derive(
-    Clone, PartialEq, Eq, Hash, Default, Serialize, Deserialize, Archive,
+    Clone,
+    PartialEq,
+    PartialOrd,
+    Eq,
+    Hash,
+    Default,
+    Serialize,
+    Deserialize,
+    Archive,
 )]
-#[rkyv(compare(PartialEq), derive(Debug))]
+#[rkyv(compare(PartialEq, PartialOrd), derive(Debug))]
 pub struct PeerId(pub [u8; 20]);
 
 pub const DEFAULT_REQUEST_QUEUE_LEN: u16 = 250;
@@ -196,14 +204,18 @@ pub enum PeerMsg {
     Blocks(BTreeMap<usize, Vec<BlockInfo>>),
 
     CloneBlocks(usize, oneshot::Sender<Vec<BlockInfo>>),
+
+    /// Force the peer to run the interested algorithm immediately.
+    InterestedAlgorithm,
 }
 
 /// Determines who initiated the connection.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Direction {
-    /// Outbound means we initiated the connection
+    /// Outbound means the local peer initiated the connection
     Outbound,
-    /// Inbound means the peer initiated the connection
+
+    /// Inbound means the remote peer initiated the connection
     Inbound,
 }
 
@@ -275,11 +287,7 @@ impl peer::Peer<Idle> {
             return Err(Error::HandshakeInvalid);
         }
 
-        let old_parts = socket.into_parts();
-        let mut new_parts = FramedParts::new(old_parts.io, CoreCodec);
-        new_parts.read_buf = old_parts.read_buf;
-        new_parts.write_buf = old_parts.write_buf;
-        let socket = Framed::from_parts(new_parts);
+        let socket = socket.map_codec(|_| CoreCodec);
 
         let (tx, rx) = mpsc::channel::<PeerMsg>(100);
 
@@ -330,7 +338,7 @@ impl peer::Peer<Idle> {
             peer.handle_ext(ext).await?;
         }
 
-        // maybe send bitfield
+        // send bitfield
         {
             let (otx, orx) = oneshot::channel();
             peer.state
@@ -341,10 +349,7 @@ impl peer::Peer<Idle> {
                 .await?;
 
             let bitfield = orx.await?;
-
-            if bitfield.any() {
-                peer.state.sink.send(Core::Bitfield(bitfield)).await?;
-            }
+            peer.state.sink.send(Core::Bitfield(bitfield)).await?;
         }
 
         Ok(peer)
@@ -399,17 +404,12 @@ impl peer::Peer<Idle> {
             ext.metadata_size = metadata_size;
         }
 
-        socket.send(our_handshake).await?;
-
-        let our_handshake = Handshake::new(
-            peer_handshake.info_hash.clone(),
-            daemon_ctx.local_peer_id.clone(),
-        );
-
         if !peer_handshake.validate(&our_handshake) {
             debug!("handshake is invalid");
             return Err(Error::HandshakeInvalid);
         }
+
+        socket.send(our_handshake).await?;
 
         let (otx, orx) = oneshot::channel();
 
@@ -425,14 +425,18 @@ impl peer::Peer<Idle> {
             return Err(Error::TorrentDoesNotExist);
         };
 
-        debug!("sending inbound handshake");
-        socket.send(our_handshake).await?;
+        let (otx, orx) = oneshot::channel();
+        torrent_ctx
+            .tx
+            .send(TorrentMsg::GetPeer(peer_handshake.peer_id.clone(), otx))
+            .await?;
+        let peer_ctx = orx.await?;
 
-        let old_parts = socket.into_parts();
-        let mut new_parts = FramedParts::new(old_parts.io, CoreCodec);
-        new_parts.read_buf = old_parts.read_buf;
-        new_parts.write_buf = old_parts.write_buf;
-        let socket = Framed::from_parts(new_parts);
+        if peer_ctx.is_some() {
+            return Err(Error::NoDuplicatePeer);
+        }
+
+        let socket = socket.map_codec(|_| CoreCodec);
 
         let (tx, rx) = mpsc::channel::<PeerMsg>(100);
 
@@ -501,7 +505,7 @@ impl peer::Peer<Idle> {
             peer.state.seed_only = orx.await? == TorrentStatus::Seeding;
         }
 
-        // maybe send bitfield
+        // send bitfield
         {
             let (otx, orx) = oneshot::channel();
             peer.state
@@ -512,10 +516,7 @@ impl peer::Peer<Idle> {
                 .await?;
 
             let bitfield = orx.await?;
-
-            if bitfield.any() {
-                peer.state.sink.send(Core::Bitfield(bitfield)).await?;
-            }
+            peer.state.sink.send(Core::Bitfield(bitfield)).await?;
         }
 
         Ok(peer)

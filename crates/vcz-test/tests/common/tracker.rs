@@ -52,16 +52,6 @@ impl MockTracker {
         }
     }
 
-    pub fn insert_seeder(&mut self, v: (PeerId, PeerInfo)) {
-        self.peers.insert(v.1.addr, v.1.connection_id);
-        self.seeders.insert(v.0, v.1);
-    }
-
-    pub fn insert_leecher(&mut self, v: (PeerId, PeerInfo)) {
-        self.peers.insert(v.1.addr, v.1.connection_id);
-        self.leechers.insert(v.0, v.1);
-    }
-
     pub async fn handle_packet(
         &mut self,
         buf: &[u8],
@@ -101,9 +91,6 @@ impl MockTracker {
                         connection_id: conn,
                         key: req.key.to_native(),
                         addr: {
-                            // some trackers ignore the `ip_addr` from the req
-                            // and just use the addr
-                            // of the socket.
                             // let v = req.ip_address.to_native().to_be_bytes();
                             let v = who.ip();
                             let v = v.as_octets();
@@ -134,7 +121,7 @@ impl MockTracker {
                 };
 
                 let mut peers: Vec<u8> =
-                    Vec::with_capacity(req.num_want.to_native() as usize);
+                    Vec::with_capacity(req.num_want.to_native() as usize * 6);
 
                 let to_take = req.num_want.to_native() as usize / 2;
 
@@ -179,20 +166,18 @@ impl MockTracker {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use std::time::Duration;
-
     use tokio::time::timeout;
     use vcz_lib::{
         peer::PeerId,
         tracker::{ANNOUNCE_RES_BUF_LEN, action::Action, event::Event},
     };
 
-    use super::*;
-
     #[tokio::test]
     async fn mock_works() -> Result<(), Error> {
         //
-        // connect
+        // seeder connect
         //
         let mut buf = [0u8; tracker::connect::Response::LEN];
         let info_hash = InfoHash::random();
@@ -206,72 +191,71 @@ mod tests {
         .await
         .unwrap();
         let mock_addr = mock.socket.local_addr().unwrap();
-        let mysocket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let addr = mysocket.local_addr().unwrap();
-        println!("my addr {addr:?}");
+        let seeder_socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let seeder_addr = seeder_socket.local_addr().unwrap();
 
-        mysocket.send_to(&req.serialize()?, mock_addr).await?;
+        seeder_socket.send_to(&req.serialize()?, mock_addr).await?;
 
-        let _ = timeout(Duration::from_millis(100), mock.run()).await;
-        let res_len = mysocket.recv(&mut buf).await?;
+        let _ = timeout(Duration::from_millis(50), mock.run()).await;
+        let res_len = seeder_socket.recv(&mut buf).await?;
         let res = tracker::connect::Response::deserialize(&buf[0..res_len])?;
 
-        assert_eq!(res.connection_id, *mock.peers.get(&addr).unwrap());
+        assert_eq!(res.connection_id, *mock.peers.get(&seeder_addr).unwrap());
         assert_eq!(res.action, req.action);
         assert_eq!(res.transaction_id, req.transaction_id);
         //
-        // announce
+        // seeder announce
         //
-        // add a fake seeder just to see if it works
-        let fake = "127.0.0.1:5678".parse().unwrap();
-        let fake_id = PeerId::generate();
-        mock.insert_seeder((
-            fake_id,
-            PeerInfo { connection_id: 123, addr: fake, key: 321 },
-        ));
-
         let mut buf = [0u8; ANNOUNCE_RES_BUF_LEN];
-        let peer_id = PeerId::generate();
+        let seeder_id = PeerId::generate();
         let req = tracker::announce::Request {
             connection_id: res.connection_id.to_native(),
             action: Action::Announce,
             transaction_id: rand::random(),
             info_hash: info_hash.clone(),
-            peer_id: peer_id.clone(),
-            downloaded: 0,
-            left: u64::MAX,
+            peer_id: seeder_id.clone(),
+            downloaded: u64::MAX,
+            left: 0,
             uploaded: 0,
             event: Event::Started,
             ip_address: {
-                let ip = addr.ip();
+                let ip = seeder_addr.ip();
                 let ip = ip.as_octets();
                 u32::from_be_bytes([ip[0], ip[1], ip[2], ip[3]])
             },
             key: 123,
             num_want: 50,
-            port: addr.port(),
+            port: seeder_addr.port(),
             compact: 1,
         };
 
-        mysocket.send_to(&req.serialize()?, mock_addr).await?;
-        let _ = timeout(Duration::from_millis(100), mock.run()).await;
-        let res_len = mysocket.recv(&mut buf).await?;
+        seeder_socket.send_to(&req.serialize()?, mock_addr).await?;
+        let _ = timeout(Duration::from_millis(50), mock.run()).await;
+        let res_len = seeder_socket.recv(&mut buf).await?;
         let (res, payload) =
             tracker::announce::Response::deserialize(&buf[0..res_len])?;
 
-        // `peers` will only have `fake` and not include the ip of the
-        // caller.
         let peers = tracker::parse_compact_peer_list(false, payload)?;
+        assert!(
+            peers.is_empty(),
+            "tracker won't send the IP of the requester in the peer list"
+        );
+
+        let seeder_info = mock.seeders.get(&seeder_id).unwrap();
 
         println!("< res   {res:?}");
-        println!("< peers {peers:?}");
+        println!("< peers {seeder_info:?}");
 
-        assert_eq!(peers, [fake]);
+        assert_eq!(seeder_info.addr, seeder_addr);
         assert_eq!(res.action, Action::Announce);
         assert_eq!(res.transaction_id, req.transaction_id);
         assert_eq!(
-            *mock.leechers.get(&peer_id).unwrap(),
-            PeerInfo { connection_id: req.connection_id, key: req.key, addr }
+            *seeder_info,
+            PeerInfo {
+                connection_id: req.connection_id,
+                key: req.key,
+                addr: seeder_addr
+            }
         );
 
         Ok(())
