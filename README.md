@@ -13,23 +13,21 @@ through the configuration file, no ads, and no telemetry.
 
 The official UI runs on the terminal with vim-like keybindings.
 
-3 binaries and 1 library:
+Vcz offers 3 binaries:
 
-- [vcz](crates/vcz) - Main binary with both UI and daemon together.
-- [vcz-ui](crates/vcz-ui) - UI binary (connects to daemon remotely).
-- [vcz-daemon](crates/vcz-daemon) - Daemon binary.
-- [vcz-lib](crates/vcz-lib) - Library.
+- [vcz](crates/vcz) - Both UI and daemon together.
+- [vcz-daemon](crates/vcz-daemon) - Daemon.
+- [vcz-ui](crates/vcz-ui) - UI (connects to daemon remotely).
 
 > [!WARNING]
-> Experimental software moving towards a stable release.
+> Experimental software, not production ready yet.
 >
-> I develop on rust nightly and there is no minimum supported version.
+> I develop on rust nightly.
 > I have only tested on my x86 Linux machine, but _probably_ works in other platforms.
 >
 > The protocol is fully implemented with good performance and with many nice
 > extensions that you would expect, however, some things are missing and sometimes
-> there are crashes. Security features and authentication for remote
-> control is not yet implemented.
+> there are crashes. Security features are not present yet.
 
 ## Features
 
@@ -41,7 +39,7 @@ The official UI runs on the terminal with vim-like keybindings.
 ## How to use
 
 Right now, you have to download the repo and compile it from scratch, remember
-to use the `--release` flag of cargo.
+to use the `--release`.
 
 ```bash
 $ git clone git@github.com:gabrieldemian/vincenzo.git
