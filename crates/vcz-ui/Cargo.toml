@@ -7,6 +7,8 @@ edition = "2024"
 
 [dependencies]
 crossterm = { version = "0.28.1", features = ["event-stream"] }
+unicode-width = "=0.2.0"
+
 clap = { workspace = true }
 futures = { workspace = true }
 hashbrown = { workspace = true }
@@ -19,7 +21,6 @@ tokio = { workspace = true }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
 vcz-lib = { workspace = true }
-unicode-width = "=0.2.0"
 
 [features]
 debug = []
