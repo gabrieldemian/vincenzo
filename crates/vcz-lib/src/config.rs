@@ -7,7 +7,7 @@
 use crate::{daemon::Daemon, error::Error};
 use clap::Parser;
 use serde::Deserialize;
-use std::{net::SocketAddr, path::PathBuf, sync::LazyLock};
+use std::{net::SocketAddr, path::PathBuf};
 
 #[derive(Deserialize, Debug, Clone, Parser, Default)]
 #[clap(name = "Vincenzo", author = "Gabriel Lombardo")]
@@ -229,15 +229,6 @@ pub struct ResolvedConfig {
     pub pause: Option<String>,
     pub quit: bool,
 }
-
-pub static CONFIG_BINCODE: LazyLock<
-    bincode::config::Configuration<
-        bincode::config::BigEndian,
-        bincode::config::Varint,
-    >,
-> = LazyLock::new(|| {
-    bincode::config::standard().with_big_endian().with_variable_int_encoding()
-});
 
 #[cfg(test)]
 mod tests {

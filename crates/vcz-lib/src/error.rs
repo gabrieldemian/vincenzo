@@ -64,12 +64,6 @@ pub enum Error {
     #[error("String is not UTF-8")]
     Utf8Error(#[from] std::string::FromUtf8Error),
 
-    #[error("Failed to encode")]
-    BincodeEncodeError(#[from] bincode::error::EncodeError),
-
-    #[error("Failed to dencode")]
-    BincodeDecodeError(#[from] bincode::error::DecodeError),
-
     #[error("Failed to decode or encode the bencode buffer")]
     BencodeError,
 

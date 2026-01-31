@@ -1,12 +1,12 @@
 //! Framed messages sent to/from Daemon
 
 use crate::{
-    config::CONFIG_BINCODE,
     error::Error,
-    torrent::{InfoHash, TorrentState},
+    torrent::{ArchivedTorrentState, InfoHash, TorrentState},
 };
 use bytes::{Buf, BufMut, BytesMut};
 use int_enum::IntEnum;
+use rkyv::{deserialize, vec::ArchivedVec};
 use tokio_util::codec::{Decoder, Encoder};
 use tracing::warn;
 
@@ -95,8 +95,7 @@ impl Encoder<Message> for DaemonCodec {
             }
             Message::TorrentState(torrent_state) => {
                 let bytes =
-                    bincode::encode_to_vec(torrent_state, *CONFIG_BINCODE)?;
-
+                    rkyv::to_bytes::<rkyv::rancor::Error>(&torrent_state)?;
                 let msg_len = 1 + bytes.len() as u32;
 
                 buf.put_u32(msg_len);
@@ -105,8 +104,7 @@ impl Encoder<Message> for DaemonCodec {
             }
             Message::TorrentStates(torrent_states) => {
                 let bytes =
-                    bincode::encode_to_vec(torrent_states, *CONFIG_BINCODE)?;
-
+                    rkyv::to_bytes::<rkyv::rancor::Error>(&torrent_states)?;
                 let msg_len = 1 + bytes.len() as u32;
 
                 buf.put_u32(msg_len);
@@ -210,18 +208,29 @@ impl Decoder for DaemonCodec {
                 let mut payload = vec![0u8; buf.remaining()];
                 buf.copy_to_slice(&mut payload);
 
-                let info: (TorrentState, usize) =
-                    bincode::decode_from_slice(&payload, *CONFIG_BINCODE)?;
+                let info = rkyv::access::<
+                    ArchivedTorrentState,
+                    rkyv::rancor::Error,
+                >(&payload[..])?;
 
-                Message::TorrentState(info.0)
+                let info =
+                    deserialize::<TorrentState, rkyv::rancor::Error>(info)?;
+
+                Message::TorrentState(info)
             }
             MessageId::TorrentStates => {
                 let mut payload = vec![0u8; buf.remaining()];
                 buf.copy_to_slice(&mut payload);
 
-                let states: Vec<TorrentState> =
-                    bincode::decode_from_slice(&payload, *CONFIG_BINCODE)
-                        .map(|v| v.0)?;
+                let states = rkyv::access::<
+                    ArchivedVec<ArchivedTorrentState>,
+                    rkyv::rancor::Error,
+                >(&payload[..])?;
+
+                let states = deserialize::<
+                    Vec<TorrentState>,
+                    rkyv::rancor::Error,
+                >(states)?;
 
                 Message::TorrentStates(states)
             }
@@ -313,7 +322,7 @@ mod tests {
             ..Default::default()
         };
 
-        let a = bincode::encode_to_vec(&info, *CONFIG_BINCODE).unwrap();
+        let a = rkyv::to_bytes::<rkyv::rancor::Error>(&info).unwrap();
         println!("encoding a {a:?}");
 
         let mut buf = BytesMut::new();

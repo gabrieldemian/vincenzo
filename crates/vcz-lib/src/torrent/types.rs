@@ -8,7 +8,6 @@ use crate::{
     torrent::{self, Torrent},
     tracker::TrackerMsg,
 };
-use bincode::{Decode, Encode};
 use hashbrown::{HashMap, HashSet};
 use rand::Rng;
 use rkyv::{Archive, Deserialize, Serialize};
@@ -142,16 +141,7 @@ pub enum TorrentMsg {
 }
 
 #[derive(
-    Eq,
-    PartialEq,
-    Clone,
-    Hash,
-    Default,
-    Encode,
-    Decode,
-    Archive,
-    Serialize,
-    Deserialize,
+    Eq, PartialEq, Clone, Hash, Default, Archive, Serialize, Deserialize,
 )]
 #[rkyv(compare(PartialEq), derive(Debug))]
 pub struct InfoHash(pub [u8; 20]);
@@ -229,7 +219,10 @@ impl TryFrom<Vec<u8>> for InfoHash {
     }
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Encode, Decode)]
+#[derive(
+    Debug, Default, Clone, Copy, PartialEq, Archive, Serialize, Deserialize,
+)]
+#[rkyv(compare(PartialEq), derive(Debug))]
 pub enum TorrentStatus {
     #[default]
     ConnectingTrackers,
@@ -241,7 +234,8 @@ pub enum TorrentStatus {
 }
 
 /// State of a [`Torrent`], used by the UI to present data.
-#[derive(Debug, Clone, Default, PartialEq, Encode, Decode)]
+#[derive(Debug, Clone, Default, PartialEq, Archive, Deserialize, Serialize)]
+#[rkyv(compare(PartialEq), derive(Debug))]
 pub struct TorrentState {
     pub name: String,
     pub stats: Stats,
@@ -302,7 +296,8 @@ impl<M: TorrentSource> From<&Torrent<torrent::Connected, M>> for TorrentState {
 }
 
 /// Status of the current Torrent, updated at every announce request.
-#[derive(Clone, Debug, PartialEq, Default, Encode, Decode)]
+#[derive(Clone, Debug, PartialEq, Default, Archive, Serialize, Deserialize)]
+#[rkyv(compare(PartialEq), derive(Debug))]
 pub struct Stats {
     pub interval: u32,
     pub leechers: u32,
