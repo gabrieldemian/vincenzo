@@ -90,6 +90,7 @@ async fn setup_client(
     Ok((disk, daemon, metainfo))
 }
 
+#[allow(dead_code, unused)]
 pub struct SetupRes(
     pub (mpsc::Sender<DiskMsg>, mpsc::Sender<TorrentMsg>, Arc<PeerCtx>),
     pub (mpsc::Sender<DiskMsg>, mpsc::Sender<TorrentMsg>, Arc<PeerCtx>),
@@ -102,6 +103,7 @@ pub struct SetupRes(
 ///
 /// Simulate a local leecher peer connected with 4 seeders.
 #[cfg(test)]
+#[allow(dead_code, unused)]
 pub async fn setup_leecher_client() -> Result<(SetupRes, impl FnOnce()), Error>
 {
     panic::set_hook(Box::new(|_| {
@@ -151,6 +153,7 @@ pub async fn setup_leecher_client() -> Result<(SetupRes, impl FnOnce()), Error>
 ///
 /// Simulate a local seeder peer connected with 4 leechers.
 #[cfg(test)]
+#[allow(dead_code, unused)]
 pub async fn setup_seeder_client() -> Result<(SetupRes, impl FnOnce()), Error> {
     panic::set_hook(Box::new(|_| {
         cleanup();
@@ -194,6 +197,7 @@ pub async fn setup_seeder_client() -> Result<(SetupRes, impl FnOnce()), Error> {
 
 /// From the perspective of the leecher
 #[cfg(test)]
+#[allow(dead_code, unused)]
 pub async fn setup_pair() -> Result<
     (
         (mpsc::Sender<DiskMsg>, mpsc::Sender<TorrentMsg>, Arc<PeerCtx>),

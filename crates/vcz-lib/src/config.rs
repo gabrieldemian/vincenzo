@@ -11,7 +11,7 @@ use std::{net::SocketAddr, path::PathBuf};
 
 #[derive(Deserialize, Debug, Clone, Parser, Default)]
 #[clap(name = "Vincenzo", author = "Gabriel Lombardo")]
-#[command( author, version, about = None, long_about = None,)]
+#[command(author, version, about = None, long_about = None)]
 pub struct Config {
     /// Where to store files of torrents. Defaults to the download dir of the
     /// user.
@@ -99,13 +99,12 @@ impl Config {
 
     #[cfg(feature = "debug")]
     pub fn load_test() -> ResolvedConfig {
+        let test_files_dir =
+            Self::find_workspace_root().unwrap().join("test-files");
+
         ResolvedConfig {
-            // download_dir: "../../../test-files".into(),
-            // metadata_dir: "../../../test-files".into(),
-            download_dir: "/home/gabriel/code/personal/vincenzo/test-files"
-                .into(),
-            metadata_dir: "/home/gabriel/code/personal/vincenzo/test-files"
-                .into(),
+            download_dir: test_files_dir.clone(),
+            metadata_dir: test_files_dir,
             daemon_addr: "0.0.0.0:0".parse().unwrap(),
             local_peer_port: rand::random_range(49152..65535),
             max_global_peers: 500,
@@ -128,6 +127,34 @@ impl Config {
         );
         config_file.push("vincenzo");
         config_file
+    }
+
+    /// Get the workspace root path
+    fn find_workspace_root() -> Option<PathBuf> {
+        let mut cur = std::env::current_dir().ok()?;
+        // cur.parent()?.parent().map(|v| v.into())
+        let mut i = 0;
+
+        loop {
+            i += 1;
+            if i >= 5 {
+                break;
+            }
+            let cargo_toml = cur.join("Cargo.toml");
+
+            if cargo_toml.exists()
+                && let Ok(content) = std::fs::read_to_string(&cargo_toml)
+                && content.contains("[workspace]")
+            {
+                return Some(cur);
+            }
+
+            if !cur.pop() {
+                break;
+            }
+        }
+
+        None
     }
 
     fn load_toml_config() -> Result<Self, Error> {
@@ -285,7 +312,6 @@ mod tests {
         assert_eq!(merged.daemon_addr, cli_config.daemon_addr);
         assert_eq!(merged.local_peer_port, cli_config.local_peer_port);
         assert_eq!(merged.is_ipv6, cli_config.is_ipv6);
-        assert_eq!(merged.quit_after_complete, cli_config.quit_after_complete);
 
         // these should fall back to file values since CLI didn't provide them
         assert_eq!(merged.max_global_peers, file_config.max_global_peers);

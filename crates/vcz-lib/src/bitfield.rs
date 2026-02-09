@@ -32,6 +32,7 @@ impl Reserved {
         ])
     }
 
+    #[inline]
     pub fn supports_extended(&self) -> bool {
         unsafe { *self.0.get_unchecked(43) }
     }

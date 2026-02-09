@@ -292,12 +292,11 @@ impl<T: Requestable> RequestManager<T> {
         let now = Instant::now();
         let new_timeout = now + self.get_timeout();
 
-        for &(mut timeout, ref block) in self
-            .timeouts
-            .iter()
-            .peekable()
-            .take(self.get_available_request_len())
+        for &(mut timeout, ref block) in
+            self.timeouts.iter().take(self.get_available_request_len())
         {
+            // timeout.0 is read in other places, shut up linter.
+            #[allow(unused_assignments)]
             if timeout.0 <= now {
                 {
                     timed_out_blocks.push(block.clone());

@@ -120,23 +120,10 @@ impl FromBencode for M {
         // let mut ut_holepunch = None;
 
         while let Some(pair) = dict.next_pair()? {
-            match pair {
-                (b"ut_metadata", value) => {
-                    ut_metadata = u8::decode_bencode_object(value)
-                        .context("ut_metadata")
-                        .map(Some)?;
-                }
-                // (b"ut_pex", value) => {
-                //     ut_pex = u8::decode_bencode_object(value)
-                //         .context("ut_pex")
-                //         .map(Some)?;
-                // }
-                // (b"ut_holepunch", value) => {
-                //     ut_holepunch = u8::decode_bencode_object(value)
-                //         .context("ut_holepunch")
-                //         .map(Some)?;
-                // }
-                _ => {}
+            if let (b"ut_metadata", value) = pair {
+                ut_metadata = u8::decode_bencode_object(value)
+                    .context("ut_metadata")
+                    .map(Some)?;
             }
         }
         Ok(Self {

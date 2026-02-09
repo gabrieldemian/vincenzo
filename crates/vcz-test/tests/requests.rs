@@ -26,12 +26,13 @@ async fn request_block() -> Result<(), Error> {
     // ! leecher and seeder are in switched perspectives.
     // but the torrent txs are in the right perspective.
 
-    // the leecher will run the interested allgorithm.
+    // the leecher will run the interested allgorithm against the seeder.
     seeder.tx.send(PeerMsg::InterestedAlgorithm).await?;
-    sleep(Duration::from_millis(20)).await;
+    sleep(Duration::from_millis(10)).await;
 
+    // the seeder runs it's unchoke allgorithm.
     storrent.send(TorrentMsg::UnchokeAlgorithm).await?;
-    sleep(Duration::from_millis(20)).await;
+    sleep(Duration::from_millis(10)).await;
 
     // seeder is not choking the leecher
     assert!(!leecher.am_choking.load(Ordering::Acquire));

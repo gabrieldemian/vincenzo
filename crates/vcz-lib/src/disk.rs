@@ -478,7 +478,7 @@ impl Disk {
         self.compute_torrent_cache(&info);
 
         // create folders, files, and preallocate them.
-        self.preallocate_files(&info_hash).await?;
+        self.pre_alloc_files(&info_hash).await?;
 
         let downloaded_pieces = self.compute_downloaded_pieces(&info).await?;
 
@@ -529,7 +529,7 @@ impl Disk {
         self.torrent_ctxs.insert(info_hash.clone(), torrent.ctx.clone());
 
         // create folders, files, and preallocate them with zeroes.
-        self.preallocate_files(&info_hash).await?;
+        self.pre_alloc_files(&info_hash).await?;
 
         self.daemon_ctx.tx.send(DaemonMsg::AddTorrentMetaInfo(torrent)).await?;
 
@@ -594,7 +594,6 @@ impl Disk {
 
         // reuse the already open file handles and put in the cache.
         for (f, mmap) in file_handles {
-            let _ = mmap.advise(memmap2::Advice::Random);
             self.read_mmap_cache.put(f.path.to_path_buf(), mmap);
         }
 
@@ -1234,11 +1233,10 @@ impl Disk {
             for (file_offset, data_range) in ops {
                 let start = file_offset;
                 let end = start + data_range.len();
-                let _ = mmap.advise_range(
-                    memmap2::Advice::Sequential,
-                    start,
-                    end - start,
-                );
+
+                // if mmap.len() < end {
+                //     mmap.copy_from_slice(&vec![0; end]);
+                // }
 
                 mmap[start..end].copy_from_slice(&piece_buffer[data_range]);
             }
@@ -1333,14 +1331,13 @@ impl Disk {
         // cache miss
         let file = Self::open_file(path).await?;
         let mmap = unsafe { MmapMut::map_mut(&file) }?;
-        let _ = mmap.advise(memmap2::Advice::Random);
         let mmap = Arc::new(Mutex::new(mmap));
 
         self.write_mmap_cache.put(path.into(), mmap.clone());
         Ok(mmap)
     }
 
-    async fn preallocate_files(
+    async fn pre_alloc_files(
         &mut self,
         info_hash: &InfoHash,
     ) -> Result<(), Error> {
@@ -1524,10 +1521,12 @@ impl Disk {
                 // calculate file offset
                 let file_offset = read_start - file_start;
 
-                // todo: handle out-of-bounds access
-                // if file_offset >= mmap.len() {
-                //     continue;
-                // }
+                // handle out-of-bounds access
+                // the file is too small to be read from, the torrent is likely
+                // incomplete.
+                if file_offset >= mmap.len() {
+                    continue;
+                }
 
                 // calculate how much we can read from the file
                 let available_bytes = read_length.min(mmap.len() - file_offset);

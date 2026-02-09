@@ -207,6 +207,9 @@ pub enum PeerMsg {
 
     /// Force the peer to run the interested algorithm immediately.
     InterestedAlgorithm,
+
+    /// Force the peer to run the request algorithm immediately.
+    RequestAlgorithm,
 }
 
 /// Determines who initiated the connection.

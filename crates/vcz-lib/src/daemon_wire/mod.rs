@@ -8,7 +8,7 @@ use bytes::{Buf, BufMut, BytesMut};
 use int_enum::IntEnum;
 use rkyv::{deserialize, vec::ArchivedVec};
 use tokio_util::codec::{Decoder, Encoder};
-use tracing::warn;
+use tracing::error;
 
 /// Messages of [`DaemonCodec`], check the struct documentation
 /// to read how to send messages.
@@ -162,7 +162,7 @@ impl Decoder for DaemonCodec {
     ) -> Result<Option<Self::Item>, Self::Error> {
         // the message length header must be present at the minimum, otherwise
         // we can't determine the message type
-        if buf.remaining() < 4 {
+        if buf.len() < 4 {
             return Ok(None);
         }
 
@@ -175,10 +175,15 @@ impl Decoder for DaemonCodec {
             return Ok(Some(Message::Quit));
         }
 
-        // incomplete message, wait for more
+        // incomplete message, if the packet is to large to fit the MTU (~1,500
+        // bytes) the packet will be split into many packets. The decoder will
+        // be called each time a packet arrive, but if the buffer is not
+        // full yet, we don't avance the cursor and just wait.
         if buf.len() < 4 + size {
             if buf.capacity() < size {
-                buf.reserve((size + 4) - buf.capacity());
+                buf.reserve(
+                    (size.saturating_add(4)).wrapping_sub(buf.capacity()),
+                );
             }
             return Ok(None);
         }
@@ -186,11 +191,14 @@ impl Decoder for DaemonCodec {
         // advance past the size, into the msg_id
         buf.advance(4);
 
+        // we know that this u8 exist because size is not 0
         let msg_id = buf.get_u8();
 
         let Ok(msg_id) = MessageId::try_from(msg_id) else {
-            warn!("unknown message_id {msg_id:?}");
-            buf.advance(size - 1);
+            error!("unknown daemon message_id {msg_id:?}");
+            // assume this is a bug, a malformed message,
+            // return Ok(None) because maybe the next message is correct.
+            buf.clear();
             return Ok(None);
         };
 

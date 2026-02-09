@@ -31,7 +31,7 @@ async fn unchoke_algorithm() -> Result<(), Error> {
     l4peer.counter.update_rates();
 
     storrent.send(TorrentMsg::UnchokeAlgorithm).await?;
-    sleep(Duration::from_millis(30)).await;
+    sleep(Duration::from_millis(10)).await;
 
     let (otx, orx) = oneshot::channel();
     storrent.send(TorrentMsg::GetUnchokedPeers(otx)).await?;
@@ -53,7 +53,7 @@ async fn unchoke_algorithm() -> Result<(), Error> {
     l4peer.counter.update_rates();
 
     storrent.send(TorrentMsg::UnchokeAlgorithm).await?;
-    sleep(Duration::from_millis(30)).await;
+    sleep(Duration::from_millis(10)).await;
 
     let (otx, orx) = oneshot::channel();
     storrent.send(TorrentMsg::GetUnchokedPeers(otx)).await?;

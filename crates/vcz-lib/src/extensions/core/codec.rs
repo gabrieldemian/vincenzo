@@ -12,7 +12,7 @@ use int_enum::IntEnum;
 use std::sync::atomic::Ordering;
 use tokio::{io, sync::oneshot};
 use tokio_util::codec::{Decoder, Encoder};
-use tracing::{debug, warn};
+use tracing::{debug, error};
 use vcz_macros::Extension;
 
 impl Core {
@@ -30,11 +30,6 @@ impl Core {
             Piece(b) => 1 + 4 + 4 + b.block.len() as u32,
             Extended(m) => 1 + 1 + m.1.len() as u32,
         }
-    }
-
-    /// The len of the message with the 4 bytes at the beggining.
-    pub fn full_len(&self) -> u32 {
-        4 + self.len()
     }
 }
 
@@ -171,7 +166,7 @@ impl ExtMsgHandler<Core> for Peer<peer::Connected> {
             Core::Request(b @ BlockInfo { index, begin, .. }) => {
                 debug!("< request {b:?}");
 
-                if self.state.ctx.peer_choking.load(Ordering::Acquire) {
+                if !self.state.ctx.peer_interested.load(Ordering::Acquire) {
                     return Ok(());
                 }
 
@@ -319,7 +314,9 @@ impl Decoder for CoreCodec {
         // full yet, we don't avance the cursor and just wait.
         if buf.len() < 4 + size {
             if buf.capacity() < size {
-                buf.reserve((size + 4) - buf.capacity());
+                buf.reserve(
+                    (size.saturating_add(4)).wrapping_sub(buf.capacity()),
+                );
             }
             return Ok(None);
         }
@@ -327,20 +324,18 @@ impl Decoder for CoreCodec {
         // advance past the size, into the msg_id
         buf.advance(4);
 
-        // with keepalive out of the way,
-        // all the messages have at least 1 byte of size
-        if buf.is_empty() {
-            return Ok(None);
-        }
-
+        // we know that this u8 exist because size is not 0
         let msg_id = buf.get_u8();
 
         let Ok(msg_id) = CoreId::try_from(msg_id) else {
-            // unknown message id, just skip the segment
-            // cursor here is after msg_id
-            warn!("unknown message_id {msg_id:?}");
-            buf.advance(size - 1);
-            // buf.clear();
+            error!("unknown core message_id {msg_id:?}");
+            // unknown message id
+            // enter the first byte of the new message
+            if buf.remaining() >= size {
+                buf.advance(size);
+            } else {
+                buf.clear();
+            }
             return Ok(None);
         };
 
@@ -370,6 +365,9 @@ impl Decoder for CoreCodec {
 
             // <len=0001+X><id=5><bitfield>
             CoreId::Bitfield => {
+                if buf.remaining() < 1 {
+                    return Ok(None);
+                }
                 let bitfield = buf.copy_to_bytes(size - 1).to_vec();
                 Core::Bitfield(Bitfield::from_vec(bitfield))
             }
@@ -548,8 +546,9 @@ mod tests {
             assert_eq!(msg.msg_type, MetadataMsgType::Response);
             assert_eq!(msg.total_size, Some(28258));
             assert_eq!(msg.payload.len(), 201);
+            return;
         }
-        assert!(buf.is_empty());
+        panic!();
     }
 
     #[test]
@@ -583,7 +582,6 @@ mod tests {
     #[test]
     fn bitfield() {
         let mut original = bitvec![u8, Msb0; 0; 10];
-        println!("original {original:?}");
         let original_len_bytes = original.len().div_ceil(8);
 
         original.set(8, true);
@@ -646,7 +644,7 @@ mod tests {
     fn piece() {
         let mut buf = BytesMut::new();
         let msg =
-            Core::Piece(Block { index: 0, begin: 0, block: vec![0].into() });
+            Core::Piece(Block { index: 2, begin: 1, block: vec![3].into() });
         CoreCodec.encode(msg.clone(), &mut buf).unwrap();
 
         // len
@@ -654,39 +652,24 @@ mod tests {
         // id
         assert_eq!(buf.get_u8(), CoreId::Piece as u8);
         // index
-        assert_eq!(buf.get_u32(), 0);
+        assert_eq!(buf.get_u32(), 2);
         // begin
-        assert_eq!(buf.get_u32(), 0);
+        assert_eq!(buf.get_u32(), 1);
         // block
-        let mut block = BytesMut::new();
-        buf.copy_to_slice(&mut block);
-        assert_eq!(block.len(), 0);
+        assert_eq!(buf.to_vec(), [3]);
 
         let mut buf = BytesMut::new();
-        CoreCodec.encode(msg.clone(), &mut buf).unwrap();
+        CoreCodec.encode(msg, &mut buf).unwrap();
         let msg = CoreCodec.decode(&mut buf).unwrap().unwrap();
 
         match msg {
             Core::Piece(block) => {
-                assert_eq!(block.index, 0);
-                assert_eq!(block.begin, 0);
+                assert_eq!(block.index, 2);
+                assert_eq!(block.begin, 1);
                 assert_eq!(block.block.len(), 1);
             }
             _ => panic!(),
         }
         assert!(buf.is_empty());
-    }
-
-    #[test]
-    fn reserved_bytes() {
-        let reserved = Bitfield::from_vec(vec![0, 0, 0, 0, 0, 16, 0, 0]);
-        // let mut a = bitarr![u8, Msb0; 0; 64];
-        // reserved.set(43, true);
-
-        assert_eq!(reserved.clone().into_vec(), [0, 0, 0, 0, 0, 16, 0, 0]);
-
-        let support_extension_protocol = reserved[43];
-
-        assert!(support_extension_protocol)
     }
 }

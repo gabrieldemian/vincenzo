@@ -224,8 +224,10 @@ impl<M: TorrentSource> Torrent<Idle, M> {
 }
 
 impl<M: TorrentSource, S: torrent::State> Torrent<S, M> {
-    /// helper function to connect and announce to a tracker, that can be used
-    /// in tasks.
+    // this monstruosity is here to avoid taking self as parameter so it can be
+    // used in tasks. There is not much I can do about the linting warning (for now).
+    /// Connect and announce to a tracker.
+    #[allow(clippy::too_many_arguments)]
     async fn announce(
         tracker: &str,
         info_hash: InfoHash,

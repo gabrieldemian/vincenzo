@@ -159,12 +159,15 @@ impl Peer<Connected> {
                         PeerMsg::InterestedAlgorithm => {
                             self.interested().await?;
                         }
+                        PeerMsg::RequestAlgorithm => {
+                            self.request_block_infos().await?;
+                        }
                         PeerMsg::CloneBlocks(qnt, tx) => {
                             let reqs = self.state.req_man_block.clone_requests(qnt);
                             let _ = tx.send(reqs);
                         }
                         PeerMsg::Blocks(blocks) => {
-                            self.request_blocks(blocks).await?;
+                            self.add_block_infos(blocks).await?;
                         }
                         PeerMsg::NotInterested => {
                             debug!("> not_interested");
@@ -352,8 +355,9 @@ impl Peer<Connected> {
         }
     }
 
+    /// Add block infos to this peer.
     #[inline]
-    pub async fn request_blocks(
+    pub async fn add_block_infos(
         &mut self,
         blocks: BTreeMap<usize, Vec<BlockInfo>>,
     ) -> Result<(), Error> {
@@ -370,11 +374,11 @@ impl Peer<Connected> {
         Ok(())
     }
 
-    /// Request block infos by requesting to the Disk.
+    /// Request block infos from Disk.
     /// Must be used after checking that the Peer is able to send blocks with
     /// [`Self::can_request`].
     #[inline]
-    pub async fn request_blocks_disk(&mut self) -> Result<(), Error> {
+    pub async fn request_block_infos(&mut self) -> Result<(), Error> {
         // max available requests for this peer at the current moment
         let qnt = self.state.req_man_block.get_available_request_len();
 
@@ -382,14 +386,15 @@ impl Peer<Connected> {
             return Ok(());
         };
 
-        // if the torrent is downloading and the peer is out of block infos to
-        // request, the peer will request more. This usually happens for fast
-        // peers at the end of the download.
-        let is_idle = self.state.req_man_block.is_requests_empty()
-            && self.state.req_man_block.downloaded_count > 0
-            && self.state.req_man_block.req_count > 0;
+        // if the torrent is beign downloaded and the peer is out of block infos
+        // to request, the peer will request more. This usually happens
+        // for fast peers at the end of the download.
+        let no_block_infos_and_torrent_being_downloaded =
+            self.state.req_man_block.is_requests_empty()
+                && self.state.req_man_block.downloaded_count > 0
+                && self.state.req_man_block.req_count > 0;
 
-        if is_idle {
+        if no_block_infos_and_torrent_being_downloaded {
             self.state
                 .ctx
                 .torrent_ctx
@@ -535,7 +540,7 @@ impl Peer<Connected> {
     /// flushed.
     #[inline]
     pub async fn feed(&mut self, core: Core) -> Result<(), Error> {
-        self.state.ctx.counter.record_upload(core.full_len() as u64);
+        self.state.ctx.counter.record_upload(4 + core.len() as u64);
         self.state.sink.feed(core).await?;
         Ok(())
     }
@@ -543,7 +548,7 @@ impl Peer<Connected> {
     /// Send a message to sink and record upload rate and flush.
     #[inline]
     pub async fn send(&mut self, core: Core) -> Result<(), Error> {
-        self.state.ctx.counter.record_upload(core.full_len() as u64);
+        self.state.ctx.counter.record_upload(4 + core.len() as u64);
         self.state.sink.send(core).await?;
         Ok(())
     }

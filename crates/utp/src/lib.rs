@@ -1,5 +1,7 @@
 //! Micro Transport Protocol (μTP)
 
+#![allow(dead_code, unused)]
+
 mod header;
 use std::time::{SystemTime, UNIX_EPOCH};
 

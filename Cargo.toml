@@ -37,7 +37,7 @@ magnet-url = "3.0.0"
 rand = "0.9.2"
 rayon = "1.11.0"
 memmap2 = "0.9.9"
-ratatui = { version = "0.29.0" }
+ratatui = { version = "0.30.0" }
 serde = { version = "1.0.228", features = ["derive"] }
 signal-hook = { version = "0.4.3" }
 signal-hook-tokio = { version = "0.4.0", features = ["futures-v0_3"] }
@@ -71,17 +71,3 @@ vcz-macros = { path = "crates/vcz-macros" }
 
 [workspace.metadata.spellcheck]
 config = "spellcheck.toml"
-
-# [workspace.lints.rust]
-# unexpected_cfgs = { level = "warn", check-cfg = [
-#   'cfg(fuzzing)',
-#   'cfg(loom)',
-#   'cfg(mio_unsupported_force_poll_poll)',
-#   'cfg(tokio_allow_from_blocking_fd)',
-#   'cfg(tokio_internal_mt_counters)',
-#   'cfg(tokio_no_parking_lot)',
-#   'cfg(tokio_no_tuning_tests)',
-#   'cfg(tokio_taskdump)',
-#   'cfg(tokio_unstable)',
-#   'cfg(target_os, values("cygwin"))',
-# ] }

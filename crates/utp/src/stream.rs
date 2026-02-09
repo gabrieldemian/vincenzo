@@ -326,11 +326,11 @@ impl UtpStream {
             && self.write_buf.iter().any(|v| !v.payload.is_empty())
     }
 
-    fn handle_fin(&self, header: &Header) -> std::io::Result<()> {
+    fn handle_fin(&self, _header: &Header) -> std::io::Result<()> {
         todo!()
     }
 
-    fn handle_reset(&self, header: &Header) -> std::io::Result<()> {
+    fn handle_reset(&self, _header: &Header) -> std::io::Result<()> {
         todo!()
     }
 
@@ -375,7 +375,7 @@ impl AsyncWrite for UtpStream {
     /// sent alone to the peer.
     fn poll_write(
         mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
+        _cx: &mut std::task::Context<'_>,
         buf: &[u8],
     ) -> Poll<Result<usize, std::io::Error>> {
         // ensure we have enough capacity in the buffer
