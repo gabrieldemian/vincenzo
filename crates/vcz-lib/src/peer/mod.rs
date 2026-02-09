@@ -17,7 +17,7 @@ use crate::{
 };
 use bendy::encoding::ToBencode;
 use futures::{SinkExt, StreamExt};
-use std::{collections::BTreeMap, sync::atomic::Ordering, time::Duration};
+use std::{sync::atomic::Ordering, time::Duration};
 use tokio::{
     select,
     sync::oneshot,
@@ -208,7 +208,7 @@ impl Peer<Connected> {
             tracing::debug!(
                 "b {} d {} t {:?} avg {:?}",
                 self.state.req_man_block.len(),
-                self.state.req_man_block.downloaded_count,
+                self.state.req_man_block.recv_count,
                 self.state.req_man_block.get_timeout(),
                 self.state.req_man_block.get_avg(),
             );
@@ -252,9 +252,7 @@ impl Peer<Connected> {
         self.state.seed_only = true;
         self.state.ctx.tx.send(PeerMsg::Unchoke).await?;
 
-        for block in
-            self.state.req_man_block.drain().into_iter().flat_map(|v| v.1)
-        {
+        for block in self.state.req_man_block.drain().into_iter() {
             self.send(Core::Cancel(block)).await?;
         }
 
@@ -293,9 +291,9 @@ impl Peer<Connected> {
         let was_requested =
             self.state.req_man_block.remove_request(&block_info);
 
-        // ignore unsolicited blocks, could be a malicious peer, a bugged
-        // client, etc. Or when the client has sent a cancel but because of the
-        // latency, the peer doesn't know that yet.
+        // ignore unsolicited (or duplicate) blocks, could be a malicious peer,
+        // a bugged client, etc. Or when the client has sent a cancel
+        // but because of the latency, the peer doesn't know that yet.
         if !was_requested {
             return Ok(());
         }
@@ -331,10 +329,7 @@ impl Peer<Connected> {
     pub fn free_pending_blocks(&mut self) {
         let blocks = self.state.req_man_block.drain();
 
-        tracing::debug!(
-            "returning {} blocks",
-            blocks.iter().fold(0, |acc, v| acc + v.1.len())
-        );
+        tracing::debug!("returning {} blocks", blocks.len(),);
 
         if !blocks.is_empty() {
             let _ = self.state.free_tx.send(ReturnToDisk::Block(
@@ -344,7 +339,6 @@ impl Peer<Connected> {
         }
 
         let pieces = self.state.req_man_meta.drain();
-        let pieces = pieces.into_values().flatten().collect::<Vec<_>>();
         debug!("returning {} pieces", pieces.len());
 
         if !pieces.is_empty() {
@@ -359,11 +353,10 @@ impl Peer<Connected> {
     #[inline]
     pub async fn add_block_infos(
         &mut self,
-        blocks: BTreeMap<usize, Vec<BlockInfo>>,
+        blocks: Vec<BlockInfo>,
     ) -> Result<(), Error> {
         for block in blocks
-            .values()
-            .flatten()
+            .into_iter()
             .take(self.state.req_man_block.get_available_request_len())
         {
             if self.state.req_man_block.add_request(block.clone()) {
@@ -389,12 +382,12 @@ impl Peer<Connected> {
         // if the torrent is beign downloaded and the peer is out of block infos
         // to request, the peer will request more. This usually happens
         // for fast peers at the end of the download.
-        let no_block_infos_and_torrent_being_downloaded =
+        let no_block_infos_and_torrent_downloading =
             self.state.req_man_block.is_requests_empty()
-                && self.state.req_man_block.downloaded_count > 0
+                && self.state.req_man_block.recv_count > 0
                 && self.state.req_man_block.req_count > 0;
 
-        if no_block_infos_and_torrent_being_downloaded {
+        if no_block_infos_and_torrent_downloading {
             self.state
                 .ctx
                 .torrent_ctx

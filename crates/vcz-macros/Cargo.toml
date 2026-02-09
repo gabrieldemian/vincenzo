@@ -14,9 +14,6 @@ exclude = ["tests/*", "*.log"]
 [lib]
 proc-macro = true
 
-[[test]]
-name = "tests"
-
 [dependencies]
 quote = "1.0.44"
 syn = "2.0.114"

@@ -27,10 +27,10 @@ use tokio::{
 #[derive(Debug, Clone)]
 pub enum PeerBrMsg {
     /// Start endgame mode with block infos sent by the disk.
-    Endgame(BTreeMap<usize, Vec<BlockInfo>>),
+    Endgame(Vec<BlockInfo>),
 
     /// Send request blocks to all peers.
-    Request(BTreeMap<usize, Vec<BlockInfo>>),
+    Request(Vec<BlockInfo>),
 
     /// When a new peer is connected, other peers might want to send messages
     /// to him to syncronize state.
@@ -111,9 +111,6 @@ pub enum TorrentMsg {
     /// When we can't do a TCP connection with the ip of the Peer.
     PeerError(SocketAddr),
 
-    /// Get the missing pieces of local. Where 1 = missing, 0 = not missing
-    GetMissingPieces(PeerId, oneshot::Sender<Bitfield>),
-
     SetPeerBitfield(PeerId, Bitfield),
 
     /// If the remote peer has a piece in which the local hasn't
@@ -127,7 +124,7 @@ pub enum TorrentMsg {
     PeerHave(PeerId, usize),
 
     /// Start endgame mode, sent by the disk.
-    Endgame(BTreeMap<usize, Vec<BlockInfo>>),
+    Endgame(Vec<BlockInfo>),
 
     /// When a peer request a piece of the info
     /// index, recipient

@@ -75,12 +75,6 @@ pub struct BlockInfo {
     pub len: usize,
 }
 
-impl From<&BlockInfo> for usize {
-    fn from(val: &BlockInfo) -> Self {
-        val.index
-    }
-}
-
 impl Default for BlockInfo {
     fn default() -> Self {
         Self { index: 0, begin: 0, len: BLOCK_LEN }

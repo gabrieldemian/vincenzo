@@ -145,16 +145,19 @@ impl Info {
     }
 
     /// Calculate how many pieces there are.
+    #[inline]
     pub fn pieces(&self) -> usize {
         (self.pieces.len()).div_ceil(20)
     }
 
     /// Calculate how many blocks there are in the entire torrent.
+    #[inline]
     pub fn blocks_count(&self) -> usize {
         self.get_torrent_size().div_ceil(BLOCK_LEN)
     }
 
     /// Calculate how many blocks there are per piece
+    #[inline]
     pub fn blocks_per_piece(&self) -> usize {
         self.piece_length.div_ceil(BLOCK_LEN)
     }

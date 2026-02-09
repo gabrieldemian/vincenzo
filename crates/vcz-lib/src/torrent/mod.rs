@@ -18,7 +18,7 @@ use crate::{
     daemon::{DaemonCtx, DaemonMsg},
     disk::{DiskMsg, ReturnToDisk},
     error::Error,
-    extensions::{BLOCK_LEN, BlockInfo},
+    extensions::BLOCK_LEN,
     metainfo::MetaInfo,
     peer::{self, Peer, PeerCtx, PeerId, PeerMsg},
     torrent,
@@ -225,7 +225,8 @@ impl<M: TorrentSource> Torrent<Idle, M> {
 
 impl<M: TorrentSource, S: torrent::State> Torrent<S, M> {
     // this monstruosity is here to avoid taking self as parameter so it can be
-    // used in tasks. There is not much I can do about the linting warning (for now).
+    // used in tasks. There is not much I can do about the linting warning (for
+    // now).
     /// Connect and announce to a tracker.
     #[allow(clippy::too_many_arguments)]
     async fn announce(
@@ -552,20 +553,12 @@ impl<M: TorrentSource> Torrent<Connected, M> {
             qnt = qnt.saturating_sub(r.len());
 
             if qnt == 0 {
-                let mut tree: BTreeMap<usize, Vec<BlockInfo>> = BTreeMap::new();
-
-                for info in r {
-                    let e = tree.entry(info.index).or_default();
-                    e.push(info);
-                }
-
-                if peer_tx.send(PeerMsg::Blocks(tree.clone())).await.is_err() {
+                if peer_tx.send(PeerMsg::Blocks(r.clone())).await.is_err() {
                     let _ = self.ctx.free_tx.send(ReturnToDisk::Block(
                         self.ctx.info_hash.clone(),
-                        tree,
+                        r,
                     ));
                 }
-
                 break;
             }
         }
@@ -788,17 +781,5 @@ impl<M: TorrentSource> Torrent<Connected, M> {
         remote
             .iter_ones()
             .find(|&piece_index| !unsafe { *local.get_unchecked(piece_index) })
-    }
-
-    /// Return a bitfield representing the pieces that the local client does not
-    /// have, and that the remote has.
-    pub fn get_missing_pieces(&self, peer_id: &PeerId) -> Bitfield {
-        self.state
-            .peer_pieces
-            .get(peer_id)
-            // even though i'm doing a clone here, the compiler *probably*
-            // optimizes this with SIMD.
-            .map(|remote| !self.bitfield.clone() & remote)
-            .unwrap_or_default()
     }
 }

@@ -1,10 +1,8 @@
 //! Helpers to build Peers.
 
-use tokio::sync::oneshot;
-use vcz_lib::torrent::TorrentMsg;
-
 use super::*;
 use std::marker::PhantomData;
+use vcz_lib::torrent::TorrentMsg;
 
 pub(crate) trait PeerBuilderState {}
 
@@ -26,15 +24,12 @@ impl PeerBuilder<Leecher> {
         let (mut disk, mut daemon, metainfo) =
             setup_incomplete_torrent().await?;
         let p = get_p(&daemon);
-        disk.set_piece_strategy(
-            &metainfo.info.info_hash,
-            PieceStrategy::Sequential,
-        )?;
         let disk_tx = disk.tx.clone();
         spawn(async move { daemon.run().await });
         let info_hash = metainfo.info.info_hash.clone();
         disk.new_torrent_metainfo(metainfo).await?;
         let torrent_tx = disk.torrent_ctxs.get(&info_hash).unwrap().tx.clone();
+        disk.set_piece_strategy(&info_hash, PieceStrategy::Sequential).await?;
         spawn(async move { disk.run().await });
         Ok((p.0, disk_tx, torrent_tx))
     }
@@ -51,19 +46,14 @@ impl PeerBuilder<Seeder> {
     {
         let (mut disk, mut daemon, metainfo) = setup_complete_torrent().await?;
         let p = get_p(&daemon);
-        disk.set_piece_strategy(
-            &metainfo.info.info_hash,
-            PieceStrategy::Sequential,
-        )?;
         let disk_tx = disk.tx.clone();
         spawn(async move { daemon.run().await });
+        let info_hash = metainfo.info.info_hash.clone();
+        disk.new_torrent_metainfo(metainfo).await?;
+        let torrent_tx = disk.torrent_ctxs.get(&info_hash).unwrap().tx.clone();
+        disk.set_piece_strategy(&info_hash, PieceStrategy::Sequential).await?;
         spawn(async move { disk.run().await });
-        let (otx, orx) = oneshot::channel();
-        disk_tx
-            .send(DiskMsg::GetTorrentCtx(metainfo.info.info_hash.clone(), otx))
-            .await?;
-        let torrent_ctx = orx.await?.unwrap();
-        Ok((p.0, disk_tx, torrent_ctx.tx.clone()))
+        Ok((p.0, disk_tx, torrent_tx))
     }
 
     pub(crate) fn seeder() -> PeerBuilder<Seeder> {

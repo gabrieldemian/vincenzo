@@ -87,10 +87,6 @@ impl Torrent<Connected, FromMetaInfo> {
                             let r = self.peer_has_piece_not_in_local(&id);
                             let _ = tx.send(r);
                         }
-                        TorrentMsg::GetMissingPieces(id, tx) => {
-                            let r = self.get_missing_pieces(&id);
-                            let _ = tx.send(r);
-                        }
                         TorrentMsg::HaveInfo(tx) => {
                             let _ = tx.send(true);
                         }

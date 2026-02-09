@@ -18,7 +18,6 @@ use futures::{
 use rand::{Rng, distr::Alphanumeric};
 use rkyv::{Archive, Deserialize, Serialize};
 use std::{
-    collections::BTreeMap,
     fmt::Display,
     net::SocketAddr,
     ops::{Deref, DerefMut},
@@ -201,7 +200,7 @@ pub enum PeerMsg {
     NotInterested,
 
     /// Send block infos to this peer.
-    Blocks(BTreeMap<usize, Vec<BlockInfo>>),
+    Blocks(Vec<BlockInfo>),
 
     CloneBlocks(usize, oneshot::Sender<Vec<BlockInfo>>),
 
@@ -547,7 +546,6 @@ pub struct Connected {
 
     pub req_man_meta: RequestManager<MetadataPiece>,
 
-    // pub outgoing_requests_info_pieces_times: HashMap<u64, Instant>,
     /// The requests we got from peer.
     ///
     /// The request's entry is removed from here when the block is transmitted
