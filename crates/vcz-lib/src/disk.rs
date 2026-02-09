@@ -46,7 +46,7 @@ use tokio::{
         mpsc::{self, Receiver},
         oneshot::{self, Sender},
     },
-    time::interval,
+    time::{Instant, interval},
 };
 use tracing::{debug, info, warn};
 
@@ -208,12 +208,18 @@ pub struct Disk {
 
     /// A LRU cache of file handles to avoid doing a sys call each time the
     /// disk needs to read or write to a file.
-    pub read_mmap_cache: LruCache<PathBuf, Arc<Mmap>>,
-    pub write_mmap_cache: LruCache<PathBuf, Arc<Mutex<MmapMut>>>,
+    pub read_mmap_cache: LruCache<Arc<Path>, Arc<Mmap>>,
+    pub write_mmap_cache: LruCache<Arc<Path>, Arc<Mutex<MmapMut>>>,
+
+    /// The instant that a file was last accessed.
+    pub last_accessed: HashMap<Arc<Path>, Instant>,
 }
 
 /// Cache capacity of files.
 static FILE_CACHE_CAPACITY: usize = 512;
+
+/// For how long a file must be inactive to be deleted from the LRU cache.
+static DURATION_LRU_POP: Duration = Duration::from_millis(10_000);
 
 impl Disk {
     pub fn new(
@@ -248,6 +254,7 @@ impl Disk {
             block_infos: HashMap::default(),
             torrent_info: HashMap::default(),
             piece_order: HashMap::default(),
+            last_accessed: HashMap::default(),
         }
     }
 
@@ -255,8 +262,9 @@ impl Disk {
     pub async fn run(&mut self) -> Result<(), Error> {
         // only for debugging
         // let mut disk_interval = interval(Duration::from_secs(3));
-        let mut flush_interval = interval(Duration::from_millis(1000));
+        let mut flush_interval = interval(Duration::from_millis(1_000));
         let mut dirty_count_history = Vec::with_capacity(10);
+        let mut lru_cleanup_interval = interval(Duration::from_millis(11_000));
 
         // ensure the necessary folders are created.
         tokio::fs::create_dir_all(self.incomplete_torrents_path()).await?;
@@ -268,7 +276,6 @@ impl Disk {
 
         'outer: loop {
             select! {
-                biased;
                 Some(msg) = self.rx.recv() => {
                     match msg {
                         DiskMsg::GetTorrentCtx(info_hash, sender) => {
@@ -363,16 +370,27 @@ impl Disk {
                         }
                     }
                 }
+                // if a file is inactive for `DURATION_LRU_POP` delete it
+                // from the mmap caches.
+                _ = lru_cleanup_interval.tick() => {
+                    let mut to_retain = Bitfield::from_piece_true(self.last_accessed.len());
+                    for (i, (k, v)) in self.last_accessed.iter().enumerate() {
+                        if Instant::now() - *v > DURATION_LRU_POP {
+                            self.read_mmap_cache.pop(k);
+                            self.write_mmap_cache.pop(k);
+                            to_retain.set(i, false);
+                        }
+                    }
+                    let mut iter = to_retain.into_iter();
+                    self.last_accessed.retain(|_, _| iter.next().unwrap());
+                }
                 _ = flush_interval.tick() => {
                     let total_dirty: usize = self.dirty_files.values()
                         .map(|bits| bits.count_ones())
                         .sum();
 
-                    if total_dirty == 0 {
-                        continue;
-                    }
-
                     dirty_count_history.push(total_dirty);
+
                     if dirty_count_history.len() > 10 {
                         dirty_count_history.swap_remove(0);
                     }
@@ -389,7 +407,7 @@ impl Disk {
                         interval(Duration::from_millis(500))
                     } else {
                         interval(Duration::from_millis(1000));
-                        continue;
+                        continue
                     };
 
                     self.flush_dirty_files().await;
@@ -594,7 +612,7 @@ impl Disk {
 
         // reuse the already open file handles and put in the cache.
         for (f, mmap) in file_handles {
-            self.read_mmap_cache.put(f.path.to_path_buf(), mmap);
+            self.read_mmap_cache.put(f.path.clone(), mmap);
         }
 
         let mut downloaded_pieces = Bitfield::from_piece(total_pieces);
@@ -830,10 +848,11 @@ impl Disk {
         })
     }
 
+    /// Flush files in `self.dirty_files` to disk.
     async fn flush_dirty_files(&mut self) {
         for (info_hash, dirty_bits) in &mut self.dirty_files {
-            let mut to_set = Bitfield::from_piece(dirty_bits.len());
-
+            // portion of `dirty_bits` succesfully flushed
+            let mut clean_bits = Bitfield::from_piece(dirty_bits.len());
             let Some(cache) = self.torrent_cache.get(info_hash) else {
                 continue;
             };
@@ -843,14 +862,13 @@ impl Disk {
                         self.write_mmap_cache.get(&*file_meta.path)
                 {
                     let mmap = mmap.lock().await;
-                    if let Err(_e) = mmap.flush_async() {
-                        // keep it marked as dirty if flush failed
-                    } else {
-                        to_set.set(file_index, true);
+                    // keep it marked as dirty if flush failed
+                    if mmap.flush_async().is_ok() {
+                        clean_bits.set(file_index, true);
                     }
                 }
             }
-            *dirty_bits &= !to_set;
+            *dirty_bits &= !clean_bits;
         }
     }
 
@@ -1154,7 +1172,7 @@ impl Disk {
         info_hash: &InfoHash,
         piece_index: usize,
         piece_buffer: &[u8],
-    ) -> Result<Vec<(PathBuf, usize, std::ops::Range<usize>)>, Error> {
+    ) -> Result<Vec<(Arc<Path>, usize, std::ops::Range<usize>)>, Error> {
         let cache = self
             .torrent_cache
             .get(info_hash)
@@ -1170,7 +1188,7 @@ impl Disk {
             return Err(Error::PieceInvalid);
         }
 
-        let mut write_ops: Vec<(PathBuf, usize, std::ops::Range<usize>)> =
+        let mut write_ops: Vec<(Arc<Path>, usize, std::ops::Range<usize>)> =
             Vec::new();
 
         for file_meta in &cache.file_metadata {
@@ -1187,7 +1205,7 @@ impl Disk {
             let file_offset = overlap_start - file_meta.start_offset;
 
             write_ops.push((
-                file_meta.path.to_path_buf(),
+                file_meta.path.clone(),
                 file_offset,
                 buffer_start..buffer_end,
             ));
@@ -1211,7 +1229,7 @@ impl Disk {
 
         // group writes by file
         let mut file_ops: HashMap<
-            PathBuf,
+            Arc<Path>,
             Vec<(usize, std::ops::Range<usize>)>,
         > = HashMap::new();
 
@@ -1305,8 +1323,11 @@ impl Disk {
 
     async fn get_cached_read_mmap(
         &mut self,
-        path: &Path,
+        path: &Arc<Path>,
     ) -> Result<Arc<Mmap>, Error> {
+        *self.last_accessed.entry(path.clone()).or_insert(Instant::now()) =
+            Instant::now();
+
         if let Some(mmap) = self.read_mmap_cache.get(path) {
             return Ok(mmap.clone());
         }
@@ -1314,16 +1335,19 @@ impl Disk {
         // cache miss
         let file = Self::open_file(path).await?;
         let mmap = unsafe { Mmap::map(&file)? };
-        let mmap_arc = Arc::new(mmap);
+        let mmap = Arc::new(mmap);
 
-        self.read_mmap_cache.put(path.into(), mmap_arc.clone());
-        Ok(mmap_arc)
+        self.read_mmap_cache.put(path.clone(), mmap.clone());
+        Ok(mmap)
     }
 
     async fn get_cached_write_mmap(
         &mut self,
-        path: &Path,
+        path: &Arc<Path>,
     ) -> Result<Arc<Mutex<MmapMut>>, Error> {
+        *self.last_accessed.entry(path.clone()).or_insert(Instant::now()) =
+            Instant::now();
+
         if let Some(mmap) = self.write_mmap_cache.get(path) {
             return Ok(mmap.clone());
         }
@@ -1333,7 +1357,7 @@ impl Disk {
         let mmap = unsafe { MmapMut::map_mut(&file) }?;
         let mmap = Arc::new(Mutex::new(mmap));
 
-        self.write_mmap_cache.put(path.into(), mmap.clone());
+        self.write_mmap_cache.put(path.clone(), mmap.clone());
         Ok(mmap)
     }
 

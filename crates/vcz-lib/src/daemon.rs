@@ -274,7 +274,6 @@ impl Daemon {
 
         'outer: loop {
             select! {
-                biased;
                 // Listen to internal mpsc messages
                 Some(msg) = self.rx.recv() => {
                     match msg {

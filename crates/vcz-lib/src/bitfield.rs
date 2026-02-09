@@ -42,6 +42,9 @@ pub trait VczBitfield {
     fn from_piece(piece: usize) -> Bitfield {
         bitvec![u8, Msb0; 0; piece]
     }
+    fn from_piece_true(piece: usize) -> Bitfield {
+        bitvec![u8, Msb0; 1; piece]
+    }
     /// Set vector to a new len, in bits.
     fn new_and_resize(vec: Vec<u8>, len: usize) -> Bitfield {
         let mut s = Bitfield::from_vec(vec);

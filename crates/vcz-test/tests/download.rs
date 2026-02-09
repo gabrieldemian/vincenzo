@@ -25,7 +25,7 @@ async fn download() -> Result<(), Error> {
     // ! leecher and seeder are in switched perspectives.
     // but the torrent txs are in the right perspective.
 
-    // the leecher will run the interested allgorithm against the seeder.
+    // the leecher runs the interested allgorithm against the seeder.
     seeder.tx.send(PeerMsg::InterestedAlgorithm).await?;
     sleep(Duration::from_millis(10)).await;
 
