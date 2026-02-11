@@ -1,15 +1,18 @@
 use crate::{
+    Input, Key,
     action::{self, Action},
     components::footer,
     error::Error,
-    pages::{Empty, Page, TorrentList},
+    pages::{Empty, Info, Page, TorrentList},
     tui::Tui,
+    widgets::Menu,
 };
 use futures::{SinkExt, Stream, StreamExt};
 use ratatui::{
     Terminal,
     layout::{Constraint, Layout},
     prelude::CrosstermBackend,
+    style::Stylize,
 };
 use std::{sync::Arc, time::Duration};
 use tokio::{
@@ -25,12 +28,19 @@ use vcz_lib::{
     daemon_wire::{DaemonCodec, Message},
 };
 
+#[derive(Default, Clone, Debug)]
+pub struct State {
+    pub should_dim: bool,
+}
+
 pub struct App {
     pub is_detached: bool,
     pub tx: UnboundedSender<Action>,
     pub config: Arc<ResolvedConfig>,
     should_quit: bool,
+    state: State,
     page: Box<dyn Page>,
+    menu: Menu,
 }
 
 impl App {
@@ -44,7 +54,16 @@ impl App {
         tx: UnboundedSender<Action>,
     ) -> Self {
         let page = Box::new(Empty::new(tx.clone()));
-        App { config, should_quit: false, tx, page, is_detached: false }
+        let menu = Menu::new(tx.clone());
+        App {
+            config,
+            state: State::default(),
+            should_quit: false,
+            menu,
+            tx,
+            page,
+            is_detached: false,
+        }
     }
 
     pub async fn run(
@@ -90,14 +109,20 @@ impl App {
 
         loop {
             let e = tui.next().await?;
-            let a = self.page.handle_event(e);
+            let a = self.page.handle_event(e, &mut self.state);
+            self.handle_action(&a);
             let _ = tx.send(a);
+            let is_empty = self.page.id() == crate::action::Page::Empty;
 
             while let Ok(action) = rx.try_recv() {
                 match action {
                     Action::ChangePage(page) => match page {
                         action::Page::Empty => {
                             let page = Empty::new(tx.clone());
+                            self.page = Box::new(page);
+                        }
+                        action::Page::Info => {
+                            let page = Info::new(tx.clone());
                             self.page = Box::new(page);
                         }
                         action::Page::TorrentList => {
@@ -110,15 +135,25 @@ impl App {
                         // all pages, the footer with a text of the
                         // keybindings. Split the layout in 2 and only
                         // send the necessary part to the page.
-                        let _ = tui.terminal.draw(|f| {
-                            let chunks = Layout::vertical([
-                                Constraint::Percentage(100),
-                                Constraint::Min(1),
-                            ])
-                            .split(f.area());
 
-                            f.render_widget(footer(), chunks[1]);
-                            self.page.draw(f, chunks[0]);
+                        let _ = tui.terminal.draw(|f| {
+                            if is_empty {
+                                self.page.draw(f, f.area(), &mut self.state);
+                            } else {
+                                let chunks = Layout::vertical([
+                                    Constraint::Min(2),
+                                    Constraint::Percentage(100),
+                                    Constraint::Min(1),
+                                ])
+                                .split(f.area());
+                                self.menu.draw(f, chunks[0], &mut self.state);
+                                self.page.draw(f, chunks[1], &mut self.state);
+                                let mut footer = footer();
+                                if self.state.should_dim {
+                                    footer = footer.dim();
+                                }
+                                f.render_widget(footer, chunks[2]);
+                            }
                         });
                     }
                     Action::Quit => {
@@ -135,7 +170,7 @@ impl App {
                     Action::DeleteTorrent(info_hash) => {
                         sink.send(Message::DeleteTorrent(info_hash)).await?;
                     }
-                    _ => self.page.handle_action(action),
+                    _ => self.page.handle_action(action, &mut self.state),
                 }
             }
 
@@ -147,6 +182,21 @@ impl App {
 
         tui.exit()?;
         Ok(())
+    }
+
+    fn handle_action(&mut self, action: &Action) {
+        let Action::Input(input) = action else { return };
+        let is_empty = self.page.id() == crate::action::Page::Empty;
+
+        match input {
+            Input { key: Key::Tab, shift: true, .. } if !is_empty => {
+                self.menu.previous();
+            }
+            Input { key: Key::Tab, .. } if !is_empty => {
+                self.menu.next();
+            }
+            _ => {}
+        }
     }
 
     /// Listen to the messages sent by the daemon via TCP,
@@ -164,15 +214,13 @@ impl App {
                 Some(Ok(msg)) = stream.next() => {
                     match msg {
                         Message::Init(has_torrents) => {
-                            let _ = tx.send(
-                                Action::ChangePage(
-                                    if has_torrents {
-                                        action::Page::TorrentList
-                                    } else {
-                                        action::Page::Empty
-                                    }
-                                )
-                            );
+                            if !has_torrents {
+                                let _ = tx.send(
+                                    Action::ChangePage(
+                                        action::Page::Info
+                                    )
+                                );
+                            }
                         }
                         Message::TorrentState(v) => {
                             let _ = tx.send(Action::TorrentState(v));

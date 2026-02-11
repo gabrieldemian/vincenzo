@@ -26,10 +26,12 @@ impl Default for AppStyle {
         let red = Color::from_u32(0x00f86624);
         let yellow = Color::from_u32(0x00f9c80e);
         let purple = Color::from_u32(0x00cd57ff);
+        let highlight_fg = Style::default().fg(purple);
+        let highlight_bg = Style::default().bg(purple).fg(base_color);
 
         Self {
             base: base_color,
-            primary: blue,
+            primary: purple,
             blue,
             green,
             purple,
@@ -40,8 +42,8 @@ impl Default for AppStyle {
             warning: yellow,
 
             base_style: Style::default().fg(base_color),
-            highlight_fg: Style::default().fg(blue),
-            highlight_bg: Style::default().bg(blue).fg(base_color),
+            highlight_fg,
+            highlight_bg,
         }
     }
 }

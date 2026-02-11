@@ -1,12 +1,12 @@
 use crate::{
     Input, Key, PALETTE,
     action::Action,
-    centered_rect,
+    app, centered_rect,
     widgets::{NetworkChart, VimInput, validate_magnet},
 };
 use ratatui::widgets::{
-    Clear, List, ListItem, ListState, Scrollbar, ScrollbarOrientation,
-    ScrollbarState,
+    Block, Borders, Clear, List, ListItem, ListState, Scrollbar,
+    ScrollbarOrientation, ScrollbarState,
 };
 use tokio::sync::mpsc;
 use vcz_lib::{
@@ -20,6 +20,7 @@ use super::*;
 pub struct TorrentList<'a> {
     active_torrent: Option<InfoHash>,
     textarea: Option<VimInput<'a>>,
+    show_network: bool,
     pub focused: bool,
     pub scroll_state: ScrollbarState,
     pub scroll: usize,
@@ -33,6 +34,7 @@ impl<'a> TorrentList<'a> {
     pub fn new(tx: mpsc::UnboundedSender<Action>) -> Self {
         Self {
             tx,
+            show_network: false,
             network_charts: Vec::new(),
             state: ListState::default(),
             scroll_state: ScrollbarState::default(),
@@ -58,10 +60,12 @@ impl<'a> TorrentList<'a> {
         self.scroll_state = self.scroll_state.position(self.scroll);
     }
 
+    #[inline]
     fn next(&mut self) {
         self.select_relative(1);
     }
 
+    #[inline]
     fn previous(&mut self) {
         self.select_relative(-1);
     }
@@ -98,7 +102,12 @@ impl<'a> TorrentList<'a> {
 }
 
 impl<'a> Page for TorrentList<'a> {
-    fn draw(&mut self, f: &mut ratatui::Frame, area: Rect) {
+    fn draw(
+        &mut self,
+        f: &mut ratatui::Frame,
+        area: Rect,
+        state: &mut app::State,
+    ) {
         let mut torrent_rows: Vec<ListItem> =
             Vec::with_capacity(self.torrent_infos.len());
 
@@ -112,6 +121,7 @@ impl<'a> Page for TorrentList<'a> {
                 TorrentStatus::Seeding => PALETTE.success,
                 TorrentStatus::Error => PALETTE.error,
                 TorrentStatus::Paused => PALETTE.warning,
+                TorrentStatus::Downloading => PALETTE.blue,
                 _ => PALETTE.primary,
             };
 
@@ -119,7 +129,7 @@ impl<'a> Page for TorrentList<'a> {
             let mut status_txt = vec![Span::styled(status_txt, status_style)];
 
             if state.status == TorrentStatus::Downloading {
-                let download_and_rate = format!("   {download_rate}",).into();
+                let download_and_rate = format!("  {download_rate}",).into();
                 status_txt.push(download_and_rate);
             }
 
@@ -212,22 +222,25 @@ impl<'a> Page for TorrentList<'a> {
 
         let has_active_torrent = self.active_torrent.is_some();
 
-        let mut torrent_list = List::new(torrent_rows);
-        if self.textarea.is_some() {
+        let mut torrent_list = List::new(torrent_rows)
+            .block(Block::default().borders(Borders::ALL).title(" Torrents "));
+
+        if state.should_dim {
             torrent_list = torrent_list.dim();
         }
 
         // one chunk for the torrent list, another for the network chart
-        let chunks = Layout::vertical(if has_active_torrent {
-            [Constraint::Length(85), Constraint::Length(15)].as_ref()
-        } else {
-            [Constraint::Max(100)].as_ref()
-        })
-        .split(body_chunk);
+        let chunks =
+            Layout::vertical(if has_active_torrent && self.show_network {
+                [Constraint::Length(85), Constraint::Length(15)].as_ref()
+            } else {
+                [Constraint::Max(100)].as_ref()
+            })
+            .split(body_chunk);
 
         f.render_stateful_widget(torrent_list, chunks[0], &mut self.state);
 
-        if has_active_torrent {
+        if has_active_torrent && self.show_network {
             let selected = self.state.selected().unwrap();
             if let Some(network_chart) = self.network_charts.get(selected) {
                 network_chart.draw(f, chunks[1], self.textarea.is_some());
@@ -241,7 +254,11 @@ impl<'a> Page for TorrentList<'a> {
         }
     }
 
-    fn handle_event(&mut self, event: crate::tui::Event) -> Action {
+    fn handle_event(
+        &mut self,
+        event: crate::tui::Event,
+        state: &mut app::State,
+    ) -> Action {
         let crate::tui::Event::TerminalEvent(event) = event else {
             return self.get_action(event);
         };
@@ -253,12 +270,13 @@ impl<'a> Page for TorrentList<'a> {
             && textarea.handle_event(&i)
         {
             self.textarea = None;
+            state.should_dim = false;
             return Action::None;
         }
         Action::Input(i)
     }
 
-    fn handle_action(&mut self, action: Action) {
+    fn handle_action(&mut self, action: Action, state: &mut app::State) {
         match action {
             Action::TorrentStates(torrent_states) => {
                 for (i, s) in torrent_states.iter().enumerate() {
@@ -289,6 +307,7 @@ impl<'a> Page for TorrentList<'a> {
 
             Action::Input(input) if self.textarea.is_none() => match input {
                 Input { key: Key::Char('q'), .. } => {
+                    state.should_dim = false;
                     self.quit();
                 }
                 Input { key: Key::Char('d'), .. } => {
@@ -300,11 +319,13 @@ impl<'a> Page for TorrentList<'a> {
                 Input { key: Key::Char('k'), .. } => {
                     self.previous();
                 }
+                Input { key: Key::Char('n'), .. } => {
+                    self.show_network = !self.show_network;
+                }
                 Input { key: Key::Char('t'), .. } => {
                     let mut textarea = VimInput::default();
-
                     textarea.set_placeholder_text("Paste magnet link here...");
-
+                    state.should_dim = true;
                     self.textarea = Some(textarea);
                 }
                 Input { key: Key::Char('p'), .. }
@@ -318,5 +339,8 @@ impl<'a> Page for TorrentList<'a> {
             },
             _ => {}
         }
+    }
+    fn id(&self) -> crate::action::Page {
+        crate::action::Page::TorrentList
     }
 }

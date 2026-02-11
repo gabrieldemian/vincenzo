@@ -4,10 +4,10 @@ use crate::Input;
 
 /// A new component to be rendered on the UI.
 /// Used in conjunction with [`Action`]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Page {
-    /// Empty page with no torrents
     Empty,
+    Info,
     // Main page with torrents
     TorrentList,
 }

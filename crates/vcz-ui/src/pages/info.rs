@@ -1,6 +1,6 @@
 use crate::{
     Input, Key, PALETTE,
-    action::{Action, Page},
+    action::Action,
     app::State,
     centered_rect,
     pages::{self},
@@ -13,13 +13,13 @@ use ratatui::{
 };
 use tokio::sync::mpsc;
 
-pub struct Empty<'a> {
+pub struct Info<'a> {
     pub tx: mpsc::UnboundedSender<Action>,
     textarea: Option<VimInput<'a>>,
     lines: Vec<Line<'a>>,
 }
 
-impl<'a> Empty<'a> {
+impl<'a> Info<'a> {
     pub fn new(tx: mpsc::UnboundedSender<Action>) -> Self {
         let lines: [Line; _] = [
             "██╗   ██╗ ██████╗███████╗".into(),
@@ -59,7 +59,7 @@ impl<'a> Empty<'a> {
     }
 }
 
-impl<'a> pages::Page for Empty<'a> {
+impl<'a> pages::Page for Info<'a> {
     fn draw(&mut self, f: &mut ratatui::Frame, area: Rect, state: &mut State) {
         let mut widget = Paragraph::new(self.lines.clone()).centered().block(
             Block::default()
@@ -93,12 +93,6 @@ impl<'a> pages::Page for Empty<'a> {
     }
 
     fn handle_action(&mut self, action: Action, state: &mut State) {
-        if let Action::TorrentStates(ref s) = action
-            && !s.is_empty()
-        {
-            let _ = self.tx.send(Action::ChangePage(Page::TorrentList));
-        }
-
         let Action::Input(input) = action else { return };
 
         if let Input { key: Key::Char('t'), .. } = input {
@@ -122,6 +116,6 @@ impl<'a> pages::Page for Empty<'a> {
     }
 
     fn id(&self) -> crate::action::Page {
-        Page::Empty
+        crate::action::Page::Info
     }
 }
