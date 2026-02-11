@@ -11,6 +11,9 @@ readme = "README.md"
 license = "MIT"
 exclude = ["*.log"]
 
+[features]
+debug = []
+
 [dependencies]
 dirs = { version = "6.0.0" }
 
@@ -40,6 +43,3 @@ urlencoding = { workspace = true }
 vcz-macros = { workspace = true }
 signal-hook = { workspace = true }
 signal-hook-tokio = { workspace = true }
-
-[features]
-debug = []

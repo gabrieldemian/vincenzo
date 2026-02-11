@@ -18,7 +18,6 @@ members = [
   "crates/vcz",
   "crates/utp",
 ]
-
 resolver = "2"
 
 [workspace.dependencies]

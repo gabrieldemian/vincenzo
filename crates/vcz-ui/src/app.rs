@@ -1,6 +1,17 @@
-use std::{sync::Arc, time::Duration};
-
+use crate::{
+    action::{self, Action},
+    components::footer,
+    error::Error,
+    pages::{Empty, Page, TorrentList},
+    tui::Tui,
+};
 use futures::{SinkExt, Stream, StreamExt};
+use ratatui::{
+    Terminal,
+    layout::{Constraint, Layout},
+    prelude::CrosstermBackend,
+};
+use std::{sync::Arc, time::Duration};
 use tokio::{
     net::TcpStream,
     select, spawn,
@@ -14,19 +25,12 @@ use vcz_lib::{
     daemon_wire::{DaemonCodec, Message},
 };
 
-use crate::{
-    action::Action,
-    error::Error,
-    pages::{Page, torrent_list::TorrentList},
-    tui::Tui,
-};
-
 pub struct App {
     pub is_detached: bool,
     pub tx: UnboundedSender<Action>,
     pub config: Arc<ResolvedConfig>,
     should_quit: bool,
-    page: TorrentList<'static>,
+    page: Box<dyn Page>,
 }
 
 impl App {
@@ -39,8 +43,7 @@ impl App {
         config: Arc<ResolvedConfig>,
         tx: UnboundedSender<Action>,
     ) -> Self {
-        let page = TorrentList::new(tx.clone());
-
+        let page = Box::new(Empty::new(tx.clone()));
         App { config, should_quit: false, tx, page, is_detached: false }
     }
 
@@ -70,10 +73,11 @@ impl App {
             }
         };
 
-        let mut tui = Tui::new()?;
-        tui.run()?;
-
+        let backend = CrosstermBackend::new(std::io::stdout());
+        let terminal = Terminal::new(backend)?;
+        let mut tui = Tui::new(terminal)?;
         let tx = self.tx.clone();
+        tui.init()?;
 
         // spawn event loop to listen to messages sent by the daemon
         let socket = Framed::new(socket, DaemonCodec);
@@ -91,9 +95,30 @@ impl App {
 
             while let Ok(action) = rx.try_recv() {
                 match action {
+                    Action::ChangePage(page) => match page {
+                        action::Page::Empty => {
+                            let page = Empty::new(tx.clone());
+                            self.page = Box::new(page);
+                        }
+                        action::Page::TorrentList => {
+                            let page = TorrentList::new(tx.clone());
+                            self.page = Box::new(page);
+                        }
+                    },
                     Action::Render => {
-                        let _ = tui.draw(|f| {
-                            self.page.draw(f);
+                        // there is a layout that is persisted between
+                        // all pages, the footer with a text of the
+                        // keybindings. Split the layout in 2 and only
+                        // send the necessary part to the page.
+                        let _ = tui.terminal.draw(|f| {
+                            let chunks = Layout::vertical([
+                                Constraint::Percentage(100),
+                                Constraint::Min(1),
+                            ])
+                            .split(f.area());
+
+                            f.render_widget(footer(), chunks[1]);
+                            self.page.draw(f, chunks[0]);
                         });
                     }
                     Action::Quit => {
@@ -101,7 +126,7 @@ impl App {
                             let _ = sink.send(Message::Quit).await;
                         }
                         handle.abort();
-                        tui.cancel();
+                        tui.cancel()?;
                         self.should_quit = true;
                     }
                     Action::NewTorrent(magnet) => {
@@ -120,6 +145,7 @@ impl App {
             }
         }
 
+        tui.exit()?;
         Ok(())
     }
 
@@ -137,11 +163,22 @@ impl App {
             select! {
                 Some(Ok(msg)) = stream.next() => {
                     match msg {
-                        Message::TorrentState(torrent_state) => {
-                            let _ = tx.send(Action::TorrentState(torrent_state));
+                        Message::Init(has_torrents) => {
+                            let _ = tx.send(
+                                Action::ChangePage(
+                                    if has_torrents {
+                                        action::Page::TorrentList
+                                    } else {
+                                        action::Page::Empty
+                                    }
+                                )
+                            );
                         }
-                        Message::TorrentStates(torrent_states) => {
-                            let _ = tx.send(Action::TorrentStates(torrent_states));
+                        Message::TorrentState(v) => {
+                            let _ = tx.send(Action::TorrentState(v));
+                        }
+                        Message::TorrentStates(v) => {
+                            let _ = tx.send(Action::TorrentStates(v));
                         }
                         Message::Quit => {
                             debug!("ui Quit");

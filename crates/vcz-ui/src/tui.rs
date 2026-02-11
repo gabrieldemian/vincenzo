@@ -1,19 +1,16 @@
 use crate::error::Error;
-use std::{
-    ops::{Deref, DerefMut},
-    time::Duration,
-};
-
-use crossterm::event::EventStream;
+use crossterm::event::{DisableMouseCapture, EventStream};
 use futures::{FutureExt, StreamExt};
 use ratatui::{
-    backend::CrosstermBackend as Backend,
+    Terminal,
+    backend::{Backend, CrosstermBackend},
     crossterm::{
-        self, cursor,
-        event::{EnableBracketedPaste, EnableMouseCapture},
-        terminal::EnterAlternateScreen,
+        self,
+        event::EnableMouseCapture,
+        terminal::{self, EnterAlternateScreen, LeaveAlternateScreen},
     },
 };
+use std::{io, time::Duration};
 use tokio::{
     sync::mpsc::{self, Receiver, Sender},
     task::JoinHandle,
@@ -29,50 +26,41 @@ pub enum Event {
     Error,
 }
 
-pub struct Tui {
-    pub terminal: ratatui::Terminal<Backend<std::io::Stdout>>,
+pub struct Tui<B: Backend> {
+    pub terminal: Terminal<B>,
     pub task: JoinHandle<()>,
     pub cancellation_token: CancellationToken,
     pub event_rx: Receiver<Event>,
     pub event_tx: Sender<Event>,
-    pub mouse: bool,
-    pub paste: bool,
 }
 
-impl Tui {
+impl<B> Tui<B>
+where
+    B: Backend,
+    Error: From<B::Error>,
+{
     const FRAME_RATE: f64 = 60.0;
     const TICK_RATE: f64 = 4.0;
 
-    pub fn new() -> Result<Self, Error> {
-        let terminal = ratatui::init();
+    pub fn new(terminal: Terminal<B>) -> Result<Self, Error> {
         let (event_tx, event_rx) = mpsc::channel(50);
         let cancellation_token = CancellationToken::new();
         let task = tokio::spawn(async {});
-        let mouse = false;
-        let paste = false;
-
-        Ok(Self {
-            terminal,
-            task,
-            cancellation_token,
-            event_rx,
-            event_tx,
-            mouse,
-            paste,
-        })
+        Ok(Self { terminal, task, cancellation_token, event_rx, event_tx })
     }
 
-    pub fn mouse(mut self, mouse: bool) -> Self {
-        self.mouse = mouse;
-        self
-    }
+    pub fn init(&mut self) -> Result<(), Error> {
+        terminal::enable_raw_mode().unwrap();
+        ratatui::crossterm::execute!(
+            io::stdout(),
+            EnterAlternateScreen,
+            EnableMouseCapture
+        )?;
+        std::panic::set_hook(Box::new(move |_panic| {
+            Self::reset().expect("failed to reset the terminal");
+            std::process::exit(1);
+        }));
 
-    pub fn paste(mut self, paste: bool) -> Self {
-        self.paste = paste;
-        self
-    }
-
-    fn start(&mut self) {
         let tick_delay = Duration::from_secs_f64(1.0 / Self::TICK_RATE);
         let render_delay = Duration::from_secs_f64(1.0 / Self::FRAME_RATE);
 
@@ -109,53 +97,42 @@ impl Tui {
             }
             Ok::<(), Error>(())
         });
-    }
 
-    pub fn run(&mut self) -> Result<(), Error> {
-        crossterm::terminal::enable_raw_mode().unwrap();
-        crossterm::execute!(
-            std::io::stderr(),
-            EnterAlternateScreen,
-            cursor::Hide
-        )
-        .unwrap();
-        if self.mouse {
-            crossterm::execute!(std::io::stderr(), EnableMouseCapture).unwrap();
-        }
-        if self.paste {
-            crossterm::execute!(std::io::stderr(), EnableBracketedPaste)
-                .unwrap();
-        }
-        self.start();
         Ok(())
     }
 
-    pub fn cancel(&self) {
+    /// Reset the terminal interface.
+    /// It disables the raw mode and reverts back the terminal properties.
+    pub fn reset() -> Result<(), Error> {
+        terminal::disable_raw_mode()?;
+        ratatui::crossterm::execute!(
+            io::stdout(),
+            LeaveAlternateScreen,
+            DisableMouseCapture
+        )?;
+        Terminal::new(CrosstermBackend::new(io::stdout()))?.show_cursor()?;
+        Ok(())
+    }
+
+    /// Exits the terminal interface.
+    /// It disables the raw mode and reverts back the terminal properties.
+    pub fn exit(&mut self) -> Result<(), Error> {
+        terminal::disable_raw_mode()?;
+        ratatui::crossterm::execute!(
+            io::stdout(),
+            LeaveAlternateScreen,
+            DisableMouseCapture
+        )?;
+        self.terminal.show_cursor()?;
+        Ok(())
+    }
+
+    pub fn cancel(&mut self) -> Result<(), Error> {
         self.cancellation_token.cancel();
-        ratatui::restore();
+        self.exit()
     }
 
     pub async fn next(&mut self) -> Result<Event, Error> {
         self.event_rx.recv().await.ok_or(Error::RecvError)
-    }
-}
-
-impl Deref for Tui {
-    type Target = ratatui::Terminal<Backend<std::io::Stdout>>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.terminal
-    }
-}
-
-impl DerefMut for Tui {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.terminal
-    }
-}
-
-impl Drop for Tui {
-    fn drop(&mut self) {
-        self.cancel();
     }
 }

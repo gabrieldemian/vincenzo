@@ -8,6 +8,7 @@ use ratatui::layout::{Constraint, Flex, Layout, Rect};
 
 pub mod action;
 pub mod app;
+pub mod components;
 pub mod error;
 pub mod pages;
 pub mod palette;

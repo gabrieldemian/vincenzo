@@ -263,13 +263,69 @@ impl<M: TorrentSource, S: torrent::State> Torrent<S, M> {
 }
 
 impl<M: TorrentSource> Torrent<Connected, M> {
-    async fn reconnect_peers(&mut self) {
-        trace!(
-            "reconnect_interval connected_peers: {} error_peers: {}",
-            self.state.connected_peers.len(),
-            self.state.error_peers.len(),
-        );
-        let _ = self.reconnect_errored_peers().await;
+    async fn reconnect_peers(&self) -> Result<(), Error> {
+        // trace!(
+        //     "reconnect_interval connected_peers: {} error_peers: {}",
+        //     self.state.connected_peers.len(),
+        //     self.state.error_peers.len(),
+        // );
+        // let ctx = self.ctx.clone();
+        // let daemon_ctx = self.daemon_ctx.clone();
+        // let metadata_size = self.state.metadata_size;
+        // let is_seed_only = self.status == TorrentStatus::Seeding;
+        //
+        // for p in &self.state.error_peers {
+        //     let ctx = ctx.clone();
+        //     let daemon_ctx = daemon_ctx.clone();
+        //
+        //     spawn(async move {
+        //         match timeout(
+        //             Duration::from_secs(5),
+        //             TcpStream::connect(p.state.addr),
+        //         )
+        //         .await
+        //         {
+        //             Ok(Ok(socket)) => {
+        //                 let idle_peer = Peer::<peer::Idle>::new();
+        //                 let Ok(mut connected_peer) = idle_peer
+        //                     .outbound_handshake(
+        //                         socket,
+        //                         daemon_ctx,
+        //                         ctx,
+        //                         metadata_size,
+        //                     )
+        //                     .await
+        //                 else {
+        //                     ctx.tx
+        //                         .send(TorrentMsg::PeerError(p.state.addr))
+        //                         .await?;
+        //                     return Err(Error::HandshakeInvalid);
+        //                 };
+        //
+        //                 connected_peer.state.have_info = true;
+        //                 connected_peer.state.seed_only = is_seed_only;
+        //
+        //                 if let Err(r) = connected_peer.run().await {
+        //                     debug!(
+        //                         "{} peer loop stopped due to an error: {r:?}",
+        //                         connected_peer.state.ctx.remote_addr
+        //                     );
+        //                     ctx.tx
+        //                         .send(TorrentMsg::PeerError(p.state.addr))
+        //                         .await?;
+        //                     connected_peer.free_pending_blocks();
+        //                     return Err(r);
+        //                 }
+        //             }
+        //             Ok(Err(_e)) => {}
+        //             // timeout
+        //             Err(_) => {}
+        //         }
+        //
+        //         Ok::<(), Error>(())
+        //     });
+        // }
+        Ok(())
     }
 
     async fn unchoke(&mut self) {
@@ -435,9 +491,9 @@ impl<M: TorrentSource> Torrent<Connected, M> {
         self.state.error_peers.push(Peer::<peer::PeerError>::new(addr));
         self.state.connected_peers.retain(|v| v.remote_addr != addr);
         self.state.unchoked_peers.retain(|v| v.remote_addr != addr);
-        // self.state.connecting_peers.retain(|v| *v != addr);
         self.state.idle_peers.remove(&addr);
 
+        // if the errored peer is the opt unchoked
         if let Some(opt_addr) =
             self.state.opt_unchoked_peer.as_ref().map(|v| v.remote_addr)
             && opt_addr == addr
@@ -452,7 +508,6 @@ impl<M: TorrentSource> Torrent<Connected, M> {
 
     async fn peer_connected(&mut self, ctx: Arc<PeerCtx>) {
         self.state.connected_peers.push(ctx.clone());
-        // self.state.connecting_peers.retain(|v| *v != ctx.remote_addr);
         self.state.error_peers.retain(|v| v.state.addr != ctx.remote_addr);
         self.state.idle_peers.remove(&ctx.remote_addr);
 
@@ -520,15 +575,6 @@ impl<M: TorrentSource> Torrent<Connected, M> {
         }
 
         Ok(max_torrent_peers as usize - currently_active)
-    }
-
-    // todo: implement reconnect algo
-    pub async fn reconnect_errored_peers(&mut self) -> Result<(), Error> {
-        // let errored: Vec<_> =
-        //     self.state.error_peers.drain(..).map(|v| v.state.addr).collect();
-        // self.state.idle_peers.extend(errored);
-
-        Ok(())
     }
 
     /// Get the slowest peers, clone and send `qnt` block infos to the given

@@ -391,6 +391,8 @@ impl Daemon {
                     let socket = Framed::new(socket, DaemonCodec);
                     let (mut sink, mut stream) = socket.split();
 
+                    // sink.send(Message::Init(!self.torrent_states.is_empty())).await?;
+
                     let ctx = ctx.clone();
                     let all_fr_token = all_fr_token.clone();
                     let fr_token = CancellationToken::new();

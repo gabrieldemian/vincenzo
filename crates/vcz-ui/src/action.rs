@@ -4,20 +4,23 @@ use crate::Input;
 
 /// A new component to be rendered on the UI.
 /// Used in conjunction with [`Action`]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum Page {
-    // first page to be rendered
+    /// Empty page with no torrents
+    Empty,
+    // Main page with torrents
     TorrentList,
-    // Details,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum Action {
     Tick,
     Render,
     Quit,
     Error,
     None,
+
+    ChangePage(Page),
 
     TerminalEvent(crossterm::event::Event),
 

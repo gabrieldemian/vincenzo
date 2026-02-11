@@ -7,6 +7,7 @@ use ratatui::{
 };
 use std::fmt;
 use unicode_width::UnicodeWidthStr;
+use vcz_lib::magnet::Magnet;
 
 use crate::{Input, Key, PALETTE};
 
@@ -513,6 +514,35 @@ impl<'a> VimInput<'a> {
             Mode::Normal => self.handle_normal_mode(input),
             Mode::Insert => self.handle_insert_mode(input),
             Mode::Operator(_) => Transition::Nop,
+        }
+    }
+}
+
+pub fn validate_magnet<'a>(textarea: &mut VimInput<'a>) -> Option<Magnet> {
+    let magnet_str = textarea.lines().join("");
+    let magnet_str = magnet_str.trim();
+    let magnet = magnet_url::Magnet::new(magnet_str);
+
+    match magnet {
+        Ok(magnet) => {
+            textarea.set_style(Style::default().fg(PALETTE.success));
+            textarea.set_block(
+                Block::default()
+                    .border_style(PALETTE.success)
+                    .borders(Borders::ALL)
+                    .title(" Ok (Press Enter) "),
+            );
+            Some(Magnet(magnet))
+        }
+        Err(err) => {
+            textarea.set_style(PALETTE.error.into());
+            textarea.set_block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(PALETTE.error)
+                    .title(format!(" Err: {err} ")),
+            );
+            None
         }
     }
 }

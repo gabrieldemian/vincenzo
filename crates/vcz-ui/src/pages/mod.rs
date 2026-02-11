@@ -4,14 +4,17 @@
 //! Action, and then it uses this Action on it's draw function to do whatever it
 //! wants.
 
-use ratatui::Frame;
+pub mod empty;
 pub mod torrent_list;
-
 use crate::{action::Action, tui::Event};
+
+pub use empty::*;
+pub use ratatui::prelude::*;
+pub use torrent_list::*;
 
 pub trait Page {
     /// Draw on the screen, can also call draw on it's components.
-    fn draw(&mut self, f: &mut Frame);
+    fn draw(&mut self, f: &mut Frame, area: Rect);
 
     fn handle_event(&mut self, event: Event) -> Action;
 
@@ -19,11 +22,13 @@ pub trait Page {
     fn handle_action(&mut self, action: Action);
 
     /// get an app event and transform into a page action
-    fn get_action(&self, event: Event) -> Action;
-
-    /// Focus on the next component, if available.
-    fn focus_next(&mut self);
-
-    /// Focus on the previous component, if available.
-    fn focus_prev(&mut self);
+    fn get_action(&self, event: Event) -> Action {
+        match event {
+            Event::Tick => Action::Tick,
+            Event::Render => Action::Render,
+            Event::Quit => Action::Quit,
+            Event::Error => Action::Error,
+            Event::TerminalEvent(e) => Action::TerminalEvent(e),
+        }
+    }
 }

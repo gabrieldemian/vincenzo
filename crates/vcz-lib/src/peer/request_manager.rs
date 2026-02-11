@@ -11,14 +11,14 @@ use std::cmp::Reverse;
 use tokio::time::Instant;
 
 /// A type that can be requested.
-pub trait Requestable = Eq + Default + Clone + Ord + Hash;
+pub trait Requestable = Clone + Ord + Hash;
 
 /// Struct to centralize the logic of requesting something,
 /// used by BlockInfo and MetadataPiece (usize).
 ///
 /// It also handles the calculation of timeouts with EMA (exponential moving
 /// average) and a dynamic multiplier.
-pub struct RequestManager<T: Eq + Default + Clone + Ord + Hash> {
+pub struct RequestManager<T: Requestable> {
     /// How many requests wered made in total.
     pub req_count: u64,
 
@@ -71,14 +71,12 @@ impl<T: Requestable> Default for RequestManager<T> {
 }
 
 impl<T: Requestable> RequestManager<T> {
-    pub fn get_requests(&self) -> Vec<T> {
-        self.requests.clone()
-    }
-}
-
-impl<T: Requestable> RequestManager<T> {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn get_requests(&self) -> Vec<T> {
+        self.requests.clone()
     }
 
     pub fn set_limit(&mut self, limit: usize) {
@@ -92,10 +90,6 @@ impl<T: Requestable> RequestManager<T> {
 
     pub fn get_avg(&self) -> Duration {
         self.avg_recv_time
-    }
-
-    pub fn last_response(&self) -> Option<&Duration> {
-        self.recv_times.iter().last()
     }
 
     pub fn get_timeout(&self) -> Duration {
@@ -190,7 +184,6 @@ impl<T: Requestable> RequestManager<T> {
 
         let timeout = Instant::now() + self.get_timeout();
         self.req_start_times.insert(block.clone(), Instant::now());
-
         self.requests.push(block.clone());
         self.index.insert(block.clone(), self.requests.len() - 1);
         self.timeouts.push((Reverse(timeout), block));
@@ -296,17 +289,9 @@ impl<T: Requestable> RequestManager<T> {
         timed_out_blocks
     }
 
-    pub fn contains(&self, v: &T) -> bool {
-        self.index.contains_key(v)
-    }
-
     /// How many in-flight items there are.
     pub fn len(&self) -> usize {
         self.index.len()
-    }
-
-    pub fn len_pieces(&self) -> usize {
-        self.requests.len()
     }
 
     /// If there are no more items to request.

@@ -1,9 +1,12 @@
-use ratatui::{
-    prelude::*,
-    widgets::{
-        Block, Borders, Clear, List, ListItem, ListState, Paragraph, Scrollbar,
-        ScrollbarOrientation, ScrollbarState,
-    },
+use crate::{
+    Input, Key, PALETTE,
+    action::Action,
+    centered_rect,
+    widgets::{NetworkChart, VimInput, validate_magnet},
+};
+use ratatui::widgets::{
+    Clear, List, ListItem, ListState, Scrollbar, ScrollbarOrientation,
+    ScrollbarState,
 };
 use tokio::sync::mpsc;
 use vcz_lib::{
@@ -12,15 +15,7 @@ use vcz_lib::{
     utils::to_human_readable,
 };
 
-use crate::{
-    Input, Key, PALETTE,
-    action::Action,
-    centered_rect,
-    tui::Event,
-    widgets::{network_chart::NetworkChart, vim_input::VimInput},
-};
-
-use super::Page;
+use super::*;
 
 pub struct TorrentList<'a> {
     active_torrent: Option<InfoHash>,
@@ -46,43 +41,6 @@ impl<'a> TorrentList<'a> {
             focused: true,
             active_torrent: None,
             torrent_infos: Vec::new(),
-        }
-    }
-
-    fn new_network_chart(&mut self, info_hash: InfoHash) {
-        let chart = NetworkChart::new(info_hash);
-        self.network_charts.push(chart);
-    }
-
-    /// Validate that the user's magnet link is valid
-    fn validate(&mut self) -> Option<Magnet> {
-        let Some(textarea) = &mut self.textarea else { return None };
-
-        let magnet_str = textarea.lines().join("");
-        let magnet_str = magnet_str.trim();
-        let magnet = magnet_url::Magnet::new(magnet_str);
-
-        match magnet {
-            Ok(magnet) => {
-                textarea.set_style(Style::default().fg(PALETTE.success));
-                textarea.set_block(
-                    Block::default()
-                        .border_style(PALETTE.success)
-                        .borders(Borders::ALL)
-                        .title(" Ok (Press Enter) "),
-                );
-                Some(Magnet(magnet))
-            }
-            Err(err) => {
-                textarea.set_style(PALETTE.error.into());
-                textarea.set_block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_style(PALETTE.error)
-                        .title(format!(" Err: {err} ")),
-                );
-                None
-            }
         }
     }
 
@@ -117,7 +75,6 @@ impl<'a> TorrentList<'a> {
     }
 
     fn submit_magnet_link(&mut self, magnet: Magnet) {
-        self.new_network_chart(magnet.parse_xt_infohash());
         let _ = self.tx.send(Action::NewTorrent(magnet.0));
         self.quit();
     }
@@ -141,8 +98,9 @@ impl<'a> TorrentList<'a> {
 }
 
 impl<'a> Page for TorrentList<'a> {
-    fn draw(&mut self, f: &mut ratatui::Frame) {
-        let mut torrent_rows: Vec<ListItem> = Vec::new();
+    fn draw(&mut self, f: &mut ratatui::Frame, area: Rect) {
+        let mut torrent_rows: Vec<ListItem> =
+            Vec::with_capacity(self.torrent_infos.len());
 
         for (i, state) in self.torrent_infos.iter().enumerate() {
             let mut download_rate = to_human_readable(state.download_rate);
@@ -169,7 +127,7 @@ impl<'a> Page for TorrentList<'a> {
             let l = state.stats.leechers.to_string();
             let sl = format!("Seeders {s} Leechers {l}").into();
 
-            let mut line_top = Line::from("-".repeat(f.area().width as usize));
+            let mut line_top = Line::from("-".repeat(area.width as usize));
             let mut line_bottom = line_top.clone();
 
             if self.state.selected() == Some(i) {
@@ -179,7 +137,6 @@ impl<'a> Page for TorrentList<'a> {
                 name = name.fg(PALETTE.primary);
             }
 
-            // let total = ctx.connected_peers + ctx.idle_peers;
             let mut items = vec![
                 line_top,
                 name.into(),
@@ -240,7 +197,7 @@ impl<'a> Page for TorrentList<'a> {
             Constraint::Percentage(100),
             Constraint::Min(3),
         ])
-        .split(f.area());
+        .split(area);
 
         let body_chunk = chunks[0];
         let scrollbar_chunk = chunks[1];
@@ -253,17 +210,7 @@ impl<'a> Page for TorrentList<'a> {
             &mut self.scroll_state,
         );
 
-        let block = Block::bordered().title(" Torrents ");
         let has_active_torrent = self.active_torrent.is_some();
-
-        if self.torrent_infos.is_empty() {
-            f.render_widget(
-                Paragraph::new("Press [t] to add a new torrent.")
-                    .block(block)
-                    .centered(),
-                f.area(),
-            );
-        }
 
         let mut torrent_list = List::new(torrent_rows);
         if self.textarea.is_some() {
@@ -271,14 +218,12 @@ impl<'a> Page for TorrentList<'a> {
         }
 
         // one chunk for the torrent list, another for the network chart
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints(if has_active_torrent {
-                [Constraint::Length(85), Constraint::Length(15)].as_ref()
-            } else {
-                [Constraint::Max(100)].as_ref()
-            })
-            .split(body_chunk);
+        let chunks = Layout::vertical(if has_active_torrent {
+            [Constraint::Length(85), Constraint::Length(15)].as_ref()
+        } else {
+            [Constraint::Max(100)].as_ref()
+        })
+        .split(body_chunk);
 
         f.render_stateful_widget(torrent_list, chunks[0], &mut self.state);
 
@@ -290,19 +235,9 @@ impl<'a> Page for TorrentList<'a> {
         }
 
         if let Some(textarea) = self.textarea.as_mut() {
-            let area = centered_rect(60, 20, f.area());
+            let area = centered_rect(60, 20, area);
             f.render_widget(Clear, area);
             textarea.draw(f, area);
-        }
-    }
-
-    fn get_action(&self, event: crate::tui::Event) -> crate::action::Action {
-        match event {
-            Event::Tick => Action::Tick,
-            Event::Render => Action::Render,
-            Event::Quit => Action::Quit,
-            Event::Error => Action::Error,
-            Event::TerminalEvent(e) => Action::TerminalEvent(e),
         }
     }
 
@@ -311,7 +246,8 @@ impl<'a> Page for TorrentList<'a> {
             return self.get_action(event);
         };
         let i = event.into();
-
+        // todo: consider making this textarea into a page,
+        // its close method would just change the page to the previous one,
         // if the child component is some, let it handle the event.
         if let Some(textarea) = &mut self.textarea
             && textarea.handle_event(&i)
@@ -331,7 +267,8 @@ impl<'a> Page for TorrentList<'a> {
                         .iter()
                         .any(|v| v.info_hash == s.info_hash)
                     {
-                        self.new_network_chart(s.info_hash.clone());
+                        let chart = NetworkChart::new(s.info_hash.clone());
+                        self.network_charts.push(chart);
                     }
                     if let Some(chart) = self.network_charts.get_mut(i) {
                         chart.on_tick(s.download_rate, s.upload_rate);
@@ -342,8 +279,9 @@ impl<'a> Page for TorrentList<'a> {
             }
 
             Action::Input(input) if self.textarea.is_some() => {
-                if let Input { key: Key::Enter, .. } = input
-                    && let Some(magnet) = self.validate()
+                if let Some(textarea) = &mut self.textarea
+                    && let Input { key: Key::Enter, .. } = input
+                    && let Some(magnet) = validate_magnet(textarea)
                 {
                     self.submit_magnet_link(magnet);
                 }
@@ -381,6 +319,4 @@ impl<'a> Page for TorrentList<'a> {
             _ => {}
         }
     }
-    fn focus_next(&mut self) {}
-    fn focus_prev(&mut self) {}
 }

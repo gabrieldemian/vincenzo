@@ -20,16 +20,14 @@ use tracing::error;
 ///   internal event handler in mpsc. They both use the same API.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Message {
-    /// Daemon will send other Quit messages to all Torrents.
-    /// and Disk. It will close all event loops spawned through `run`.
-    ///
-    /// Quit does not have a message_id, only the u32 len.
+    /// Message to initiate the connection and exchange usefull state,
+    /// `u8` 1 or 0 if the client has any torrent.
+    Init(bool),
+
+    /// Daemon is quitting.
     Quit,
 
-    /// Daemon will send other Quit messages to all Torrents.
-    /// and Disk. It will close all event loops spawned through `run`.
-    ///
-    /// Quit does not have a message_id, only the u32 len.
+    /// Daemon is quitting the frontend remotely.
     FrontendQuit,
 
     /// Add a new torrent given a magnet link.
@@ -70,6 +68,7 @@ pub enum MessageId {
     FrontendQuit = 7,
     TorrentStates = 8,
     DeleteTorrent = 9,
+    Init = 10,
 }
 
 #[derive(Debug)]
@@ -85,6 +84,10 @@ impl Encoder<Message> for DaemonCodec {
         buf: &mut BytesMut,
     ) -> Result<(), Self::Error> {
         match item {
+            Message::Init(bool) => {
+                buf.put_u32(1);
+                buf.put_u8(if bool { 1 } else { 0 });
+            }
             Message::NewTorrent(magnet) => {
                 let magnet = magnet.to_string();
                 let msg_len = 1 + magnet.len() as u32;
@@ -203,6 +206,7 @@ impl Decoder for DaemonCodec {
         };
 
         let msg = match msg_id {
+            MessageId::Init => Message::Init(buf.get_u8() == 1),
             MessageId::NewTorrent => {
                 let mut payload = vec![0u8; buf.remaining()];
                 buf.copy_to_slice(&mut payload);

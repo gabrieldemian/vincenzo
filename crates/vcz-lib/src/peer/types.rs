@@ -585,12 +585,6 @@ pub struct PeerError {
     pub reconnect_attempts: u32,
 }
 
-/// A peer that is being handshaked and soon turned into a connected state.
-#[derive(Clone)]
-pub struct Connecting {
-    pub addr: SocketAddr,
-}
-
 impl peer::Peer<PeerError> {
     pub fn new(addr: SocketAddr) -> Self {
         peer::Peer {
@@ -602,5 +596,4 @@ impl peer::Peer<PeerError> {
 
 impl PeerState for PeerError {}
 impl PeerState for Connected {}
-impl PeerState for Connecting {}
 impl PeerState for Idle {}

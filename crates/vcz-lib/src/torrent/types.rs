@@ -411,8 +411,6 @@ pub struct Connected {
     /// request more peers to the tracker.
     pub idle_peers: HashSet<SocketAddr>,
 
-    // Idle peers being handshaked and soon moved to `connected_peer`.
-    // pub connecting_peers: Vec<SocketAddr>,
     pub connected_peers: Vec<Arc<PeerCtx>>,
 
     /// Maximum of 3 unchoked peers as per the protocol + the optimistically

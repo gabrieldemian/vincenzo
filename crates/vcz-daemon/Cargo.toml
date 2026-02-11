@@ -7,6 +7,9 @@ edition = "2024"
 name = "vczd"
 path = "src/main.rs"
 
+[features]
+debug = []
+
 [dependencies]
 bendy = { workspace = true }
 bytes = { workspace = true }
@@ -26,6 +29,3 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 urlencoding = { workspace = true }
 vcz-lib = { workspace = true }
-
-[features]
-debug = []

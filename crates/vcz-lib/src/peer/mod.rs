@@ -89,7 +89,7 @@ impl Peer<Connected> {
                     // because I want to run this deterministically
                     // and manually in integration tests.
                     #[cfg(not(feature = "debug"))]
-                    self.request_blocks_disk().await?;
+                    self.request_block_infos().await?;
 
                     #[cfg(not(feature = "debug"))]
                     self.rerequest_blocks().await?;
