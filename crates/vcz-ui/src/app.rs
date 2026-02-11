@@ -125,7 +125,8 @@ impl App {
                             self.page = Box::new(page);
                         }
                         action::Page::Info => {
-                            let page = Info::new(tx.clone());
+                            let page =
+                                Info::new(tx.clone(), &self.state.config);
                             self.page = Box::new(page);
                         }
                         action::Page::TorrentList => {

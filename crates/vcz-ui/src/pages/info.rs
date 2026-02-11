@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::{
     Input, Key, PALETTE,
     action::Action,
@@ -9,7 +11,7 @@ use ratatui::{
     widgets::{Block, Borders, Padding, Paragraph},
 };
 use tokio::sync::mpsc;
-use vcz_lib::VERSION;
+use vcz_lib::{VERSION, config::ResolvedConfig};
 
 pub struct Info<'a> {
     pub tx: mpsc::UnboundedSender<Action>,
@@ -17,7 +19,10 @@ pub struct Info<'a> {
 }
 
 impl<'a> Info<'a> {
-    pub fn new(tx: mpsc::UnboundedSender<Action>) -> Self {
+    pub fn new(
+        tx: mpsc::UnboundedSender<Action>,
+        config: &Arc<ResolvedConfig>,
+    ) -> Self {
         let lines: [Line; _] = [
             "██╗   ██╗ ██████╗███████╗".into(),
             "██║   ██║██╔════╝╚══███╔╝".into(),
@@ -26,14 +31,45 @@ impl<'a> Info<'a> {
             " ╚████╔╝ ╚██████╗███████╗".into(),
             "  ╚═══╝   ╚═════╝╚══════╝".into(),
             "".into(),
-            format!("v{VERSION}").into(),
+            vec![
+                Span::raw("version:").style(PALETTE.primary),
+                format!(" {VERSION}").into(),
+            ]
+            .into(),
+            vec![
+                Span::raw("peer port:").style(PALETTE.primary),
+                format!(" {}", config.local_peer_port).into(),
+            ]
+            .into(),
+            vec![
+                Span::raw("daemon addr:").style(PALETTE.primary),
+                format!(" {:?}", config.daemon_addr).into(),
+            ]
+            .into(),
+            vec![
+                Span::raw("download dir:").style(PALETTE.primary),
+                format!(" {}", config.download_dir.to_string_lossy()).into(),
+            ]
+            .into(),
+            vec![
+                Span::raw("config dir:").style(PALETTE.primary),
+                format!(" {}", config.config_dir.to_string_lossy()).into(),
+            ]
+            .into(),
+            vec![
+                Span::raw("metadata dir:").style(PALETTE.primary),
+                format!(" {}", config.metadata_dir.to_string_lossy()).into(),
+            ]
+            .into(),
+            "".into(),
+            "-------".into(),
             "".into(),
             Span::raw("https://github.com/gabrieldemian/vincenzo")
                 .italic()
                 .into(),
             vec![
                 Span::raw("by "),
-                Span::raw("@gabrieldemian").style(PALETTE.purple),
+                Span::raw("@gabrieldemian").style(PALETTE.primary),
             ]
             .into(),
         ];

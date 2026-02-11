@@ -103,6 +103,7 @@ impl Config {
             Self::find_workspace_root().unwrap().join("test-files");
 
         ResolvedConfig {
+            config_dir: "".into(),
             download_dir: test_files_dir.clone(),
             metadata_dir: test_files_dir,
             daemon_addr: "0.0.0.0:0".parse().unwrap(),
@@ -216,7 +217,11 @@ impl Config {
         let download_dir = dirs::download_dir()
             .expect("Could not read your download directory.");
 
+        let mut config_dir = Self::get_config_folder();
+        config_dir.push("config");
+
         ResolvedConfig {
+            config_dir,
             download_dir: self.download_dir.unwrap_or(download_dir),
             metadata_dir: self.metadata_dir.unwrap_or(metadata_dir),
             daemon_addr: self.daemon_addr.unwrap_or(Daemon::DEFAULT_LISTENER),
@@ -240,6 +245,7 @@ impl Config {
 pub struct ResolvedConfig {
     pub download_dir: PathBuf,
     pub metadata_dir: PathBuf,
+    pub config_dir: PathBuf,
     pub daemon_addr: SocketAddr,
     pub local_peer_port: u16,
     pub max_global_peers: u32,
