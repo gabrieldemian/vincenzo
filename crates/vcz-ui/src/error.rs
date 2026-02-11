@@ -1,9 +1,7 @@
 use std::net::SocketAddr;
-
 use thiserror::Error;
 use tokio::sync::mpsc;
-
-use crate::{action::Action, tui::Event};
+use crate::action::Action;
 
 impl From<mpsc::error::SendError<Action>> for Error {
     fn from(_value: mpsc::error::SendError<Action>) -> Self {
@@ -24,9 +22,6 @@ pub enum Error {
 
     #[error("Could not send message to TCP socket: `{0}`")]
     SendErrorTcp(String),
-
-    #[error("Could not send message")]
-    SendError(#[from] mpsc::error::SendError<Event>),
 
     #[error("Could not send action")]
     SendErrorAction,

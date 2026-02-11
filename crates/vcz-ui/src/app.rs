@@ -28,15 +28,25 @@ use vcz_lib::{
     daemon_wire::{DaemonCodec, Message},
 };
 
-#[derive(Default, Clone, Debug)]
+/// Global state shared between all pages.
+#[derive(Clone, Debug)]
 pub struct State {
+    /// If components should be dimmed.
     pub should_dim: bool,
+    /// Show network widget on page torrent list.
+    pub show_network: bool,
+    pub config: Arc<ResolvedConfig>,
+}
+
+impl State {
+    pub fn new(config: Arc<ResolvedConfig>) -> Self {
+        Self { config, should_dim: false, show_network: false }
+    }
 }
 
 pub struct App {
     pub is_detached: bool,
-    pub tx: UnboundedSender<Action>,
-    pub config: Arc<ResolvedConfig>,
+    tx: UnboundedSender<Action>,
     should_quit: bool,
     state: State,
     page: Box<dyn Page>,
@@ -44,11 +54,6 @@ pub struct App {
 }
 
 impl App {
-    pub fn is_detched(mut self, v: bool) -> Self {
-        self.is_detached = v;
-        self
-    }
-
     pub fn new(
         config: Arc<ResolvedConfig>,
         tx: UnboundedSender<Action>,
@@ -56,8 +61,7 @@ impl App {
         let page = Box::new(Empty::new(tx.clone()));
         let menu = Menu::new(tx.clone());
         App {
-            config,
-            state: State::default(),
+            state: State::new(config),
             should_quit: false,
             menu,
             tx,
@@ -75,7 +79,7 @@ impl App {
         let socket = loop {
             match timeout(
                 Duration::from_millis(100),
-                TcpStream::connect(self.config.daemon_addr),
+                TcpStream::connect(self.state.config.daemon_addr),
             )
             .await
             {
@@ -84,7 +88,7 @@ impl App {
                     i += 1;
                     if i > 10 {
                         return Err(Error::DaemonNotRunning(
-                            self.config.daemon_addr,
+                            self.state.config.daemon_addr,
                         ));
                     }
                     tokio::time::sleep(Duration::from_millis(150)).await;
@@ -108,8 +112,7 @@ impl App {
         });
 
         loop {
-            let e = tui.next().await?;
-            let a = self.page.handle_event(e, &mut self.state);
+            let a = tui.next().await?;
             self.handle_action(&a);
             let _ = tx.send(a);
             let is_empty = self.page.id() == crate::action::Page::Empty;
@@ -135,7 +138,6 @@ impl App {
                         // all pages, the footer with a text of the
                         // keybindings. Split the layout in 2 and only
                         // send the necessary part to the page.
-
                         let _ = tui.terminal.draw(|f| {
                             if is_empty {
                                 self.page.draw(f, f.area(), &mut self.state);

@@ -20,7 +20,6 @@ use super::*;
 pub struct TorrentList<'a> {
     active_torrent: Option<InfoHash>,
     textarea: Option<VimInput<'a>>,
-    show_network: bool,
     pub focused: bool,
     pub scroll_state: ScrollbarState,
     pub scroll: usize,
@@ -34,7 +33,6 @@ impl<'a> TorrentList<'a> {
     pub fn new(tx: mpsc::UnboundedSender<Action>) -> Self {
         Self {
             tx,
-            show_network: false,
             network_charts: Vec::new(),
             state: ListState::default(),
             scroll_state: ScrollbarState::default(),
@@ -70,17 +68,9 @@ impl<'a> TorrentList<'a> {
         self.select_relative(-1);
     }
 
-    fn quit(&mut self) {
-        if self.textarea.is_some() {
-            self.textarea = None;
-        } else {
-            let _ = self.tx.send(Action::Quit);
-        }
-    }
-
     fn submit_magnet_link(&mut self, magnet: Magnet) {
         let _ = self.tx.send(Action::NewTorrent(magnet.0));
-        self.quit();
+        let _ = self.tx.send(Action::Quit);
     }
 
     fn delete_torrent(&mut self) {
@@ -231,7 +221,7 @@ impl<'a> Page for TorrentList<'a> {
 
         // one chunk for the torrent list, another for the network chart
         let chunks =
-            Layout::vertical(if has_active_torrent && self.show_network {
+            Layout::vertical(if has_active_torrent && state.show_network {
                 [Constraint::Length(85), Constraint::Length(15)].as_ref()
             } else {
                 [Constraint::Max(100)].as_ref()
@@ -240,7 +230,7 @@ impl<'a> Page for TorrentList<'a> {
 
         f.render_stateful_widget(torrent_list, chunks[0], &mut self.state);
 
-        if has_active_torrent && self.show_network {
+        if has_active_torrent && state.show_network {
             let selected = self.state.selected().unwrap();
             if let Some(network_chart) = self.network_charts.get(selected) {
                 network_chart.draw(f, chunks[1], self.textarea.is_some());
@@ -254,29 +244,18 @@ impl<'a> Page for TorrentList<'a> {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: crate::tui::Event,
-        state: &mut app::State,
-    ) -> Action {
-        let crate::tui::Event::TerminalEvent(event) = event else {
-            return self.get_action(event);
-        };
-        let i = event.into();
-        // todo: consider making this textarea into a page,
-        // its close method would just change the page to the previous one,
-        // if the child component is some, let it handle the event.
-        if let Some(textarea) = &mut self.textarea
-            && textarea.handle_event(&i)
-        {
-            self.textarea = None;
-            state.should_dim = false;
-            return Action::None;
-        }
-        Action::Input(i)
-    }
-
     fn handle_action(&mut self, action: Action, state: &mut app::State) {
+        if let Action::Input(ref input) = action {
+            // if textarea is rendered, let it handle the event first.
+            if let Some(textarea) = &mut self.textarea
+                && textarea.handle_event(input)
+            {
+                self.textarea = None;
+                state.should_dim = false;
+                return;
+            }
+        }
+
         match action {
             Action::TorrentStates(torrent_states) => {
                 for (i, s) in torrent_states.iter().enumerate() {
@@ -308,7 +287,7 @@ impl<'a> Page for TorrentList<'a> {
             Action::Input(input) if self.textarea.is_none() => match input {
                 Input { key: Key::Char('q'), .. } => {
                     state.should_dim = false;
-                    self.quit();
+                    let _ = self.tx.send(Action::Quit);
                 }
                 Input { key: Key::Char('d'), .. } => {
                     self.delete_torrent();
@@ -320,7 +299,7 @@ impl<'a> Page for TorrentList<'a> {
                     self.previous();
                 }
                 Input { key: Key::Char('n'), .. } => {
-                    self.show_network = !self.show_network;
+                    state.show_network = !state.show_network;
                 }
                 Input { key: Key::Char('t'), .. } => {
                     let mut textarea = VimInput::default();

@@ -1,6 +1,5 @@
-use vcz_lib::torrent::{InfoHash, TorrentState};
-
 use crate::Input;
+use vcz_lib::torrent::{InfoHash, TorrentState};
 
 /// A new component to be rendered on the UI.
 /// Used in conjunction with [`Action`]
@@ -12,6 +11,11 @@ pub enum Page {
     TorrentList,
 }
 
+/// Pages handle `Action` in this order:
+/// TUI -> page child (optional) OR page
+///
+/// For example, if a page has a popup, it will handle the event instead of the
+/// parent page.
 #[derive(Clone, Debug)]
 pub enum Action {
     Tick,
@@ -19,14 +23,8 @@ pub enum Action {
     Quit,
     Error,
     None,
-
     ChangePage(Page),
-
-    TerminalEvent(crossterm::event::Event),
-
-    /// First the page will process TerminalEvent and transform it into Input.
     Input(Input),
-
     NewTorrent(magnet_url::Magnet),
     TogglePause(InfoHash),
     DeleteTorrent(InfoHash),

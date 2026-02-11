@@ -1,4 +1,4 @@
-use crate::error::Error;
+use crate::{action::Action, error::Error};
 use crossterm::event::{DisableMouseCapture, EventStream};
 use futures::{FutureExt, StreamExt};
 use ratatui::{
@@ -17,21 +17,12 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-#[derive(Clone, Debug)]
-pub enum Event {
-    TerminalEvent(ratatui::crossterm::event::Event),
-    Tick,
-    Render,
-    Quit,
-    Error,
-}
-
 pub struct Tui<B: Backend> {
     pub terminal: Terminal<B>,
     pub task: JoinHandle<()>,
     pub cancellation_token: CancellationToken,
-    pub event_rx: Receiver<Event>,
-    pub event_tx: Sender<Event>,
+    pub rx: Receiver<Action>,
+    pub tx: Sender<Action>,
 }
 
 impl<B> Tui<B>
@@ -43,10 +34,10 @@ where
     const TICK_RATE: f64 = 4.0;
 
     pub fn new(terminal: Terminal<B>) -> Result<Self, Error> {
-        let (event_tx, event_rx) = mpsc::channel(50);
+        let (tx, rx) = mpsc::channel(50);
         let cancellation_token = CancellationToken::new();
         let task = tokio::spawn(async {});
-        Ok(Self { terminal, task, cancellation_token, event_rx, event_tx })
+        Ok(Self { terminal, task, cancellation_token, rx, tx })
     }
 
     pub fn init(&mut self) -> Result<(), Error> {
@@ -67,7 +58,7 @@ where
         self.cancellation_token = CancellationToken::new();
 
         let cancellation_token = self.cancellation_token.clone();
-        let event_tx = self.event_tx.clone();
+        let tx = self.tx.clone();
 
         tokio::spawn(async move {
             let mut reader = EventStream::default();
@@ -81,14 +72,14 @@ where
                 tokio::select! {
                     event = reader.next().fuse() => {
                         if let Some(Ok(event)) = event {
-                            event_tx.send(Event::TerminalEvent(event)).await?;
+                            tx.send(Action::Input(event.into())).await?;
                         }
                     },
                     _ = tick_delay => {
-                        event_tx.send(Event::Tick).await?;
+                        tx.send(Action::Tick).await?;
                     },
                     _ = render_delay => {
-                        event_tx.send(Event::Render).await?;
+                        tx.send(Action::Render).await?;
                     },
                     _ = cancellation_token.cancelled() => {
                         break;
@@ -132,7 +123,7 @@ where
         self.exit()
     }
 
-    pub async fn next(&mut self) -> Result<Event, Error> {
-        self.event_rx.recv().await.ok_or(Error::RecvError)
+    pub async fn next(&mut self) -> Result<Action, Error> {
+        self.rx.recv().await.ok_or(Error::RecvError)
     }
 }

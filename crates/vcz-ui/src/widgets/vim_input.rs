@@ -32,8 +32,8 @@ impl fmt::Display for Mode {
 impl Mode {
     pub(crate) fn block<'a>(&self) -> Block<'a> {
         let help = match self {
-            Self::Normal => "Esc to quit, i to enter insert mode",
-            Self::Insert => "Esc to enter normal mode, Enter to submit",
+            Self::Normal => "Esc -> quit, i -> insert mode",
+            Self::Insert => "Esc -> normal mode, Enter -> submit",
             Self::Operator(_) => "move cursor to apply operator",
         };
         let title = format!("{} MODE ({})", self, help);

@@ -10,9 +10,7 @@ pub mod torrent_list;
 use crate::{
     action::{self, Action},
     app::State,
-    tui::Event,
 };
-
 pub use empty::*;
 pub use info::*;
 pub use ratatui::prelude::*;
@@ -22,21 +20,10 @@ pub trait Page {
     /// Draw on the screen, can also call draw on it's components.
     fn draw(&mut self, f: &mut Frame, area: Rect, state: &mut State);
 
-    fn handle_event(&mut self, event: Event, state: &mut State) -> Action;
-
     /// Handle an action, for example, key presses, change to another page, etc.
     fn handle_action(&mut self, action: Action, state: &mut State);
 
-    /// get an app event and transform into a page action
-    fn get_action(&self, event: Event) -> Action {
-        match event {
-            Event::Tick => Action::Tick,
-            Event::Render => Action::Render,
-            Event::Quit => Action::Quit,
-            Event::Error => Action::Error,
-            Event::TerminalEvent(e) => Action::TerminalEvent(e),
-        }
-    }
-
+    /// Since pages are trait objects they need an easy way to identify
+    /// themselves.
     fn id(&self) -> action::Page;
 }

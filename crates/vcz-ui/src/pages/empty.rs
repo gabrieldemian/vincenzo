@@ -4,7 +4,6 @@ use crate::{
     app::State,
     centered_rect,
     pages::{self},
-    tui::Event,
     widgets::{VimInput, validate_magnet},
 };
 use ratatui::{
@@ -60,7 +59,7 @@ impl<'a> Empty<'a> {
 }
 
 impl<'a> pages::Page for Empty<'a> {
-    fn draw(&mut self, f: &mut ratatui::Frame, area: Rect, state: &mut State) {
+    fn draw(&mut self, f: &mut ratatui::Frame, area: Rect, _: &mut State) {
         let mut widget = Paragraph::new(self.lines.clone()).centered().block(
             Block::default()
                 .borders(Borders::ALL)
@@ -77,26 +76,23 @@ impl<'a> pages::Page for Empty<'a> {
         }
     }
 
-    fn handle_event(&mut self, event: Event, state: &mut State) -> Action {
-        let crate::tui::Event::TerminalEvent(event) = event else {
-            return self.get_action(event);
-        };
-        let i = event.into();
-        // if the child component is some, let it handle the event.
-        if let Some(textarea) = &mut self.textarea
-            && textarea.handle_event(&i)
-        {
-            self.textarea = None;
-            return Action::None;
-        }
-        Action::Input(i)
-    }
-
     fn handle_action(&mut self, action: Action, state: &mut State) {
+        if let Action::Input(ref input) = action {
+            // if textarea is rendered, let it handle the event first.
+            if let Some(textarea) = &mut self.textarea
+                && textarea.handle_event(input)
+            {
+                self.textarea = None;
+                state.should_dim = false;
+                return;
+            }
+        }
+
         if let Action::TorrentStates(ref s) = action
             && !s.is_empty()
         {
             let _ = self.tx.send(Action::ChangePage(Page::TorrentList));
+            return;
         }
 
         let Action::Input(input) = action else { return };
@@ -113,7 +109,6 @@ impl<'a> pages::Page for Empty<'a> {
         {
             let _ = self.tx.send(Action::NewTorrent(magnet.0));
             self.quit();
-            // let _ = self.tx.send(Action::ChangePage(Page::TorrentList));
         }
 
         if let Input { key: Key::Char('q'), .. } = input {
