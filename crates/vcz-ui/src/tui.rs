@@ -10,6 +10,8 @@ use ratatui::{
         terminal::{self, EnterAlternateScreen, LeaveAlternateScreen},
     },
 };
+use signal_hook::consts::signal::*;
+use signal_hook_tokio::Signals;
 use std::{io, time::Duration};
 use tokio::{
     sync::mpsc::{self, Receiver, Sender},
@@ -27,7 +29,7 @@ pub struct Tui<B: Backend> {
 
 impl<B> Tui<B>
 where
-    B: Backend,
+    B: Backend + 'static,
     Error: From<B::Error>,
 {
     const FRAME_RATE: f64 = 60.0;
@@ -51,6 +53,11 @@ where
             Self::reset().expect("failed to reset the terminal");
             std::process::exit(1);
         }));
+
+        let signals = Signals::new([SIGHUP, SIGTERM, SIGINT, SIGQUIT])?;
+        let handle = signals.handle();
+        let _tx = self.tx.clone();
+        let signals_task = tokio::spawn(Self::handle_signals(signals, _tx));
 
         let tick_delay = Duration::from_secs_f64(1.0 / Self::TICK_RATE);
         let render_delay = Duration::from_secs_f64(1.0 / Self::FRAME_RATE);
@@ -82,6 +89,8 @@ where
                         tx.send(Action::Render).await?;
                     },
                     _ = cancellation_token.cancelled() => {
+                        signals_task.abort();
+                        handle.close();
                         break;
                     }
                 }
@@ -125,5 +134,20 @@ where
 
     pub async fn next(&mut self) -> Result<Action, Error> {
         self.rx.recv().await.ok_or(Error::RecvError)
+    }
+
+    async fn handle_signals(mut signals: Signals, tx: Sender<Action>) {
+        while let Some(signal) = signals.next().await {
+            match signal {
+                SIGHUP => {
+                    // Reload configuration
+                    // Reopen the log file
+                }
+                _sig @ (SIGTERM | SIGINT | SIGQUIT | SIGKILL) => {
+                    let _ = tx.send(Action::Quit).await;
+                }
+                _ => unreachable!(),
+            }
+        }
     }
 }

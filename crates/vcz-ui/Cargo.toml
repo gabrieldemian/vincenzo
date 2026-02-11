@@ -21,6 +21,8 @@ tokio = { workspace = true }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
 vcz-lib = { workspace = true }
+signal-hook = { workspace = true }
+signal-hook-tokio = { workspace = true }
 
 [features]
 debug = []
