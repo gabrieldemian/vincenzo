@@ -191,11 +191,11 @@ impl App {
         let is_empty = self.page.id() == crate::action::Page::Empty;
 
         match input {
+            Input { key: Key::Tab, shift: false, .. } if !is_empty => {
+                self.menu.next();
+            }
             Input { key: Key::Tab, shift: true, .. } if !is_empty => {
                 self.menu.previous();
-            }
-            Input { key: Key::Tab, .. } if !is_empty => {
-                self.menu.next();
             }
             _ => {}
         }

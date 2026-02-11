@@ -22,7 +22,6 @@ pub enum Action {
     Render,
     Quit,
     Error,
-    None,
     ChangePage(Page),
     Input(Input),
     NewTorrent(magnet_url::Magnet),

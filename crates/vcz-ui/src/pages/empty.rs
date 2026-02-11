@@ -11,6 +11,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Padding, Paragraph},
 };
 use tokio::sync::mpsc;
+use vcz_lib::VERSION;
 
 pub struct Empty<'a> {
     pub tx: mpsc::UnboundedSender<Action>,
@@ -28,7 +29,7 @@ impl<'a> Empty<'a> {
             " ╚████╔╝ ╚██████╗███████╗".into(),
             "  ╚═══╝   ╚═════╝╚══════╝".into(),
             "".into(),
-            "v0.0.1".into(),
+            format!("v{VERSION}").into(),
             "".into(),
             vec![
                 Span::raw("Press "),

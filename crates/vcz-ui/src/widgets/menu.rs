@@ -5,6 +5,7 @@ use crate::{
 };
 use ratatui::{layout::Flex, prelude::*, widgets::Tabs};
 use tokio::sync::mpsc::UnboundedSender;
+use vcz_lib::VERSION;
 
 static TITLES_LEN: isize = TITLES.len() as isize;
 static TITLES: [&str; 2] = [
@@ -25,7 +26,8 @@ impl Menu {
     }
 
     pub fn draw(&mut self, f: &mut Frame, area: Rect, state: &mut State) {
-        let mut tag = Span::raw("[ VCZ - v0.0.1 ]").style(PALETTE.highlight_fg);
+        let mut tag = Span::raw(format!("[ VCZ - v{VERSION} ]"))
+            .style(PALETTE.highlight_fg);
         let chunks = Layout::horizontal([
             Constraint::Percentage(100),
             Constraint::Min(16),

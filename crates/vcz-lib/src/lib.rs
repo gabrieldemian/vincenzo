@@ -2,6 +2,12 @@
 #![feature(ip_as_octets)]
 #![feature(trait_alias)]
 
+pub static VERSION: &str = "0.0.1";
+
+/// Version number part of the PeerID.
+/// 0.00.00
+pub static VERSION_PROT: &[u8; 5] = b"00001";
+
 pub mod bitfield;
 pub mod config;
 pub mod counter;

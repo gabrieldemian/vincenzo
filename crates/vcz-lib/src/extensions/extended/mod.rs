@@ -2,7 +2,7 @@
 //!
 //! <http://www.bittorrent.org/beps/bep_0010.html>
 
-use crate::extensions::Metadata;
+use crate::{VERSION, extensions::Metadata};
 use bendy::{
     decoding::{FromBencode, Object, ResultExt},
     encoding::ToBencode,
@@ -57,7 +57,7 @@ impl Extension {
         Self {
             m,
             p: None,
-            v: Some("vincenzo-0.0.1".to_owned()),
+            v: Some(format!("vincenzo-{VERSION}")),
             reqq: Some(200),
             metadata_size,
         }
@@ -235,7 +235,10 @@ mod tests {
         let raw = b"d1:md11:ut_metadatai3ee13:metadata_sizei0e4:reqqi200e1:v14:vincenzo-0.0.1e";
 
         let v = Extension::from_bencode(raw).unwrap();
-        println!("{v:?}");
+        assert_eq!(v.reqq, Some(200));
+        assert_eq!(v.v, Some("vincenzo-0.0.1".to_string()));
+        assert_eq!(v.metadata_size, Some(0));
+        assert_eq!(v.m.ut_metadata, Some(3));
     }
 
     #[test]

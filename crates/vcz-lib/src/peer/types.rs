@@ -1,4 +1,5 @@
 use crate::{
+    VERSION_PROT,
     bitfield::Reserved,
     counter::Counter,
     daemon::{DaemonCtx, DaemonMsg},
@@ -58,8 +59,8 @@ impl PeerId {
         peer_id[..3].copy_from_slice(b"vcz");
         peer_id[3] = b'-';
         // version
-        // 0.00.01
-        peer_id[4..9].copy_from_slice(b"00001");
+        // 0.00.00
+        peer_id[4..9].copy_from_slice(VERSION_PROT);
         peer_id[9] = b'-';
 
         (10..20).for_each(|i| {

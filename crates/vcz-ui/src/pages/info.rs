@@ -9,6 +9,7 @@ use ratatui::{
     widgets::{Block, Borders, Padding, Paragraph},
 };
 use tokio::sync::mpsc;
+use vcz_lib::VERSION;
 
 pub struct Info<'a> {
     pub tx: mpsc::UnboundedSender<Action>,
@@ -25,7 +26,7 @@ impl<'a> Info<'a> {
             " ╚████╔╝ ╚██████╗███████╗".into(),
             "  ╚═══╝   ╚═════╝╚══════╝".into(),
             "".into(),
-            "v0.0.1".into(),
+            format!("v{VERSION}").into(),
             "".into(),
             Span::raw("https://github.com/gabrieldemian/vincenzo")
                 .italic()
