@@ -195,7 +195,10 @@ impl Daemon {
         }))
     }
 
-    async fn handle_signals(mut signals: Signals, tx: mpsc::Sender<DaemonMsg>) {
+    async fn handle_signals(
+        mut signals: Signals,
+        tx: mpsc::Sender<DaemonMsg>,
+    ) -> Result<(), Error> {
         while let Some(signal) = signals.next().await {
             match signal {
                 SIGHUP => {
@@ -204,11 +207,12 @@ impl Daemon {
                 }
                 sig @ (SIGTERM | SIGINT | SIGQUIT | SIGKILL) => {
                     info!("received SIG {sig}");
-                    let _ = tx.send(DaemonMsg::Quit).await;
+                    tx.send(DaemonMsg::Quit).await?;
                 }
                 _ => unreachable!(),
             }
         }
+        Ok(())
     }
 
     async fn delete_torrent(
@@ -226,11 +230,29 @@ impl Daemon {
         Ok(())
     }
 
-    async fn delete_all_torrents(&mut self) -> Result<(), Error> {
+    async fn quit_all_torrents(&mut self) -> Result<(), Error> {
         for ctx in self.torrent_ctxs.values() {
             let _ = ctx.tx.send(TorrentMsg::Quit).await;
         }
         self.torrent_ctxs.clear();
+        Ok(())
+    }
+
+    async fn draw(
+        ctx: &Arc<DaemonCtx>,
+        sink: &mut SplitSink<Framed<TcpStream, DaemonCodec>, Message>,
+        fr_token: &CancellationToken,
+    ) -> Result<(), Error> {
+        let (otx, orx) = oneshot::channel();
+        ctx.tx.send(DaemonMsg::GetAllTorrentState(otx)).await?;
+        if sink
+            .send(Message::TorrentStates(orx.await?))
+            .await
+            .map_err(|_| Error::SendErrorTcp)
+            .is_err()
+        {
+            fr_token.cancel();
+        }
         Ok(())
     }
 
@@ -250,6 +272,7 @@ impl Daemon {
     /// can also be fired internaly (via CLI flags).
     #[tracing::instrument(name = "daemon", skip_all)]
     pub async fn run(&mut self) -> Result<(), Error> {
+        let token = CancellationToken::new();
         let socket = TcpListener::bind(self.config.daemon_addr).await.unwrap();
         info!("listening on: {}", self.config.daemon_addr);
 
@@ -262,13 +285,12 @@ impl Daemon {
 
         let signals = Signals::new([SIGHUP, SIGTERM, SIGINT, SIGQUIT])?;
         let handle = signals.handle();
-        let signals_task =
-            tokio::spawn(Daemon::handle_signals(signals, ctx.tx.clone()));
+        let _token = token.clone();
+        let _tx = ctx.tx.clone();
 
         let mut test_interval = interval(Duration::from_secs(1));
-
-        // token to cancel all frontend's tasks
-        let all_fr_token = CancellationToken::new();
+        let signals_task =
+            tokio::spawn(Daemon::handle_signals(signals, _tx));
 
         debug!("running event loop");
 
@@ -369,14 +391,14 @@ impl Daemon {
                             }
                         }
                         DaemonMsg::Quit => {
-                            let _ = self.delete_all_torrents().await;
+                            let _ = self.quit_all_torrents().await;
                             let _ = self.disk_tx.send(DiskMsg::Quit).await;
                             signals_task.abort();
                             if let Some(h) = &self.local_peer_handle {
                                 h.abort();
                             }
                             handle.close();
-                            all_fr_token.cancel();
+                            token.cancel();
                             break 'outer;
                         }
                     }
@@ -390,12 +412,11 @@ impl Daemon {
 
                     let socket = Framed::new(socket, DaemonCodec);
                     let (mut sink, mut stream) = socket.split();
+                    let fr_token = CancellationToken::new();
 
                     // sink.send(Message::Init(!self.torrent_states.is_empty())).await?;
 
                     let ctx = ctx.clone();
-                    let all_fr_token = all_fr_token.clone();
-                    let fr_token = CancellationToken::new();
 
                     tokio::spawn(async move {
                         let mut draw_interval = interval(Duration::from_secs(1));
@@ -403,28 +424,13 @@ impl Daemon {
 
                         'inner: loop {
                             select! {
-                                _ = all_fr_token.cancelled() => {
-                                    info!("disconnected from remote: {addr}");
-                                    sink.close().await?;
-                                    break 'inner;
-                                }
                                 _ = fr_token.cancelled() => {
                                     info!("disconnected from remote: {addr}");
                                     sink.close().await?;
                                     break 'inner;
                                 }
                                 _ = draw_interval.tick() => {
-                                    let (otx, orx) = oneshot::channel();
-
-                                    ctx.tx.send(DaemonMsg::GetAllTorrentState(otx))
-                                        .await?;
-
-                                    if sink.send(Message::TorrentStates(orx.await?))
-                                        .await
-                                        .map_err(|_| Error::SendErrorTcp).is_err()
-                                    {
-                                        fr_token.cancel();
-                                    }
+                                    Self::draw(&ctx, &mut sink, &fr_token).await?;
                                 }
                                 Some(Ok(msg)) = stream.next() => {
                                     if msg == Message::FrontendQuit {
@@ -576,7 +582,7 @@ impl Daemon {
 
     #[cfg(feature = "debug")]
     async fn add_test_torrents(&mut self) {
-        use crate::torrent::Stats;
+        use crate::torrent::{Stats, TorrentStatusErrorCode};
         self.torrent_states.extend([
             TorrentState {
                 name: "Test torrent 01".to_string(),
@@ -641,6 +647,20 @@ impl Daemon {
             TorrentState {
                 name: "Test torrent 06".to_string(),
                 status: TorrentStatus::Downloading,
+                stats: Stats { leechers: 1, seeders: 9, interval: 1000 },
+                connected_peers: 25,
+                downloading_from: 3,
+                download_rate: 12_000.0,
+                downloaded: 100,
+                size: 180_327_100_000,
+                info_hash: InfoHash::random(),
+                ..Default::default()
+            },
+            TorrentState {
+                name: "Test torrent 07".to_string(),
+                status: TorrentStatus::Error(
+                    TorrentStatusErrorCode::FilesMissing,
+                ),
                 stats: Stats { leechers: 1, seeders: 9, interval: 1000 },
                 connected_peers: 25,
                 downloading_from: 3,
@@ -721,6 +741,17 @@ impl Daemon {
             ..
         } = &mut self.torrent_states[5];
         *download_rate = rand::random_range(30_000.0..100_000.0);
+        *downloaded += *download_rate as u64;
+        *uploaded += *upload_rate as u64;
+
+        let TorrentState {
+            download_rate,
+            downloaded,
+            upload_rate,
+            uploaded,
+            ..
+        } = &mut self.torrent_states[6];
+        *download_rate = rand::random_range(10_000.0..150_000.0);
         *downloaded += *download_rate as u64;
         *uploaded += *upload_rate as u64;
     }

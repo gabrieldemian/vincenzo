@@ -227,7 +227,32 @@ pub enum TorrentStatus {
     Downloading,
     Seeding,
     Paused,
-    Error,
+    Error(TorrentStatusErrorCode),
+}
+
+#[derive(
+    Debug, Default, Clone, Copy, PartialEq, Archive, Serialize, Deserialize,
+)]
+#[rkyv(compare(PartialEq), derive(Debug))]
+pub enum TorrentStatusErrorCode {
+    /// Errors not handled by the code.
+    #[default]
+    Unknown,
+
+    /// Files missing from a completed torrent, likely due to the user fault.
+    FilesMissing,
+}
+
+impl Display for TorrentStatusErrorCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            TorrentStatusErrorCode::Unknown => "Unknown error".to_string(),
+            TorrentStatusErrorCode::FilesMissing => {
+                "Missing files on disk".to_string()
+            }
+        };
+        write!(f, "{}", s)
+    }
 }
 
 /// State of a [`Torrent`], used by the UI to present data.
@@ -310,7 +335,7 @@ impl From<TorrentStatus> for &str {
             Downloading => "Downloading",
             Seeding => "Seeding",
             Paused => "Paused",
-            Error => "Error",
+            Error(_) => "Error",
         }
     }
 }
@@ -324,7 +349,7 @@ impl From<TorrentStatus> for String {
             Downloading => "Downloading".to_owned(),
             Seeding => "Seeding".to_owned(),
             Paused => "Paused".to_owned(),
-            Error => "Error".to_owned(),
+            Error(_) => "Error".to_owned(),
         }
     }
 }
@@ -338,7 +363,7 @@ impl From<&str> for TorrentStatus {
             "Downloading" => Downloading,
             "Seeding" => Seeding,
             "Paused" => Paused,
-            _ => Error,
+            _ => Error(TorrentStatusErrorCode::Unknown),
         }
     }
 }

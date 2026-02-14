@@ -4,9 +4,12 @@ use crate::{
     app, centered_rect,
     widgets::{NetworkChart, VimInput, validate_magnet},
 };
-use ratatui::widgets::{
-    Block, Borders, Clear, List, ListItem, ListState, Scrollbar,
-    ScrollbarOrientation, ScrollbarState,
+use ratatui::{
+    style::Styled,
+    widgets::{
+        Block, Borders, Clear, List, ListItem, ListState, Scrollbar,
+        ScrollbarOrientation, ScrollbarState,
+    },
 };
 use tokio::sync::mpsc;
 use vcz_lib::{
@@ -17,14 +20,26 @@ use vcz_lib::{
 
 use super::*;
 
+#[repr(u8)]
+#[derive(Clone, Copy, Default, PartialEq)]
+enum SearchStatus {
+    /// User is typing in the seach bar and can't do anything else except Esc.
+    Typing,
+    /// User pressed Esc and is now moving in the torrent list.
+    #[default]
+    Moving,
+}
+
 pub struct TorrentList<'a> {
     active_torrent: Option<InfoHash>,
     textarea: Option<VimInput<'a>>,
-    pub focused: bool,
+    search: String,
+    search_status: SearchStatus,
     pub scroll_state: ScrollbarState,
     pub scroll: usize,
     pub state: ListState,
     pub torrent_infos: Vec<TorrentState>,
+    pub rendered_torrent_infos: Vec<usize>,
     pub network_charts: Vec<NetworkChart>,
     pub tx: mpsc::UnboundedSender<Action>,
 }
@@ -34,13 +49,28 @@ impl<'a> TorrentList<'a> {
         Self {
             tx,
             network_charts: Vec::new(),
+            search: String::new(),
+            search_status: SearchStatus::default(),
             state: ListState::default(),
             scroll_state: ScrollbarState::default(),
             scroll: 0,
             textarea: None,
-            focused: true,
             active_torrent: None,
             torrent_infos: Vec::new(),
+            rendered_torrent_infos: Vec::new(),
+        }
+    }
+
+    fn search(&mut self) {
+        let SearchStatus::Typing = self.search_status else { return };
+        self.rendered_torrent_infos.clear();
+        for (i, _) in self
+            .torrent_infos
+            .iter()
+            .enumerate()
+            .filter(|v| v.1.name.starts_with(&self.search))
+        {
+            self.rendered_torrent_infos.push(i);
         }
     }
 
@@ -101,7 +131,8 @@ impl<'a> Page for TorrentList<'a> {
         let mut torrent_rows: Vec<ListItem> =
             Vec::with_capacity(self.torrent_infos.len());
 
-        for (i, state) in self.torrent_infos.iter().enumerate() {
+        for (i, rendered_i) in self.rendered_torrent_infos.iter().enumerate() {
+            let state = &self.torrent_infos[*rendered_i];
             let mut download_rate = to_human_readable(state.download_rate);
             download_rate.push_str("/s");
 
@@ -109,7 +140,7 @@ impl<'a> Page for TorrentList<'a> {
 
             let status_style = match state.status {
                 TorrentStatus::Seeding => PALETTE.success,
-                TorrentStatus::Error => PALETTE.error,
+                TorrentStatus::Error(_) => PALETTE.error,
                 TorrentStatus::Paused => PALETTE.warning,
                 TorrentStatus::Downloading => PALETTE.blue,
                 _ => PALETTE.primary,
@@ -148,11 +179,15 @@ impl<'a> Page for TorrentList<'a> {
                 .into(),
                 sl,
                 status_txt.into(),
-                format!(
-                    "Downloading from {} of {} peers",
-                    state.downloading_from, state.connected_peers,
-                )
-                .into(),
+                if let TorrentStatus::Error(e) = state.status {
+                    e.to_string().set_style(PALETTE.error).into()
+                } else {
+                    format!(
+                        "Downloading from {} of {} peers",
+                        state.downloading_from, state.connected_peers,
+                    )
+                    .into()
+                },
                 line_bottom,
             ];
 
@@ -184,12 +219,6 @@ impl<'a> Page for TorrentList<'a> {
             torrent_rows.push(ListItem::new(items));
         }
 
-        // if nothing is selected, we want to select the first item if there are
-        // torrents.
-        if self.state.selected().is_none() && !torrent_rows.is_empty() {
-            self.next();
-        }
-
         self.scroll_state =
             self.scroll_state.content_length(torrent_rows.len());
 
@@ -212,8 +241,22 @@ impl<'a> Page for TorrentList<'a> {
 
         let has_active_torrent = self.active_torrent.is_some();
 
-        let mut torrent_list = List::new(torrent_rows)
-            .block(Block::default().borders(Borders::ALL).title(" Torrents "));
+        let mut block =
+            Block::default().borders(Borders::ALL).title(" Torrents ");
+
+        if self.search_status == SearchStatus::Typing {
+            block = block.title_bottom(format!(
+                " Search: {} (press enter) ",
+                self.search
+            ));
+        }
+
+        if self.search_status == SearchStatus::Moving && !self.search.is_empty()
+        {
+            block = block.title_bottom(format!(" Search: {} ", self.search));
+        }
+
+        let mut torrent_list = List::new(torrent_rows).block(block);
 
         if state.should_dim {
             torrent_list = torrent_list.dim();
@@ -231,8 +274,13 @@ impl<'a> Page for TorrentList<'a> {
         f.render_stateful_widget(torrent_list, chunks[0], &mut self.state);
 
         if has_active_torrent && state.show_network {
-            let selected = self.state.selected().unwrap();
-            if let Some(network_chart) = self.network_charts.get(selected) {
+            let Some(rendered_i) = self.state.selected() else { return };
+            let Some(info_i) =
+                self.rendered_torrent_infos.get(rendered_i).cloned()
+            else {
+                return;
+            };
+            if let Some(network_chart) = self.network_charts.get(info_i) {
                 network_chart.draw(f, chunks[1], self.textarea.is_some());
             }
         }
@@ -271,8 +319,45 @@ impl<'a> Page for TorrentList<'a> {
                         chart.on_tick(s.download_rate, s.upload_rate);
                     }
                 }
-
+                if self.search.is_empty() {
+                    self.rendered_torrent_infos =
+                        (0..torrent_states.len()).collect();
+                }
                 self.torrent_infos = torrent_states;
+            }
+
+            Action::Input(input)
+                if let SearchStatus::Moving = &self.search_status
+                    && let Input { key: Key::Esc, .. } = input =>
+            {
+                self.rendered_torrent_infos =
+                    (0..self.torrent_infos.len()).collect();
+                self.search.clear();
+            }
+
+            Action::Input(input)
+                if let SearchStatus::Typing = &self.search_status =>
+            {
+                match input {
+                    Input { key: Key::Char(c), .. } => {
+                        self.search.push(c);
+                        self.search();
+                    }
+                    Input { key: Key::Esc, .. } => {
+                        self.rendered_torrent_infos =
+                            (0..self.torrent_infos.len()).collect();
+                        self.search_status = SearchStatus::Moving;
+                    }
+                    Input { key: Key::Enter, .. } => {
+                        self.search_status = SearchStatus::Moving;
+                        self.next();
+                    }
+                    Input { key: Key::Backspace, .. } => {
+                        self.search.pop();
+                        self.search();
+                    }
+                    _ => {}
+                }
             }
 
             Action::Input(input) if self.textarea.is_some() => {
@@ -285,9 +370,32 @@ impl<'a> Page for TorrentList<'a> {
             }
 
             Action::Input(input) if self.textarea.is_none() => match input {
+                Input { key: Key::Char('/'), .. } => {
+                    self.state.select(None);
+                    self.active_torrent = None;
+                    self.search_status = SearchStatus::Typing;
+                }
                 Input { key: Key::Char('q'), .. } => {
                     state.should_dim = false;
                     let _ = self.tx.send(Action::Quit);
+                }
+                Input { key: Key::Char('g'), .. } => {
+                    if self.torrent_infos.is_empty() {
+                        return;
+                    }
+                    self.state.select(Some(0));
+                    self.scroll =
+                        unsafe { self.state.selected().unwrap_unchecked() };
+                    self.scroll_state = self.scroll_state.position(self.scroll);
+                }
+                Input { key: Key::Char('G'), .. } => {
+                    if self.torrent_infos.is_empty() {
+                        return;
+                    }
+                    self.state.select(Some(self.torrent_infos.len() - 1));
+                    self.scroll =
+                        unsafe { self.state.selected().unwrap_unchecked() };
+                    self.scroll_state = self.scroll_state.position(self.scroll);
                 }
                 Input { key: Key::Char('d'), .. } => {
                     self.delete_torrent();
@@ -319,6 +427,7 @@ impl<'a> Page for TorrentList<'a> {
             _ => {}
         }
     }
+
     fn id(&self) -> crate::action::Page {
         crate::action::Page::TorrentList
     }

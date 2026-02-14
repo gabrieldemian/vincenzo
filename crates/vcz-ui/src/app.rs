@@ -232,7 +232,6 @@ impl App {
                             let _ = tx.send(Action::TorrentStates(v));
                         }
                         Message::Quit => {
-                            debug!("ui Quit");
                             let _ = tx.send(Action::Quit);
                             break;
                         }
