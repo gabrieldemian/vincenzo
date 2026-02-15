@@ -18,7 +18,6 @@ pub enum Page {
 /// parent page.
 #[derive(Clone, Debug)]
 pub enum Action {
-    Tick,
     Render,
     Quit,
     Error,

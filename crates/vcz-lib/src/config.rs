@@ -52,6 +52,12 @@ pub struct Config {
     #[serde(default)]
     pub is_ipv6: Option<bool>,
 
+    /// If the program will write logs to disk.
+    /// Defaults to false.
+    #[clap(long)]
+    #[serde(default)]
+    pub log: Option<bool>,
+
     /// If the daemon should quit after all downloads are complete. Defaults to
     /// false.
     #[clap(long)]
@@ -111,6 +117,7 @@ impl Config {
             max_global_peers: 500,
             max_torrent_peers: 50,
             is_ipv6: false,
+            log: false,
             quit_after_complete: false,
             key: 123,
             magnet: None,
@@ -128,6 +135,15 @@ impl Config {
         );
         config_file.push("vincenzo");
         config_file
+    }
+
+    pub fn get_log_path() -> PathBuf {
+        let mut p = dirs::data_local_dir().expect(
+            "Could not get the user's local directory. Have you configured \
+             $XDG_DATA_HOME ?",
+        );
+        p.push("vincenzo");
+        p
     }
 
     /// Get the workspace root path
@@ -189,6 +205,7 @@ impl Config {
                 .max_torrent_peers
                 .or(file_config.max_torrent_peers),
             is_ipv6: cli_config.is_ipv6.or(file_config.is_ipv6),
+            log: cli_config.log.or(file_config.log),
             quit_after_complete: cli_config
                 .quit_after_complete
                 .or(file_config.quit_after_complete),
@@ -229,6 +246,7 @@ impl Config {
             max_global_peers: self.max_global_peers.unwrap_or(500),
             max_torrent_peers: self.max_torrent_peers.unwrap_or(50),
             is_ipv6: self.is_ipv6.unwrap_or(false),
+            log: self.log.unwrap_or(false),
             quit_after_complete: self.quit_after_complete.unwrap_or(false),
             key: self.key.unwrap_or(rand::random()),
 
@@ -251,6 +269,7 @@ pub struct ResolvedConfig {
     pub max_global_peers: u32,
     pub max_torrent_peers: u32,
     pub is_ipv6: bool,
+    pub log: bool,
     pub quit_after_complete: bool,
     pub key: u32,
 
@@ -287,6 +306,7 @@ mod tests {
             max_global_peers: Some(100),
             max_torrent_peers: Some(10),
             is_ipv6: Some(false),
+            log: Some(false),
             quit_after_complete: Some(false),
             key: Some(123),
             magnet: None,
@@ -303,6 +323,7 @@ mod tests {
             max_global_peers: None,
             max_torrent_peers: None,
             is_ipv6: Some(true),
+            log: Some(true),
             quit_after_complete: Some(true),
             key: None,
             magnet: Some("magnet:test".to_string()),
@@ -318,6 +339,7 @@ mod tests {
         assert_eq!(merged.daemon_addr, cli_config.daemon_addr);
         assert_eq!(merged.local_peer_port, cli_config.local_peer_port);
         assert_eq!(merged.is_ipv6, cli_config.is_ipv6);
+        assert_eq!(merged.log, cli_config.log);
 
         // these should fall back to file values since CLI didn't provide them
         assert_eq!(merged.max_global_peers, file_config.max_global_peers);

@@ -1,7 +1,6 @@
-use std::sync::Arc;
-
 use futures::SinkExt;
 use magnet_url::Magnet;
+use std::sync::Arc;
 use tokio::{
     net::{TcpListener, TcpStream},
     spawn,
@@ -43,8 +42,13 @@ async fn main() -> Result<(), Error> {
         let (free_tx, free_rx) = mpsc::unbounded_channel::<ReturnToDisk>();
 
         let mut daemon = Daemon::new(config.clone(), disk_tx.clone(), free_tx);
-        let mut disk =
-            Disk::new(config.clone(), daemon.ctx.clone(), disk_tx, disk_rx, free_rx);
+        let mut disk = Disk::new(
+            config.clone(),
+            daemon.ctx.clone(),
+            disk_tx,
+            disk_rx,
+            free_rx,
+        );
 
         let disk_handle = spawn(async move { disk.run().await });
         let daemon_handle = spawn(async move { daemon.run().await });

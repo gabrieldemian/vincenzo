@@ -33,7 +33,6 @@ where
     Error: From<B::Error>,
 {
     const FRAME_RATE: f64 = 60.0;
-    const TICK_RATE: f64 = 4.0;
 
     pub fn new(terminal: Terminal<B>) -> Result<Self, Error> {
         let (tx, rx) = mpsc::channel(50);
@@ -59,7 +58,6 @@ where
         let _tx = self.tx.clone();
         let signals_task = tokio::spawn(Self::handle_signals(signals, _tx));
 
-        let tick_delay = Duration::from_secs_f64(1.0 / Self::TICK_RATE);
         let render_delay = Duration::from_secs_f64(1.0 / Self::FRAME_RATE);
 
         self.cancellation_token = CancellationToken::new();
@@ -69,21 +67,15 @@ where
 
         tokio::spawn(async move {
             let mut reader = EventStream::default();
-            let mut tick_interval = tokio::time::interval(tick_delay);
             let mut render_interval = tokio::time::interval(render_delay);
 
             loop {
-                let tick_delay = tick_interval.tick();
                 let render_delay = render_interval.tick();
-
                 tokio::select! {
                     event = reader.next().fuse() => {
                         if let Some(Ok(event)) = event {
                             tx.send(Action::Input(event.into())).await?;
                         }
-                    },
-                    _ = tick_delay => {
-                        tx.send(Action::Tick).await?;
                     },
                     _ = render_delay => {
                         tx.send(Action::Render).await?;
