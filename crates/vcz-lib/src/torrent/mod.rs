@@ -25,10 +25,9 @@ use crate::{
     tracker::{Tracker, TrackerMsg, TrackerTrait, event::Event},
     utils::to_human_readable,
 };
-use hashbrown::{HashMap, HashSet};
 use rand::Rng;
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap, HashSet},
     net::{IpAddr, SocketAddr},
     sync::{Arc, atomic::Ordering},
     time::Duration,
@@ -39,7 +38,7 @@ use tokio::{
     sync::{broadcast, mpsc, oneshot},
     time::{Instant, interval, interval_at, timeout},
 };
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, info, warn};
 
 /// This is the main entity responsible for the high-level management of
 /// a torrent download or upload.
@@ -307,9 +306,9 @@ impl<M: TorrentSource> Torrent<Connected, M> {
         //
         //                 if let Err(r) = connected_peer.run().await {
         //                     debug!(
-        //                         "{} peer loop stopped due to an error: {r:?}",
-        //                         connected_peer.state.ctx.remote_addr
-        //                     );
+        //                         "{} peer loop stopped due to an error:
+        // {r:?}",
+        // connected_peer.state.ctx.remote_addr                     );
         //                     ctx.tx
         //                         .send(TorrentMsg::PeerError(p.state.addr))
         //                         .await?;

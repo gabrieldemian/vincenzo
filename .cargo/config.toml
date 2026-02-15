@@ -1,2 +1,9 @@
 [unstable]
-build-std = ["std", "panic_abort", "alloc", "proc_macro"]
+build-std = ["core", "std", "panic_abort", "alloc", "proc_macro"]
+codegen-backend = true
+
+[build]
+rustflags = "-Zthreads=8"
+
+[resolver]
+feature-unification = "workspace"

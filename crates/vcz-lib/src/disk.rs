@@ -20,7 +20,6 @@ use crate::{
 use bendy::{decoding::FromBencode, encoding::ToBencode};
 use bytes::Bytes;
 use futures::future::join_all;
-use hashbrown::HashMap;
 use lru::LruCache;
 use memmap2::{Mmap, MmapMut};
 use rand::seq::SliceRandom;
@@ -29,6 +28,7 @@ use rayon::iter::{
 };
 use sha1::{Digest, Sha1};
 use std::{
+    collections::HashMap,
     net::SocketAddr,
     num::NonZeroUsize,
     path::{Path, PathBuf},

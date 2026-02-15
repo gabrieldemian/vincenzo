@@ -1,7 +1,9 @@
 //! Mock of an UDP tracker.
 
-use hashbrown::HashMap;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
+use std::{
+    collections::HashMap,
+    net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4},
+};
 use tokio::net::UdpSocket;
 use vcz_lib::{error::Error, peer::PeerId, torrent::InfoHash, tracker};
 

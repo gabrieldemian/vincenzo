@@ -5,8 +5,8 @@
 mod header;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use hashbrown::HashMap;
 pub(crate) use header::*;
+use std::collections::HashMap;
 
 mod packet;
 pub(crate) use packet::*;

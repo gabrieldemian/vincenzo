@@ -5,8 +5,9 @@ authors = ["Gabriel Lombardo <gabrielgcr45@gmail.com>"]
 edition = "2024"
 
 [dependencies]
-rand = { workspace = true }
+
+[dev-dependencies]
 bendy = { workspace = true }
-hashbrown = { workspace = true }
+rand = { workspace = true }
 tokio = { workspace = true }
 vcz-lib = { workspace = true, features = ["debug"] }

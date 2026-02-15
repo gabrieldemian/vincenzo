@@ -5,99 +5,84 @@
 //! CLI Flags --overrides--> File
 
 use crate::{daemon::Daemon, error::Error};
-use clap::Parser;
-use hashbrown::HashMap;
-use serde::Deserialize;
-use std::{net::SocketAddr, path::PathBuf};
+use argh::FromArgs;
+use std::{collections::HashMap, net::SocketAddr, path::PathBuf};
 
-#[derive(Deserialize, Debug, Clone, Parser, Default)]
-#[clap(name = "Vincenzo", author = "Gabriel Lombardo")]
-#[command(author, version, about = None, long_about = None)]
+/// vincenzo 0.0.1
+#[derive(Default, FromArgs)]
+#[argh(help_triggers("-h", "--help"))]
 pub struct Config {
-    /// Where to store files of torrents. Defaults to the download dir of the
-    /// user.
-    #[clap(long)]
-    #[serde(default)]
+    #[argh(option, short = 'd', description = "dir to write torrent files")]
     pub download_dir: Option<PathBuf>,
 
-    /// Where to store .torrent files. Defaults to
-    /// `~/.config/vincenzo/torrents`.
-    #[clap(long)]
-    #[serde(default)]
+    // `~/.config/vincenzo/torrents`.
+    #[argh(option, description = "dir to store .torrent files")]
     pub metadata_dir: Option<PathBuf>,
 
-    /// Where the daemon listens for connections. Defaults to `0.0.0.0:0`.
-    #[clap(long)]
-    #[serde(default)]
+    /// Default: 0.0.0.0:0
+    #[argh(option, description = "where daemon listens for connections")]
     pub daemon_addr: Option<SocketAddr>,
 
-    /// Port of the client, defaults to 51413
-    #[clap(long)]
-    #[serde(default)]
+    /// Default: 51413
+    #[argh(
+        option,
+        description = "port that the client connect to other peers"
+    )]
     pub local_peer_port: Option<u16>,
 
-    /// Max number of global TCP connections, defaults to 500.
-    #[clap(long)]
-    #[serde(default)]
+    /// Default 500
+    #[argh(option, description = "max global TCP connections")]
     pub max_global_peers: Option<u32>,
 
-    /// Max number of TCP connections for each torrent, defaults to 50, and is
-    /// capped by `max_global_peers`.
-    #[clap(long)]
-    #[serde(default)]
+    /// Default 50
+    #[argh(
+        option,
+        description = "max peers in each torrent, capped by `max_global_peers"
+    )]
     pub max_torrent_peers: Option<u32>,
 
-    /// If the client will use an ipv6 socket to connect to other peers.
-    /// Defaults to false.
-    #[clap(long)]
-    #[serde(default)]
+    #[argh(option, description = "if the client addr is ipv6")]
     pub is_ipv6: Option<bool>,
 
-    /// If the program will write logs to disk.
     /// Defaults to false.
-    #[clap(long)]
-    #[serde(default)]
+    #[argh(option, description = "if the program writes logs to disk")]
     pub log: Option<bool>,
 
-    /// If the daemon should quit after all downloads are complete. Defaults to
-    /// false.
-    #[clap(long)]
-    #[serde(default)]
+    #[argh(
+        option,
+        short = 'q',
+        description = "make daemon quit after all downloads are completed"
+    )]
     pub quit_after_complete: Option<bool>,
 
-    /// ID that the peer sends to trackers, defaults to a random number.
-    #[clap(skip)]
-    #[serde(skip, default)]
+    #[argh(
+        option,
+        short = 'k',
+        description = "key that peer sends to trackers, defaults to random"
+    )]
     pub key: Option<u32>,
 
     // -------------------------
     // Command fields (CLI only)
     // -------------------------
     /// Add magnet url to the daemon.
-    #[clap(short, long)]
-    #[serde(skip)]
+    #[argh(option, short = 'm', description = "add magnet url to the daemon")]
     pub magnet: Option<String>,
 
-    /// Print the stats of all torrents.
-    #[clap(short, long)]
-    #[serde(skip)]
+    #[argh(switch, description = "print the stats of all torrents")]
     pub stats: bool,
 
-    /// Pause the torrent with the given info hash.
-    #[clap(short, long)]
-    #[serde(skip)]
+    #[argh(option, description = "pause this torrent")]
     pub pause: Option<String>,
 
-    /// Terminate the process of the daemon.
-    #[clap(short, long)]
-    #[serde(skip)]
+    #[argh(switch, description = "terminate the process of the daemon")]
     pub quit: bool,
 }
 
 impl Config {
     /// Load the configuration file from disk and CLI, resolve and merge them.
     pub fn load() -> Result<ResolvedConfig, Error> {
-        let cli_config = Self::parse();
+        let cli_config = argh::from_env();
         let file_config = Self::from_file()?;
         Ok(Config::merge(file_config, cli_config).resolve())
     }
@@ -213,10 +198,8 @@ impl Config {
     fn resolve(self) -> ResolvedConfig {
         let mut metadata_dir = Self::get_config_folder();
         metadata_dir.push("torrents");
-
         let download_dir = dirs::download_dir()
             .expect("Could not read your download directory.");
-
         let mut config_dir = Self::get_config_folder();
         config_dir.push("config");
 
@@ -243,7 +226,7 @@ impl Config {
 
     fn from_file() -> Result<Self, Error> {
         let mut config_file = Config::get_config_folder();
-        config_file.push("config");
+        config_file.push("config.toml");
         let content = std::fs::read_to_string(config_file).unwrap();
         Self::from_str(&content)
     }
@@ -268,6 +251,7 @@ impl Config {
         Ok(trimmed[1..trimmed.len() - 1].to_string())
     }
 
+    /// Decode the toml file contents into self.
     fn from_str(input: &str) -> Result<Self, Error> {
         let mut map = HashMap::new();
 
@@ -406,25 +390,25 @@ mod tests {
             quit: true,
         };
 
-        let merged = Config::merge(file_config.clone(), cli_config.clone());
+        let merged = Config::merge(file_config, cli_config);
 
         // CLI values should override file values
-        assert_eq!(merged.download_dir, cli_config.download_dir);
-        assert_eq!(merged.daemon_addr, cli_config.daemon_addr);
-        assert_eq!(merged.local_peer_port, cli_config.local_peer_port);
-        assert_eq!(merged.is_ipv6, cli_config.is_ipv6);
-        assert_eq!(merged.log, cli_config.log);
+        assert_eq!(merged.download_dir.unwrap(), PathBuf::from("/cli/path"));
+        assert_eq!(merged.daemon_addr.unwrap().to_string(), "127.0.0.1:9090");
+        assert_eq!(merged.local_peer_port.unwrap(), 9090);
+        assert_eq!(merged.is_ipv6, Some(true));
+        assert_eq!(merged.log, Some(true));
 
         // these should fall back to file values since CLI didn't provide them
-        assert_eq!(merged.max_global_peers, file_config.max_global_peers);
-        assert_eq!(merged.max_torrent_peers, file_config.max_torrent_peers);
-        assert_eq!(merged.key, file_config.key);
+        assert_eq!(merged.max_global_peers, Some(100));
+        assert_eq!(merged.max_torrent_peers, Some(10));
+        assert_eq!(merged.key, Some(123));
 
         // command fields should come from CLI only
-        assert_eq!(merged.magnet, cli_config.magnet);
+        assert_eq!(merged.magnet, Some("magnet:test".to_string()));
         assert!(merged.stats);
 
-        assert_eq!(merged.pause, cli_config.pause);
+        assert_eq!(merged.pause, Some("pause_hash".to_string()));
         assert!(merged.quit);
     }
 

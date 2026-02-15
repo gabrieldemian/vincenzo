@@ -5,7 +5,6 @@ edition = "2024"
 
 [dependencies]
 tokio = { workspace = true }
-hashbrown = { workspace = true }
 tokio-util = { workspace = true }
 rand = { workspace = true }
 int-enum = { workspace = true }

@@ -18,10 +18,10 @@ use futures::{
     SinkExt,
     stream::{SplitSink, StreamExt},
 };
-use hashbrown::HashMap;
 use signal_hook::consts::signal::*;
 use signal_hook_tokio::Signals;
 use std::{
+    collections::HashMap,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     sync::Arc,
     time::Duration,
@@ -289,8 +289,7 @@ impl Daemon {
         let _tx = ctx.tx.clone();
 
         let mut test_interval = interval(Duration::from_secs(1));
-        let signals_task =
-            tokio::spawn(Daemon::handle_signals(signals, _tx));
+        let signals_task = tokio::spawn(Daemon::handle_signals(signals, _tx));
 
         debug!("running event loop");
 

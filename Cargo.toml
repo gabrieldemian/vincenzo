@@ -26,46 +26,28 @@ resolver = "2"
 
 [workspace.dependencies]
 int-enum = "1.2.0"
-rkyv = { version = "0.8.14", features = ["unaligned", "big_endian"] }
+rkyv = { version = "0.8.14", features = ["big_endian", "unaligned"] }
 lru = "0.16.3"
-bendy = { version = "0.6.1", features = ["std", "serde"] }
+bendy = "0.6.1"
 bitvec = "1.0.1"
 bytes = "1.11.0"
-clap = { version = "4.5.56", features = ["derive"] }
+argh = "0.1.14"
 futures = "0.3.31"
-hashbrown = "0.16.1"
 hex = "0.4.3"
 magnet-url = "3.0.0"
 rand = "0.9.2"
 rayon = "1.11.0"
 memmap2 = "0.9.9"
-ratatui = "0.30.0"
-serde = { version = "1.0.228", default-features = false, features = ["derive"] }
 signal-hook = "0.4.3"
 signal-hook-tokio = { version = "0.4.0", features = ["futures-v0_3"] }
 sha1 = { version = "0.10.6", features = ["sha1-asm"] }
 thiserror = "2.0.18"
-time = "0.3.46"
-tokio = { version = "1.49.0", default-features = false, features = [
-  "rt",
-  "fs",
-  "tracing",
-  "time",
-  "macros",
-  "rt-multi-thread",
-  "sync",
-  "io-std",
-  "io-util",
-  "bytes",
-  "net",
-]}
+tokio = { version = "1.49.0", features = ["fs", "io-util", "macros", "rt-multi-thread", "sync", "time"] }
 tokio-util = { version = "0.7.18", features = ["codec"] }
 tracing = "0.1.44"
 tracing-appender = "0.2.4"
-tracing-subscriber = { version = "0.3.22", features = ["time"] }
+tracing-subscriber = { version = "0.3.22" }
 urlencoding = "2.1.3"
-vcz = { path = "crates/vcz" }
-vcz-daemon = { path = "crates/vcz-daemon" }
 vcz-ui = { path = "crates/vcz-ui" }
 vcz-lib = { path = "crates/vcz-lib" }
 vcz-macros = { path = "crates/vcz-macros" }

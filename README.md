@@ -71,55 +71,25 @@ $vcz --help
 Usage: vczd [OPTIONS]
 
 Options:
-      --download-dir <DOWNLOAD_DIR>
-          Where to store files of torrents. Defaults to the download dir of the user.
-
-      --metadata-dir <METADATA_DIR>
-          Where to store .torrent files. Defaults to `~/.config/vincenzo/torrents`
-
-      --daemon-addr <DAEMON_ADDR>
-          Where the daemon listens for connections. Defaults to `0.0.0.0:0`
-
-      --local-peer-port <LOCAL_PEER_PORT>
-          Port of the client, defaults to 51413
-
-      --max-global-peers <MAX_GLOBAL_PEERS>
-          Max number of global TCP connections, defaults to 500
-
-      --max-torrent-peers <MAX_TORRENT_PEERS>
-          Max number of TCP connections for each torrent, defaults to 50, and is
-          capped by `max_global_peers`
-
-      --is-ipv6 <IS_IPV6>
-          If the client will use an ipv6 socket to connect to other peers.
-          Defaults to false [possible values: true, false]
-
-      --log <LOG>
-          If the program will write logs to disk.
-          Defaults to false [possible values: true, false]
-
-
-      --quit-after-complete <QUIT_AFTER_COMPLETE>
-          If the daemon should quit after all downloads are complete. Defaults
-          to false [possible values: true, false]
-
-  -m, --magnet <MAGNET>
-          Add magnet url to the daemon
-
-  -s, --stats
-          Print the stats of all torrents
-
-  -p, --pause <PAUSE>
-          Pause the torrent with the given info hash
-
-  -q, --quit
-          Terminate the process of the daemon
-
-  -h, --help
-          Print help
-
-  -V, --version
-          Print version
+  -d, --download-dir
+                    dir to write torrent files
+  --metadata-dir    dir to store .torrent files
+  --daemon-addr     where daemon listens for connections
+  --local-peer-port port that the client connect to other peers
+  --max-global-peers
+                    max global TCP connections
+  --max-torrent-peers
+                    max peers in each torrent, capped by `max_global_peers
+  --is-ipv6         if the client addr is ipv6
+  --log             if the program writes logs to disk
+  -q, --quit-after-complete
+                    make daemon quit after all downloads are completed
+  -k, --key         key that peer sends to trackers, defaults to random
+  -m, --magnet      add magnet url to the daemon
+  --stats           print the stats of all torrents
+  --pause           pause this torrent
+  --quit            terminate the process of the daemon
+  -h, --help        display usage information
 ```
 
 ### Default config.toml

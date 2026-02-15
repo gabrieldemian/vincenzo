@@ -22,7 +22,7 @@
       in
       with pkgs;
       {
-        devShells.default = mkShell {
+        devShells.default = mkShell rec {
           shellHook = ''
             #   export DOWNLOAD_DIR="$HOME/vincenzo/test-files";
             #   export XDG_DOWNLOAD_DIR="$HOME/downloads";
@@ -30,21 +30,28 @@
             #   export XDG_STATE_HOME="$HOME/.local/state";
             #   export XDG_DATA_HOME="$HOME/.local/share";
           '';
+          nativeBuildInputs = with nixpkgs; [
+            gcc
+            cmake
+            pkg-config
+            glibc
+            clang
+          ];
           buildInputs = [
             (writeShellScriptBin "writedump" "sudo tcpdump -i CloudflareWARP -XX 'tcp and port not https' -w dump.pcap")
             rustup
             cargo-bloat
+            cargo-outdated
+            cargo-features-manager
             cargo-flamegraph
-            cargo-unused-features
-            cargo-udeps
-            taplo
+            cargo-shear
             trippy
             netscanner
             tcpdump
-            pkg-config
             glib
             (rust-bin.fromRustupToolchainFile ./rust-toolchain.toml)
           ];
+          LD_LIBRARY_PATH = lib.makeLibraryPath buildInputs;
         };
       }
     );

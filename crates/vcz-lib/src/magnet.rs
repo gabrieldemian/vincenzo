@@ -1,9 +1,11 @@
 //! Handle magnet link
 
 use crate::{error::Error, torrent::InfoHash};
-use hashbrown::HashMap;
 use magnet_url::Magnet as Magnet_;
-use std::ops::{Deref, DerefMut};
+use std::{
+    collections::HashMap,
+    ops::{Deref, DerefMut},
+};
 
 #[derive(Debug, Clone, Hash)]
 pub struct Magnet(pub Magnet_);

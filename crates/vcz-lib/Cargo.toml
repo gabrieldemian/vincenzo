@@ -25,13 +25,11 @@ rayon = { workspace = true }
 memmap2 = { workspace = true }
 bitvec = { workspace = true }
 bytes = { workspace = true }
-clap = { workspace = true }
+argh = { workspace = true }
 futures = { workspace = true }
-hashbrown = { workspace = true }
 hex = { workspace = true }
 magnet-url = { workspace = true }
 rand = { workspace = true }
-serde = { workspace = true }
 sha1 = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }

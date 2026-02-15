@@ -1,5 +1,3 @@
-mod utils;
-
 use darling::{FromDeriveInput, util::PathList};
 use proc_macro::TokenStream;
 use quote::quote;

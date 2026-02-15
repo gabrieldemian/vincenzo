@@ -8,11 +8,10 @@ use crate::{
     torrent::{self, Torrent},
     tracker::TrackerMsg,
 };
-use hashbrown::{HashMap, HashSet};
 use rand::Rng;
 use rkyv::{Archive, Deserialize, Serialize};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap, HashSet},
     fmt::Display,
     net::{IpAddr, SocketAddr},
     ops::Deref,

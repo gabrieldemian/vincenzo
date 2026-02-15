@@ -6,8 +6,7 @@ use std::{
 
 use crate::peer::DEFAULT_REQUEST_QUEUE_LEN;
 use bitvec::{bitvec, order::Msb0};
-use hashbrown::HashMap;
-use std::cmp::Reverse;
+use std::{cmp::Reverse, collections::HashMap};
 use tokio::time::Instant;
 
 /// A type that can be requested.
