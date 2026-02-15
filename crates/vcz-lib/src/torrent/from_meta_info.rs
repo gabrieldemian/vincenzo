@@ -10,13 +10,15 @@ impl Torrent<Connected, FromMetaInfo> {
     pub async fn run(&mut self) -> Result<(), Error> {
         debug!("running torrent: {:?}", self.name);
 
-        self.status = TorrentStatus::Downloading;
-
-        {
-            let is_seed_only =
-                self.bitfield.count_ones() >= self.bitfield.len();
-            if is_seed_only {
-                self.status = TorrentStatus::Seeding;
+        match self.status {
+            TorrentStatus::Error(_) => {}
+            _ => {
+                self.status = TorrentStatus::Downloading;
+                let is_seed_only =
+                    self.bitfield.count_ones() >= self.bitfield.len();
+                if is_seed_only {
+                    self.status = TorrentStatus::Seeding;
+                }
             }
         }
 
@@ -144,7 +146,9 @@ impl Torrent<Connected, FromMetaInfo> {
                 _ = self.state.heartbeat_interval.tick() => {
                     self.heartbeat_interval().await;
                 }
-                _ = self.state.reconnect_interval.tick() => {
+                _ = self.state.reconnect_interval.tick(),
+                    if !matches!(self.status, TorrentStatus::Error(_)) =>
+                {
                     // self.reconnect_interval().await;
                     let _ = self.spawn_outbound_peers(true).await;
                 }

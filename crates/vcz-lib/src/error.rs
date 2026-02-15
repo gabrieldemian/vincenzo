@@ -1,5 +1,5 @@
 use crate::{
-    daemon::DaemonMsg, disk::DiskMsg, peer::PeerMsg, torrent::TorrentMsg,
+    bitfield::Bitfield, daemon::DaemonMsg, disk::DiskMsg, peer::PeerMsg, torrent::TorrentMsg
 };
 use std::{io, path::PathBuf};
 use thiserror::Error;
@@ -45,6 +45,9 @@ pub enum Error {
          `{received}`"
     )]
     WrongExtensionId { local: u8, received: u8 },
+
+    #[error("Missing files on disk")]
+    TorrentFilesMissing(Bitfield),
 
     #[error("File not found: {0}")]
     FileNotFound(PathBuf),

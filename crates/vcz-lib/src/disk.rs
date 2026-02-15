@@ -11,7 +11,10 @@ use crate::{
     },
     metainfo::{Info, MetaInfo},
     peer::{PeerCtx, PeerId},
-    torrent::{InfoHash, Torrent, TorrentCtx, TorrentMsg},
+    torrent::{
+        InfoHash, Torrent, TorrentCtx, TorrentMsg, TorrentStatus,
+        TorrentStatusErrorCode,
+    },
     utils::to_human_readable,
 };
 use bendy::{decoding::FromBencode, encoding::ToBencode};
@@ -46,7 +49,7 @@ use tokio::{
     },
     time::{Instant, interval},
 };
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 #[derive(Debug)]
 pub enum DiskMsg {
@@ -483,6 +486,7 @@ impl Disk {
 
     /// Create a new torrent from a [`MetaInfo`] and send a
     /// [`DaemonMsg::AddTorrentMetaInfo`].
+    #[tracing::instrument(skip_all, fields(name = %metainfo.info.name))]
     pub async fn new_torrent_metainfo(
         &mut self,
         metainfo: MetaInfo,
@@ -496,15 +500,23 @@ impl Disk {
 
         self.compute_torrent_cache(&metainfo.info);
 
+        let mut is_err = false;
         let downloaded_pieces =
-            self.compute_downloaded_pieces(&metainfo.info).await?;
+            match self.compute_downloaded_pieces(&metainfo.info).await {
+                Ok(downloaded_pieces) => downloaded_pieces,
+                Err(Error::TorrentFilesMissing(downloaded_pieces)) => {
+                    is_err = true;
+                    downloaded_pieces
+                }
+                Err(e) => return Err(e),
+            };
 
         self.compute_torrent_state(&info_hash, &downloaded_pieces).await?;
 
         let b = downloaded_pieces.count_ones() * metainfo.info.piece_length;
-        info!("downloaded {b} bytes {:?}", to_human_readable(b as f64));
+        info!("downloaded {:?}", to_human_readable(b as f64));
 
-        let torrent = Torrent::new_metainfo(
+        let mut torrent = Torrent::new_metainfo(
             self.config.clone(),
             self.tx.clone(),
             self.daemon_ctx.clone(),
@@ -512,10 +524,18 @@ impl Disk {
             downloaded_pieces,
         );
 
+        if is_err {
+            error!("missing files on disk");
+            torrent.status =
+                TorrentStatus::Error(TorrentStatusErrorCode::FilesMissing);
+        }
+
         self.torrent_ctxs.insert(info_hash.clone(), torrent.ctx.clone());
 
         // create folders, files, and preallocate them with zeroes.
-        self.pre_alloc_files(&info_hash).await?;
+        if !is_err {
+            self.pre_alloc_files(&info_hash).await?;
+        }
 
         self.daemon_ctx.tx.send(DaemonMsg::AddTorrentMetaInfo(torrent)).await?;
 
@@ -525,14 +545,22 @@ impl Disk {
     async fn preopen_files<'a>(
         &self,
         file_metadata: &'a [FileMetadata],
-    ) -> Result<Vec<(&'a FileMetadata, Arc<Mmap>)>, Error> {
+    ) -> Result<
+        Vec<(&'a FileMetadata, Arc<Mmap>)>,
+        Vec<(&'a FileMetadata, Arc<Mmap>)>,
+    > {
         let mut mmaps = Vec::with_capacity(file_metadata.len());
 
         for file_meta in file_metadata {
-            let Ok(file) = Self::open_file(&file_meta.path).await else {
-                continue;
+            let path = file_meta.path.as_ref().to_owned();
+            info!("path {path:?}");
+            // return error if the file doesn't exist
+            if tokio::fs::metadata(&path).await.is_err() {
+                info!("its just not possible");
+                return Err(mmaps);
             };
-            let mmap = unsafe { Mmap::map(&file)? };
+            let file = Self::open_file(path).await.unwrap();
+            let mmap = unsafe { Mmap::map(&file).unwrap() };
             mmaps.push((file_meta, Arc::new(mmap)));
         }
 
@@ -541,7 +569,7 @@ impl Disk {
 
     /// Compute the downloaded and valid pieces of the torrent and feed the read
     /// cache with the file handles.
-    #[tracing::instrument(skip(self), fields(info = %info.info_hash))]
+    #[tracing::instrument(skip_all, fields(name = %info.name))]
     async fn compute_downloaded_pieces(
         &mut self,
         info: &Info,
@@ -562,7 +590,14 @@ impl Disk {
         let total_size = torrent_cache.total_size;
 
         let file_handles =
-            self.preopen_files(&torrent_cache.file_metadata).await?;
+            self.preopen_files(&torrent_cache.file_metadata).await;
+
+        let is_err = file_handles.is_err();
+
+        let file_handles = match file_handles {
+            Ok(v) => v,
+            Err(v) => v,
+        };
 
         // compute all pieces in parallel using rayon.
         let piece_results: Vec<bool> = (0..total_pieces)
@@ -595,6 +630,9 @@ impl Disk {
             downloaded_pieces.count_ones()
         );
 
+        if is_err {
+            return Err(Error::TorrentFilesMissing(downloaded_pieces));
+        }
         Ok(downloaded_pieces)
     }
 
@@ -623,7 +661,7 @@ impl Disk {
             block_infos.extend(info.get_block_infos_of_piece_self(p));
         }
 
-        info!("generated pieces and {} blocks", block_infos.len(),);
+        info!("generated {} blocks", block_infos.len(),);
 
         self.endgame.insert(info_hash.clone(), false);
 
@@ -920,7 +958,6 @@ impl Disk {
     /// Open a file given a path.
     pub async fn open_file(path: impl AsRef<Path>) -> Result<File, Error> {
         let path = path.as_ref().to_owned();
-
         OpenOptions::new()
             .read(true)
             .write(true)
