@@ -1,7 +1,8 @@
 use crate::{
-    bitfield::Bitfield, daemon::DaemonMsg, disk::DiskMsg, peer::PeerMsg, torrent::TorrentMsg
+    bitfield::Bitfield, daemon::DaemonMsg, disk::DiskMsg, peer::PeerMsg,
+    torrent::TorrentMsg,
 };
-use std::{io, path::PathBuf};
+use std::{io, num::ParseIntError, path::PathBuf, str::ParseBoolError};
 use thiserror::Error;
 use tokio::{
     sync::{mpsc, oneshot},
@@ -38,6 +39,12 @@ impl From<std::convert::Infallible> for Error {
     }
 }
 
+impl From<Error> for ! {
+    fn from(_: Error) -> Self {
+        panic!("wtf")
+    }
+}
+
 #[derive(Error, Debug)]
 pub enum Error {
     #[error(
@@ -57,6 +64,15 @@ pub enum Error {
 
     #[error("Join error: {0}")]
     JoinError(#[from] JoinError),
+
+    #[error("Error parsing str")]
+    ParseStrError,
+
+    #[error("Error while parsing: {0}")]
+    ParseIntError(#[from] ParseIntError),
+
+    #[error("Error while parsing: {0}")]
+    ParseBoolError(#[from] ParseBoolError),
 
     #[error("Rkyv error: {0}")]
     Rkyv(#[from] rkyv::rancor::Error),
@@ -93,9 +109,6 @@ pub enum Error {
 
     #[error("Could not connect to the UDP socket of the tracker")]
     TrackerSocketConnect,
-
-    #[error("Error while trying to load configuration: `{0}")]
-    FromConfigError(#[from] config::ConfigError),
 
     #[error("Error when reading magnet link")]
     MagnetLinkInvalid,

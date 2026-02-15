@@ -1,11 +1,12 @@
 //! Configuration file and CLI flags.
 //!
-//! We have 3 components for the configuration, in order of priority :
+//! We have 2 components for the configuration, in order of priority :
 //!
-//! Environment --overrides--> CLI Flags --overrides--> File
+//! CLI Flags --overrides--> File
 
 use crate::{daemon::Daemon, error::Error};
 use clap::Parser;
+use hashbrown::HashMap;
 use serde::Deserialize;
 use std::{net::SocketAddr, path::PathBuf};
 
@@ -94,13 +95,11 @@ pub struct Config {
 }
 
 impl Config {
-    /// Try to load the configuration. Environmental variables have priviledge
-    /// over values from the configuration file. If both are not set, it will
-    /// try to guess the default values using $HOME.
+    /// Load the configuration file from disk and CLI, resolve and merge them.
     pub fn load() -> Result<ResolvedConfig, Error> {
         let cli_config = Self::parse();
-        let file_config = Self::load_toml_config()?;
-        Ok(Self::merge(file_config, cli_config).resolve())
+        let file_config = Self::from_file()?;
+        Ok(Config::merge(file_config, cli_config).resolve())
     }
 
     #[cfg(feature = "debug")]
@@ -174,23 +173,7 @@ impl Config {
         None
     }
 
-    fn load_toml_config() -> Result<Self, Error> {
-        let mut config_file = Self::get_config_folder();
-        config_file.push("config");
-
-        config::Config::builder()
-            .add_source(
-                config::File::with_name(config_file.to_str().unwrap())
-                    .required(false), // .format(config::FileFormat::Toml),
-            )
-            .add_source(config::Environment::default())
-            .build()
-            .map_err(Error::FromConfigError)?
-            .try_deserialize()
-            .map_err(Error::FromConfigError)
-    }
-
-    fn merge(file_config: Self, cli_config: Self) -> Self {
+    fn merge(file_config: Config, cli_config: Self) -> Self {
         let s = Self {
             download_dir: cli_config.download_dir.or(file_config.download_dir),
             metadata_dir: cli_config.metadata_dir.or(file_config.metadata_dir),
@@ -227,7 +210,7 @@ impl Config {
         s
     }
 
-    pub fn resolve(self) -> ResolvedConfig {
+    fn resolve(self) -> ResolvedConfig {
         let mut metadata_dir = Self::get_config_folder();
         metadata_dir.push("torrents");
 
@@ -257,6 +240,110 @@ impl Config {
             quit: self.quit,
         }
     }
+
+    fn from_file() -> Result<Self, Error> {
+        let mut config_file = Config::get_config_folder();
+        config_file.push("config");
+        let content = std::fs::read_to_string(config_file).unwrap();
+        Self::from_str(&content)
+    }
+
+    fn parse_bool(s: &str) -> Result<bool, Error> {
+        s.parse::<bool>().map_err(|e| e.into())
+    }
+
+    fn parse_u16(s: &str) -> Result<u16, Error> {
+        s.parse::<u16>().map_err(|e| e.into())
+    }
+
+    fn parse_u32(s: &str) -> Result<u32, Error> {
+        s.parse::<u32>().map_err(|e| e.into())
+    }
+
+    fn parse_quoted_string(raw: &str) -> Result<String, Error> {
+        let trimmed = raw.trim();
+        if !trimmed.starts_with('"') || !trimmed.ends_with('"') {
+            return Err(Error::ParseStrError);
+        }
+        Ok(trimmed[1..trimmed.len() - 1].to_string())
+    }
+
+    fn from_str(input: &str) -> Result<Self, Error> {
+        let mut map = HashMap::new();
+
+        for line in input.lines() {
+            let line = line.trim();
+
+            // look for an '='
+            let Some(eq_pos) = line.find('=') else { continue };
+
+            let key = line[..eq_pos].trim();
+            let value_part = line[eq_pos + 1..].trim();
+
+            if key.is_empty() {
+                return Err(Error::ParseStrError);
+            }
+
+            // remove anything after an #
+            let value = match value_part.find('#') {
+                Some(idx) => {
+                    // ensure the '#' is not inside quotes (very basic check)
+                    let before_hash = &value_part[..idx];
+                    if before_hash.contains('"') {
+                        // we have a quote before '#', so the '#' might be part
+                        // of a string. For simplicity,
+                        // we treat the whole value_part as the value.
+                        value_part
+                    } else {
+                        before_hash.trim()
+                    }
+                }
+                None => value_part,
+            };
+            map.insert(key.to_string(), value.to_string());
+        }
+
+        let is_ipv6 = map.get("is_ipv6").map(|v| Self::parse_bool(v).into_ok());
+        let log = map.get("log").map(|v| Self::parse_bool(v).into_ok());
+        let quit_after_complete = map
+            .get("quit_after_complete")
+            .map(|v| Self::parse_bool(v).into_ok());
+        let local_peer_port =
+            map.get("local_peer_port").map(|v| Self::parse_u16(v).into_ok());
+        let max_global_peers =
+            map.get("max_global_peers").map(|v| Self::parse_u32(v).into_ok());
+        let key = map.get("key").map(|v| Self::parse_u32(v).into_ok());
+        let max_torrent_peers =
+            map.get("max_torrent_peers").map(|v| Self::parse_u32(v).into_ok());
+        let daemon_addr = map
+            .get("daemon_addr")
+            .map(|v| Self::parse_quoted_string(v).into_ok());
+        let daemon_addr = if let Some(addr) = daemon_addr {
+            Some(addr.parse().map_err(|_| Error::ParseStrError)?)
+        } else {
+            None
+        };
+        let metadata_dir = map
+            .get("metadata_dir")
+            .map(|v| PathBuf::from(Self::parse_quoted_string(v).into_ok()));
+        let download_dir = map
+            .get("download_dir")
+            .map(|v| PathBuf::from(Self::parse_quoted_string(v).into_ok()));
+
+        Ok(Self {
+            daemon_addr,
+            download_dir,
+            is_ipv6,
+            key,
+            local_peer_port,
+            log,
+            max_global_peers,
+            max_torrent_peers,
+            metadata_dir,
+            quit_after_complete,
+            ..Default::default()
+        })
+    }
 }
 
 #[derive(Debug)]
@@ -272,7 +359,6 @@ pub struct ResolvedConfig {
     pub log: bool,
     pub quit_after_complete: bool,
     pub key: u32,
-
     // -------------------------
     // Command fields (CLI only)
     // -------------------------
@@ -287,16 +373,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn environment() {
-        unsafe {
-            std::env::set_var("DOWNLOAD_DIR", "/new/download");
-        }
-        let config = Config::load().unwrap();
-        assert_eq!(config.download_dir.to_str().unwrap(), "/new/download");
-    }
-
-    #[test]
-    fn override_config() {
+    fn merge() {
         // test that CLI values override file values
         let file_config = Config {
             download_dir: Some("/file/path".into()),
@@ -309,10 +386,7 @@ mod tests {
             log: Some(false),
             quit_after_complete: Some(false),
             key: Some(123),
-            magnet: None,
-            stats: false,
-            pause: None,
-            quit: false,
+            ..Default::default()
         };
 
         let cli_config = Config {
@@ -352,5 +426,39 @@ mod tests {
 
         assert_eq!(merged.pause, cli_config.pause);
         assert!(merged.quit);
+    }
+
+    #[test]
+    fn decode() {
+        let toml = r#"
+            is_ipv6 = true
+            local_peer_port = 8080
+            daemon_addr = "127.0.0.1:9000"
+            metadata_dir = "/tmp/metadata_dir"
+        "#;
+        let config = Config::from_str(toml).unwrap();
+        assert_eq!(config.is_ipv6, Some(true));
+        assert_eq!(config.local_peer_port, Some(8080));
+        assert_eq!(config.daemon_addr, Some("127.0.0.1:9000".parse().unwrap()));
+        assert_eq!(
+            config.metadata_dir,
+            Some(PathBuf::from("/tmp/metadata_dir"))
+        );
+    }
+
+    #[test]
+    fn decode_potential_errors() {
+        let toml = r#"
+            [notsupported]
+            # this will be skiped
+            is_ipv6 = true #heh
+            # wtf
+            wtf_is_a_kilometer = true
+        "#;
+        let config = Config::from_str(toml).unwrap();
+        assert_eq!(config.is_ipv6, Some(true));
+        assert_eq!(config.local_peer_port, None);
+        assert_eq!(config.daemon_addr, None);
+        assert_eq!(config.metadata_dir, None);
     }
 }

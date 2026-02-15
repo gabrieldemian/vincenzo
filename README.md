@@ -6,7 +6,8 @@ Vincenzo is a BitTorrent client with vim-like keybindings and a terminal based U
 
 ## About
 
-Vincenzo aims to be a modern, fast, minimalistic\*, and good-looking BitTorrent client.
+Vincenzo aims to be a modern, fast, minimalistic\*, and good-looking BitTorrent
+client.
 
 \*Minimalistic here means that the UI is not bloated, configuration is done
 through the configuration file, no ads, and no telemetry.
@@ -93,6 +94,11 @@ Options:
           If the client will use an ipv6 socket to connect to other peers.
           Defaults to false [possible values: true, false]
 
+      --log <LOG>
+          If the program will write logs to disk.
+          Defaults to false [possible values: true, false]
+
+
       --quit-after-complete <QUIT_AFTER_COMPLETE>
           If the daemon should quit after all downloads are complete. Defaults
           to false [possible values: true, false]
@@ -125,6 +131,7 @@ max_global_peers = 500
 max_torrent_peers = 50
 local_peer_port = 51413
 is_ipv6 = false
+log = false
 ```
 
 ## Supported BEPs

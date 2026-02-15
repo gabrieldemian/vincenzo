@@ -22,7 +22,6 @@ use tokio::{
     time::timeout,
 };
 use tokio_util::codec::Framed;
-use tracing::debug;
 use vcz_lib::{
     config::ResolvedConfig,
     daemon_wire::{DaemonCodec, Message},

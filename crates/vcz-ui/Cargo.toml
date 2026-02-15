@@ -9,17 +9,12 @@ edition = "2024"
 crossterm = { version = "0.29.0", features = ["event-stream"] }
 unicode-width = "=0.2.0"
 
-clap = { workspace = true }
 futures = { workspace = true }
-hashbrown = { workspace = true }
 magnet-url = { workspace = true }
-rand = { workspace = true }
 ratatui = { workspace = true }
-serde = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
-tracing = { workspace = true }
 vcz-lib = { workspace = true }
 signal-hook = { workspace = true }
 signal-hook-tokio = { workspace = true }

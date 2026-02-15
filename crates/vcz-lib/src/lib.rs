@@ -1,6 +1,8 @@
 #![feature(macro_metavar_expr)]
+#![feature(unwrap_infallible)]
 #![feature(ip_as_octets)]
 #![feature(trait_alias)]
+#![feature(never_type)]
 
 pub static VERSION: &str = "0.0.1";
 

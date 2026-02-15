@@ -7,12 +7,6 @@ edition = "2024"
 [dependencies]
 rand = { workspace = true }
 bendy = { workspace = true }
-bitvec = { workspace = true }
-futures = { workspace = true }
 hashbrown = { workspace = true }
 tokio = { workspace = true }
-tokio-util = { workspace = true }
 vcz-lib = { workspace = true, features = ["debug"] }
-
-# [lints]
-# workspace = true

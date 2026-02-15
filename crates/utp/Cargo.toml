@@ -9,6 +9,3 @@ hashbrown = { workspace = true }
 tokio-util = { workspace = true }
 rand = { workspace = true }
 int-enum = { workspace = true }
-
-# [dev-dependencies]
-# futures = { workspace = true }
