@@ -50,12 +50,12 @@ async fn setup_complete_torrent() -> Result<(Disk, Daemon, MetaInfo), Error> {
 /// Setup a torrent that doesn't have any files from the torrent.
 async fn setup_incomplete_torrent() -> Result<(Disk, Daemon, MetaInfo), Error> {
     let mut config = Config::load_test();
-    // points to a place that doesn't exist
     config.download_dir = "/tmp/fakedownload".into();
     config.metadata_dir = "/tmp/fakemetadata".into();
     config.key = rand::random();
     let r = setup_client(Arc::new(config)).await?;
     let mut p = r.0.config.metadata_dir.clone();
+    // right now downloads start by adding metainfo files on the queue folder.
     p.push("queue");
     tokio::fs::create_dir_all(p.clone()).await?;
     p.push("t.torrent");

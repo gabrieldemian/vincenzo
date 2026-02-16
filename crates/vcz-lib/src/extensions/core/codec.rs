@@ -191,7 +191,7 @@ impl ExtMsgHandler<Core> for Peer<peer::Connected> {
                 self.send(Core::Piece(Block {
                     index,
                     begin,
-                    block: rx.await?,
+                    block: rx.await??,
                 }))
                 .await?;
             }

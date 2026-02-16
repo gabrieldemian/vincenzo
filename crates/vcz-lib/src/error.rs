@@ -2,7 +2,7 @@ use crate::{
     bitfield::Bitfield, daemon::DaemonMsg, disk::DiskMsg, peer::PeerMsg,
     torrent::TorrentMsg,
 };
-use std::{io, num::ParseIntError, path::PathBuf, str::ParseBoolError};
+use std::{num::ParseIntError, str::ParseBoolError};
 use thiserror::Error;
 use tokio::{
     sync::{mpsc, oneshot},
@@ -56,12 +56,6 @@ pub enum Error {
     #[error("Missing files on disk")]
     TorrentFilesMissing(Bitfield),
 
-    #[error("File not found: {0}")]
-    FileNotFound(PathBuf),
-
-    #[error("")]
-    FrontendError,
-
     #[error("Join error: {0}")]
     JoinError(#[from] JoinError),
 
@@ -86,8 +80,8 @@ pub enum Error {
     #[error("Failed to decode or encode the bencode buffer")]
     BencodeError,
 
-    #[error("IO error")]
-    IO(#[from] io::Error),
+    #[error("IO error: {0}")]
+    IO(#[from] std::io::Error),
 
     #[error("Tracker resolved to no unusable addresses")]
     TrackerNoHosts,
@@ -121,18 +115,6 @@ pub enum Error {
 
     #[error("The peer took to long to send the handshake")]
     HandshakeTimeout,
-
-    #[error("The peer didn't send a handshake as the first message")]
-    NoHandshake,
-
-    #[error(
-        "Could not open the file `{0}`. Please make sure the program has \
-         permission to access it"
-    )]
-    FileOpenError(String),
-
-    #[error("This torrent is already downloaded fully")]
-    TorrentComplete,
 
     #[error("Could not find torrent for the given info_hash")]
     TorrentDoesNotExist,

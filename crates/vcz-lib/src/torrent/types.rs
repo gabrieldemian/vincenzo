@@ -54,6 +54,8 @@ pub enum TorrentMsg {
     /// Make the torrent run the unchoke algorithm.
     UnchokeAlgorithm,
 
+    SetTorrentError(TorrentStatusErrorCode),
+
     /// Make the torrent run the optimistic unchoke algorithm.
     OptUnchokeAlgorithm,
 

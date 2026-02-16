@@ -10,7 +10,7 @@ use crate::{
     peer::{self, Peer, PeerId},
     torrent::{
         self, InfoHash, Torrent, TorrentCtx, TorrentMsg, TorrentState,
-        TorrentStatus,
+        TorrentStatus, TorrentStatusErrorCode,
     },
     utils::to_human_readable,
 };
@@ -88,6 +88,7 @@ pub enum DaemonMsg {
     GetConnectedPeers(oneshot::Sender<u32>),
     GetMetadataSize(oneshot::Sender<Option<usize>>, InfoHash),
     SetMetadataSize(usize, InfoHash),
+    SetTorrentError(InfoHash, TorrentStatusErrorCode),
 
     GetTorrentCtx(oneshot::Sender<Option<Arc<TorrentCtx>>>, InfoHash),
     IncrementConnectedPeers,
@@ -298,6 +299,11 @@ impl Daemon {
                 // Listen to internal mpsc messages
                 Some(msg) = self.rx.recv() => {
                     match msg {
+                        DaemonMsg::SetTorrentError(info_hash, code) => {
+                            let Some(ctx) = self.torrent_ctxs.get(&info_hash).cloned()
+                            else { continue };
+                            let _ = ctx.tx.send(TorrentMsg::SetTorrentError(code)).await;
+                        }
                         DaemonMsg::NewTorrentMagnet(magnet) => {
                             let _ = self.new_torrent_magnet(magnet).await;
                         }

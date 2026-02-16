@@ -45,6 +45,9 @@ impl Torrent<Connected, FromMetaInfo> {
             select! {
                 Some(msg) = self.rx.recv() => {
                     match msg {
+                        TorrentMsg::SetTorrentError(code) => {
+                            self.status = TorrentStatus::Error(code);
+                        }
                         TorrentMsg::GetPeer(peer_id, sender) => {
                             let _ =
                                 sender.send(

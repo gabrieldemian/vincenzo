@@ -27,7 +27,6 @@ impl PeerBuilder<Leecher> {
         let disk_tx = disk.tx.clone();
         spawn(async move { daemon.run().await });
         let info_hash = metainfo.info.info_hash.clone();
-        // continue here tomorrow
         disk.read_metainfos_and_add(MetadataDir::Queue).await?;
         let torrent_tx = disk.torrent_ctxs.get(&info_hash).unwrap().tx.clone();
         disk.set_piece_strategy(&info_hash, PieceStrategy::Sequential).await?;

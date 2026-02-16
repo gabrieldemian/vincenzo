@@ -54,7 +54,7 @@ async fn download() -> Result<(), Error> {
         })
         .await?;
 
-    let block = orx.await?;
+    let block = orx.await??;
     assert_eq!(*block.first().unwrap(), 1);
     assert_eq!(block.len(), BLOCK_LEN);
 
@@ -72,7 +72,7 @@ async fn download() -> Result<(), Error> {
         })
         .await?;
 
-    let block = orx.await?;
+    let block = orx.await??;
     assert_eq!(*block.first().unwrap(), 1);
     assert_eq!(block.len(), BLOCK_LEN);
 
@@ -85,7 +85,7 @@ async fn download() -> Result<(), Error> {
         })
         .await?;
 
-    let block = orx.await?;
+    let block = orx.await??;
     assert_eq!(*block.first().unwrap(), 1);
     assert_eq!(block.len(), BLOCK_LEN);
 
@@ -98,7 +98,7 @@ async fn download() -> Result<(), Error> {
         })
         .await?;
 
-    let block = orx.await?;
+    let block = orx.await??;
     assert_eq!(*block.first().unwrap(), 1);
     assert_eq!(block.len(), BLOCK_LEN);
 
@@ -111,7 +111,7 @@ async fn download() -> Result<(), Error> {
         })
         .await?;
 
-    let block = orx.await?;
+    let block = orx.await??;
     assert_eq!(*block.first().unwrap(), 2);
     assert_eq!(block.len(), BLOCK_LEN);
 
@@ -124,7 +124,7 @@ async fn download() -> Result<(), Error> {
         })
         .await?;
 
-    let block = orx.await?;
+    let block = orx.await??;
     assert_eq!(*block.first().unwrap(), 2);
     assert_eq!(block.len(), BLOCK_LEN);
 
