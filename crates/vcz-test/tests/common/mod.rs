@@ -16,7 +16,7 @@ mod tracker;
 pub(crate) use peer::*;
 pub(crate) use tracker::*;
 
-use bendy::decoding::FromBencode;
+use bendy::{decoding::FromBencode, encoding::ToBencode};
 use std::{
     net::{Ipv4Addr, SocketAddr, SocketAddrV4},
     panic,
@@ -24,6 +24,7 @@ use std::{
     time::Duration,
 };
 use tokio::{
+    io::AsyncWriteExt,
     spawn,
     sync::{mpsc, oneshot},
     time::sleep,
@@ -53,7 +54,14 @@ async fn setup_incomplete_torrent() -> Result<(Disk, Daemon, MetaInfo), Error> {
     config.download_dir = "/tmp/fakedownload".into();
     config.metadata_dir = "/tmp/fakemetadata".into();
     config.key = rand::random();
-    setup_client(Arc::new(config)).await
+    let r = setup_client(Arc::new(config)).await?;
+    let mut p = r.0.config.metadata_dir.clone();
+    p.push("queue");
+    tokio::fs::create_dir_all(p.clone()).await?;
+    p.push("t.torrent");
+    let mut file = Disk::open_file(p).await?;
+    file.write_all(&r.2.to_bencode()?).await?;
+    Ok(r)
 }
 
 /// Delete download and metadata dirs of [`setup_incomplete_torrent`].
@@ -62,11 +70,11 @@ async fn setup_incomplete_torrent() -> Result<(Disk, Daemon, MetaInfo), Error> {
 /// creating the structure of the torrent and pre-allocating files with zero
 /// bytes.
 fn cleanup() {
-    let mut cc = Config::load_test();
-    cc.download_dir = "/tmp/fakedownload".into();
-    cc.metadata_dir = "/tmp/fakemetadata".into();
-    let _ = std::fs::remove_dir_all(&cc.download_dir);
-    let _ = std::fs::remove_dir_all(&cc.metadata_dir);
+    let mut config = Config::load_test();
+    config.download_dir = "/tmp/fakedownload".into();
+    config.metadata_dir = "/tmp/fakemetadata".into();
+    let _ = std::fs::remove_dir_all(&config.download_dir);
+    let _ = std::fs::remove_dir_all(&config.metadata_dir);
 }
 
 /// Setup the boilerplate of a client.
@@ -78,7 +86,6 @@ async fn setup_client(
 ) -> Result<(Disk, Daemon, MetaInfo), Error> {
     let (disk_tx, disk_rx) = mpsc::channel::<DiskMsg>(10);
     let (free_tx, free_rx) = mpsc::unbounded_channel::<ReturnToDisk>();
-
     let daemon = Daemon::new(config.clone(), disk_tx.clone(), free_tx.clone());
     let daemon_ctx = daemon.ctx.clone();
     let disk = Disk::new(config, daemon_ctx, disk_tx, disk_rx, free_rx);

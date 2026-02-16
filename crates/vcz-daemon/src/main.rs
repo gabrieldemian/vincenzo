@@ -38,7 +38,7 @@ async fn main() -> Result<(), Error> {
 
     // if the daemon is not running, run it
     if !is_daemon_running {
-        let (disk_tx, disk_rx) = mpsc::channel::<DiskMsg>(512);
+        let (disk_tx, disk_rx) = mpsc::channel::<DiskMsg>(128);
         let (free_tx, free_rx) = mpsc::unbounded_channel::<ReturnToDisk>();
 
         let mut daemon = Daemon::new(config.clone(), disk_tx.clone(), free_tx);

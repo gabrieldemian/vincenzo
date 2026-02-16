@@ -124,7 +124,7 @@ impl Daemon {
         disk_tx: mpsc::Sender<DiskMsg>,
         free_tx: mpsc::UnboundedSender<ReturnToDisk>,
     ) -> Self {
-        let (tx, rx) = mpsc::channel::<DaemonMsg>(100);
+        let (tx, rx) = mpsc::channel::<DaemonMsg>(128);
 
         let local_peer_id = PeerId::generate();
 

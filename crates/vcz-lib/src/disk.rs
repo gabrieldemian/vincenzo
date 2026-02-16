@@ -51,6 +51,19 @@ use tokio::{
 };
 use tracing::{debug, error, info, warn};
 
+/// There are 3 dirs inside `torrents` to store metainfo files in their
+/// contexts.
+#[derive(Clone, Copy, PartialEq)]
+#[repr(u8)]
+pub enum MetadataDir {
+    /// Metainfos that are seeding and fully downloaded
+    Complete,
+    /// Downloading metainfo, on completion moved to complete.
+    Incomplete,
+    /// Metainfo to be downloaded and moved to incomplete.
+    Queue,
+}
+
 #[derive(Debug)]
 pub enum DiskMsg {
     /// Sent by the frontend or CLI flag to add a new torrent from a magnet,
@@ -252,19 +265,27 @@ impl Disk {
 
     #[tracing::instrument(name = "disk", skip_all)]
     pub async fn run(&mut self) -> Result<(), Error> {
-        // only for debugging
-        // let mut disk_interval = interval(Duration::from_secs(3));
         let mut flush_interval = interval(Duration::from_millis(1_000));
         let mut dirty_count_history = Vec::with_capacity(10);
         let mut lru_cleanup_interval = interval(Duration::from_millis(11_000));
 
         // ensure the necessary folders are created.
+        // if tokio::fs::metadata(self.incomplete_torrents_path()).await.
+        // is_err() { };
+        //
+        // if tokio::fs::metadata(self.incomplete_torrents_path()).await.
+        // is_err() { }
+        //
+        // if tokio::fs::metadata(self.queue_torrents_path()).await.is_err() {
+        // }
         tokio::fs::create_dir_all(self.incomplete_torrents_path()).await?;
         tokio::fs::create_dir_all(self.complete_torrents_path()).await?;
+        tokio::fs::create_dir_all(self.queue_torrents_path()).await?;
 
         // load .torrent files into the client.
-        self.read_incomplete_torrents().await?;
-        self.read_complete_torrents().await?;
+        self.read_metainfos_and_add(MetadataDir::Complete).await?;
+        self.read_metainfos_and_add(MetadataDir::Incomplete).await?;
+        self.read_metainfos_and_add(MetadataDir::Queue).await?;
 
         'outer: loop {
             select! {
@@ -400,17 +421,6 @@ impl Disk {
                     self.flush_dirty_files().await;
                     self.dirty_files.retain(|_, bits| bits.any());
                 }
-                // _ = disk_interval.tick() => {
-                //     for (k, v) in self.block_infos.iter() {
-                //         let pr = self.pieces_requested.get(k).unwrap();
-                //         debug!(
-                //             "p: {} b: {} pr: {}",
-                //             v.len(),
-                //             v.values().fold(0, |acc, v| acc + v.len()),
-                //             pr.count_ones(),
-                //         );
-                //     }
-                // }
                 Some(return_to_disk) = self.free_rx.recv() => {
                     match return_to_disk {
                         ReturnToDisk::Block(info_hash, blocks) => {
@@ -500,11 +510,15 @@ impl Disk {
 
         self.compute_torrent_cache(&metainfo.info);
 
+        // create folders, files, and preallocate them with zeroes.
+        self.pre_alloc_files(&info_hash).await?;
+
         let mut is_err = false;
         let downloaded_pieces =
             match self.compute_downloaded_pieces(&metainfo.info).await {
                 Ok(downloaded_pieces) => downloaded_pieces,
                 Err(Error::TorrentFilesMissing(downloaded_pieces)) => {
+                    println!("hehhhhhhhh");
                     is_err = true;
                     downloaded_pieces
                 }
@@ -532,11 +546,6 @@ impl Disk {
 
         self.torrent_ctxs.insert(info_hash.clone(), torrent.ctx.clone());
 
-        // create folders, files, and preallocate them with zeroes.
-        if !is_err {
-            self.pre_alloc_files(&info_hash).await?;
-        }
-
         self.daemon_ctx.tx.send(DaemonMsg::AddTorrentMetaInfo(torrent)).await?;
 
         Ok(())
@@ -553,13 +562,13 @@ impl Disk {
 
         for file_meta in file_metadata {
             let path = file_meta.path.as_ref().to_owned();
-            info!("path {path:?}");
+            println!("2222222 {path:?}");
             // return error if the file doesn't exist
-            if tokio::fs::metadata(&path).await.is_err() {
-                info!("its just not possible");
-                return Err(mmaps);
-            };
-            let file = Self::open_file(path).await.unwrap();
+            // if tokio::fs::metadata(&path).await.is_err() {
+            //     println!("its just not possible {path:?}");
+            //     return Err(mmaps);
+            // };
+            let file = Self::open_file(path).await.expect("cant preopen");
             let mmap = unsafe { Mmap::map(&file).unwrap() };
             mmaps.push((file_meta, Arc::new(mmap)));
         }
@@ -588,7 +597,6 @@ impl Disk {
         let total_pieces = info.pieces();
         let piece_length = info.piece_length;
         let total_size = torrent_cache.total_size;
-
         let file_handles =
             self.preopen_files(&torrent_cache.file_metadata).await;
 
@@ -631,6 +639,7 @@ impl Disk {
         );
 
         if is_err {
+            println!("helpppp");
             return Err(Error::TorrentFilesMissing(downloaded_pieces));
         }
         Ok(downloaded_pieces)
@@ -1301,15 +1310,24 @@ impl Disk {
         Ok(())
     }
 
+    #[inline]
     fn complete_torrents_path(&self) -> PathBuf {
         let mut path = self.config.metadata_dir.clone();
         path.push("complete");
         path
     }
 
+    #[inline]
     fn incomplete_torrents_path(&self) -> PathBuf {
         let mut path = self.config.metadata_dir.clone();
         path.push("incomplete");
+        path
+    }
+
+    #[inline]
+    fn queue_torrents_path(&self) -> PathBuf {
+        let mut path = self.config.metadata_dir.clone();
+        path.push("queue");
         path
     }
 
@@ -1382,43 +1400,22 @@ impl Disk {
         path.exists()
     }
 
-    /// Read all .torrent files from complete folder, and add them to the
+    /// Read all .torrent files from (in)complete folder, and add them to the
     /// client.
-    async fn read_complete_torrents(&mut self) -> Result<(), Error> {
-        let path = self.complete_torrents_path();
-        let mut entries = tokio::fs::read_dir(path).await?;
-
-        while let Some(entry) = entries.next_entry().await? {
-            // ~/.config/vincenzo/torrents/complete
-            let path = entry.path();
-
-            // only read .torrent files
-            if path.extension().and_then(|s| s.to_str()) != Some("torrent") {
-                continue;
-            }
-
-            let bytes = tokio::fs::read(&path).await?;
-            let metainfo = MetaInfo::from_bencode(&bytes)?;
-
-            // skip duplicate
-            if self.torrent_ctxs.contains_key(&metainfo.info.info_hash) {
-                continue;
-            }
-
-            self.new_torrent_metainfo(metainfo).await?;
-        }
-
-        Ok(())
-    }
-
-    /// Read all .torrent files from incomplete folder, and add them to the
-    /// client.
-    async fn read_incomplete_torrents(&mut self) -> Result<(), Error> {
+    pub async fn read_metainfos_and_add(
+        &mut self,
+        metadata_dir: MetadataDir,
+    ) -> Result<(), Error> {
         // ~/.config/vincenzo/torrents/incomplete
-        let path = self.incomplete_torrents_path();
+        let path = match metadata_dir {
+            MetadataDir::Queue => self.queue_torrents_path(),
+            MetadataDir::Incomplete => self.incomplete_torrents_path(),
+            MetadataDir::Complete => self.complete_torrents_path(),
+        };
         let mut entries = tokio::fs::read_dir(path).await?;
 
         while let Some(entry) = entries.next_entry().await? {
+            // ~/.config/vincenzo/torrents/incomplete/file.torrent
             let path = entry.path();
 
             // only read .torrent files

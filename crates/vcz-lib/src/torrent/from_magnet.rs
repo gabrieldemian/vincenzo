@@ -116,7 +116,9 @@ impl Torrent<Connected, FromMagnet> {
                 _ = self.state.heartbeat_interval.tick() => {
                     self.heartbeat_interval().await;
                 }
-                _ = self.state.reconnect_interval.tick() => {
+                _ = self.state.reconnect_interval.tick(),
+                    if !matches!(self.status, TorrentStatus::Error(_)) =>
+                {
                     // self.reconnect_interval().await;
                     let _ = self.spawn_outbound_peers(self.source.info.is_some()).await;
                 }
@@ -214,8 +216,8 @@ impl Torrent<Idle, FromMagnet> {
         daemon_ctx: Arc<DaemonCtx>,
         magnet: Magnet,
     ) -> Torrent<Idle, FromMagnet> {
-        let (tx, rx) = mpsc::channel::<TorrentMsg>(100);
-        let (btx, _brx) = broadcast::channel::<PeerBrMsg>(100);
+        let (tx, rx) = mpsc::channel::<TorrentMsg>(32);
+        let (btx, _brx) = broadcast::channel::<PeerBrMsg>(16);
 
         let ctx = Arc::new(TorrentCtx {
             free_tx,

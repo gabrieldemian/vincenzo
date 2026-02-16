@@ -180,8 +180,8 @@ impl Torrent<Idle, FromMetaInfo> {
         let name = meta_info.info.name.clone();
         let metadata_size = Some(meta_info.info.metadata_size);
 
-        let (tx, rx) = mpsc::channel::<TorrentMsg>(100);
-        let (btx, _brx) = broadcast::channel::<PeerBrMsg>(100);
+        let (tx, rx) = mpsc::channel::<TorrentMsg>(32);
+        let (btx, _brx) = broadcast::channel::<PeerBrMsg>(16);
 
         let ctx = Arc::new(TorrentCtx {
             free_tx: daemon_ctx.free_tx.clone(),

@@ -57,7 +57,7 @@ async fn main() -> Result<(), Error> {
 
     tracing::info!("config: {config:?}");
 
-    let (disk_tx, disk_rx) = mpsc::channel::<DiskMsg>(512);
+    let (disk_tx, disk_rx) = mpsc::channel::<DiskMsg>(128);
     let (free_tx, free_rx) = mpsc::unbounded_channel::<ReturnToDisk>();
 
     let mut daemon = Daemon::new(config.clone(), disk_tx.clone(), free_tx);

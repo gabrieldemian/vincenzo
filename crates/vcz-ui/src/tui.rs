@@ -35,7 +35,7 @@ where
     const FRAME_RATE: f64 = 60.0;
 
     pub fn new(terminal: Terminal<B>) -> Result<Self, Error> {
-        let (tx, rx) = mpsc::channel(50);
+        let (tx, rx) = mpsc::channel(64);
         let cancellation_token = CancellationToken::new();
         let task = tokio::spawn(async {});
         Ok(Self { terminal, task, cancellation_token, rx, tx })

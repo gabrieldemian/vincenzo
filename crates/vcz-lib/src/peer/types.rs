@@ -292,7 +292,7 @@ impl peer::Peer<Idle> {
 
         let socket = socket.map_codec(|_| CoreCodec);
 
-        let (tx, rx) = mpsc::channel::<PeerMsg>(100);
+        let (tx, rx) = mpsc::channel::<PeerMsg>(32);
 
         let ctx = Arc::new(PeerCtx {
             torrent_ctx,
@@ -441,7 +441,7 @@ impl peer::Peer<Idle> {
 
         let socket = socket.map_codec(|_| CoreCodec);
 
-        let (tx, rx) = mpsc::channel::<PeerMsg>(100);
+        let (tx, rx) = mpsc::channel::<PeerMsg>(32);
 
         let ctx = PeerCtx {
             torrent_ctx,
