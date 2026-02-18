@@ -84,7 +84,11 @@ impl<T: Requestable> RequestManager<T> {
 
     /// How many requests the client can make right now.
     pub fn get_available_request_len(&self) -> usize {
-        self.limit.saturating_sub(self.index.len())
+        if self.index.len() >= self.limit {
+            0
+        } else {
+            self.limit.saturating_sub(self.index.len())
+        }
     }
 
     pub fn get_avg(&self) -> Duration {
@@ -159,11 +163,31 @@ impl<T: Requestable> RequestManager<T> {
         r
     }
 
+    /// Drain `qnt` requests and mark them as fulfilled.
+    pub fn steal_qnt(&mut self, qnt: usize) -> Vec<T> {
+        let max = qnt.min(self.len());
+        let mut r = Vec::with_capacity(max);
+        for _ in 0..max {
+            if let Some(v) = self.pop() {
+                r.push(v);
+            }
+        }
+        r
+    }
+
+    /// Delete the most recent item
+    fn pop(&mut self) -> Option<T> {
+        let v = self.timeouts.pop()?;
+        self.fulfill_request(&v.1);
+        Some(v.1)
+    }
+
     pub fn clear(&mut self) {
         *self = Self {
             limit: self.limit,
             recv_count: self.recv_count,
             req_count: self.req_count,
+            timeout_mult: self.timeout_mult,
             ..Default::default()
         };
     }
@@ -195,8 +219,9 @@ impl<T: Requestable> RequestManager<T> {
         self.requests.iter().take(qnt).cloned().collect::<Vec<_>>()
     }
 
-    /// Return true if the request exists, and false otherwise.
-    pub fn remove_request(&mut self, req: &T) -> bool {
+    /// Mark request as completed. Return true if the request exists, and false
+    /// otherwise.
+    pub fn fulfill_request(&mut self, req: &T) -> bool {
         let Some(pos) = self.index.remove(req) else { return false };
 
         if let Some(start_time) = self.req_start_times.remove(req) {
@@ -444,17 +469,17 @@ mod tests {
         assert_eq!(manager.timeouts.len(), 2);
         assert_eq!(manager.index.len(), 2);
 
-        assert!(manager.remove_request(&block));
-        assert!(!manager.remove_request(&block));
-        assert!(!manager.remove_request(&block));
+        assert!(manager.fulfill_request(&block));
+        assert!(!manager.fulfill_request(&block));
+        assert!(!manager.fulfill_request(&block));
 
         assert_eq!(manager.requests.len(), 1);
         assert_eq!(manager.timeouts.len(), 1);
         assert_eq!(manager.index.len(), 1);
 
-        assert!(manager.remove_request(&block2));
-        assert!(!manager.remove_request(&block2));
-        assert!(!manager.remove_request(&block2));
+        assert!(manager.fulfill_request(&block2));
+        assert!(!manager.fulfill_request(&block2));
+        assert!(!manager.fulfill_request(&block2));
 
         assert!(manager.requests.is_empty());
         assert!(manager.timeouts.is_empty());
@@ -473,7 +498,7 @@ mod tests {
         assert_eq!(manager.timeouts.len(), 2);
         assert_eq!(manager.index.len(), 2);
 
-        assert!(manager.remove_request(&block0));
+        assert!(manager.fulfill_request(&block0));
         assert_eq!(manager.requests.len(), 1);
         assert_eq!(manager.timeouts.len(), 1);
         assert_eq!(manager.index.len(), 1);
@@ -484,7 +509,7 @@ mod tests {
     fn remove_nonexistent_request() {
         let mut manager = RequestManager::new();
         let block = BlockInfo::new(0, 0, 16384);
-        manager.remove_request(&block);
+        manager.fulfill_request(&block);
     }
 
     #[test]
@@ -609,7 +634,7 @@ mod tests {
         assert_eq!(manager.index[&block1], 1);
         assert_eq!(manager.index[&block2], 2);
 
-        manager.remove_request(&block1);
+        manager.fulfill_request(&block1);
 
         assert_eq!(manager.index.len(), 2);
         assert_eq!(manager.index[&block0], 0);

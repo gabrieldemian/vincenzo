@@ -33,7 +33,7 @@ impl ExtMsgHandler<Metadata> for Peer<peer::Connected> {
 
                 self.state
                     .req_man_meta
-                    .remove_request(&MetadataPiece(msg.piece as usize));
+                    .fulfill_request(&MetadataPiece(msg.piece as usize));
 
                 self.state
                     .ctx

@@ -203,7 +203,7 @@ pub enum PeerMsg {
     /// Send block infos to this peer.
     Blocks(Vec<BlockInfo>),
 
-    CloneBlocks(usize, oneshot::Sender<Vec<BlockInfo>>),
+    StealBlockInfos(usize, oneshot::Sender<Vec<BlockInfo>>),
 
     /// Force the peer to run the interested algorithm immediately.
     InterestedAlgorithm,
@@ -310,7 +310,6 @@ impl peer::Peer<Idle> {
 
         let _ =
             ctx.torrent_ctx.disk_tx.send(DiskMsg::NewPeer(ctx.clone())).await;
-        let _ = ctx.torrent_ctx.btx.send(PeerBrMsg::NewPeer(ctx.clone()));
 
         let (sink, stream) = socket.split();
 

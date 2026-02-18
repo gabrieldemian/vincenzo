@@ -29,7 +29,10 @@ use rand::Rng;
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     net::{IpAddr, SocketAddr},
-    sync::{Arc, atomic::Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::Duration,
 };
 use tokio::{
@@ -509,10 +512,8 @@ impl<M: TorrentSource> Torrent<Connected, M> {
         self.state.connected_peers.push(ctx.clone());
         self.state.error_peers.retain(|v| v.state.addr != ctx.remote_addr);
         self.state.idle_peers.remove(&ctx.remote_addr);
-
         let _ =
             ctx.torrent_ctx.disk_tx.send(DiskMsg::NewPeer(ctx.clone())).await;
-        let _ = ctx.torrent_ctx.btx.send(PeerBrMsg::NewPeer(ctx.clone()));
         let _ =
             self.daemon_ctx.tx.send(DaemonMsg::IncrementConnectedPeers).await;
     }
@@ -578,35 +579,113 @@ impl<M: TorrentSource> Torrent<Connected, M> {
 
     /// Get the slowest peers, clone and send `qnt` block infos to the given
     /// `peer_tx`.
-    pub async fn clone_block_infos_to_peer(
+    pub(crate) async fn steal_block_infos(
         &mut self,
-        mut qnt: usize,
-        peer_tx: mpsc::Sender<PeerMsg>,
+        qnt: usize,
+        peer_ctx: Arc<PeerCtx>,
     ) -> Result<(), Error> {
+        let peer_tx = peer_ctx.tx.clone();
+        let mut tasks = Vec::with_capacity(self.state.connected_peers.len());
+        let (result_tx, mut result_rx) = mpsc::unbounded_channel();
+
         // sort connected peers by slowest to fastest.
         self.state.connected_peers.sort_by(|a, b| {
             a.counter.download_rate_u64().cmp(&b.counter.download_rate_u64())
         });
 
-        let mut r = Vec::with_capacity(qnt);
+        let need = Arc::new(AtomicUsize::new(qnt));
 
         for p in &self.state.connected_peers {
-            let (otx, orx) = oneshot::channel();
-            p.tx.send(PeerMsg::CloneBlocks(qnt, otx)).await?;
-            r.extend(orx.await?);
+            if p.id == peer_ctx.id {
+                continue;
+            };
 
-            qnt = qnt.saturating_sub(r.len());
+            let need_clone = need.clone();
+            let p_tx = p.tx.clone();
+            let r_tx = result_tx.clone();
+            let f_tx = self.ctx.free_tx.clone();
+            let info_hash = self.ctx.info_hash.clone();
 
-            if qnt == 0 {
-                if peer_tx.send(PeerMsg::Blocks(r.clone())).await.is_err() {
-                    let _ = self.ctx.free_tx.send(ReturnToDisk::Block(
-                        self.ctx.info_hash.clone(),
-                        r,
-                    ));
+            tasks.push(tokio::spawn(async move {
+                loop {
+                    let remaining = need_clone.load(Ordering::Acquire);
+                    if remaining == 0 {
+                        break;
+                    }
+                    if need_clone
+                        .compare_exchange(
+                            remaining,
+                            0,
+                            Ordering::Release,
+                            Ordering::Relaxed,
+                        )
+                        .is_err()
+                    {
+                        // another task claimed the need; retry.
+                        continue;
+                    }
+
+                    let (otx, orx) = oneshot::channel();
+                    if p_tx
+                        .send(PeerMsg::StealBlockInfos(remaining, otx))
+                        .await
+                        .is_err()
+                    {
+                        need_clone.fetch_add(remaining, Ordering::Release);
+                        break;
+                    }
+
+                    let infos = match timeout(Duration::from_secs(1), orx).await
+                    {
+                        Ok(Ok(infos)) => infos,
+                        Err(_) => {
+                            warn!("deadlocked");
+                            need_clone.fetch_add(remaining, Ordering::Release);
+                            break;
+                        }
+                        _ => {
+                            need_clone.fetch_add(remaining, Ordering::Release);
+                            break;
+                        }
+                    };
+                    if infos.len() < remaining {
+                        need_clone.fetch_add(
+                            remaining - infos.len(),
+                            Ordering::Release,
+                        );
+                    }
+                    if r_tx.send(infos.clone()).is_err() {
+                        let _ = f_tx.send(ReturnToDisk::Block(
+                            info_hash.clone(),
+                            infos,
+                        ));
+                        break;
+                    }
                 }
-                break;
+            }));
+        }
+
+        drop(result_tx);
+
+        let mut stolen = Vec::with_capacity(qnt);
+        while let Some(infos) = result_rx.recv().await {
+            stolen.extend(infos);
+            if stolen.len() >= qnt {
+                warn!("stolen more than it should");
+                // break;
             }
         }
+
+        if peer_tx.send(PeerMsg::Blocks(stolen.clone())).await.is_err() {
+            let _ = self
+                .ctx
+                .free_tx
+                .send(ReturnToDisk::Block(self.ctx.info_hash.clone(), stolen));
+        }
+
+        // for task in tasks {
+        //     let _ = task.await;
+        // }
 
         Ok(())
     }

@@ -49,7 +49,7 @@ impl PeerBuilder<Seeder> {
         let disk_tx = disk.tx.clone();
         spawn(async move { daemon.run().await });
         let info_hash = metainfo.info.info_hash.clone();
-        disk.new_torrent_metainfo(metainfo).await?;
+        disk.new_torrent_metainfo(metainfo, MetadataDir::Complete).await?;
         let torrent_tx = disk.torrent_ctxs.get(&info_hash).unwrap().tx.clone();
         disk.set_piece_strategy(&info_hash, PieceStrategy::Sequential).await?;
         spawn(async move { disk.run().await });

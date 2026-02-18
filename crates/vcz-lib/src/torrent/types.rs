@@ -25,15 +25,14 @@ use tokio::{
 /// Broadcasted messages for all peers in a torrent.
 #[derive(Debug, Clone)]
 pub enum PeerBrMsg {
-    /// Start endgame mode with block infos sent by the disk.
-    Endgame(Vec<BlockInfo>),
+    /// Start endgame mode.
+    /// Block infos of all peers will be freed to the disk to be requested
+    /// again, but this time they will be cloned instead of removed, and
+    /// Disk won't send duplicates to each peer.
+    Endgame,
 
     /// Send request blocks to all peers.
     Request(Vec<BlockInfo>),
-
-    /// When a new peer is connected, other peers might want to send messages
-    /// to him to syncronize state.
-    NewPeer(Arc<PeerCtx>),
 
     /// When in endgame mode, the first peer that receives this info,
     /// sends this message to send Cancel's to all other peers.
@@ -74,7 +73,7 @@ pub enum TorrentMsg {
     /// fast downloaders usually become out of block infos during or close to
     /// endgame mode. This message is sent by this peer to request more blocks
     /// from another peer chosen by the torrent.
-    CloneBlockInfosToPeer(usize, mpsc::Sender<PeerMsg>),
+    StealBlockInfos(usize, Arc<PeerCtx>),
 
     /// Sent by the tracker on periodic announces to add more peers to be
     /// connected.
@@ -124,8 +123,11 @@ pub enum TorrentMsg {
     /// Set a piece of the peer's bitfield to true
     PeerHave(PeerId, usize),
 
-    /// Start endgame mode, sent by the disk.
-    Endgame(Vec<BlockInfo>),
+    /// Start endgame mode.
+    /// Block infos of all peers will be freed to the disk to be requested
+    /// again, but this time they will be cloned instead of removed, and
+    /// Disk won't send duplicates to each peer.
+    Endgame,
 
     /// When a peer request a piece of the info
     /// index, recipient
