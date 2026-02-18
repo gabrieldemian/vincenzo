@@ -79,16 +79,12 @@ impl<T: Requestable> RequestManager<T> {
     }
 
     pub fn set_limit(&mut self, limit: usize) {
-        self.limit = limit;
+        self.limit = limit.max(DEFAULT_REQUEST_QUEUE_LEN as usize);
     }
 
     /// How many requests the client can make right now.
     pub fn get_available_request_len(&self) -> usize {
-        if self.index.len() >= self.limit {
-            0
-        } else {
-            self.limit.saturating_sub(self.index.len())
-        }
+        self.limit.saturating_sub(self.len())
     }
 
     pub fn get_avg(&self) -> Duration {
@@ -314,16 +310,13 @@ impl<T: Requestable> RequestManager<T> {
     }
 
     /// How many in-flight items there are.
+    #[inline]
     pub fn len(&self) -> usize {
         self.index.len()
     }
 
-    /// If there are no more items to request.
-    pub fn is_requests_empty(&self) -> bool {
-        self.requests.is_empty()
-    }
-
     /// If there are no items in-flight.
+    #[inline]
     pub fn is_empty(&self) -> bool {
         self.index.is_empty()
     }

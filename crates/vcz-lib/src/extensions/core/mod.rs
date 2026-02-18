@@ -82,8 +82,8 @@ impl Default for BlockInfo {
 }
 
 impl From<&Block> for BlockInfo {
-    fn from(val: &Block) -> Self {
-        BlockInfo { index: val.index, begin: val.begin, len: val.block.len() }
+    fn from(block: &Block) -> Self {
+        BlockInfo { index: block.index, begin: block.begin, len: block.block.len() }
     }
 }
 

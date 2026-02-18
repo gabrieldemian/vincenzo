@@ -21,9 +21,9 @@ use std::{sync::atomic::Ordering, time::Duration};
 use tokio::{
     select,
     sync::oneshot,
-    time::{Instant, interval, interval_at},
+    time::{Instant, interval, interval_at, timeout},
 };
-use tracing::{debug, trace};
+use tracing::{debug, trace, warn};
 
 /// Data about a remote Peer that the client is connected to,
 /// but the client itself does not have a Peer struct.
@@ -56,8 +56,9 @@ impl Peer<Connected> {
         let mut metadata_interval = interval(Duration::from_millis(100));
 
         // request blocks
-        let mut block_interval = interval(Duration::from_millis(100));
-        let mut help_interval = interval(Duration::from_millis(10_000));
+        let mut request_interval = interval(Duration::from_millis(100));
+        let mut rerequest_interval = interval(Duration::from_millis(200));
+        let mut help_interval = interval(Duration::from_millis(3000));
 
         // send interested or uninterested.
         // algorithm:
@@ -66,6 +67,11 @@ impl Peer<Connected> {
         // - 2. later, if we already have all pieces which the peer has, and we
         //   are interested, send not interested.
         let mut interested_interval = interval(Duration::from_secs(3));
+
+        // let mut steal_interval = interval_at(
+        //     Instant::now() + Duration::from_secs(3),
+        //     Duration::from_secs(3),
+        // );
 
         // send message to keep the connection alive
         let mut keep_alive_interval = interval_at(
@@ -85,20 +91,25 @@ impl Peer<Connected> {
                     self.request_metadata().await?;
                     self.rerequest_metadata().await?;
                 }
-                _ = help_interval.tick() => {
+                _ = help_interval.tick(), if self.can_rerequest() => {
                     let len = self.state.req_man_block.len();
                     tracing::info!("infos: {len}");
                 }
-                _ = block_interval.tick(), if self.can_request() => {
+                _ = request_interval.tick(), if self.can_request() => {
                     // some intervals are only ran in production (not debug)
                     // because I want to run this deterministically
                     // and manually in integration tests.
                     #[cfg(not(feature = "debug"))]
                     self.request_block_infos().await?;
-
+                }
+                _ = rerequest_interval.tick(), if self.can_rerequest() => {
                     #[cfg(not(feature = "debug"))]
                     self.rerequest_blocks().await?;
                 }
+                // _ = steal_interval.tick(), if self.can_request() => {
+                //     #[cfg(not(feature = "debug"))]
+                //     let _ = self.steal().await;
+                // }
                 _ = interested_interval.tick(),
                     if !self.state.seed_only && !self.state.is_paused
                 => {
@@ -111,11 +122,11 @@ impl Peer<Connected> {
                 Ok(msg) = brx.recv() => {
                     match msg {
                         PeerBrMsg::Endgame => {
-                            // self.state.in_endgame = true;
-                            // self.free_pending_blocks();
-                            // if self.can_request() {
-                            //     self.request_block_infos().await?;
-                            // }
+                            self.state.in_endgame = true;
+                            self.free_pending_blocks();
+                            if self.can_request() {
+                                self.request_block_infos().await?;
+                            }
                         }
                         PeerBrMsg::Request(blocks) => {
                             self.state
@@ -160,14 +171,34 @@ impl Peer<Connected> {
                             self.interested().await?;
                         }
                         PeerMsg::RequestAlgorithm => {
-                            self.request_block_infos().await?;
+                            let _ = self.request_block_infos().await;
                         }
                         PeerMsg::StealBlockInfos(qnt, tx) => {
+                            let infos_len = self.state.req_man_block.len();
+                            let qnt = if qnt >= infos_len { qnt / 2 } else { qnt };
                             let infos = self.state.req_man_block.steal_qnt(qnt);
-                            let _ = tx.send(infos);
+                            self.state
+                                .ctx
+                                .block_infos_len
+                                .store(self.state.req_man_block.len(), Ordering::Release);
+                            tokio::spawn(async move {
+                                let _ = tx.send(infos);
+                            });
                         }
                         PeerMsg::Blocks(blocks) => {
+                            tracing::info!(
+                                "---stolen {}",
+                                blocks.len(),
+                            );
                             self.state.req_man_block.extend(blocks);
+                            self.state
+                                .ctx
+                                .block_infos_len
+                                .store(self.state.req_man_block.len(), Ordering::Release);
+                            self.state.ctx.is_stealing.store(false, Ordering::Release);
+                            self.state.last_stolen = Some(Instant::now());
+                            *self.state.ctx.steal_mutex.lock().await =
+                                Instant::now();
                         }
                         PeerMsg::NotInterested => {
                             debug!("> not_interested");
@@ -199,157 +230,6 @@ impl Peer<Connected> {
         }
     }
 
-    /// Run interested algorithm.
-    #[inline]
-    pub async fn interested(&mut self) -> Result<(), Error> {
-        if !self.state.ctx.peer_choking.load(Ordering::Acquire)
-            && self.state.ctx.am_interested.load(Ordering::Acquire)
-        {
-            tracing::debug!(
-                "b {} d {} t {:?} avg {:?}",
-                self.state.req_man_block.len(),
-                self.state.req_man_block.recv_count,
-                self.state.req_man_block.get_timeout(),
-                self.state.req_man_block.get_avg(),
-            );
-        }
-        let (otx, orx) = oneshot::channel();
-
-        self.state
-            .ctx
-            .torrent_ctx
-            .tx
-            .send(TorrentMsg::PeerHasPieceNotInLocal(
-                self.state.ctx.id.clone(),
-                otx,
-            ))
-            .await?;
-
-        let should_be_interested = orx.await?;
-
-        let am_interested =
-            self.state.ctx.am_interested.load(Ordering::Acquire);
-
-        if should_be_interested.is_some() && !am_interested {
-            self.state.ctx.am_interested.store(true, Ordering::Release);
-            self.state_log[1] = 'i';
-            self.send(Core::Interested).await?;
-        }
-
-        // sorry, you're not the problem, it's me.
-        if should_be_interested.is_none() && am_interested {
-            self.state.ctx.am_interested.store(false, Ordering::Release);
-            self.state_log[1] = '-';
-            self.state.sink.send(Core::NotInterested).await?;
-        }
-        Ok(())
-    }
-
-    #[inline]
-    /// Enter seed only mode and send Cancel's for in-flight block infos.
-    pub async fn seed_only(&mut self) -> Result<(), Error> {
-        debug!("seed_only");
-        self.state.seed_only = true;
-        if self.state.ctx.am_choking.load(Ordering::Acquire) {
-            self.state.ctx.tx.send(PeerMsg::Unchoke).await?;
-        }
-
-        for block in self.state.req_man_block.drain().into_iter() {
-            self.send(Core::Cancel(block)).await?;
-        }
-
-        self.state.req_man_meta.clear();
-
-        Ok(())
-    }
-
-    /// Check if we can request new blocks, if:
-    /// - We are not being choked by the peer
-    /// - We are interested in the peer
-    /// - We have the downloaded the info of the torrent
-    /// - The torrent is not fully downloaded (peer is not in seed-only mode)
-    /// - The capacity of inflight blocks is not full (len of outgoing_requests)
-    #[inline]
-    pub fn can_request(&self) -> bool {
-        let am_interested =
-            self.state.ctx.am_interested.load(Ordering::Acquire);
-        let peer_choking = self.state.ctx.peer_choking.load(Ordering::Acquire);
-        let have_capacity = self.state.req_man_block.len()
-            < self.state.target_request_queue_len as usize;
-
-        am_interested
-            && !peer_choking
-            && self.state.have_info
-            && have_capacity
-            && !self.state.seed_only
-            && !self.state.is_paused
-    }
-
-    /// Handle a block sent by the core codec.
-    #[inline]
-    pub async fn handle_block(&mut self, block: Block) -> Result<(), Error> {
-        let block_info = BlockInfo::from(&block);
-
-        let was_requested =
-            self.state.req_man_block.fulfill_request(&block_info);
-
-        // ignore unsolicited (or duplicate) blocks, could be a malicious peer,
-        // a bugged client, etc. Or when the client has sent a cancel
-        // but because of the latency, the peer doesn't know that yet.
-        if !was_requested {
-            return Ok(());
-        }
-
-        // `downloaded` in the perspective of the local peer.
-        self.state.ctx.counter.record_download(block_info.len as u64);
-
-        // if in endgame, send cancels to all other peers
-        // if self.state.in_endgame {
-        //     let _ = self
-        //         .state
-        //         .ctx
-        //         .torrent_ctx
-        //         .btx
-        //         .send(PeerBrMsg::Cancel(block_info));
-        // }
-
-        self.state
-            .ctx
-            .torrent_ctx
-            .disk_tx
-            .send(DiskMsg::WriteBlock {
-                block,
-                info_hash: self.state.ctx.torrent_ctx.info_hash.clone(),
-            })
-            .await?;
-
-        Ok(())
-    }
-
-    /// Take outgoing block infos and metadata pieces and send them back to the
-    /// disk so that other peers can request them.
-    pub fn free_pending_blocks(&mut self) {
-        let infos = self.state.req_man_block.drain();
-        tracing::debug!("returning {} blocks", infos.len(),);
-
-        if !infos.is_empty() {
-            let _ = self.state.free_tx.send(ReturnToDisk::Block(
-                self.state.ctx.torrent_ctx.info_hash.clone(),
-                infos,
-            ));
-        }
-
-        let metas = self.state.req_man_meta.drain();
-        debug!("returning {} pieces", metas.len());
-
-        if !metas.is_empty() {
-            let _ = self.state.free_tx.send(ReturnToDisk::Metadata(
-                self.state.ctx.torrent_ctx.info_hash.clone(),
-                metas,
-            ));
-        }
-    }
-
     /// Request block infos from Disk.
     /// Must be used after checking that the Peer is able to send blocks with
     /// [`Self::can_request`].
@@ -377,36 +257,72 @@ impl Peer<Connected> {
             })
             .await?;
 
-        let blocks: Vec<BlockInfo> = orx.await?;
-        let is_empty = blocks.is_empty();
-
-        for block in blocks {
-            if self.state.req_man_block.add_request(block.clone()) {
-                self.feed(Core::Request(block)).await?;
+        match timeout(Duration::from_millis(500), orx).await {
+            Ok(Ok(blocks)) => {
+                let len = blocks.len();
+                for block in blocks {
+                    if self.state.req_man_block.add_request(block.clone()) {
+                        self.feed(Core::Request(block)).await?;
+                    }
+                }
+                if len == 0 {
+                    self.steal().await?;
+                } else {
+                    self.state
+                        .ctx
+                        .block_infos_len
+                        .fetch_add(len, Ordering::Release);
+                    self.state.sink.flush().await?;
+                }
             }
-        }
+            Err(_) => warn!("request deadlocked"),
+            _ => {}
+        };
 
-        if !is_empty {
-            self.state.sink.flush().await?;
-        }
+        Ok(())
+    }
+
+    pub async fn steal(&mut self) -> Result<(), Error> {
+        // if the peer has no block infos to request
+        let nothing_to_request = self.state.req_man_block.is_empty()
+            && self.state.req_man_block.req_count > 0;
 
         // if the torrent is beign downloaded and the peer is out of block infos
         // to request, the peer will request more. This usually happens
         // for fast peers at the end of the download.
-        let no_block_infos_and_torrent_downloading =
-            self.state.req_man_block.is_requests_empty()
-                && self.state.req_man_block.recv_count > 0
-                && self.state.req_man_block.req_count > 0
-                && is_empty;
-        if no_block_infos_and_torrent_downloading {
-            self.state
+        if !nothing_to_request {
+            return Ok(());
+        };
+
+        // steal only once every `STEAL_COOLDOWN` duration
+        if let Some(last) = self.state.last_stolen
+            && last.elapsed() < STEAL_COOLDOWN
+        {
+            return Ok(());
+        }
+        if self
+            .state
+            .ctx
+            .is_stealing
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_ok()
+        {
+            self.state.last_stolen = Some(Instant::now());
+            if self
+                .state
                 .ctx
                 .torrent_ctx
                 .tx
-                .send(TorrentMsg::StealBlockInfos(qnt, self.state.ctx.clone()))
-                .await?;
+                .send(TorrentMsg::StealBlockInfos(
+                    self.state.req_man_block.get_available_request_len(),
+                    self.state.ctx.clone(),
+                ))
+                .await
+                .is_err()
+            {
+                self.state.ctx.is_stealing.store(false, Ordering::Release);
+            };
         }
-
         Ok(())
     }
 
@@ -522,7 +438,6 @@ impl Peer<Connected> {
     pub async fn handle_ext(&mut self, ext: Extension) -> Result<(), Error> {
         let n = ext.reqq.unwrap_or(DEFAULT_REQUEST_QUEUE_LEN);
 
-        self.state.target_request_queue_len = n;
         self.state.req_man_meta.set_limit(n as usize);
         self.state.req_man_block.set_limit(n as usize);
 
@@ -538,5 +453,177 @@ impl Peer<Connected> {
         self.state.extension = Some(ext);
 
         Ok(())
+    }
+
+    /// Run interested algorithm.
+    #[inline]
+    pub async fn interested(&mut self) -> Result<(), Error> {
+        if !self.state.ctx.peer_choking.load(Ordering::Acquire)
+            && self.state.ctx.am_interested.load(Ordering::Acquire)
+        {
+            tracing::debug!(
+                "b {} d {} t {:?} avg {:?}",
+                self.state.req_man_block.len(),
+                self.state.req_man_block.recv_count,
+                self.state.req_man_block.get_timeout(),
+                self.state.req_man_block.get_avg(),
+            );
+        }
+        let (otx, orx) = oneshot::channel();
+
+        self.state
+            .ctx
+            .torrent_ctx
+            .tx
+            .send(TorrentMsg::PeerHasPieceNotInLocal(
+                self.state.ctx.id.clone(),
+                otx,
+            ))
+            .await?;
+
+        let should_be_interested = orx.await?;
+
+        let am_interested =
+            self.state.ctx.am_interested.load(Ordering::Acquire);
+
+        if should_be_interested.is_some() && !am_interested {
+            self.state.ctx.am_interested.store(true, Ordering::Release);
+            self.state_log[1] = 'i';
+            self.send(Core::Interested).await?;
+        }
+
+        // sorry, you're not the problem, it's me.
+        if should_be_interested.is_none() && am_interested {
+            self.state.ctx.am_interested.store(false, Ordering::Release);
+            self.state_log[1] = '-';
+            self.state.sink.send(Core::NotInterested).await?;
+        }
+        Ok(())
+    }
+
+    #[inline]
+    /// Enter seed only mode and send Cancel's for in-flight block infos.
+    pub async fn seed_only(&mut self) -> Result<(), Error> {
+        debug!("seed_only");
+        self.state.seed_only = true;
+        if self.state.ctx.am_choking.load(Ordering::Acquire) {
+            self.state.ctx.tx.send(PeerMsg::Unchoke).await?;
+        }
+
+        for block in self.state.req_man_block.drain().into_iter() {
+            self.send(Core::Cancel(block)).await?;
+        }
+
+        self.state.req_man_meta.clear();
+
+        Ok(())
+    }
+
+    /// Check if we can request new blocks, if:
+    /// - We are not being choked by the peer
+    /// - We are interested in the peer
+    /// - We have the downloaded the info of the torrent
+    /// - The torrent is not fully downloaded (peer is not in seed-only mode)
+    /// - The capacity of inflight blocks is not full (len of outgoing_requests)
+    #[inline]
+    pub fn can_request(&self) -> bool {
+        let am_interested =
+            self.state.ctx.am_interested.load(Ordering::Acquire);
+        let peer_choking = self.state.ctx.peer_choking.load(Ordering::Acquire);
+        let have_capacity =
+            self.state.req_man_block.get_available_request_len() > 0;
+
+        am_interested
+            && !peer_choking
+            && self.state.have_info
+            && have_capacity
+            && !self.state.seed_only
+            && !self.state.is_paused
+    }
+
+    #[inline]
+    pub fn can_rerequest(&self) -> bool {
+        let am_interested =
+            self.state.ctx.am_interested.load(Ordering::Acquire);
+        let peer_choking = self.state.ctx.peer_choking.load(Ordering::Acquire);
+
+        am_interested
+            && !peer_choking
+            && self.state.have_info
+            && !self.state.seed_only
+            && !self.state.is_paused
+    }
+
+    /// Handle a block sent by the core codec.
+    #[inline]
+    pub async fn handle_block(&mut self, block: Block) -> Result<(), Error> {
+        let block_info = BlockInfo::from(&block);
+
+        let was_requested =
+            self.state.req_man_block.fulfill_request(&block_info);
+
+        // ignore unsolicited (or duplicate) blocks, could be a malicious peer,
+        // a bugged client, etc. Or when the client has sent a cancel
+        // but because of the latency, the peer doesn't know that yet.
+        if !was_requested {
+            return Ok(());
+        }
+
+        self.state
+            .ctx
+            .block_infos_len
+            .store(self.state.req_man_block.len(), Ordering::Release);
+
+        // `downloaded` in the perspective of the local peer.
+        self.state.ctx.counter.record_download(block_info.len as u64);
+
+        // if in endgame, send cancels to all other peers
+        if self.state.in_endgame {
+            let _ = self
+                .state
+                .ctx
+                .torrent_ctx
+                .btx
+                .send(PeerBrMsg::Cancel(block_info));
+        }
+
+        self.state
+            .ctx
+            .torrent_ctx
+            .disk_tx
+            .send(DiskMsg::WriteBlock {
+                block,
+                info_hash: self.state.ctx.torrent_ctx.info_hash.clone(),
+            })
+            .await?;
+
+        Ok(())
+    }
+
+    /// Take outgoing block infos and metadata pieces and send them back to the
+    /// disk so that other peers can request them.
+    pub fn free_pending_blocks(&mut self) {
+        let infos = self.state.req_man_block.drain();
+        if self.state.in_endgame {
+            return;
+        };
+        tracing::debug!("returning {} blocks", infos.len(),);
+
+        if !infos.is_empty() {
+            let _ = self.state.free_tx.send(ReturnToDisk::Block(
+                self.state.ctx.torrent_ctx.info_hash.clone(),
+                infos,
+            ));
+        }
+
+        let metas = self.state.req_man_meta.drain();
+        debug!("returning {} pieces", metas.len());
+
+        if !metas.is_empty() {
+            let _ = self.state.free_tx.send(ReturnToDisk::Metadata(
+                self.state.ctx.torrent_ctx.info_hash.clone(),
+                metas,
+            ));
+        }
     }
 }

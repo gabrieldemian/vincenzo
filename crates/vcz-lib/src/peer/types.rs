@@ -10,7 +10,7 @@ use crate::{
         core::BlockInfo,
     },
     peer::{self, RequestManager},
-    torrent::{PeerBrMsg, TorrentCtx, TorrentMsg, TorrentStatus},
+    torrent::{TorrentCtx, TorrentMsg, TorrentStatus},
 };
 use futures::{
     SinkExt,
@@ -22,16 +22,20 @@ use std::{
     fmt::Display,
     net::SocketAddr,
     ops::{Deref, DerefMut},
-    sync::{Arc, atomic::AtomicBool},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicUsize},
+    },
     time::Duration,
 };
 use tokio::{
     net::TcpStream,
     sync::{
+        Mutex,
         mpsc::{self, Receiver},
         oneshot,
     },
-    time::timeout,
+    time::{Instant, timeout},
 };
 use tokio_util::codec::Framed;
 use tracing::debug;
@@ -51,7 +55,12 @@ use tracing::debug;
 #[rkyv(compare(PartialEq, PartialOrd), derive(Debug))]
 pub struct PeerId(pub [u8; 20]);
 
-pub const DEFAULT_REQUEST_QUEUE_LEN: u16 = 250;
+pub static STEAL_COOLDOWN: Duration = Duration::from_secs(3);
+
+/// The minimum queue len for inflight block infos.
+// Looking at peers from other clients, this is the lowest value that I have
+// found.
+pub const DEFAULT_REQUEST_QUEUE_LEN: u16 = 500;
 
 impl PeerId {
     pub fn generate() -> Self {
@@ -157,10 +166,14 @@ impl TryFrom<Vec<u8>> for PeerId {
 /// Ctx that is shared with Torrent and Disk;
 #[derive(Debug)]
 pub struct PeerCtx {
+    /// The last time this peer stole.
+    pub steal_mutex: Mutex<Instant>,
+    pub is_stealing: AtomicBool,
     pub tx: mpsc::Sender<PeerMsg>,
     pub torrent_ctx: Arc<TorrentCtx>,
     pub direction: Direction,
     pub id: PeerId,
+    pub block_infos_len: AtomicUsize,
 
     /// Remote addr of this peer.
     pub remote_addr: SocketAddr,
@@ -295,6 +308,9 @@ impl peer::Peer<Idle> {
         let (tx, rx) = mpsc::channel::<PeerMsg>(32);
 
         let ctx = Arc::new(PeerCtx {
+            block_infos_len: 0.into(),
+            is_stealing: false.into(),
+            steal_mutex: Mutex::new(Instant::now()),
             torrent_ctx,
             counter: Counter::default(),
             am_interested: false.into(),
@@ -316,10 +332,10 @@ impl peer::Peer<Idle> {
         let mut peer = peer::Peer {
             state_log: StateLog::default(),
             state: Connected {
+                last_stolen: None,
                 free_tx: daemon_ctx.free_tx.clone(),
                 is_paused: false,
                 seed_only: false,
-                target_request_queue_len: DEFAULT_REQUEST_QUEUE_LEN,
                 ctx,
                 extension: None,
                 sink,
@@ -443,6 +459,9 @@ impl peer::Peer<Idle> {
         let (tx, rx) = mpsc::channel::<PeerMsg>(32);
 
         let ctx = PeerCtx {
+            block_infos_len: 0.into(),
+            is_stealing: false.into(),
+            steal_mutex: Mutex::new(Instant::now()),
             torrent_ctx,
             counter: Counter::default(),
             am_interested: false.into(),
@@ -461,10 +480,10 @@ impl peer::Peer<Idle> {
         let mut peer = peer::Peer {
             state_log: StateLog::default(),
             state: Connected {
+                last_stolen: None,
                 free_tx: daemon_ctx.free_tx.clone(),
                 is_paused: false,
                 seed_only: false,
-                target_request_queue_len: DEFAULT_REQUEST_QUEUE_LEN,
                 ctx: Arc::new(ctx),
                 extension: None,
                 sink,
@@ -527,6 +546,7 @@ impl peer::Peer<Idle> {
 
 /// Peer is downloading / uploading and working well
 pub struct Connected {
+    pub last_stolen: Option<tokio::time::Instant>,
     pub stream: SplitStream<Framed<TcpStream, CoreCodec>>,
     pub sink: SplitSink<Framed<TcpStream, CoreCodec>, Core>,
     pub reserved: Reserved,
@@ -552,10 +572,6 @@ pub struct Connected {
     /// or when the peer cancels it. If a peer sends a request and cancels it
     /// before the disk read is done, the read block is dropped.
     pub incoming_requests: Vec<BlockInfo>,
-
-    /// The target request queue size is the number of block requests we keep
-    /// outstanding
-    pub target_request_queue_len: u16,
 
     /// This is a cache of have_info on Torrent
     /// to avoid using locks or atomics.

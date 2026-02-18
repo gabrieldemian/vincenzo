@@ -4,7 +4,7 @@ use crate::{
     extensions::core::BlockInfo,
     magnet::Magnet,
     metainfo::{Info, MetaInfo},
-    peer::{self, Peer, PeerCtx, PeerId, PeerMsg},
+    peer::{self, Peer, PeerCtx, PeerId},
     torrent::{self, Torrent},
     tracker::TrackerMsg,
 };
