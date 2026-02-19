@@ -10,6 +10,7 @@ use tokio_util::codec::Framed;
 use tracing::Level;
 use tracing_subscriber::FmtSubscriber;
 use vcz_lib::{
+    DISK_MSG_BOUND,
     config::Config,
     daemon::Daemon,
     daemon_wire::{DaemonCodec, Message},
@@ -38,7 +39,7 @@ async fn main() -> Result<(), Error> {
 
     // if the daemon is not running, run it
     if !is_daemon_running {
-        let (disk_tx, disk_rx) = mpsc::channel::<DiskMsg>(128);
+        let (disk_tx, disk_rx) = mpsc::channel::<DiskMsg>(DISK_MSG_BOUND);
         let (free_tx, free_rx) = mpsc::unbounded_channel::<ReturnToDisk>();
 
         let mut daemon = Daemon::new(config.clone(), disk_tx.clone(), free_tx);

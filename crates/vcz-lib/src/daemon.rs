@@ -2,6 +2,7 @@
 //! that is not the UI.
 
 use crate::{
+    DAEMON_MSG_BOUND,
     config::ResolvedConfig,
     daemon_wire::{DaemonCodec, Message},
     disk::{DiskMsg, ReturnToDisk},
@@ -81,10 +82,9 @@ pub struct DaemonCtx {
 pub enum DaemonMsg {
     /// Tell Daemon to add a new torrent and it will immediately
     /// announce to a tracker, connect to the peers, and start the download.
-    NewTorrentMagnet(magnet_url::Magnet),
+    NewTorrentMagnet(Box<magnet_url::Magnet>),
 
-    AddTorrentMetaInfo(Torrent<torrent::Idle, torrent::FromMetaInfo>),
-
+    AddTorrentMetaInfo(Box<Torrent<torrent::Idle, torrent::FromMetaInfo>>),
     GetConnectedPeers(oneshot::Sender<u32>),
     GetMetadataSize(oneshot::Sender<Option<usize>>, InfoHash),
     SetMetadataSize(usize, InfoHash),
@@ -99,7 +99,7 @@ pub enum DaemonMsg {
 
     /// Message that the Daemon will send to all connectors when the state
     /// of a torrent updates (every 1 second).
-    TorrentState(TorrentState),
+    TorrentState(Box<TorrentState>),
 
     /// Ask the Daemon to send a [`TorrentStatetatetate`] of the torrent with
     /// the given
@@ -125,9 +125,10 @@ impl Daemon {
         disk_tx: mpsc::Sender<DiskMsg>,
         free_tx: mpsc::UnboundedSender<ReturnToDisk>,
     ) -> Self {
-        let (tx, rx) = mpsc::channel::<DaemonMsg>(128);
+        let (tx, rx) = mpsc::channel::<DaemonMsg>(DAEMON_MSG_BOUND);
 
         let local_peer_id = PeerId::generate();
+        info!("local peer id: {local_peer_id}");
 
         Self {
             config,
@@ -350,9 +351,9 @@ impl Daemon {
                                     .find(|v| v.info_hash == torrent_state.info_hash);
 
                             if let Some(found) = found {
-                                *found = torrent_state;
+                                *found = *torrent_state;
                             } else {
-                                self.torrent_states.push(torrent_state);
+                                self.torrent_states.push(*torrent_state);
                             }
 
                             if self.config.quit_after_complete
@@ -475,7 +476,9 @@ impl Daemon {
             Message::NewTorrent(magnet) => {
                 info!("new_torrent: {:?}", magnet.hash());
 
-                let _ = tx.send(DaemonMsg::NewTorrentMagnet(magnet)).await;
+                let _ = tx
+                    .send(DaemonMsg::NewTorrentMagnet(Box::new(magnet)))
+                    .await;
             }
             Message::GetTorrentState(info_hash) => {
                 let (otx, orx) = oneshot::channel();
@@ -523,9 +526,9 @@ impl Daemon {
     /// and run the torrent's event loop.
     pub async fn new_torrent_magnet(
         &mut self,
-        magnet: magnet_url::Magnet,
+        magnet: Box<magnet_url::Magnet>,
     ) -> Result<(), Error> {
-        let magnet: Magnet = magnet.into();
+        let magnet: Magnet = crate::magnet::Magnet(*magnet);
         let info_hash = magnet.parse_xt_infohash();
 
         if self.torrent_states.iter().any(|v| v.info_hash == info_hash) {
@@ -562,8 +565,9 @@ impl Daemon {
 
     async fn add_torrent_meta_info(
         &mut self,
-        torrent: Torrent<torrent::Idle, torrent::FromMetaInfo>,
+        torrent: Box<Torrent<torrent::Idle, torrent::FromMetaInfo>>,
     ) -> Result<(), Error> {
+        let torrent = *torrent;
         let info = &torrent.source.meta_info.info;
 
         if self.torrent_states.iter().any(|v| v.info_hash == info.info_hash) {

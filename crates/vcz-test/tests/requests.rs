@@ -42,13 +42,13 @@ async fn request_block() -> Result<(), Error> {
 
     ldisk_tx
         .send(DiskMsg::RequestBlocks {
-            peer_id: seeder.id.clone(),
+            peer_ctx: seeder.clone(),
             recipient: otx,
             qnt: 3,
         })
         .await?;
 
-    let blocks = orx.await?;
+    let blocks = orx.await??;
 
     assert_eq!(
         blocks,
@@ -62,13 +62,13 @@ async fn request_block() -> Result<(), Error> {
     let (otx, orx) = oneshot::channel();
     ldisk_tx
         .send(DiskMsg::RequestBlocks {
-            peer_id: seeder.id.clone(),
+            peer_ctx: seeder.clone(),
             recipient: otx,
             qnt: 3,
         })
         .await?;
 
-    let blocks = orx.await?;
+    let blocks = orx.await??;
 
     assert_eq!(
         blocks,
@@ -82,13 +82,13 @@ async fn request_block() -> Result<(), Error> {
     let (otx, orx) = oneshot::channel();
     ldisk_tx
         .send(DiskMsg::RequestBlocks {
-            peer_id: seeder.id.clone(),
+            peer_ctx: seeder.clone(),
             recipient: otx,
             qnt: 3,
         })
         .await?;
 
-    let blocks = orx.await?;
+    let blocks = orx.await??;
 
     assert!(
         blocks.is_empty(),

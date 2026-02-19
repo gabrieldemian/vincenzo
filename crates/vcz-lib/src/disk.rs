@@ -12,7 +12,7 @@ use crate::{
     metainfo::{Info, MetaInfo},
     peer::{PeerCtx, PeerId},
     torrent::{
-        InfoHash, Torrent, TorrentCtx, TorrentMsg, TorrentStatus,
+        InfoHash, PeerBrMsg, Torrent, TorrentCtx, TorrentMsg, TorrentStatus,
         TorrentStatusErrorCode,
     },
     utils::to_human_readable,
@@ -110,8 +110,8 @@ pub enum DiskMsg {
     /// Request block infos that the peer has, that we do not have ir nor
     /// requested it.
     RequestBlocks {
-        peer_id: PeerId,
-        recipient: Sender<Vec<BlockInfo>>,
+        peer_ctx: Arc<PeerCtx>,
+        recipient: Sender<Result<Vec<BlockInfo>, Error>>,
         qnt: usize,
     },
 
@@ -341,11 +341,10 @@ impl Disk {
                                 self.handle_torrent_err(&info_hash, e).await;
                             }
                         }
-                        DiskMsg::RequestBlocks { qnt, recipient, peer_id } => {
+                        DiskMsg::RequestBlocks { qnt, recipient, peer_ctx } => {
                             let infos = self
-                                .request_blocks(&peer_id, qnt)
-                                .await
-                                .unwrap_or_default();
+                                .request_blocks(peer_ctx, qnt)
+                                .await;
                             let _ = recipient.send(infos);
                         }
                         DiskMsg::RequestMetadata { qnt, recipient, info_hash } => {
@@ -368,10 +367,10 @@ impl Disk {
                         }
                     }
                 }
-                _ = help_interval.tick() => {
-                    let b = &self.block_infos.values().fold(0, |acc, x| acc + x.len());
-                    info!("disk blocks: {b}");
-                }
+                // _ = help_interval.tick() => {
+                //     let b = &self.block_infos.values().fold(0, |acc, x| acc + x.len());
+                //     info!("disk blocks: {b}");
+                // }
                 // if a file is inactive for `DURATION_LRU_POP` delete it
                 // from the mmap caches.
                 _ = lru_cleanup_interval.tick() => {
@@ -418,8 +417,6 @@ impl Disk {
                 Some(return_to_disk) = self.free_rx.recv() => {
                     match return_to_disk {
                         ReturnToDisk::Block(info_hash, blocks) => {
-                            let in_endgame = *self.endgame.get(&info_hash).ok_or(Error::TorrentDoesNotExist)?;
-                            if in_endgame { continue };
                             self.block_infos
                                 .entry(info_hash)
                                 .or_default()
@@ -512,7 +509,10 @@ impl Disk {
         }
 
         self.torrent_ctxs.insert(info_hash.clone(), torrent.ctx.clone());
-        self.daemon_ctx.tx.send(DaemonMsg::AddTorrentMetaInfo(torrent)).await?;
+        self.daemon_ctx
+            .tx
+            .send(DaemonMsg::AddTorrentMetaInfo(Box::new(torrent)))
+            .await?;
 
         Ok(())
     }
@@ -846,44 +846,21 @@ impl Disk {
     /// Request available block infos following the order of PieceStrategy.
     pub async fn request_blocks(
         &mut self,
-        peer_id: &PeerId,
+        peer_ctx: Arc<PeerCtx>,
         qnt: usize,
     ) -> Result<Vec<BlockInfo>, Error> {
-        let Some(peer_ctx) = self.peer_ctxs.iter().find(|v| v.id == *peer_id)
-        else {
-            // todo: receiving remote's peer_id instead of local
-            // warn!("peer not found: {peer_id:?}");
-            return Ok(vec![]);
-        };
-
         let info_hash = peer_ctx.torrent_ctx.info_hash.clone();
-        // let is_empty = self
-        //     .block_infos
-        //     .get(&peer_ctx.torrent_ctx.info_hash)
-        //     .ok_or(Error::TorrentDoesNotExist)?
-        //     .is_empty();
-
-        // if is_empty {
-        //     self.enter_endgame(&info_hash).await?;
-        // }
-
-        // let in_endgame =
-        //     *self.endgame.get(&info_hash).ok_or(Error::TorrentDoesNotExist)?;
-
         let mut result = Vec::with_capacity(qnt);
         let block_infos = self
             .block_infos
             .get_mut(&info_hash)
             .ok_or(Error::TorrentDoesNotExist)?;
 
-        // if in_endgame {
-        //     if let Some(b) = block_infos.get(0..qnt.min(block_infos.len())) {
-        //         result.extend(b.iter().cloned());
-        //     }
-        // } else {
-        //     result.extend(block_infos.drain(0..qnt.min(block_infos.len())));
-        // }
         result.extend(block_infos.drain(0..qnt.min(block_infos.len())));
+
+        if block_infos.is_empty() {
+            let _ = self.enter_endgame(&info_hash);
+        }
 
         Ok(result)
     }
@@ -908,28 +885,25 @@ impl Disk {
         Ok(v)
     }
 
-    async fn enter_endgame(
-        &mut self,
-        info_hash: &InfoHash,
-    ) -> Result<(), Error> {
-        let endgame = self
+    fn enter_endgame(&mut self, info_hash: &InfoHash) -> Result<(), Error> {
+        let in_endgame = self
             .endgame
             .get_mut(info_hash)
             .ok_or(Error::TorrentDoesNotExist)?;
 
-        if *endgame {
+        if *in_endgame {
             return Ok(());
         }
 
-        *endgame = true;
+        *in_endgame = true;
 
         let torrent_ctx = self
             .torrent_ctxs
             .get(info_hash)
             .ok_or(Error::TorrentDoesNotExist)?;
 
-        torrent_ctx.tx.send(TorrentMsg::Endgame).await?;
-        info!("endgame");
+        let _ = torrent_ctx.btx.send(PeerBrMsg::Endgame);
+        info!("endgame ʕノ•ᴥ•ʔノ ︵ ┻━┻");
 
         Ok(())
     }
@@ -1005,9 +979,6 @@ impl Disk {
             .ok_or(Error::TorrentDoesNotExist)?
             .clone();
 
-        let in_endgame =
-            *self.endgame.get(info_hash).ok_or(Error::TorrentDoesNotExist)?;
-
         let cache = self
             .block_cache
             .get_mut(info_hash)
@@ -1020,25 +991,6 @@ impl Disk {
             x.index == index && x.begin == block.begin && x.block.len() == len
         }) {
             return Ok(());
-        }
-
-        if in_endgame {
-            let info: BlockInfo = (&block).into();
-            let idx = self
-                .block_infos
-                .get(info_hash)
-                .ok_or(Error::TorrentDoesNotExist)?
-                .iter()
-                .position(|v| *v == info);
-            if let Some(idx) = idx {
-                let infos = self
-                    .block_infos
-                    .get_mut(info_hash)
-                    .ok_or(Error::TorrentDoesNotExist)?;
-                infos.swap_remove(idx);
-            } else {
-                warn!("endgame, block info not found to delete");
-            }
         }
 
         cache.push(block);

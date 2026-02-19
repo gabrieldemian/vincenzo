@@ -11,6 +11,7 @@ use tracing_subscriber::{
     layer::{Filter, SubscriberExt},
 };
 use vcz_lib::{
+    DISK_MSG_BOUND,
     config::Config,
     daemon::Daemon,
     disk::{Disk, DiskMsg, ReturnToDisk},
@@ -57,7 +58,7 @@ async fn main() -> Result<(), Error> {
 
     tracing::info!("config: {config:?}");
 
-    let (disk_tx, disk_rx) = mpsc::channel::<DiskMsg>(128);
+    let (disk_tx, disk_rx) = mpsc::channel::<DiskMsg>(DISK_MSG_BOUND);
     let (free_tx, free_rx) = mpsc::unbounded_channel::<ReturnToDisk>();
 
     let mut daemon = Daemon::new(config.clone(), disk_tx.clone(), free_tx);

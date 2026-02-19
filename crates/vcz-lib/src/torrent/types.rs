@@ -18,7 +18,7 @@ use std::{
     sync::{Arc, atomic::Ordering},
 };
 use tokio::{
-    sync::{broadcast, mpsc, oneshot},
+    sync::{broadcast, oneshot},
     time::Interval,
 };
 
@@ -32,11 +32,8 @@ pub enum PeerBrMsg {
     Endgame,
 
     /// Send request blocks to all peers.
-    Request(Vec<BlockInfo>),
-
-    /// When in endgame mode, the first peer that receives this info,
-    /// sends this message to send Cancel's to all other peers.
-    Cancel(BlockInfo),
+    // peerId = from peer
+    Request(PeerId, Vec<BlockInfo>, Vec<BlockInfo>),
 
     /// The download finished
     Seedonly,
@@ -123,12 +120,6 @@ pub enum TorrentMsg {
     /// Set a piece of the peer's bitfield to true
     PeerHave(PeerId, usize),
 
-    /// Start endgame mode.
-    /// Block infos of all peers will be freed to the disk to be requested
-    /// again, but this time they will be cloned instead of removed, and
-    /// Disk won't send duplicates to each peer.
-    Endgame,
-
     /// When a peer request a piece of the info
     /// index, recipient
     RequestInfoPiece(u64, oneshot::Sender<Option<Vec<u8>>>),
@@ -138,6 +129,8 @@ pub enum TorrentMsg {
 
     /// When torrent is being gracefully shutdown
     Quit,
+
+    Cancel(PeerId, BlockInfo),
 }
 
 #[derive(

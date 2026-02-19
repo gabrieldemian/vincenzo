@@ -12,6 +12,7 @@ mod types;
 pub use types::*;
 
 use crate::{
+    TRACKER_MSG_BOUND,
     bitfield::{Bitfield, VczBitfield},
     config::ResolvedConfig,
     counter::Counter,
@@ -96,7 +97,8 @@ impl<M: TorrentSource> Torrent<Idle, M> {
 
         info!("connecting to {} udp trackers", udp_trackers.len());
 
-        let (tracker_tx, _tracker_rx) = broadcast::channel::<TrackerMsg>(10);
+        let (tracker_tx, _tracker_rx) =
+            broadcast::channel::<TrackerMsg>(TRACKER_MSG_BOUND);
         let mut tracker_tasks = Vec::with_capacity(udp_trackers.len());
 
         let info_hash = self.ctx.info_hash.clone();
@@ -404,7 +406,7 @@ impl<M: TorrentSource> Torrent<Connected, M> {
         let _ = self
             .daemon_ctx
             .tx
-            .send(DaemonMsg::TorrentState(torrent_state))
+            .send(DaemonMsg::TorrentState(Box::new(torrent_state)))
             .await;
     }
 
@@ -574,8 +576,117 @@ impl<M: TorrentSource> Torrent<Connected, M> {
         Ok(max_torrent_peers as usize - currently_active)
     }
 
-    // Get the slowest peers, clone and send `qnt` block infos to the given
-    // `peer_tx`.
+    // pub(crate) async fn steal_block_infos(
+    //     &mut self,
+    //     qnt: usize,
+    //     thief: Arc<PeerCtx>,
+    // ) -> Result<(), Error> {
+    //     // sort connected peers by slowest to fastest.
+    //     self.state.connected_peers.sort_by(|a, b| {
+    //         a.counter
+    //             .download_rate_u64()
+    //             .cmp(&b.counter.download_rate_u64())
+    //             .then(
+    //                 b.block_infos_len
+    //                     .load(Ordering::Relaxed)
+    //                     .cmp(&a.block_infos_len.load(Ordering::Relaxed)),
+    //             )
+    //     });
+    //
+    //     let thief_tx = thief.tx.clone();
+    //     tracing::info!("---thief {qnt} {:?}", thief.remote_addr);
+    //     let r = Arc::new(Mutex::new(Vec::with_capacity(qnt)));
+    //     let mut tasks = Vec::with_capacity(self.state.connected_peers.len());
+    //
+    //     let peer_len = self.state.connected_peers.len();
+    //
+    //     for victim in &self.state.connected_peers {
+    //         // don't steal from yourself
+    //         if victim.id == thief.id {
+    //             continue;
+    //         };
+    //
+    //         let victim_tx = victim.tx.clone();
+    //         let r = r.clone();
+    //         let victim = victim.clone();
+    //         let thief = thief.clone();
+    //         let victim_id = victim.id.clone();
+    //         let thief_id = thief.id.clone();
+    //         tracing::info!("---victim {:?}", victim.remote_addr);
+    //
+    //         tasks.push(tokio::spawn(async move {
+    //             let victim_mutex = &victim.steal_mutex;
+    //             let thief_mutex = &thief.steal_mutex;
+    //             let (guard1, guard2) = if thief_id < victim_id {
+    //                 let r =
+    //                     (thief_mutex.lock().await,
+    // victim_mutex.lock().await);                 if r.1.elapsed() <
+    // STEAL_COOLDOWN {                     return;
+    //                 }
+    //                 r
+    //             } else {
+    //                 let r =
+    //                     (victim_mutex.lock().await,
+    // thief_mutex.lock().await);                 if r.0.elapsed() <
+    // STEAL_COOLDOWN {                     return;
+    //                 }
+    //                 r
+    //             };
+    //             drop(guard1);
+    //             drop(guard2);
+    //             let (otx, orx) = oneshot::channel();
+    //             if victim_tx
+    //                 .send(PeerMsg::StealBlockInfos(qnt / peer_len, otx))
+    //                 .await
+    //                 .is_err()
+    //             {
+    //                 return;
+    //             };
+    //             match timeout(Duration::from_millis(500), orx).await {
+    //                 Ok(Ok(infos)) => {
+    //                     tracing::info!(
+    //                         "---stolen {} from {}",
+    //                         infos.len(),
+    //                         victim.remote_addr
+    //                     );
+    //                     let mut r = r.lock().await;
+    //                     r.extend(infos);
+    //                 }
+    //                 Err(_) => warn!("deadlocked"),
+    //                 _ => {}
+    //             }
+    //         }));
+    //     }
+    //
+    //     let r = r.clone();
+    //     let info_hash = self.ctx.info_hash.clone();
+    //     let ftx = self.ctx.free_tx.clone();
+    //
+    //     tokio::spawn(async move {
+    //         let collect_fut = async {
+    //             for t in tasks {
+    //                 let _ = t.await;
+    //             }
+    //         };
+    //         // wait for all stealing tasks, but no longer than 2 seconds.
+    //         tokio::select! {
+    //             _ = collect_fut => {},
+    //             _ = tokio::time::sleep(Duration::from_secs(2)) => {
+    //                 warn!("steal collector timeout – forcing completion");
+    //             }
+    //         }
+    //         let r = r.lock().await;
+    //         if thief_tx.send(PeerMsg::Blocks(r.clone())).await.is_err() {
+    //             let _ = ftx.send(ReturnToDisk::Block(info_hash, r.clone()));
+    //             thief.is_stealing.store(false, Ordering::Release);
+    //             *thief.steal_mutex.lock().await = Instant::now();
+    //             // thief.last_stolen = Some(Instant::now());
+    //         };
+    //     });
+    //
+    //     Ok(())
+    // }
+
     pub(crate) async fn steal_block_infos(
         &mut self,
         qnt: usize,
@@ -583,8 +694,14 @@ impl<M: TorrentSource> Torrent<Connected, M> {
     ) -> Result<(), Error> {
         // sort connected peers by slowest to fastest.
         self.state.connected_peers.sort_by(|a, b| {
-            a.counter.download_rate_u64().cmp(&b.counter.download_rate_u64())
-            // todo: also sort by number of block infos
+            a.counter
+                .download_rate_u64()
+                .cmp(&b.counter.download_rate_u64())
+                .then(
+                    b.block_infos_len
+                        .load(Ordering::Relaxed)
+                        .cmp(&a.block_infos_len.load(Ordering::Relaxed)),
+                )
         });
 
         let thief_tx = thief.tx.clone();
@@ -599,17 +716,10 @@ impl<M: TorrentSource> Torrent<Connected, M> {
                 continue;
             };
 
-            // only steal if the victim is slower than the thief.
-            // if victim.counter.download_rate_u64()
-            //     >= thief.counter.download_rate_u64()
-            // {
-            //     continue;
-            // }
-
             let victim_tx = victim.tx.clone();
-            let qnt = qnt.clone();
             let r = r.clone();
             let victim = victim.clone();
+            let qnt = qnt.clone();
             let thief = thief.clone();
             let victim_id = victim.id.clone();
             let thief_id = thief.id.clone();
@@ -618,12 +728,9 @@ impl<M: TorrentSource> Torrent<Connected, M> {
             tasks.push(tokio::spawn(async move {
                 let victim_mutex = &victim.steal_mutex;
                 let thief_mutex = &thief.steal_mutex;
-                // ABBA lock prevention: lock both mutexes in order of peer ID
                 let (guard1, guard2) = if thief_id < victim_id {
                     let r =
                         (thief_mutex.lock().await, victim_mutex.lock().await);
-                    // don't steal from a peer that has just stolen and it's on
-                    // cooldown
                     if r.1.elapsed() < STEAL_COOLDOWN {
                         return;
                     }
@@ -638,16 +745,13 @@ impl<M: TorrentSource> Torrent<Connected, M> {
                 };
                 drop(guard1);
                 drop(guard2);
-                let qnt_clone = {
-                    let qnt = qnt.lock().await;
-                    if *qnt == 0 {
-                        return;
-                    }
-                    *qnt
-                };
                 let (otx, orx) = oneshot::channel();
+                let _qnt = *qnt.lock().await;
+                if _qnt == 0 {
+                    return;
+                }
                 if victim_tx
-                    .send(PeerMsg::StealBlockInfos(qnt_clone, otx))
+                    .send(PeerMsg::StealBlockInfos(_qnt, otx))
                     .await
                     .is_err()
                 {
@@ -661,9 +765,11 @@ impl<M: TorrentSource> Torrent<Connected, M> {
                             victim.remote_addr
                         );
                         let mut r = r.lock().await;
+                        let len = r.len();
                         r.extend(infos);
+                        drop(r);
                         let mut qnt = qnt.lock().await;
-                        *qnt = qnt.saturating_sub(r.len());
+                        *qnt = qnt.saturating_sub(len);
                     }
                     Err(_) => warn!("deadlocked"),
                     _ => {}
@@ -699,6 +805,98 @@ impl<M: TorrentSource> Torrent<Connected, M> {
 
         Ok(())
     }
+
+    // Get the slowest peers, clone and send `qnt` block infos to the given
+    // `peer_tx`.
+    // pub(crate) async fn steal_block_infos(
+    //     &mut self,
+    //     mut qnt: usize,
+    //     thief: Arc<PeerCtx>,
+    // ) -> Result<(), Error> {
+    //     // sort connected peers by slowest to fastest.
+    //     self.state.connected_peers.sort_by(|a, b| {
+    //         a.counter
+    //             .download_rate_u64()
+    //             .cmp(&b.counter.download_rate_u64())
+    //             .then(
+    //                 b.block_infos_len
+    //                     .load(Ordering::Relaxed)
+    //                     .cmp(&a.block_infos_len.load(Ordering::Relaxed)),
+    //             )
+    //     });
+    //
+    //     let _thief = thief.clone();
+    //     let thief_tx = thief.tx.clone();
+    //     tracing::info!("---thief {qnt} {:?}", thief.remote_addr);
+    //
+    //     let (rtx, mut rrx) = mpsc::unbounded_channel::<Vec<BlockInfo>>();
+    //     let peers = self.state.connected_peers.clone();
+    //
+    //     tokio::spawn(async move {
+    //         for victim in peers {
+    //             if qnt == 0 {
+    //                 break;
+    //             }
+    //
+    //             // don't steal from yourself
+    //             if victim.id == thief.id {
+    //                 continue;
+    //             };
+    //
+    //             // wait if victim is stealing from someone (could be self)
+    //             // if victim.is_stealing.load(Ordering::Relaxed) {
+    //             //     continue;
+    //             // }
+    //
+    //             tracing::info!("---victim {:?}", victim.remote_addr);
+    //             let steal = victim.steal_mutex.lock().await;
+    //             if steal.elapsed() < STEAL_COOLDOWN {
+    //                 continue;
+    //             }
+    //             drop(steal);
+    //
+    //             let (otx, orx) = oneshot::channel();
+    //             if victim
+    //                 .tx
+    //                 .send(PeerMsg::StealBlockInfos(qnt, otx))
+    //                 .await
+    //                 .is_err()
+    //             {
+    //                 continue;
+    //             };
+    //             match timeout(Duration::from_millis(500), orx).await {
+    //                 Ok(Ok(infos)) => {
+    //                     tracing::info!(
+    //                         "---stolen {} from {}",
+    //                         infos.len(),
+    //                         victim.remote_addr
+    //                     );
+    //                     qnt = qnt.saturating_sub(infos.len());
+    //                 }
+    //                 Err(_) => warn!("deadlocked"),
+    //                 _ => {}
+    //             }
+    //         }
+    //     });
+    //
+    //     drop(rtx);
+    //     let info_hash = self.ctx.info_hash.clone();
+    //     let ftx = self.ctx.free_tx.clone();
+    //
+    //     tokio::spawn(async move {
+    //         while let Some(r) = rrx.recv().await {
+    //             let info_hash = info_hash.clone();
+    //             if thief_tx.send(PeerMsg::Blocks(r.clone())).await.is_err() {
+    //                 let _ = ftx.send(ReturnToDisk::Block(info_hash,
+    // r.clone()));                 _thief.is_stealing.store(false,
+    // Ordering::Release);                 *_thief.steal_mutex.lock().await
+    // = Instant::now();                 // thief.last_stolen =
+    // Some(Instant::now());             };
+    //         }
+    //     });
+    //
+    //     Ok(())
+    // }
 
     /// Try to connect to all idle peers (if there is capacity) and run their
     /// event loops.

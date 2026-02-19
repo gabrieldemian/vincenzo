@@ -1,5 +1,5 @@
 use crate::{
-    VERSION_PROT,
+    PEER_MSG_BOUND, VERSION_PROT,
     bitfield::Reserved,
     counter::Counter,
     daemon::{DaemonCtx, DaemonMsg},
@@ -68,14 +68,12 @@ impl PeerId {
         peer_id[..3].copy_from_slice(b"vcz");
         peer_id[3] = b'-';
         // version
-        // 0.00.00
-        peer_id[4..9].copy_from_slice(VERSION_PROT);
-        peer_id[9] = b'-';
-
-        (10..20).for_each(|i| {
+        // 0001
+        peer_id[4..8].copy_from_slice(VERSION_PROT);
+        peer_id[8] = b'-';
+        (9..19).for_each(|i| {
             peer_id[i] = rand::rng().sample(Alphanumeric);
         });
-
         PeerId(peer_id)
     }
 }
@@ -223,6 +221,10 @@ pub enum PeerMsg {
 
     /// Force the peer to run the request algorithm immediately.
     RequestAlgorithm,
+
+    /// When in endgame mode, the first peer that receives this info,
+    /// sends this message to send Cancel's to all other peers.
+    Cancel(BlockInfo),
 }
 
 /// Determines who initiated the connection.
@@ -305,7 +307,7 @@ impl peer::Peer<Idle> {
 
         let socket = socket.map_codec(|_| CoreCodec);
 
-        let (tx, rx) = mpsc::channel::<PeerMsg>(32);
+        let (tx, rx) = mpsc::channel::<PeerMsg>(PEER_MSG_BOUND);
 
         let ctx = Arc::new(PeerCtx {
             block_infos_len: 0.into(),
@@ -332,6 +334,7 @@ impl peer::Peer<Idle> {
         let mut peer = peer::Peer {
             state_log: StateLog::default(),
             state: Connected {
+                no_more_unique_reqs: false,
                 last_stolen: None,
                 free_tx: daemon_ctx.free_tx.clone(),
                 is_paused: false,
@@ -340,6 +343,9 @@ impl peer::Peer<Idle> {
                 extension: None,
                 sink,
                 stream,
+                endgame_queue: Vec::with_capacity(
+                    DEFAULT_REQUEST_QUEUE_LEN as usize,
+                ),
                 incoming_requests: Vec::with_capacity(
                     DEFAULT_REQUEST_QUEUE_LEN as usize,
                 ),
@@ -448,15 +454,14 @@ impl peer::Peer<Idle> {
             .tx
             .send(TorrentMsg::GetPeer(peer_handshake.peer_id.clone(), otx))
             .await?;
-        let peer_ctx = orx.await?;
 
+        let peer_ctx = orx.await?;
         if peer_ctx.is_some() {
             return Err(Error::NoDuplicatePeer);
         }
 
         let socket = socket.map_codec(|_| CoreCodec);
-
-        let (tx, rx) = mpsc::channel::<PeerMsg>(32);
+        let (tx, rx) = mpsc::channel::<PeerMsg>(PEER_MSG_BOUND);
 
         let ctx = PeerCtx {
             block_infos_len: 0.into(),
@@ -480,6 +485,7 @@ impl peer::Peer<Idle> {
         let mut peer = peer::Peer {
             state_log: StateLog::default(),
             state: Connected {
+                no_more_unique_reqs: false,
                 last_stolen: None,
                 free_tx: daemon_ctx.free_tx.clone(),
                 is_paused: false,
@@ -488,7 +494,12 @@ impl peer::Peer<Idle> {
                 extension: None,
                 sink,
                 stream,
-                incoming_requests: Vec::with_capacity(50),
+                endgame_queue: Vec::with_capacity(
+                    DEFAULT_REQUEST_QUEUE_LEN as usize,
+                ),
+                incoming_requests: Vec::with_capacity(
+                    DEFAULT_REQUEST_QUEUE_LEN as usize,
+                ),
                 req_man_block: RequestManager::new(),
                 req_man_meta: RequestManager::new(),
                 have_info: false,
@@ -546,6 +557,8 @@ impl peer::Peer<Idle> {
 
 /// Peer is downloading / uploading and working well
 pub struct Connected {
+    pub no_more_unique_reqs: bool,
+    pub endgame_queue: Vec<BlockInfo>,
     pub last_stolen: Option<tokio::time::Instant>,
     pub stream: SplitStream<Framed<TcpStream, CoreCodec>>,
     pub sink: SplitSink<Framed<TcpStream, CoreCodec>, Core>,

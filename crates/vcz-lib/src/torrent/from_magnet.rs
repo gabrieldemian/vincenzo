@@ -1,5 +1,7 @@
 use super::*;
-use crate::{magnet::Magnet, metainfo::Info};
+use crate::{
+    PEER_BR_MSG_BOUND, TORRENT_MSG_BOUND, magnet::Magnet, metainfo::Info,
+};
 use bendy::decoding::FromBencode;
 
 impl Torrent<Connected, FromMagnet> {
@@ -16,6 +18,16 @@ impl Torrent<Connected, FromMagnet> {
             select! {
                 Some(msg) = self.rx.recv() => {
                     match msg {
+                        TorrentMsg::Cancel(sender, block_info) => {
+                            for p in &self.state.connected_peers {
+                                if p.id == sender { continue };
+                                let b = block_info.clone();
+                                let tx = p.tx.clone();
+                                tokio::spawn(async move {
+                                    let _ = tx.send(PeerMsg::Cancel(b)).await;
+                                });
+                            }
+                        }
                         TorrentMsg::SetTorrentError(code) => {
                             self.status = TorrentStatus::Error(code);
                         }
@@ -96,9 +108,6 @@ impl Torrent<Connected, FromMagnet> {
                         },
                         TorrentMsg::PeerConnected(ctx) => {
                             self.peer_connected(ctx).await;
-                        }
-                        TorrentMsg::Endgame => {
-                            let _ = self.ctx.btx.send(PeerBrMsg::Endgame);
                         }
                         TorrentMsg::DownloadedInfoPiece(total, index, bytes) => {
                             self.downloaded_info_piece(total, index, bytes).await?;
@@ -219,8 +228,8 @@ impl Torrent<Idle, FromMagnet> {
         daemon_ctx: Arc<DaemonCtx>,
         magnet: Magnet,
     ) -> Torrent<Idle, FromMagnet> {
-        let (tx, rx) = mpsc::channel::<TorrentMsg>(32);
-        let (btx, _brx) = broadcast::channel::<PeerBrMsg>(16);
+        let (tx, rx) = mpsc::channel::<TorrentMsg>(TORRENT_MSG_BOUND);
+        let (btx, _brx) = broadcast::channel::<PeerBrMsg>(PEER_BR_MSG_BOUND);
 
         let ctx = Arc::new(TorrentCtx {
             free_tx,

@@ -30,6 +30,7 @@ use tokio::{
     time::sleep,
 };
 use vcz_lib::{
+    DISK_MSG_BOUND,
     config::{Config, ResolvedConfig},
     daemon::Daemon,
     disk::{Disk, DiskMsg, PieceStrategy, ReturnToDisk},
@@ -84,7 +85,7 @@ fn cleanup() {
 async fn setup_client(
     config: Arc<ResolvedConfig>,
 ) -> Result<(Disk, Daemon, MetaInfo), Error> {
-    let (disk_tx, disk_rx) = mpsc::channel::<DiskMsg>(10);
+    let (disk_tx, disk_rx) = mpsc::channel::<DiskMsg>(DISK_MSG_BOUND);
     let (free_tx, free_rx) = mpsc::unbounded_channel::<ReturnToDisk>();
     let daemon = Daemon::new(config.clone(), disk_tx.clone(), free_tx.clone());
     let daemon_ctx = daemon.ctx.clone();

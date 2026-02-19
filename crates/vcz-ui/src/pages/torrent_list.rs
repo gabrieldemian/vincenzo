@@ -183,7 +183,7 @@ impl<'a> Page for TorrentList<'a> {
                     e.to_string().set_style(PALETTE.error).into()
                 } else {
                     format!(
-                        "Downloading from {} of {} peers",
+                        "Connected to {} of {} peers",
                         state.downloading_from, state.connected_peers,
                     )
                     .into()

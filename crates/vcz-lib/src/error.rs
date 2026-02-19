@@ -119,6 +119,9 @@ pub enum Error {
     #[error("Could not find torrent for the given info_hash")]
     TorrentDoesNotExist,
 
+    #[error("Peer does not exist")]
+    PeerDoesNotExist,
+
     #[error("The piece downloaded does not have a valid hash")]
     PieceInvalid,
 
