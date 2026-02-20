@@ -1,7 +1,7 @@
 use crate::peer::DEFAULT_REQUEST_QUEUE_LEN;
 use std::{
     cmp::Reverse,
-    collections::{BinaryHeap, HashMap, VecDeque},
+    collections::{BinaryHeap, HashMap, HashSet, VecDeque},
     hash::Hash,
     time::Duration,
 };
@@ -16,12 +16,6 @@ pub trait Requestable = Clone + Ord + Hash;
 /// It also handles the calculation of timeouts with EMA (exponential moving
 /// average) and a dynamic multiplier.
 pub struct RequestManager<T: Requestable> {
-    /// How many requests wered made in total.
-    pub req_count: u64,
-
-    /// How many requests were sent by the remote peer.
-    pub recv_count: u64,
-
     /// When there is no space in `requests` it will be added to the queue.
     queue: Vec<T>,
     timeouts: BinaryHeap<(Reverse<Instant>, T)>,
@@ -29,6 +23,10 @@ pub struct RequestManager<T: Requestable> {
 
     /// Inverse index for requests
     index: HashMap<T, usize>,
+
+    /// Same as index but used to identify duplicates, even if they were
+    /// deleted.
+    dupe_index: HashSet<T>,
 
     /// Max amount of inflight pending requests
     limit: usize,
@@ -50,14 +48,15 @@ pub struct RequestManager<T: Requestable> {
 impl<T: Requestable> Default for RequestManager<T> {
     fn default() -> Self {
         Self {
-            req_count: 0,
-            recv_count: 0,
             timeouts: BinaryHeap::with_capacity(
                 DEFAULT_REQUEST_QUEUE_LEN as usize,
             ),
             requests: Vec::with_capacity(DEFAULT_REQUEST_QUEUE_LEN as usize),
             queue: Vec::with_capacity(DEFAULT_REQUEST_QUEUE_LEN as usize),
             index: HashMap::with_capacity(DEFAULT_REQUEST_QUEUE_LEN as usize),
+            dupe_index: HashSet::with_capacity(
+                DEFAULT_REQUEST_QUEUE_LEN as usize,
+            ),
             recv_times: VecDeque::with_capacity(10),
             avg_recv_time: Duration::ZERO,
             timeout_mult: 3.0,
@@ -77,6 +76,11 @@ impl<T: Requestable> RequestManager<T> {
     #[inline]
     pub fn set_limit(&mut self, limit: usize) {
         self.limit = limit.max(DEFAULT_REQUEST_QUEUE_LEN as usize);
+    }
+
+    #[inline]
+    pub fn queue_len(&self) -> usize {
+        self.queue.len()
     }
 
     /// How many requests the client can make right now.
@@ -162,8 +166,6 @@ impl<T: Requestable> RequestManager<T> {
     pub fn clear(&mut self) {
         *self = Self {
             limit: self.limit,
-            recv_count: self.recv_count,
-            req_count: self.req_count,
             timeout_mult: self.timeout_mult,
             ..Default::default()
         };
@@ -201,7 +203,7 @@ impl<T: Requestable> RequestManager<T> {
     /// Return true if the item was inserted, false if duplicate.
     pub fn add_request(&mut self, block: T) -> bool {
         // avoid duplicates
-        if self.index.contains_key(&block) {
+        if self.index.contains_key(&block) || self.dupe_index.contains(&block) {
             return false;
         }
 
@@ -214,8 +216,8 @@ impl<T: Requestable> RequestManager<T> {
         self.req_start_times.insert(block.clone(), Instant::now());
         self.requests.push(block.clone());
         self.index.insert(block.clone(), self.requests.len() - 1);
+        self.dupe_index.insert(block.clone());
         self.timeouts.push((Reverse(timeout), block));
-        self.req_count += 1;
         true
     }
 
@@ -236,9 +238,12 @@ impl<T: Requestable> RequestManager<T> {
     pub fn fulfill_request(&mut self, req: &T) -> bool {
         if let Some(pos) = self.queue.iter().position(|v| *v == *req) {
             self.queue.swap_remove(pos);
+            return true;
         }
-        // todo: don't remove from index so i can know if this is a duplicate
-        // even if the request was already fulfilled.
+
+        if self.dupe_index.contains(req) && !self.index.contains_key(req) {
+            return true;
+        }
         let Some(pos) = self.index.remove(req) else { return false };
 
         if let Some(start_time) = self.req_start_times.remove(req) {
@@ -255,8 +260,6 @@ impl<T: Requestable> RequestManager<T> {
         {
             self.index.insert(remaining_block.clone(), new_pos);
         }
-
-        self.recv_count += 1;
 
         if let Some(idx) = self.queue.iter().position(|v| *v == *req) {
             self.queue.remove(idx);
@@ -347,7 +350,7 @@ impl<T: Requestable> RequestManager<T> {
     /// If there are no items in-flight.
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.index.is_empty()
+        self.len() == 0
     }
 }
 
@@ -481,34 +484,48 @@ mod tests {
     #[test]
     fn banana() {
         let mut manager = RequestManager::new();
-        let block = BlockInfo::new(0, 0, 16384);
-        let block2 = BlockInfo::new(1, 0, 16384);
+        let block0 = BlockInfo::new(0, 0, 16384);
+        let block1 = BlockInfo::new(1, 0, 16384);
 
-        assert!(manager.add_request(block.clone()));
-        assert!(manager.add_request(block2.clone()));
+        assert!(manager.add_request(block0.clone()));
+        assert!(manager.add_request(block1.clone()));
 
         assert_eq!(manager.requests.len(), 2);
         assert_eq!(manager.timeouts.len(), 2);
         assert_eq!(manager.index.len(), 2);
         assert_eq!(manager.len(), 2);
 
-        assert!(manager.fulfill_request(&block));
-        assert!(!manager.fulfill_request(&block));
-        assert!(!manager.fulfill_request(&block));
+        assert!(manager.fulfill_request(&block0));
+        assert_eq!(manager.len(), 1);
+        assert_eq!(manager.dupe_index.len(), 2);
+        assert_eq!(manager.index.len(), 1);
+
+        assert!(manager.fulfill_request(&block0));
+        assert!(manager.fulfill_request(&block0));
+
+        assert_eq!(manager.len(), 1);
+        assert_eq!(manager.dupe_index.len(), 2);
+        assert_eq!(manager.index.len(), 1);
 
         assert_eq!(manager.requests.len(), 1);
         assert_eq!(manager.timeouts.len(), 1);
         assert_eq!(manager.index.len(), 1);
         assert_eq!(manager.len(), 1);
+        assert_eq!(manager.dupe_index.len(), 2);
 
-        assert!(manager.fulfill_request(&block2));
-        assert!(!manager.fulfill_request(&block2));
-        assert!(!manager.fulfill_request(&block2));
+        assert!(manager.fulfill_request(&block1));
+        assert!(manager.fulfill_request(&block1));
+        assert!(manager.fulfill_request(&block1));
 
         assert!(manager.requests.is_empty());
         assert!(manager.timeouts.is_empty());
         assert!(manager.index.is_empty());
         assert!(manager.is_empty());
+        assert_eq!(manager.requests.len(), 0);
+        assert_eq!(manager.timeouts.len(), 0);
+        assert_eq!(manager.index.len(), 0);
+        assert_eq!(manager.len(), 0);
+        assert_eq!(manager.dupe_index.len(), 2);
     }
 
     #[test]
@@ -519,14 +536,17 @@ mod tests {
 
         assert!(manager.add_request(block0.clone()));
         assert!(manager.add_request(block1.clone()));
+
         assert_eq!(manager.requests.len(), 2);
         assert_eq!(manager.timeouts.len(), 2);
         assert_eq!(manager.index.len(), 2);
+        assert_eq!(manager.len(), 2);
 
         assert!(manager.fulfill_request(&block0));
         assert_eq!(manager.requests.len(), 1);
         assert_eq!(manager.timeouts.len(), 1);
         assert_eq!(manager.index.len(), 1);
+        assert_eq!(manager.len(), 1);
         assert_eq!(manager.requests[0], block1);
     }
 
@@ -683,24 +703,39 @@ mod tests {
         assert!(!manager.is_empty());
     }
 
-    // #[test]
-    // fn no_dupes() {
-    //     let mut manager = RequestManager::new();
-    //     let block0 = BlockInfo::new(0, 0, 16384);
-    //     let block1 = BlockInfo::new(0, 16384, 16384);
-    //     let block2 = BlockInfo::new(0, 32768, 16384);
-    //
-    //     assert!(manager.add_request(block0.clone()));
-    //     assert!(manager.add_request(block1.clone()));
-    //     assert!(manager.add_request(block2.clone()));
-    //
-    //     assert!(!manager.add_request(block2.clone()));
-    //     assert_eq!(manager.len(), 3);
-    //     assert!(!manager.add_request(block0.clone()));
-    //     assert_eq!(manager.len(), 3);
-    //
-    //     // don't add this request as it was already added and fulfilled
-    //     manager.fulfill_request(&block2);
-    //     assert!(!manager.add_request(block2.clone()));
-    // }
+    #[test]
+    fn no_dupes() {
+        let mut manager = RequestManager::new();
+        let block0 = BlockInfo::new(0, 0, 16384);
+        let block1 = BlockInfo::new(0, 16384, 16384);
+        let block2 = BlockInfo::new(0, 32768, 16384);
+
+        assert!(!manager.fulfill_request(&block2));
+
+        assert!(manager.add_request(block0.clone()));
+        assert!(manager.add_request(block1.clone()));
+        assert!(manager.add_request(block2.clone()));
+
+        assert!(!manager.add_request(block2.clone()));
+        assert_eq!(manager.len(), 3);
+        assert_eq!(manager.index.len(), 3);
+        assert_eq!(manager.dupe_index.len(), 3);
+        assert!(!manager.add_request(block0.clone()));
+        assert_eq!(manager.len(), 3);
+        assert_eq!(manager.index.len(), 3);
+        assert_eq!(manager.dupe_index.len(), 3);
+
+        assert!(manager.fulfill_request(&block2));
+        assert!(!manager.add_request(block2.clone()));
+
+        // don't add this request as it was already added and fulfilled
+        assert!(!manager.add_request(block2.clone()));
+
+        // but return true because it was already fulfilled
+        assert!(manager.fulfill_request(&block2));
+
+        assert_eq!(manager.len(), 2);
+        assert_eq!(manager.index.len(), 2);
+        assert_eq!(manager.dupe_index.len(), 3);
+    }
 }

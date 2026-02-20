@@ -87,10 +87,10 @@ impl Peer<Connected> {
                 }
                 _ = help_interval.tick(), if self.can_rerequest() => {
                     let len = self.state.req_man_block.len();
-                    tracing::info!("i: {len} q: {} u: {} e: {}",
+                    tracing::info!("i: {len} eq: {} u: {} rq: {}",
                         self.state.endgame_queue.len(),
                         self.state.no_more_unique_reqs,
-                        self.state.in_endgame
+                        self.state.req_man_block.queue_len(),
                     );
                 }
                 _ = block_interval.tick(), if self.can_request() => {
@@ -132,10 +132,15 @@ impl Peer<Connected> {
                                 PeerBrMsg::Request(self.state.ctx.id.clone(), reqs, queue)
                             );
                         }
-                        PeerBrMsg::Request(sender, mut reqs, queue) => {
+                        PeerBrMsg::Request(sender, mut reqs, mut queue) => {
                             if sender == self.state.ctx.id { continue };
+
+                            // shuffle so that all peers don't requset the same blocks at the same
+                            // time.
                             reqs.shuffle(&mut rand::rng());
                             self.state.endgame_queue.extend(reqs);
+
+                            queue.shuffle(&mut rand::rng());
                             self.state.endgame_queue.extend(queue);
                         }
                         PeerBrMsg::HavePiece(piece) => {
@@ -317,8 +322,7 @@ impl Peer<Connected> {
 
     pub(crate) async fn steal(&mut self) -> Result<(), Error> {
         // if the peer has no block infos to request
-        let nothing_to_request = self.state.req_man_block.is_empty()
-            && self.state.req_man_block.req_count > 0;
+        let nothing_to_request = self.state.req_man_block.is_empty();
 
         // if the torrent is beign downloaded and the peer is out of block infos
         // to request, the peer will request more. This usually happens
@@ -491,17 +495,16 @@ impl Peer<Connected> {
     /// Run interested algorithm.
     #[inline]
     pub async fn interested(&mut self) -> Result<(), Error> {
-        if !self.state.ctx.peer_choking.load(Ordering::Acquire)
-            && self.state.ctx.am_interested.load(Ordering::Acquire)
-        {
-            tracing::debug!(
-                "b {} d {} t {:?} avg {:?}",
-                self.state.req_man_block.len(),
-                self.state.req_man_block.recv_count,
-                self.state.req_man_block.get_timeout(),
-                self.state.req_man_block.get_avg(),
-            );
-        }
+        // if !self.state.ctx.peer_choking.load(Ordering::Acquire)
+        //     && self.state.ctx.am_interested.load(Ordering::Acquire)
+        // {
+        //     tracing::debug!(
+        //         "b {} d {} t {:?} avg {:?}",
+        //         self.state.req_man_block.len(),
+        //         self.state.req_man_block.get_timeout(),
+        //         self.state.req_man_block.get_avg(),
+        //     );
+        // }
         let (otx, orx) = oneshot::channel();
 
         self.state
@@ -600,7 +603,7 @@ impl Peer<Connected> {
         // ignore unsolicited (or duplicate) blocks, could be a malicious peer,
         // a bugged client, etc. Or when the client has sent a cancel
         // but because of the latency, the peer doesn't know that yet.
-        if !was_requested {
+        if !was_requested && !self.state.in_endgame {
             return Ok(());
         }
 

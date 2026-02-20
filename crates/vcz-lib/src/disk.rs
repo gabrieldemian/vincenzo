@@ -263,7 +263,7 @@ impl Disk {
         let mut flush_interval = interval(Duration::from_millis(1_000));
         let mut dirty_count_history = Vec::with_capacity(10);
         let mut lru_cleanup_interval = interval(Duration::from_millis(11_000));
-        let mut help_interval = interval(Duration::from_millis(3_000));
+        // let mut help_interval = interval(Duration::from_millis(3_000));
 
         // ensure the necessary folders are created.
         tokio::fs::create_dir_all(self.incomplete_torrents_path()).await?;
