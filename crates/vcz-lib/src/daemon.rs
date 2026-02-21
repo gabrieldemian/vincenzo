@@ -11,7 +11,7 @@ use crate::{
     peer::{self, Peer, PeerId},
     torrent::{
         self, InfoHash, Torrent, TorrentCtx, TorrentMsg, TorrentState,
-        TorrentStatus, TorrentStatusErrorCode,
+        TorrentStatus,
     },
     utils::to_human_readable,
 };
@@ -55,8 +55,8 @@ use tracing::{debug, info, warn};
 pub struct Daemon {
     pub disk_tx: mpsc::Sender<DiskMsg>,
     pub ctx: Arc<DaemonCtx>,
-    pub torrent_ctxs: HashMap<InfoHash, Arc<TorrentCtx>>,
-    pub metadata_sizes: HashMap<InfoHash, Option<usize>>,
+    pub(crate) torrent_ctxs: HashMap<InfoHash, Arc<TorrentCtx>>,
+    pub(crate) metadata_sizes: HashMap<InfoHash, Option<usize>>,
     pub config: Arc<ResolvedConfig>,
 
     /// Connected peers of all torrents
@@ -71,7 +71,7 @@ pub struct Daemon {
 
 /// Context of the [`Daemon`] that may be shared between other types.
 pub struct DaemonCtx {
-    pub tx: mpsc::Sender<DaemonMsg>,
+    pub(crate) tx: mpsc::Sender<DaemonMsg>,
     pub free_tx: mpsc::UnboundedSender<ReturnToDisk>,
     pub local_peer_id: PeerId,
 }
@@ -79,7 +79,7 @@ pub struct DaemonCtx {
 /// Messages used by the [`Daemon`] for internal communication.
 /// All of these local messages have an equivalent remote message
 /// on [`DaemonMsg`].
-pub enum DaemonMsg {
+pub(crate) enum DaemonMsg {
     /// Tell Daemon to add a new torrent and it will immediately
     /// announce to a tracker, connect to the peers, and start the download.
     NewTorrentMagnet(Box<magnet_url::Magnet>),
@@ -88,8 +88,6 @@ pub enum DaemonMsg {
     GetConnectedPeers(oneshot::Sender<u32>),
     GetMetadataSize(oneshot::Sender<Option<usize>>, InfoHash),
     SetMetadataSize(usize, InfoHash),
-    SetTorrentError(InfoHash, TorrentStatusErrorCode),
-
     GetTorrentCtx(oneshot::Sender<Option<Arc<TorrentCtx>>>, InfoHash),
     IncrementConnectedPeers,
     DecrementConnectedPeers,
@@ -300,11 +298,6 @@ impl Daemon {
                 // Listen to internal mpsc messages
                 Some(msg) = self.rx.recv() => {
                     match msg {
-                        DaemonMsg::SetTorrentError(info_hash, code) => {
-                            let Some(ctx) = self.torrent_ctxs.get(&info_hash).cloned()
-                            else { continue };
-                            let _ = ctx.tx.send(TorrentMsg::SetTorrentError(code)).await;
-                        }
                         DaemonMsg::NewTorrentMagnet(magnet) => {
                             let _ = self.new_torrent_magnet(magnet).await;
                         }

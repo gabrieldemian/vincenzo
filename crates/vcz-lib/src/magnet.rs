@@ -1,6 +1,6 @@
 //! Handle magnet link
 
-use crate::{error::Error, torrent::InfoHash};
+use crate::torrent::InfoHash;
 use magnet_url::Magnet as Magnet_;
 use std::{
     collections::HashMap,
@@ -30,14 +30,8 @@ impl DerefMut for Magnet {
 }
 
 impl Magnet {
-    pub fn new(magnet_url: &str) -> Result<Self, Error> {
-        Ok(Self(
-            Magnet_::new(magnet_url).map_err(|_| Error::MagnetLinkInvalid)?,
-        ))
-    }
-
     /// The name will come URL encoded, and it is also optional.
-    pub fn parse_dn(&self) -> String {
+    pub(crate) fn parse_dn(&self) -> String {
         if let Some(dn) = self.0.display_name()
             && let Ok(dn) = urlencoding::decode(dn)
         {
@@ -47,16 +41,7 @@ impl Magnet {
     }
 
     /// Transform the "xt" field from hex, to a slice.
-    pub fn parse_xt(&self) -> [u8; 20] {
-        let info_hash = hex::decode(self.hash().unwrap()).unwrap();
-        let mut x = [0u8; 20];
-
-        x[..20].copy_from_slice(&info_hash[..20]);
-        x
-    }
-
-    /// Transform the "xt" field from hex, to a slice.
-    pub fn parse_xt_infohash(&self) -> InfoHash {
+    pub(crate) fn parse_xt_infohash(&self) -> InfoHash {
         let info_hash = hex::decode(
             self.hash().unwrap_or("0000000000000000000000000000000000000000"),
         )
@@ -67,7 +52,7 @@ impl Magnet {
         x.into()
     }
 
-    pub fn organize_trackers(&self) -> HashMap<&str, Vec<String>> {
+    pub(crate) fn organize_trackers(&self) -> HashMap<&str, Vec<String>> {
         let mut hashmap = HashMap::from([
             ("udp", vec![]),
             ("http", vec![]),
@@ -89,18 +74,6 @@ impl Magnet {
         }
 
         hashmap
-    }
-
-    /// Parse trackers so they can be used as socket addresses.
-    pub fn parse_trackers(&self) -> Vec<String> {
-        let tr: Vec<String> = self
-            .trackers()
-            .to_owned()
-            .iter_mut()
-            .filter(|x| x.starts_with("udp") || x.starts_with("http"))
-            .map(|x| x.to_owned())
-            .collect();
-        tr
     }
 }
 
@@ -125,7 +98,7 @@ pub mod tests {
              2Fannounce&tr=udp%3A%2F%2Ftracker.leechers-paradise.org%3A6969%\
              2Fannounce&tr=udp%3A%2F%2Fcoppersurfer.tk%3A6969%2Fannounce&\
              tr=udp%3A%2F%2Ftracker.zer0day.to%3A1337%2Fannounce";
-        let magnet = Magnet::new(mstr).unwrap();
+        let magnet = Magnet(Magnet_::new(mstr).unwrap());
         let org = magnet.organize_trackers();
 
         assert_eq!(org["http"], ["tracker.openbittorrent.com:80"]);
@@ -156,7 +129,7 @@ pub mod tests {
                     2Ftracker.opentrackr.org%3A1337%2Fannounce&tr=udp%3A%2F%\
                     2Fexodus.desync.com%3A6969%2Fannounce&tr=udp%3A%2F%\
                     2Ftracker.torrent.eu.org%3A451%2Fannounce";
-        let magnet = Magnet::new(mstr).unwrap();
+        let magnet = Magnet(Magnet_::new(mstr).unwrap());
         let org = magnet.organize_trackers();
 
         assert_eq!(org["http"], ["nyaa.tracker.wf:7777"]);

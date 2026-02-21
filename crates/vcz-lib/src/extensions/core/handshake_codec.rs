@@ -36,7 +36,7 @@ use tracing::warn;
 ///
 /// Note: a handshake (without ext) has exactly 68 bytes.
 #[derive(Clone, Debug, Default)]
-pub struct Handshake {
+pub(crate) struct Handshake {
     /// 13__
     pub pstr_len: u8,
 
@@ -44,7 +44,7 @@ pub struct Handshake {
     /// 6f63 6f6c
     pub pstr: [u8; 19],
 
-    pub reserved: Reserved,
+    pub(crate) reserved: Reserved,
 
     /// d7e0 49fc 9182 5ac8 069e 640a b45a 511f
     /// 87d8 f807
@@ -96,7 +96,7 @@ impl Handshake {
 }
 
 #[derive(Debug)]
-pub struct HandshakeCodec;
+pub(crate) struct HandshakeCodec;
 
 impl Encoder<Handshake> for HandshakeCodec {
     type Error = Error;

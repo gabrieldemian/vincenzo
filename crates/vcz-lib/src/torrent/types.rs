@@ -284,8 +284,17 @@ impl<M: TorrentSource> From<&Torrent<torrent::Idle, M>> for TorrentState {
 
 impl<M: TorrentSource> From<&Torrent<torrent::Connected, M>> for TorrentState {
     fn from(value: &Torrent<torrent::Connected, M>) -> Self {
-        let downloading_from =
-            value.state.connected_peers.iter().fold(0, |acc, v| {
+        let downloading_from = match value.status {
+            TorrentStatus::Seeding => {
+                value.state.connected_peers.iter().fold(0, |acc, v| {
+                    acc + if v.peer_interested.load(Ordering::Relaxed) {
+                        1
+                    } else {
+                        0
+                    }
+                })
+            }
+            _ => value.state.connected_peers.iter().fold(0, |acc, v| {
                 acc + if !v.peer_choking.load(Ordering::Relaxed)
                     && v.am_interested.load(Ordering::Relaxed)
                 {
@@ -293,7 +302,8 @@ impl<M: TorrentSource> From<&Torrent<torrent::Connected, M>> for TorrentState {
                 } else {
                     0
                 }
-            });
+            }),
+        };
 
         Self {
             name: value.name.clone(),
@@ -364,22 +374,22 @@ impl From<&str> for TorrentStatus {
     }
 }
 
-pub trait State {}
+pub(crate) trait State {}
 
 /// If the torrent came from a magnet or metainfo.
-pub trait TorrentSource {
+pub(crate) trait TorrentSource {
     fn organize_trackers(&self) -> HashMap<&str, Vec<String>>;
     fn info_hash(&self) -> InfoHash;
     /// Get torrent size
     fn size(&self) -> u64;
 }
 
-pub struct FromMagnet {
+pub(crate) struct FromMagnet {
     pub magnet: Magnet,
     pub info: Option<Arc<Info>>,
 }
 
-pub struct FromMetaInfo {
+pub(crate) struct FromMetaInfo {
     pub meta_info: MetaInfo,
 }
 
@@ -408,11 +418,11 @@ impl TorrentSource for FromMetaInfo {
 
 // States of the torrent, idle is when the tracker is not connected and the
 // torrent is not being downloaded
-pub struct Idle {
+pub(crate) struct Idle {
     pub metadata_size: Option<usize>,
 }
 
-pub struct Connected {
+pub(crate) struct Connected {
     /// Stats of the current Torrent, returned from tracker on announce
     /// requests.
     pub stats: Stats,

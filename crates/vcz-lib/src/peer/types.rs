@@ -55,12 +55,12 @@ use tracing::debug;
 #[rkyv(compare(PartialEq, PartialOrd), derive(Debug))]
 pub struct PeerId(pub [u8; 20]);
 
-pub static STEAL_COOLDOWN: Duration = Duration::from_secs(3);
+pub(crate) static STEAL_COOLDOWN: Duration = Duration::from_secs(3);
 
 /// The minimum queue len for inflight block infos.
 // Looking at peers from other clients, this is the lowest value that I have
 // found.
-pub const DEFAULT_REQUEST_QUEUE_LEN: u16 = 500;
+pub(crate) const DEFAULT_REQUEST_QUEUE_LEN: u16 = 500;
 
 impl PeerId {
     pub fn generate() -> Self {
@@ -81,7 +81,7 @@ impl PeerId {
 /// Only used for logging the state of the per in a compact way.
 /// am_choking[0], am_interested[1], peer_choking[2], peer_interested[3]
 #[derive(PartialEq, Eq)]
-pub struct StateLog(pub [char; 4]);
+pub(crate) struct StateLog(pub [char; 4]);
 
 impl Default for StateLog {
     fn default() -> Self {
@@ -238,12 +238,12 @@ pub enum Direction {
 }
 
 /// A peer can be: Idle, Connected, or Error.
-pub trait PeerState {}
+pub(crate) trait PeerState {}
 
 /// New peers just returned by the tracker, without any type of connection,
 /// ready to be handshaked at any moment.
 #[derive(Clone)]
-pub struct Idle {}
+pub(crate) struct Idle {}
 
 impl Default for peer::Peer<Idle> {
     fn default() -> Self {
@@ -560,12 +560,12 @@ pub struct Connected {
     pub no_more_unique_reqs: bool,
     pub endgame_queue: Vec<BlockInfo>,
     pub last_stolen: Option<tokio::time::Instant>,
-    pub stream: SplitStream<Framed<TcpStream, CoreCodec>>,
-    pub sink: SplitSink<Framed<TcpStream, CoreCodec>, Core>,
+    pub(crate) stream: SplitStream<Framed<TcpStream, CoreCodec>>,
+    pub(crate) sink: SplitSink<Framed<TcpStream, CoreCodec>, Core>,
     pub reserved: Reserved,
     pub rx: Receiver<PeerMsg>,
     pub free_tx: mpsc::UnboundedSender<ReturnToDisk>,
-    pub extension: Option<Extension>,
+    pub(crate) extension: Option<Extension>,
 
     /// Context of the Peer which is shared for anyone who needs it.
     pub ctx: Arc<PeerCtx>,
@@ -575,9 +575,9 @@ pub struct Connected {
     ///
     /// If we receive a block whose request entry is here, that entry is
     /// removed. A request is also removed here when it is timed out.
-    pub req_man_block: RequestManager<BlockInfo>,
+    pub(crate) req_man_block: RequestManager<BlockInfo>,
 
-    pub req_man_meta: RequestManager<MetadataPiece>,
+    pub(crate) req_man_meta: RequestManager<MetadataPiece>,
 
     /// The requests we got from peer.
     ///
@@ -608,8 +608,7 @@ pub struct Connected {
 // connection and it doesn't work, if the peer is connected and returns an
 // error, we should maybe use another type with more information about why it
 // failed, such as a peer being malicious.
-#[derive(Clone)]
-pub struct PeerError {
+pub(crate) struct PeerError {
     pub addr: SocketAddr,
     pub reconnect_attempts: u32,
 }

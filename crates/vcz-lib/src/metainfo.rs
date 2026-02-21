@@ -2,7 +2,6 @@
 //! From the magnet link, we get the Metainfo from other peers.
 
 use crate::{
-    error,
     extensions::core::{BLOCK_LEN, BlockInfo},
     torrent::InfoHash,
 };
@@ -11,27 +10,29 @@ use bendy::{
     encoding::{self, AsString, Error, SingleItemEncoder, ToBencode},
 };
 use sha1::{Digest, Sha1};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 
 /// Metainfo is a .torrent file with information about the Torrent.
 /// From the magnet link, we get the Metainfo from other peers.
 #[derive(Debug, PartialEq, Clone, Default)]
 pub struct MetaInfo {
-    pub announce: String,
-    pub announce_list: Option<Vec<Vec<String>>>,
-    pub comment: Option<String>,
+    pub(crate) announce: String,
+    pub(crate) announce_list: Option<Vec<Vec<String>>>,
+    pub(crate) comment: Option<String>,
     // pub created_by: Option<String>,
-    pub creation_date: Option<u32>,
+    pub(crate) creation_date: Option<u32>,
     pub info: Info,
-    pub http_seeds: Option<Vec<String>>,
+    pub(crate) http_seeds: Option<Vec<String>>,
 }
 
 impl MetaInfo {
-    pub fn organize_trackers(&self) -> HashMap<&str, Vec<String>> {
+    pub(crate) fn organize_trackers(&self) -> HashMap<&str, Vec<String>> {
         let mut hashmap = HashMap::from([
             ("udp", vec![]),
             ("http", vec![]),
             ("https", vec![]),
+            ("wss", vec![]),
+            ("ws", vec![]),
         ]);
 
         let mut list = vec![self.announce.clone()];
@@ -44,18 +45,23 @@ impl MetaInfo {
         for x in list {
             let x = x.clone();
             let mut uri = urlencoding::decode(&x).unwrap().to_string();
-            let (protocol, _) = x.split_once("%3A").unwrap();
 
-            if protocol == "udp" {
-                uri = uri.replace("udp://", "");
-                // remove any /announce
-                if let Some(i) = uri.find("/announce") {
-                    uri = uri[..i].to_string();
-                };
+            let protocol = match x.split_once("%3A") {
+                Some((protocol, _)) => protocol,
+                None => x.split_once(":").map(|v| v.0).unwrap_or(""),
+            };
+
+            if protocol != "udp" {
+                continue;
             }
 
-            let trackers = hashmap.get_mut(protocol).unwrap();
+            uri = uri.replace("udp://", "");
+            // remove any /announce
+            if let Some(i) = uri.find("/announce") {
+                uri = uri[..i].to_string();
+            };
 
+            let trackers = hashmap.get_mut(protocol).unwrap();
             trackers.push(uri.to_string());
         }
 
@@ -80,7 +86,7 @@ pub struct Info {
     pub file_length: Option<usize>,
 
     /// If the torrent has many files, this is some, and file_length is none.
-    pub files: Option<Vec<File>>,
+    pub(crate) files: Option<Vec<File>>,
 
     /// name of the file
     pub name: String,
@@ -102,62 +108,22 @@ pub struct Info {
 }
 
 impl Info {
-    pub fn to_meta_info(self, announce_list: &[String]) -> MetaInfo {
-        let first_item = announce_list.first().cloned().unwrap_or_default();
-
-        let announce = announce_list
-            .iter()
-            .find(|v| v.starts_with("udp"))
-            .cloned()
-            .unwrap_or(first_item);
-
-        let mut list = vec![
-            vec![], // udp
-            vec![], // http
-            vec![], // https
-            vec![], // wss
-        ];
-
-        for l in announce_list {
-            if l.starts_with("udp") {
-                list[0].push(l.to_owned());
-            } else if l.starts_with("http") {
-                list[1].push(l.to_owned());
-            } else if l.starts_with("https") {
-                list[2].push(l.to_owned());
-            } else if l.starts_with("wss") {
-                list[3].push(l.to_owned());
-            }
-        }
-
-        MetaInfo {
-            announce_list: Some(list),
-            announce,
-            info: self,
-            ..Default::default()
-        }
-    }
-
-    pub fn name(mut self, name: String) -> Self {
-        self.name = name;
-        self
-    }
-
     /// Calculate how many pieces there are.
     #[inline]
-    pub fn pieces(&self) -> usize {
+    pub(crate) fn pieces(&self) -> usize {
         (self.pieces.len()).div_ceil(20)
     }
 
     /// Calculate how many blocks there are in the entire torrent.
     #[inline]
-    pub fn blocks_count(&self) -> usize {
+    pub(crate) fn blocks_count(&self) -> usize {
         self.get_torrent_size().div_ceil(BLOCK_LEN)
     }
 
     /// Calculate how many blocks there are per piece
     #[inline]
-    pub fn blocks_per_piece(&self) -> usize {
+    #[cfg(test)]
+    pub(crate) fn blocks_per_piece(&self) -> usize {
         self.piece_length.div_ceil(BLOCK_LEN)
     }
 
@@ -167,7 +133,7 @@ impl Info {
         InfoHash(hasher.finalize().into())
     }
 
-    pub fn get_block_infos_of_piece_self(
+    pub(crate) fn get_block_infos_of_piece_self(
         &self,
         piece_index: usize,
     ) -> Vec<BlockInfo> {
@@ -196,7 +162,7 @@ impl Info {
     }
 
     /// Only get block infos of a piece.
-    pub fn get_block_infos_of_piece(
+    pub(crate) fn get_block_infos_of_piece(
         total_size: usize,
         piece_length: usize,
         piece_index: usize,
@@ -226,13 +192,18 @@ impl Info {
     /// Get all block_infos of a torrent
     /// Returns an Err if the Info is malformed, if it does not have `files` or
     /// `file_length`.
+    #[cfg(test)]
     pub fn get_block_infos(
         &self,
-    ) -> Result<BTreeMap<usize, Vec<BlockInfo>>, error::Error> {
+    ) -> Result<
+        std::collections::BTreeMap<usize, Vec<BlockInfo>>,
+        crate::error::Error,
+    > {
         let total_size = self.get_torrent_size();
         let piece_length = self.piece_length;
         let num_pieces = self.pieces();
-        let mut block_infos: BTreeMap<usize, Vec<BlockInfo>> = BTreeMap::new();
+        let mut block_infos: std::collections::BTreeMap<usize, Vec<BlockInfo>> =
+            std::collections::BTreeMap::new();
 
         for piece_index in 0..num_pieces {
             let blocks = Self::get_block_infos_of_piece(
@@ -248,7 +219,7 @@ impl Info {
     }
 
     /// Get the size in bytes of the files of the torrent.
-    pub fn get_torrent_size(&self) -> usize {
+    pub(crate) fn get_torrent_size(&self) -> usize {
         match &self.files {
             Some(files) => files.iter().map(|f| f.length).sum(),
             None => self.file_length.unwrap_or(0),
@@ -256,6 +227,7 @@ impl Info {
     }
 
     /// Get the size (in bytes) of a piece.
+    #[cfg(test)]
     pub fn piece_size(&self, piece_index: usize) -> usize {
         let total_size = self.get_torrent_size();
         if piece_index == self.pieces() - 1 {
@@ -270,23 +242,11 @@ impl Info {
 /// Files in the [`Info`] are relative to the root folder name,
 /// but do not contain them as the first item in the vector.
 #[derive(Debug, PartialEq, Clone, Default, Hash, Eq)]
-pub struct File {
+pub(crate) struct File {
     /// Length of the file in bytes.
     pub length: usize,
     /// Path of the file, excluding the parent name.
     pub path: Vec<String>,
-}
-
-impl File {
-    /// Get the len of the given piece in the file, in bytes..
-    pub fn get_piece_len(&self, piece: usize, piece_length: usize) -> usize {
-        let b = (piece * piece_length) + piece_length;
-        if b <= self.length { piece_length } else { self.length % piece_length }
-    }
-    /// Return the number of pieces in the file, rounded up.
-    pub fn pieces(&self, piece_length: usize) -> usize {
-        self.length.div_ceil(piece_length)
-    }
 }
 
 impl ToBencode for File {

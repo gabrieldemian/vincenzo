@@ -58,7 +58,7 @@ pub enum Message {
 
 #[repr(u8)]
 #[derive(Copy, Clone, Debug, PartialEq, IntEnum)]
-pub enum MessageId {
+pub(crate) enum MessageId {
     NewTorrent = 1,
     TorrentState = 2,
     GetTorrentState = 3,

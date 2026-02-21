@@ -3,8 +3,9 @@ mod request_manager;
 mod types;
 
 use rand::seq::SliceRandom;
+
 // re-exports
-pub use request_manager::RequestManager;
+pub(crate) use request_manager::RequestManager;
 pub use types::*;
 
 use crate::{
@@ -30,7 +31,7 @@ use tracing::{debug, trace, warn};
 /// but the client itself does not have a Peer struct.
 #[derive(Default, PartialEq, Eq, vcz_macros::Peer)]
 #[extensions(Core, Metadata, Extension)]
-pub struct Peer<S: PeerState> {
+pub(crate) struct Peer<S: PeerState> {
     pub state: S,
     /// am_choking[0], am_interested[1], peer_choking[2], peer_interested[3]
     pub state_log: StateLog,
@@ -45,7 +46,7 @@ impl Peer<Connected> {
             id = %self.state.ctx.id,
         )
     )]
-    pub async fn run(&mut self) -> Result<(), Error> {
+    pub(crate) async fn run(&mut self) -> Result<(), Error> {
         self.state
             .ctx
             .torrent_ctx
@@ -87,10 +88,10 @@ impl Peer<Connected> {
                 }
                 _ = help_interval.tick(), if self.can_rerequest() => {
                     let len = self.state.req_man_block.len();
-                    tracing::info!("i: {len} eq: {} u: {} rq: {}",
+                    tracing::info!("i: {len} eq: {} u: {}",
                         self.state.endgame_queue.len(),
                         self.state.no_more_unique_reqs,
-                        self.state.req_man_block.queue_len(),
+                        // self.state.req_man_block.queue_len(),
                     );
                 }
                 _ = block_interval.tick(), if self.can_request() => {
@@ -134,7 +135,6 @@ impl Peer<Connected> {
                         }
                         PeerBrMsg::Request(sender, mut reqs, mut queue) => {
                             if sender == self.state.ctx.id { continue };
-
                             // shuffle so that all peers don't requset the same blocks at the same
                             // time.
                             reqs.shuffle(&mut rand::rng());
@@ -173,10 +173,14 @@ impl Peer<Connected> {
                 Some(msg) = self.state.rx.recv() => {
                     match msg {
                         PeerMsg::Cancel(block_info) => {
-                            self.state.req_man_block.fulfill_request(&block_info);
                             if let Some(pos) = self.state.endgame_queue.iter().position(|v| *v == block_info) {
                                 self.state.endgame_queue.swap_remove(pos);
                             }
+                            if !self.state.req_man_block.fulfill_request(&block_info) { continue };
+                            self.state
+                                .ctx
+                                .block_infos_len
+                                .store(self.state.req_man_block.len(), Ordering::Release);
                             self.send(Core::Cancel(block_info)).await?;
                         }
                         PeerMsg::InterestedAlgorithm => {
@@ -244,7 +248,7 @@ impl Peer<Connected> {
     }
 
     #[inline]
-    pub async fn request_endgame(&mut self) -> Result<(), Error> {
+    pub(crate) async fn request_endgame(&mut self) -> Result<(), Error> {
         let qnt = self.state.req_man_block.get_available_request_len();
         let qnt = qnt.min(self.state.endgame_queue.len());
         let blocks: Vec<BlockInfo> =
@@ -268,7 +272,7 @@ impl Peer<Connected> {
     /// Must be used after checking that the Peer is able to send blocks with
     /// [`Self::can_request`].
     #[inline]
-    pub async fn request_block_infos(&mut self) -> Result<(), Error> {
+    pub(crate) async fn request_block_infos(&mut self) -> Result<(), Error> {
         if self.state.req_man_block.is_empty() && self.state.in_endgame {
             self.state.no_more_unique_reqs = true;
         }
@@ -374,9 +378,9 @@ impl Peer<Connected> {
             self.feed(Core::Request(block)).await?;
         }
 
-        // todo: some peers dont resend the blocks no matter how many times we
-        // resend, even if they have the piece. Maybe after 3 tries send all the
-        // blocks to another peer.
+        // todo: implement anti-snubbing: some peers dont resend the blocks no
+        // matter how many times we ask for, delay of 60 seconds -> don't
+        // request from them and free the blocks.
         if !is_empty {
             self.state.sink.flush().await?;
         }
@@ -385,7 +389,7 @@ impl Peer<Connected> {
     }
 
     /// Request available metadata pieces.
-    pub async fn request_metadata(&mut self) -> Result<(), Error> {
+    pub(crate) async fn request_metadata(&mut self) -> Result<(), Error> {
         let Some(ut_metadata) =
             self.state.extension.as_ref().and_then(|v| v.m.ut_metadata)
         else {
@@ -429,7 +433,7 @@ impl Peer<Connected> {
     }
 
     /// Check for timedout metadata requests and request them again.
-    pub async fn rerequest_metadata(&mut self) -> Result<(), Error> {
+    pub(crate) async fn rerequest_metadata(&mut self) -> Result<(), Error> {
         let Some(ut_metadata) =
             self.state.extension.as_ref().and_then(|v| v.m.ut_metadata)
         else {
@@ -455,7 +459,7 @@ impl Peer<Connected> {
     /// Send a message to sink and record upload rate, but the sink is not
     /// flushed.
     #[inline]
-    pub async fn feed(&mut self, core: Core) -> Result<(), Error> {
+    pub(crate) async fn feed(&mut self, core: Core) -> Result<(), Error> {
         self.state.ctx.counter.record_upload(4 + core.len() as u64);
         self.state.sink.feed(core).await?;
         Ok(())
@@ -463,48 +467,15 @@ impl Peer<Connected> {
 
     /// Send a message to sink and record upload rate and flush.
     #[inline]
-    pub async fn send(&mut self, core: Core) -> Result<(), Error> {
+    pub(crate) async fn send(&mut self, core: Core) -> Result<(), Error> {
         self.state.ctx.counter.record_upload(4 + core.len() as u64);
         self.state.sink.send(core).await?;
         Ok(())
     }
 
-    /// Mutate the peer based on his [`Extension`], should be called after an
-    /// extended handshake.
-    #[inline]
-    pub async fn handle_ext(&mut self, ext: Extension) -> Result<(), Error> {
-        let n = ext.reqq.unwrap_or(DEFAULT_REQUEST_QUEUE_LEN);
-
-        self.state.req_man_meta.set_limit(n as usize);
-        self.state.req_man_block.set_limit(n as usize);
-
-        if let Some(meta_size) = ext.metadata_size {
-            self.state
-                .ctx
-                .torrent_ctx
-                .tx
-                .send(TorrentMsg::MetadataSize(meta_size))
-                .await?;
-        }
-
-        self.state.extension = Some(ext);
-
-        Ok(())
-    }
-
     /// Run interested algorithm.
     #[inline]
-    pub async fn interested(&mut self) -> Result<(), Error> {
-        // if !self.state.ctx.peer_choking.load(Ordering::Acquire)
-        //     && self.state.ctx.am_interested.load(Ordering::Acquire)
-        // {
-        //     tracing::debug!(
-        //         "b {} d {} t {:?} avg {:?}",
-        //         self.state.req_man_block.len(),
-        //         self.state.req_man_block.get_timeout(),
-        //         self.state.req_man_block.get_avg(),
-        //     );
-        // }
+    pub(crate) async fn interested(&mut self) -> Result<(), Error> {
         let (otx, orx) = oneshot::channel();
 
         self.state
@@ -539,19 +510,15 @@ impl Peer<Connected> {
 
     #[inline]
     /// Enter seed only mode and send Cancel's for in-flight block infos.
-    pub async fn seed_only(&mut self) -> Result<(), Error> {
-        debug!("seed_only");
+    pub(crate) async fn seed_only(&mut self) -> Result<(), Error> {
         self.state.seed_only = true;
 
-        if self.state.ctx.am_choking.load(Ordering::Acquire) {
-            self.state.ctx.tx.send(PeerMsg::Unchoke).await?;
-        }
-
-        for block in self.state.req_man_block.drain().into_iter() {
-            self.send(Core::Cancel(block)).await?;
+        if self.state.ctx.am_interested.load(Ordering::Acquire) {
+            self.state.ctx.tx.send(PeerMsg::NotInterested).await?;
         }
 
         self.state.req_man_meta.clear();
+        self.state.req_man_block.clear();
         self.state.endgame_queue.clear();
 
         Ok(())
@@ -564,7 +531,7 @@ impl Peer<Connected> {
     /// - The torrent is not fully downloaded (peer is not in seed-only mode)
     /// - The capacity of inflight blocks is not full (len of outgoing_requests)
     #[inline]
-    pub fn can_request(&self) -> bool {
+    pub(crate) fn can_request(&self) -> bool {
         let am_interested =
             self.state.ctx.am_interested.load(Ordering::Acquire);
         let peer_choking = self.state.ctx.peer_choking.load(Ordering::Acquire);
@@ -580,7 +547,7 @@ impl Peer<Connected> {
     }
 
     #[inline]
-    pub fn can_rerequest(&self) -> bool {
+    pub(crate) fn can_rerequest(&self) -> bool {
         let am_interested =
             self.state.ctx.am_interested.load(Ordering::Acquire);
         let peer_choking = self.state.ctx.peer_choking.load(Ordering::Acquire);
@@ -594,24 +561,26 @@ impl Peer<Connected> {
 
     /// Handle a block sent by the core codec.
     #[inline]
-    pub async fn handle_block(&mut self, block: Block) -> Result<(), Error> {
+    pub(crate) async fn handle_block(
+        &mut self,
+        block: Block,
+    ) -> Result<(), Error> {
         let block_info = BlockInfo::from(&block);
 
-        let was_requested =
-            self.state.req_man_block.fulfill_request(&block_info);
+        // todo: wtf is happening here
+        // this block could have been fulfilled by another peer on endgame.
+        // let was_fulfilled =
+        // self.state.req_man_block.was_fulfilled(&block_info);
 
-        // ignore unsolicited (or duplicate) blocks, could be a malicious peer,
-        // a bugged client, etc. Or when the client has sent a cancel
-        // but because of the latency, the peer doesn't know that yet.
-        if !was_requested && !self.state.in_endgame {
-            return Ok(());
-        }
+        // if this peer requested this block
+        // let was_requested =
+        //     self.state.req_man_block.fulfill_request(&block_info);
 
-        if let Some(pos) =
-            self.state.endgame_queue.iter().position(|v| *v == block_info)
-        {
-            self.state.endgame_queue.swap_remove(pos);
-        }
+        // ignore unsolicited / duplicate / cancelled blocks
+        // if !was_requested {
+        // warn!("received non requested (´°ω°`)");
+        //     return Ok(());
+        // }
 
         // `downloaded` in the perspective of the local peer.
         self.state.ctx.counter.record_download(block_info.len as u64);
@@ -647,7 +616,7 @@ impl Peer<Connected> {
 
     /// Take outgoing block infos and metadata pieces and send them back to the
     /// disk so that other peers can request them.
-    pub fn free_pending_blocks(&mut self) {
+    pub(crate) fn free_pending_blocks(&mut self) {
         let infos = self.state.req_man_block.drain();
         if self.state.in_endgame {
             return;
@@ -670,5 +639,31 @@ impl Peer<Connected> {
                 metas,
             ));
         }
+    }
+
+    /// Mutate the peer based on his [`Extension`], should be called after an
+    /// extended handshake.
+    #[inline]
+    pub(crate) async fn handle_ext(
+        &mut self,
+        ext: Extension,
+    ) -> Result<(), Error> {
+        let n = ext.reqq.unwrap_or(DEFAULT_REQUEST_QUEUE_LEN);
+
+        self.state.req_man_meta.set_limit(n as usize);
+        self.state.req_man_block.set_limit(n as usize);
+
+        if let Some(meta_size) = ext.metadata_size {
+            self.state
+                .ctx
+                .torrent_ctx
+                .tx
+                .send(TorrentMsg::MetadataSize(meta_size))
+                .await?;
+        }
+
+        self.state.extension = Some(ext);
+
+        Ok(())
     }
 }

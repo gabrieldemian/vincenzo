@@ -6,7 +6,7 @@ mod handshake_codec;
 
 // re-exports
 pub use codec::*;
-pub use handshake_codec::*;
+pub(crate) use handshake_codec::*;
 
 use bytes::Bytes;
 

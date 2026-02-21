@@ -15,7 +15,7 @@ use int_enum::IntEnum;
 /// this dict is used to request, reject, and send data (info).
 #[derive(Debug, Clone, PartialEq, vcz_macros::Extension)]
 #[extension(id = 3, bencoded)]
-pub struct Metadata {
+pub(crate) struct Metadata {
     pub msg_type: MetadataMsgType,
     pub piece: u64,
     pub total_size: Option<usize>,

@@ -76,7 +76,7 @@ pub enum Core {
 /// The IDs of the [`Core`] messages.
 #[repr(u8)]
 #[derive(Copy, Clone, Debug, PartialEq, IntEnum)]
-pub enum CoreId {
+pub(crate) enum CoreId {
     Choke = 0,
     Unchoke = 1,
     Interested = 2,
@@ -90,10 +90,7 @@ pub enum CoreId {
 }
 
 #[derive(Debug, Clone)]
-pub struct CoreCodec;
-
-#[derive(Clone, Debug, Copy)]
-pub struct CoreExt;
+pub(crate) struct CoreCodec;
 
 impl ExtMsgHandler<Core> for Peer<peer::Connected> {
     type Error = Error;

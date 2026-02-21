@@ -43,18 +43,18 @@ use tracing::{debug, info, warn};
 
 /// This is the main entity responsible for the high-level management of
 /// a torrent download or upload.
-pub struct Torrent<S: State, M: TorrentSource> {
-    pub name: String,
+pub(crate) struct Torrent<S: State, M: TorrentSource> {
+    name: String,
     pub ctx: Arc<TorrentCtx>,
-    pub config: Arc<ResolvedConfig>,
-    pub daemon_ctx: Arc<DaemonCtx>,
+    config: Arc<ResolvedConfig>,
+    daemon_ctx: Arc<DaemonCtx>,
     pub status: TorrentStatus,
-    pub rx: mpsc::Receiver<TorrentMsg>,
+    rx: mpsc::Receiver<TorrentMsg>,
 
     /// Bitfield representing the presence or absence of pieces for our local
     /// peer, where each bit is a piece.
-    pub bitfield: Bitfield,
-    pub state: S,
+    bitfield: Bitfield,
+    state: S,
     pub source: M,
 }
 
@@ -74,7 +74,7 @@ impl<M: TorrentSource> Torrent<Idle, M> {
     ///
     /// The function will return when it receives an announce from the first
     /// tracker, the other ones will be awaited for in the background.
-    pub async fn start(self) -> Result<Torrent<Connected, M>, Error> {
+    pub(crate) async fn start(self) -> Result<Torrent<Connected, M>, Error> {
         if let Some(metadata_size) = self.state.metadata_size {
             let _ = self
                 .daemon_ctx
@@ -401,7 +401,9 @@ impl<M: TorrentSource> Torrent<Connected, M> {
         }
         self.state.counter.update_rates();
 
-        let torrent_state: TorrentState = (&*self).into();
+        let mut torrent_state: TorrentState = (&*self).into();
+        torrent_state.downloaded =
+            torrent_state.downloaded.min(self.state.size);
 
         let _ = self
             .daemon_ctx
@@ -900,7 +902,7 @@ impl<M: TorrentSource> Torrent<Connected, M> {
 
     /// Try to connect to all idle peers (if there is capacity) and run their
     /// event loops.
-    pub async fn spawn_outbound_peers(
+    pub(crate) async fn spawn_outbound_peers(
         &self,
         have_info: bool,
     ) -> Result<(), Error> {
@@ -965,34 +967,8 @@ impl<M: TorrentSource> Torrent<Connected, M> {
     }
 
     /// Get the best n downloaders that are interested in the client.
-    pub fn get_best_interested_downloaders(&self) -> Vec<Arc<PeerCtx>> {
+    pub(crate) fn get_best_interested_downloaders(&self) -> Vec<Arc<PeerCtx>> {
         self.sort_peers_by_rate(true, false)
-    }
-
-    pub fn get_next_opt_unchoked_peer(&self) -> Option<Arc<PeerCtx>> {
-        let mut min = u64::MAX;
-        let mut result = None;
-
-        for peer in &self.state.connected_peers {
-            let peer_uploaded = peer.counter.upload_rate_u64();
-
-            match &self.state.opt_unchoked_peer {
-                Some(opt_unchoked) => {
-                    if peer_uploaded < min && opt_unchoked.id != peer.id {
-                        min = peer_uploaded;
-                        result = Some(opt_unchoked.clone());
-                    }
-                }
-                None => {
-                    if peer_uploaded < min {
-                        min = peer_uploaded;
-                        result = Some(peer.clone());
-                    }
-                }
-            }
-        }
-
-        result
     }
 
     /// A fast function for returning the best or worst N amount of peers,
@@ -1097,7 +1073,7 @@ impl<M: TorrentSource> Torrent<Connected, M> {
 
     /// Return the first piece that the remote peer has and the local client
     /// hasn't.
-    pub fn peer_has_piece_not_in_local(
+    pub(crate) fn peer_has_piece_not_in_local(
         &self,
         peer_id: &PeerId,
     ) -> Option<usize> {
