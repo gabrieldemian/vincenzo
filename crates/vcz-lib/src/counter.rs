@@ -48,7 +48,7 @@ impl Counter {
         Self::default()
     }
 
-    pub fn from_total_download(t: u64) -> Self {
+    pub(crate) fn from_total_download(t: u64) -> Self {
         Counter { total_downloaded: t.into(), ..Default::default() }
     }
 
@@ -64,47 +64,43 @@ impl Counter {
         self.window_uploaded.fetch_add(bytes, Ordering::Relaxed);
     }
 
-    pub fn download_rate_f64(&self) -> f64 {
+    pub(crate) fn download_rate_f64(&self) -> f64 {
         let bits = self.ema_download.load(Ordering::Relaxed);
         f64::from_bits(bits)
     }
 
-    pub fn upload_rate_f64(&self) -> f64 {
+    pub(crate) fn upload_rate_f64(&self) -> f64 {
         let bits = self.ema_upload.load(Ordering::Relaxed);
         f64::from_bits(bits)
     }
 
-    pub fn window_uploaded_u64(&self) -> u64 {
+    pub(crate) fn window_uploaded_u64(&self) -> u64 {
         self.window_uploaded.load(Ordering::Relaxed)
     }
 
-    pub fn window_downloaded_u64(&self) -> u64 {
+    pub(crate) fn window_downloaded_u64(&self) -> u64 {
         self.window_downloaded.load(Ordering::Relaxed)
     }
 
-    pub fn download_rate_u64(&self) -> u64 {
+    pub(crate) fn download_rate_u64(&self) -> u64 {
         self.ema_download.load(Ordering::Relaxed)
     }
 
-    pub fn total_download(&self) -> u64 {
+    pub(crate) fn total_download(&self) -> u64 {
         self.total_downloaded.load(Ordering::Relaxed)
     }
 
-    pub fn total_upload(&self) -> u64 {
+    pub(crate) fn total_upload(&self) -> u64 {
         self.total_uploaded.load(Ordering::Relaxed)
     }
 
-    pub fn upload_rate_u64(&self) -> u64 {
-        self.ema_upload.load(Ordering::Relaxed)
-    }
-
-    pub fn download_rate(&self) -> String {
+    pub(crate) fn download_rate(&self) -> String {
         let mut v = to_human_readable(self.download_rate_f64());
         v.push_str("/s");
         v
     }
 
-    pub fn upload_rate(&self) -> String {
+    pub(crate) fn upload_rate(&self) -> String {
         let mut v = to_human_readable(self.upload_rate_f64());
         v.push_str("/s");
         v

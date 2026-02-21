@@ -1,5 +1,5 @@
 //! Wrapper types around Bitvec.
-use bitvec::{prelude::*, ptr::Const};
+use bitvec::prelude::*;
 
 /// Bitfield where index = piece.
 pub type Bitfield = BitVec<u8, Msb0>;
@@ -38,7 +38,7 @@ impl Reserved {
     }
 }
 
-pub trait VczBitfield {
+pub(crate) trait VczBitfield {
     fn from_piece(piece: usize) -> Bitfield {
         bitvec![u8, Msb0; 0; piece]
     }
@@ -46,12 +46,17 @@ pub trait VczBitfield {
         bitvec![u8, Msb0; 1; piece]
     }
     /// Set vector to a new len, in bits.
+    #[cfg(test)]
     fn new_and_resize(vec: Vec<u8>, len: usize) -> Bitfield {
         let mut s = Bitfield::from_vec(vec);
         unsafe { s.set_len(len) };
         s
     }
-    fn safe_get(&mut self, index: usize) -> BitRef<'_, Const, u8, Msb0>;
+    #[cfg(test)]
+    fn safe_get(
+        &mut self,
+        index: usize,
+    ) -> BitRef<'_, bitvec::ptr::Const, u8, Msb0>;
     fn safe_set(&mut self, _index: usize) {}
 }
 
@@ -62,7 +67,11 @@ impl VczBitfield for Bitfield {
         }
         unsafe { self.set_unchecked(index, true) };
     }
-    fn safe_get(&mut self, index: usize) -> BitRef<'_, Const, u8, Msb0> {
+    #[cfg(test)]
+    fn safe_get(
+        &mut self,
+        index: usize,
+    ) -> BitRef<'_, bitvec::ptr::Const, u8, Msb0> {
         if self.len() <= index {
             self.resize(index + 1, false);
         }

@@ -20,7 +20,7 @@ pub use r#trait::*;
 /// Other protocols may add new fields to this struct.
 #[derive(Debug, Clone, PartialEq, Default, vcz_macros::Extension)]
 #[extension(id = 0, bencoded)]
-pub struct Extension {
+pub(crate) struct Extension {
     /// messages (dictionary of supported extensions)
     pub m: M,
 

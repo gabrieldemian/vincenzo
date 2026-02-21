@@ -33,6 +33,7 @@ enum SearchStatus {
 pub struct TorrentList<'a> {
     active_torrent: Option<InfoHash>,
     textarea: Option<VimInput<'a>>,
+    delete_popup: Option<VimInput<'a>>,
     search: String,
     search_status: SearchStatus,
     pub scroll_state: ScrollbarState,
@@ -55,6 +56,7 @@ impl<'a> TorrentList<'a> {
             scroll_state: ScrollbarState::default(),
             scroll: 0,
             textarea: None,
+            delete_popup: None,
             active_torrent: None,
             torrent_infos: Vec::new(),
             rendered_torrent_infos: Vec::new(),

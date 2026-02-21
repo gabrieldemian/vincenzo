@@ -57,7 +57,7 @@ impl App {
         config: Arc<ResolvedConfig>,
         tx: UnboundedSender<Action>,
     ) -> Self {
-        let page = Box::new(Empty::new(tx.clone()));
+        let page = Box::new(Empty::new(tx.clone(), config.clone()));
         let menu = Menu::new(tx.clone());
         App {
             state: State::new(config),
@@ -120,7 +120,10 @@ impl App {
                 match action {
                     Action::ChangePage(page) => match page {
                         action::Page::Empty => {
-                            let page = Empty::new(tx.clone());
+                            let page = Empty::new(
+                                tx.clone(),
+                                self.state.config.clone(),
+                            );
                             self.page = Box::new(page);
                         }
                         action::Page::Info => {

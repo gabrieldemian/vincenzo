@@ -1,3 +1,5 @@
+#![allow(unused, dead_code)]
+
 mod codec;
 
 // re-exports
@@ -16,7 +18,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
     PartialEq, Debug, Serialize, Deserialize, Archive, Clone, Copy, IntEnum,
 )]
 #[rkyv(compare(PartialEq), derive(Debug))]
-pub enum HolepunchMsgType {
+pub(crate) enum HolepunchMsgType {
     /// Send connect messages to both the initiating peer and target peer
     Rendezvous = 0,
 
@@ -40,7 +42,7 @@ pub enum HolepunchMsgType {
     IntEnum,
 )]
 #[rkyv(compare(PartialEq), derive(Debug))]
-pub enum HolepunchErrorCodes {
+pub(crate) enum HolepunchErrorCodes {
     /// No error
     #[default]
     NoError = 0,
@@ -63,7 +65,7 @@ pub enum HolepunchErrorCodes {
     PartialEq, Debug, Serialize, Deserialize, Archive, Clone, Copy, IntEnum,
 )]
 #[rkyv(compare(PartialEq), derive(Debug))]
-pub enum HolepunchAddrType {
+pub(crate) enum HolepunchAddrType {
     Ipv4 = 0,
     Ipv6 = 1,
 }
@@ -71,7 +73,7 @@ pub enum HolepunchAddrType {
 #[repr(u8)]
 #[derive(PartialEq, Debug, Serialize, Deserialize, Archive, Clone, Copy)]
 #[rkyv(compare(PartialEq), derive(Debug))]
-pub enum HolepunchAddr {
+pub(crate) enum HolepunchAddr {
     Ipv4(u32),
     Ipv6(u128),
 }
@@ -100,7 +102,7 @@ impl From<SocketAddr> for HolepunchAddr {
 
 #[derive(PartialEq, Debug, Serialize, Deserialize, Archive, Clone)]
 #[rkyv(compare(PartialEq), derive(Debug))]
-pub struct Holepunch {
+pub(crate) struct Holepunch {
     pub msg_type: HolepunchMsgType, // 1 byte
 
     pub addr_type: HolepunchAddrType, // 1 byte

@@ -131,6 +131,7 @@ impl Config {
     }
 
     /// Get the workspace root path
+    #[cfg(feature = "debug")]
     fn find_workspace_root() -> Option<PathBuf> {
         let mut cur = std::env::current_dir().ok()?;
         // cur.parent()?.parent().map(|v| v.into())

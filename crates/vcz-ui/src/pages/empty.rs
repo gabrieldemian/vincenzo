@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::{
     Input, Key, PALETTE,
     action::{Action, Page},
@@ -11,7 +13,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Padding, Paragraph},
 };
 use tokio::sync::mpsc;
-use vcz_lib::VERSION;
+use vcz_lib::{VERSION, config::ResolvedConfig};
 
 pub struct Empty<'a> {
     pub tx: mpsc::UnboundedSender<Action>,
@@ -20,7 +22,14 @@ pub struct Empty<'a> {
 }
 
 impl<'a> Empty<'a> {
-    pub fn new(tx: mpsc::UnboundedSender<Action>) -> Self {
+    pub fn new(
+        tx: mpsc::UnboundedSender<Action>,
+        config: Arc<ResolvedConfig>,
+    ) -> Self {
+        let mut meta_dir = config.metadata_dir.clone();
+        meta_dir.push("queue");
+        let meta_dir = meta_dir.to_string_lossy().to_string();
+
         let lines: [Line; _] = [
             "██╗   ██╗ ██████╗███████╗".into(),
             "██║   ██║██╔════╝╚══███╔╝".into(),
@@ -35,6 +44,11 @@ impl<'a> Empty<'a> {
                 Span::raw("Press "),
                 Span::raw("[t] ").style(PALETTE.purple),
                 Span::raw("to add a new magnet torrent."),
+            ]
+            .into(),
+            vec![
+                Span::raw("Or add .torrent files -> "),
+                Span::raw(meta_dir).style(PALETTE.purple),
             ]
             .into(),
             "".into(),
