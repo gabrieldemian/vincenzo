@@ -199,6 +199,9 @@ pub struct PeerCtx {
 /// message.
 #[derive(Debug)]
 pub enum PeerMsg {
+    /// Make this peer enter endgame mode.
+    Endgame,
+
     /// Tell this peer that we choked them
     Choke,
 

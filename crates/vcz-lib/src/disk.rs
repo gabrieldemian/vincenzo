@@ -12,7 +12,7 @@ use crate::{
     metainfo::{Info, MetaInfo},
     peer::{PeerCtx, PeerId},
     torrent::{
-        InfoHash, PeerBrMsg, Torrent, TorrentCtx, TorrentMsg, TorrentStatus,
+        InfoHash, Torrent, TorrentCtx, TorrentMsg, TorrentStatus,
         TorrentStatusErrorCode,
     },
 };
@@ -27,7 +27,7 @@ use rayon::iter::{
 };
 use sha1::{Digest, Sha1};
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     io::ErrorKind,
     net::SocketAddr,
     num::NonZeroUsize,
@@ -171,6 +171,8 @@ pub struct Disk {
     pub torrent_ctxs: HashMap<InfoHash, Arc<TorrentCtx>>,
     pub(crate) piece_strategy: HashMap<InfoHash, PieceStrategy>,
 
+    pub(crate) downloaded_blocks: HashMap<InfoHash, HashSet<BlockInfo>>,
+
     /// How many pieces were downloaded.
     pub(crate) downloaded_pieces_len: HashMap<InfoHash, u64>,
     pub(crate) endgame: HashMap<InfoHash, bool>,
@@ -231,6 +233,7 @@ impl Disk {
                 NonZeroUsize::new(FILE_CACHE_CAPACITY).unwrap(),
             ),
             torrent_cache: HashMap::new(),
+            downloaded_blocks: HashMap::new(),
             metadata_pieces: HashMap::new(),
             block_cache: HashMap::new(),
             peer_ctxs: Vec::new(),
@@ -270,18 +273,20 @@ impl Disk {
                         }
                         DiskMsg::DeleteTorrent(info_hash) => {
                             let path = self.get_metainfo_path(&info_hash)?;
-                            tokio::fs::remove_file(path).await?;
-                            self.torrent_cache.remove_entry(&info_hash);
-                            self.block_cache.remove_entry(&info_hash);
-                            self.torrent_ctxs.remove_entry(&info_hash);
-                            self.downloaded_pieces_len.remove_entry(&info_hash);
-                            self.endgame.remove_entry(&info_hash);
-                            self.piece_strategy.remove_entry(&info_hash);
-                            self.block_infos.remove_entry(&info_hash);
-                            self.metadata_pieces.remove_entry(&info_hash);
-                            self.torrent_info.remove_entry(&info_hash);
-                            self.dirty_files.remove_entry(&info_hash);
-                            self.peer_ctxs.retain(|v| v.torrent_ctx.info_hash != info_hash);
+                            info!("deleting {path:?}");
+                            // tokio::fs::remove_file(path).await?;
+                            // self.torrent_cache.remove_entry(&info_hash);
+                            // self.block_cache.remove_entry(&info_hash);
+                            // self.torrent_ctxs.remove_entry(&info_hash);
+                            // self.downloaded_pieces_len.remove_entry(&info_hash);
+                            // self.endgame.remove_entry(&info_hash);
+                            // self.downloaded_blocks.remove_entry(&info_hash);
+                            // self.piece_strategy.remove_entry(&info_hash);
+                            // self.block_infos.remove_entry(&info_hash);
+                            // self.metadata_pieces.remove_entry(&info_hash);
+                            // self.torrent_info.remove_entry(&info_hash);
+                            // self.dirty_files.remove_entry(&info_hash);
+                            // self.peer_ctxs.retain(|v| v.torrent_ctx.info_hash != info_hash);
                         }
                         DiskMsg::FinishedDownload(info_hash) => {
                             self.block_cache.remove_entry(&info_hash);
@@ -621,6 +626,11 @@ impl Disk {
         let block_infos =
             self.block_infos.entry(info_hash.clone()).or_default();
 
+        self.downloaded_blocks.insert(
+            info_hash.clone(),
+            HashSet::with_capacity(block_infos.len()),
+        );
+
         // create block infos for missing pieces
         for p in downloaded_pieces.iter_zeros() {
             block_infos.extend(info.get_block_infos_of_piece_self(p));
@@ -852,7 +862,7 @@ impl Disk {
         if block_infos.is_empty()
             && peer_ctx.block_infos_len.load(Ordering::Relaxed) == 0
         {
-            let _ = self.enter_endgame(&info_hash);
+            let _ = self.enter_endgame(&peer_ctx.torrent_ctx).await;
         }
 
         Ok(result)
@@ -878,10 +888,13 @@ impl Disk {
         Ok(v)
     }
 
-    fn enter_endgame(&mut self, info_hash: &InfoHash) -> Result<(), Error> {
+    async fn enter_endgame(
+        &mut self,
+        torrent_ctx: &Arc<TorrentCtx>,
+    ) -> Result<(), Error> {
         let in_endgame = self
             .endgame
-            .get_mut(info_hash)
+            .get_mut(&torrent_ctx.info_hash)
             .ok_or(Error::TorrentDoesNotExist)?;
 
         if *in_endgame {
@@ -890,12 +903,7 @@ impl Disk {
 
         *in_endgame = true;
 
-        let torrent_ctx = self
-            .torrent_ctxs
-            .get(info_hash)
-            .ok_or(Error::TorrentDoesNotExist)?;
-
-        let _ = torrent_ctx.btx.send(PeerBrMsg::Endgame);
+        let _ = torrent_ctx.tx.send(TorrentMsg::Endgame).await;
         info!("endgame ʕノ•ᴥ•ʔノ ︵ ┻━┻");
 
         Ok(())
@@ -1315,8 +1323,8 @@ impl Disk {
         self.torrent_info.insert(info_hash.clone(), info.clone());
 
         // if the client already has a .torrent file, it's a duplicate.
-        let is_complete = self.is_torrent_complete(&info.name);
-        let is_incomplete = self.is_torrent_incomplete(&info.name);
+        let is_complete = self.is_torrent_complete(&info.info_hash);
+        let is_incomplete = self.is_torrent_incomplete(&info.info_hash);
 
         if is_complete || is_incomplete {
             return Err(Error::NoDuplicateTorrent);
@@ -1361,15 +1369,17 @@ impl Disk {
         Ok(())
     }
 
-    fn is_torrent_complete(&self, name: &str) -> bool {
+    fn is_torrent_complete(&self, hash: &InfoHash) -> bool {
         let mut path = self.complete_torrents_path();
-        path.push(name);
+        path.push(hash.to_string());
+        path.set_extension("torrent");
         path.exists()
     }
 
-    fn is_torrent_incomplete(&self, name: &str) -> bool {
+    fn is_torrent_incomplete(&self, hash: &InfoHash) -> bool {
         let mut path = self.incomplete_torrents_path();
-        path.push(name);
+        path.push(hash.to_string());
+        path.set_extension("torrent");
         path.exists()
     }
 
@@ -1525,18 +1535,15 @@ impl Disk {
         &self,
         info_hash: &InfoHash,
     ) -> Result<PathBuf, Error> {
-        let info = self
-            .torrent_info
-            .get(info_hash)
-            .ok_or(Error::TorrentDoesNotExist)?;
-
-        if self.is_torrent_complete(&info.name) {
+        if self.is_torrent_complete(info_hash) {
             let mut path = self.complete_torrents_path();
-            path.push(&info.name);
+            path.push(info_hash.to_string());
+            path.set_extension("torrent");
             return Ok(path);
-        } else if self.is_torrent_incomplete(&info.name) {
+        } else if self.is_torrent_incomplete(info_hash) {
             let mut path = self.incomplete_torrents_path();
-            path.push(&info.name);
+            path.push(info_hash.to_string());
+            path.set_extension("torrent");
             return Ok(path);
         }
         Err(Error::TorrentDoesNotExist)

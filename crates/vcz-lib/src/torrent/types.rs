@@ -25,16 +25,6 @@ use tokio::{
 /// Broadcasted messages for all peers in a torrent.
 #[derive(Debug, Clone)]
 pub enum PeerBrMsg {
-    /// Start endgame mode.
-    /// Block infos of all peers will be freed to the disk to be requested
-    /// again, but this time they will be cloned instead of removed, and
-    /// Disk won't send duplicates to each peer.
-    Endgame,
-
-    /// Send request blocks to all peers.
-    // peerId = from peer
-    Request(PeerId, Vec<BlockInfo>, Vec<BlockInfo>),
-
     /// The download finished
     Seedonly,
     HavePiece(usize),
@@ -47,6 +37,9 @@ pub enum PeerBrMsg {
 /// Messages used to control the local peer or the state of the torrent.
 #[derive(Debug)]
 pub enum TorrentMsg {
+    Endgame,
+    Request(PeerId, Vec<BlockInfo>, Vec<BlockInfo>),
+
     /// Make the torrent run the unchoke algorithm.
     UnchokeAlgorithm,
 

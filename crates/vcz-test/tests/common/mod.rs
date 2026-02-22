@@ -74,8 +74,6 @@ fn cleanup() {
     let mut config = Config::load_test();
     config.download_dir = "/tmp/fakedownload".into();
     config.metadata_dir = "/tmp/fakemetadata".into();
-    let _ = std::fs::remove_dir_all("../../../../test-files/incomplete");
-    let _ = std::fs::remove_dir_all("../../../../test-files/queue");
     let _ = std::fs::remove_dir_all(&config.download_dir);
     let _ = std::fs::remove_dir_all(&config.metadata_dir);
 }

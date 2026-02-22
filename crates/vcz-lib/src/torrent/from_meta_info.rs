@@ -45,6 +45,25 @@ impl Torrent<Connected, FromMetaInfo> {
             select! {
                 Some(msg) = self.rx.recv() => {
                     match msg {
+                        TorrentMsg::Request(sender, reqs, queue) => {
+                            for p in &self.state.connected_peers {
+                                if p.id == sender { continue };
+                                let tx = p.tx.clone();
+                                let mut blocks = reqs.clone();
+                                blocks.extend(queue.clone());
+                                tokio::spawn(async move {
+                                    let _ = tx.send(PeerMsg::Blocks(blocks)).await;
+                                });
+                            }
+                        }
+                        TorrentMsg::Endgame => {
+                            for p in &self.state.connected_peers {
+                                let tx = p.tx.clone();
+                                tokio::spawn(async move {
+                                    let _ = tx.send(PeerMsg::Endgame).await;
+                                });
+                            }
+                        }
                         TorrentMsg::Cancel(sender, block_info) => {
                             for p in &self.state.connected_peers {
                                 if p.id == sender { continue };

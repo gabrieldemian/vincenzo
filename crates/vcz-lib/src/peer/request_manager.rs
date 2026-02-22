@@ -71,14 +71,10 @@ impl<T: Requestable> Default for RequestManager<T> {
 impl<T: Requestable> RequestManager<T> {
     pub(crate) fn get_timeout(&self) -> Duration {
         if self.avg_recv_time == Duration::ZERO {
-            return Duration::from_secs(3);
+            return Duration::from_secs(5);
         }
-
         let timeout = self.avg_recv_time.mul_f32(self.timeout_mult);
-
-        // if the timeout is higher than the maximum (10 seconds)
-        // what should the client do? choke the peer?
-        timeout.clamp(Duration::from_millis(100), Duration::from_secs(10))
+        timeout.clamp(Duration::from_millis(3_000), Duration::from_secs(30))
     }
 
     fn update_response_time(&mut self, response_time: Duration) {
@@ -134,8 +130,14 @@ impl<T: Requestable> RequestManager<T> {
     pub(crate) fn drain(&mut self) -> Vec<T> {
         let mut r = std::mem::take(&mut self.requests);
         let q = std::mem::take(&mut self.queue);
+        let fulfilled_index = std::mem::take(&mut self.fulfilled_index);
         r.extend(q);
-        self.clear();
+        *self = Self {
+            limit: self.limit,
+            timeout_mult: self.timeout_mult,
+            fulfilled_index,
+            ..Default::default()
+        };
         r
     }
 
@@ -304,7 +306,8 @@ impl<T: Requestable> RequestManager<T> {
 
     #[inline]
     pub(crate) fn set_limit(&mut self, limit: usize) {
-        self.limit = limit.max(DEFAULT_REQUEST_QUEUE_LEN as usize);
+        // self.limit = limit.max(DEFAULT_REQUEST_QUEUE_LEN as usize);
+        self.limit = limit;
     }
 
     /// How many requests the client can make right now.
@@ -697,6 +700,63 @@ mod tests {
         manager.fulfill_request(&block0);
         manager.fulfill_request(&block1);
         assert!(!manager.is_empty());
+    }
+
+    #[test]
+    fn req() {
+        let mut manager = RequestManager::new();
+        manager.set_limit(4);
+
+        let blocks = [
+            BlockInfo::new(0, 0, 16384),
+            BlockInfo::new(1, 16384, 16384),
+            BlockInfo::new(2, 16384, 16384),
+            BlockInfo::new(3, 16384, 16384),
+        ];
+
+        assert_eq!(manager.limit, 4);
+        assert_eq!(manager.len(), 0);
+        assert!(manager.is_empty());
+        assert!(!manager.is_full());
+
+        let qnt = manager.get_available_request_len();
+        assert!(qnt == manager.limit);
+        let qnt = qnt.min(blocks.len());
+        assert!(qnt == blocks.len());
+
+        for block in 0..qnt {
+            let block = &blocks[block];
+            let added = manager.add_request(block.clone());
+            assert!(added);
+            assert!(!manager.was_fulfilled(block));
+            println!("added: {block:?}");
+        }
+
+        assert_eq!(manager.len(), qnt);
+        assert_eq!(manager.fulfilled_index.len(), 0);
+
+        println!("len: {}", manager.len());
+        println!("limit: {}", manager.limit());
+        println!("avail: {}", manager.get_available_request_len());
+
+        let qnt = manager.get_available_request_len();
+        assert!(qnt == 0);
+
+        manager.fulfill_request(&blocks[0]);
+        manager.fulfill_request(&blocks[1]);
+
+        assert_eq!(manager.len(), 2);
+        let qnt = manager.get_available_request_len();
+        assert!(qnt == 2);
+
+        let block = BlockInfo::new(9, 3, 3);
+        let added = manager.add_request(block.clone());
+        assert!(added);
+        assert!(!manager.was_fulfilled(&block));
+        println!("added: {block:?}");
+        assert_eq!(manager.len(), 3);
+        let qnt = manager.get_available_request_len();
+        assert!(qnt == 1);
     }
 
     #[test]
