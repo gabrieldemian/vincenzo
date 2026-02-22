@@ -52,8 +52,8 @@ impl<'a> Info<'a> {
             ]
             .into(),
             vec![
-                Span::raw("config dir:").style(PALETTE.primary),
-                format!(" {}", config.config_dir.to_string_lossy()).into(),
+                Span::raw("config file:").style(PALETTE.primary),
+                format!(" {}", config.config_file.to_string_lossy()).into(),
             ]
             .into(),
             vec![

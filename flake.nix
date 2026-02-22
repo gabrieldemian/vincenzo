@@ -24,7 +24,6 @@
       {
         devShells.default = mkShell rec {
           shellHook = ''
-            #   export DOWNLOAD_DIR="$HOME/vincenzo/test-files";
             #   export XDG_DOWNLOAD_DIR="$HOME/downloads";
             #   export XDG_CONFIG_HOME="$HOME/.config";
             #   export XDG_STATE_HOME="$HOME/.local/state";

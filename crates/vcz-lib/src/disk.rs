@@ -1347,14 +1347,16 @@ impl Disk {
         to_dir: MetadataDir,
     ) -> Result<(), Error> {
         let mut from_path = self.get_path_of(from_dir);
+
         from_path.push(info.to_string());
         from_path.set_extension("torrent");
 
         let mut to_path = self.get_path_of(to_dir);
+
         to_path.push(info.to_string());
         to_path.set_extension("torrent");
 
-        tokio::fs::rename(from_path, to_path).await?;
+        let _ = tokio::fs::rename(from_path, to_path).await;
 
         Ok(())
     }

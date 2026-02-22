@@ -6,3 +6,5 @@ flamegraph.svg
 **.DS_Store
 /bin
 rustc-ice*
+test-files/incomplete
+test-files/queue

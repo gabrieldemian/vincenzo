@@ -4,7 +4,7 @@
 //!
 //! CLI Flags --overrides--> File
 
-use crate::{daemon::Daemon, error::Error};
+use crate::{daemon::Daemon, dirs, error::Error};
 use argh::FromArgs;
 use std::{collections::HashMap, net::SocketAddr, path::PathBuf};
 
@@ -93,7 +93,7 @@ impl Config {
             Self::find_workspace_root().unwrap().join("test-files");
 
         ResolvedConfig {
-            config_dir: "".into(),
+            config_file: "".into(),
             download_dir: test_files_dir.clone(),
             metadata_dir: test_files_dir,
             daemon_addr: "0.0.0.0:0".parse().unwrap(),
@@ -112,19 +112,19 @@ impl Config {
     }
 
     // ~/.config/vincenzo
+    #[inline]
     fn get_config_folder() -> PathBuf {
-        let mut config_file = dirs::config_dir().expect(
+        dirs::config_dir().expect(
             "Could not get the user's config directory. Have you configured \
              $XDG_CONFIG_DIR ?",
-        );
-        config_file.push("vincenzo");
-        config_file
+        )
     }
 
+    #[inline]
     pub fn get_log_path() -> PathBuf {
-        let mut p = dirs::data_local_dir().expect(
-            "Could not get the user's local directory. Have you configured \
-             $XDG_DATA_HOME ?",
+        let mut p = dirs::data_dir().expect(
+            "Could not get the user's local data directory. Have you \
+             configured $XDG_DATA_HOME ?",
         );
         p.push("vincenzo");
         p
@@ -198,14 +198,14 @@ impl Config {
 
     fn resolve(self) -> ResolvedConfig {
         let mut metadata_dir = Self::get_config_folder();
-        metadata_dir.push("torrents");
+        metadata_dir.push("vincenzo/torrents");
         let download_dir = dirs::download_dir()
-            .expect("Could not read your download directory.");
+            .expect("Could not find your download directory.");
         let mut config_dir = Self::get_config_folder();
-        config_dir.push("config");
+        config_dir.push("vincenzo/config.toml");
 
         ResolvedConfig {
-            config_dir,
+            config_file: config_dir,
             download_dir: self.download_dir.unwrap_or(download_dir),
             metadata_dir: self.metadata_dir.unwrap_or(metadata_dir),
             daemon_addr: self.daemon_addr.unwrap_or(Daemon::DEFAULT_LISTENER),
@@ -227,7 +227,7 @@ impl Config {
 
     fn from_file() -> Result<Self, Error> {
         let mut config_file = Config::get_config_folder();
-        config_file.push("config.toml");
+        config_file.push("vincenzo/config.toml");
         let content = std::fs::read_to_string(config_file).unwrap();
         Self::from_str(&content)
     }
@@ -335,7 +335,7 @@ impl Config {
 pub struct ResolvedConfig {
     pub download_dir: PathBuf,
     pub metadata_dir: PathBuf,
-    pub config_dir: PathBuf,
+    pub config_file: PathBuf,
     pub daemon_addr: SocketAddr,
     pub local_peer_port: u16,
     pub max_global_peers: u32,

@@ -12,11 +12,11 @@ license = "MIT"
 exclude = ["*.log"]
 
 [features]
+favor-xdg-style = []
 debug = []
+default = ["favor-xdg-style"]
 
 [dependencies]
-dirs = "6.0.0"
-
 int-enum = { workspace = true }
 rkyv = { workspace = true }
 lru = { workspace = true }

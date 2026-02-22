@@ -1,4 +1,3 @@
-#![feature(macro_metavar_expr)]
 #![feature(unwrap_infallible)]
 #![feature(ip_as_octets)]
 #![feature(trait_alias)]
@@ -22,6 +21,7 @@ pub mod config;
 pub mod counter;
 pub mod daemon;
 pub mod daemon_wire;
+pub mod dirs;
 pub mod disk;
 pub mod error;
 pub mod extensions;
