@@ -8,6 +8,7 @@ pub struct AppStyle {
     pub highlight_fg: Style,
 
     pub base: Color,
+    pub gray: Color,
     pub primary: Color,
     pub blue: Color,
     pub green: Color,
@@ -21,6 +22,7 @@ pub struct AppStyle {
 impl Default for AppStyle {
     fn default() -> Self {
         let base_color = Color::Gray;
+        let gray = Color::from_u32(0x00A19795);
         let blue = Color::from_u32(0x0063A7FF);
         let green = Color::from_u32(0x006EEB83);
         let red = Color::from_u32(0x00f86624);
@@ -31,6 +33,7 @@ impl Default for AppStyle {
 
         Self {
             base: base_color,
+            gray,
             primary: purple,
             blue,
             green,

@@ -47,6 +47,8 @@ pub enum Key {
     F(u8),
     /// Backspace key
     Backspace,
+    /// Insert key
+    Insert,
     /// Enter or return key
     Enter,
     /// Left arrow key

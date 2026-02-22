@@ -156,7 +156,7 @@ impl Daemon {
 
         // accept connections from other peers
         Ok(spawn(async move {
-            info!("accepting requests in {local_socket:?}");
+            info!("accepting requests in {local_addr:?}",);
 
             loop {
                 select! {

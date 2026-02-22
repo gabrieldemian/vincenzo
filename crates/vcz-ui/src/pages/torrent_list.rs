@@ -2,7 +2,7 @@ use crate::{
     Input, Key, PALETTE,
     action::Action,
     app, centered_rect,
-    widgets::{NetworkChart, VimInput, validate_magnet},
+    widgets::{ConfirmPopup, NetworkChart, VimInput, validate_magnet},
 };
 use ratatui::{
     style::Styled,
@@ -33,7 +33,7 @@ enum SearchStatus {
 pub struct TorrentList<'a> {
     active_torrent: Option<InfoHash>,
     textarea: Option<VimInput<'a>>,
-    delete_popup: Option<VimInput<'a>>,
+    delete_popup: Option<ConfirmPopup<'a>>,
     search: String,
     search_status: SearchStatus,
     pub scroll_state: ScrollbarState,
@@ -102,24 +102,16 @@ impl<'a> TorrentList<'a> {
 
     fn submit_magnet_link(&mut self, magnet: Magnet) {
         let _ = self.tx.send(Action::NewTorrent(magnet.0));
-        let _ = self.tx.send(Action::Quit);
     }
 
     fn delete_torrent(&mut self) {
-        let Some(active_idx) = self.state.selected() else { return };
+        let Some(_active_idx) = self.state.selected() else { return };
         let Some(active_info_hash) = &self.active_torrent else { return };
 
         let _ = self.tx.send(Action::DeleteTorrent(active_info_hash.clone()));
 
-        self.network_charts.retain(|v| v.info_hash != *active_info_hash);
-        self.torrent_infos.retain(|v| v.info_hash != *active_info_hash);
-
-        if active_idx == 0 {
-            self.state.select(None);
-            self.active_torrent = None;
-        }
-
-        self.previous();
+        self.state.select(None);
+        self.active_torrent = None;
     }
 }
 
@@ -287,7 +279,11 @@ impl<'a> Page for TorrentList<'a> {
             }
         }
 
-        if let Some(textarea) = self.textarea.as_mut() {
+        if let Some(confirm) = self.delete_popup.as_mut() {
+            let area = centered_rect(60, 20, area);
+            f.render_widget(Clear, area);
+            confirm.draw(f, area);
+        } else if let Some(textarea) = self.textarea.as_mut() {
             let area = centered_rect(60, 20, area);
             f.render_widget(Clear, area);
             textarea.draw(f, area);
@@ -295,6 +291,12 @@ impl<'a> Page for TorrentList<'a> {
     }
 
     fn handle_action(&mut self, action: Action, state: &mut app::State) {
+        if let Action::Input(ref input) = action
+            && let Some(confirm) = &mut self.delete_popup
+        {
+            confirm.handle_event(input);
+        }
+
         if let Action::Input(ref input) = action {
             // if textarea is rendered, let it handle the event first.
             if let Some(textarea) = &mut self.textarea
@@ -326,6 +328,21 @@ impl<'a> Page for TorrentList<'a> {
                         (0..torrent_states.len()).collect();
                 }
                 self.torrent_infos = torrent_states;
+            }
+
+            Action::Input(input) if self.delete_popup.is_some() => {
+                match input {
+                    Input { key: Key::Enter, .. } => {
+                        self.delete_torrent();
+                        self.delete_popup = None;
+                        state.should_dim = false;
+                    }
+                    Input { key: Key::Esc, .. } => {
+                        self.delete_popup = None;
+                        state.should_dim = false;
+                    }
+                    _ => {}
+                }
             }
 
             Action::Input(input)
@@ -399,9 +416,6 @@ impl<'a> Page for TorrentList<'a> {
                         unsafe { self.state.selected().unwrap_unchecked() };
                     self.scroll_state = self.scroll_state.position(self.scroll);
                 }
-                Input { key: Key::Char('d'), .. } => {
-                    self.delete_torrent();
-                }
                 Input { key: Key::Char('j'), .. } => {
                     self.next();
                 }
@@ -410,6 +424,21 @@ impl<'a> Page for TorrentList<'a> {
                 }
                 Input { key: Key::Char('n'), .. } => {
                     state.show_network = !state.show_network;
+                }
+                Input { key: Key::Char('d'), .. } => {
+                    let Some(active) = self.state.selected() else {
+                        return;
+                    };
+                    let Some(active) = self.rendered_torrent_infos.get(active)
+                    else {
+                        return;
+                    };
+                    let Some(t) = self.torrent_infos.get(*active) else {
+                        return;
+                    };
+                    let confirm = ConfirmPopup::new(t.name.clone());
+                    state.should_dim = true;
+                    self.delete_popup = Some(confirm);
                 }
                 Input { key: Key::Char('t'), .. } => {
                     let mut textarea = VimInput::default();

@@ -58,7 +58,7 @@ impl Peer<Connected> {
         let mut block_interval = interval(Duration::from_millis(100));
         let mut endgame_interval = interval(Duration::from_millis(200));
         let mut rerequest_block_interval = interval(Duration::from_millis(200));
-        // let mut help_interval = interval(Duration::from_millis(10_000));
+        let mut help_interval = interval(Duration::from_millis(10_000));
 
         // send interested or uninterested.
         // algorithm:
@@ -86,14 +86,14 @@ impl Peer<Connected> {
                     self.request_metadata().await?;
                     self.rerequest_metadata().await?;
                 }
-                // _ = help_interval.tick(), if self.can_rerequest() => {
-                //     let len = self.state.req_man_block.len();
-                //     tracing::info!("i: {len} eq: {} u: {}",
-                //         self.state.endgame_queue.len(),
-                //         self.state.no_more_unique_reqs,
-                //         // self.state.req_man_block.queue_len(),
-                //     );
-                // }
+                _ = help_interval.tick(), if self.can_rerequest() => {
+                    let len = self.state.req_man_block.len();
+                    tracing::info!("i: {len} eq: {} u: {}",
+                        self.state.endgame_queue.len(),
+                        self.state.no_more_unique_reqs,
+                        // self.state.req_man_block.queue_len(),
+                    );
+                }
                 _ = block_interval.tick(), if self.can_request() => {
                     // some intervals are only ran in production (not debug)
                     // because I want to run this deterministically
