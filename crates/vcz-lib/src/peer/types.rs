@@ -164,7 +164,7 @@ impl TryFrom<Vec<u8>> for PeerId {
 /// Ctx that is shared with Torrent and Disk;
 #[derive(Debug)]
 pub struct PeerCtx {
-    /// The last time this peer stole.
+    /// The last time this peer got stolen.
     pub steal_mutex: Mutex<Instant>,
     pub is_stealing: AtomicBool,
     pub tx: mpsc::Sender<PeerMsg>,
@@ -217,7 +217,7 @@ pub enum PeerMsg {
     /// Send block infos to this peer.
     Blocks(Vec<BlockInfo>),
 
-    StealBlockInfos(usize, oneshot::Sender<Vec<BlockInfo>>),
+    Steal(usize, oneshot::Sender<Vec<BlockInfo>>),
 
     /// Force the peer to run the interested algorithm immediately.
     InterestedAlgorithm,
@@ -562,6 +562,7 @@ impl peer::Peer<Idle> {
 pub struct Connected {
     pub no_more_unique_reqs: bool,
     pub endgame_queue: Vec<BlockInfo>,
+    /// Last time this peer stole from someone
     pub last_stolen: Option<tokio::time::Instant>,
     pub(crate) stream: SplitStream<Framed<TcpStream, CoreCodec>>,
     pub(crate) sink: SplitSink<Framed<TcpStream, CoreCodec>, Core>,

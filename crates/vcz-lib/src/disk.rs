@@ -903,7 +903,7 @@ impl Disk {
 
         *in_endgame = true;
 
-        let _ = torrent_ctx.tx.send(TorrentMsg::Endgame).await;
+        // let _ = torrent_ctx.tx.send(TorrentMsg::Endgame).await;
         info!("endgame ʕノ•ᴥ•ʔノ ︵ ┻━┻");
 
         Ok(())

@@ -18,7 +18,7 @@ use std::{
     sync::{Arc, atomic::Ordering},
 };
 use tokio::{
-    sync::{broadcast, oneshot},
+    sync::{Mutex, broadcast, oneshot},
     time::Interval,
 };
 
@@ -419,6 +419,9 @@ pub(crate) struct Connected {
     /// Stats of the current Torrent, returned from tracker on announce
     /// requests.
     pub stats: Stats,
+
+    /// Lock the torrent so only one peer can do something at a time.
+    pub lock: Mutex<()>,
 
     pub counter: Counter,
 
