@@ -55,7 +55,8 @@ use tracing::debug;
 #[rkyv(compare(PartialEq, PartialOrd), derive(Debug))]
 pub struct PeerId(pub [u8; 20]);
 
-pub(crate) static STEAL_COOLDOWN: Duration = Duration::from_secs(3);
+pub(crate) const STEAL_COOLDOWN: Duration = Duration::from_millis(200);
+pub(crate) const STOLEN_COOLDOWN: Duration = Duration::from_secs(3);
 
 /// The minimum queue len for inflight block infos.
 // Looking at peers from other clients, this is the lowest value that I have
@@ -214,10 +215,15 @@ pub enum PeerMsg {
     /// Tell this peer that we are not interested,
     NotInterested,
 
-    /// Send block infos to this peer.
+    /// Send block infos to this peer in endgame mode.
     Blocks(Vec<BlockInfo>),
 
+    /// Send stolen blocks to thief peer.
+    BlocksStolen(Vec<BlockInfo>),
+
     Steal(usize, oneshot::Sender<Vec<BlockInfo>>),
+
+    Clone(usize, oneshot::Sender<Vec<BlockInfo>>),
 
     /// Force the peer to run the interested algorithm immediately.
     InterestedAlgorithm,
@@ -337,7 +343,6 @@ impl peer::Peer<Idle> {
         let mut peer = peer::Peer {
             state_log: StateLog::default(),
             state: Connected {
-                no_more_unique_reqs: false,
                 last_stolen: None,
                 free_tx: daemon_ctx.free_tx.clone(),
                 is_paused: false,
@@ -346,9 +351,6 @@ impl peer::Peer<Idle> {
                 extension: None,
                 sink,
                 stream,
-                endgame_queue: Vec::with_capacity(
-                    DEFAULT_REQUEST_QUEUE_LEN as usize,
-                ),
                 incoming_requests: Vec::with_capacity(
                     DEFAULT_REQUEST_QUEUE_LEN as usize,
                 ),
@@ -488,7 +490,6 @@ impl peer::Peer<Idle> {
         let mut peer = peer::Peer {
             state_log: StateLog::default(),
             state: Connected {
-                no_more_unique_reqs: false,
                 last_stolen: None,
                 free_tx: daemon_ctx.free_tx.clone(),
                 is_paused: false,
@@ -497,9 +498,6 @@ impl peer::Peer<Idle> {
                 extension: None,
                 sink,
                 stream,
-                endgame_queue: Vec::with_capacity(
-                    DEFAULT_REQUEST_QUEUE_LEN as usize,
-                ),
                 incoming_requests: Vec::with_capacity(
                     DEFAULT_REQUEST_QUEUE_LEN as usize,
                 ),
@@ -560,8 +558,6 @@ impl peer::Peer<Idle> {
 
 /// Peer is downloading / uploading and working well
 pub struct Connected {
-    pub no_more_unique_reqs: bool,
-    pub endgame_queue: Vec<BlockInfo>,
     /// Last time this peer stole from someone
     pub last_stolen: Option<tokio::time::Instant>,
     pub(crate) stream: SplitStream<Framed<TcpStream, CoreCodec>>,

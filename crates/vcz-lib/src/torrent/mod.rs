@@ -21,7 +21,9 @@ use crate::{
     error::Error,
     extensions::BLOCK_LEN,
     metainfo::MetaInfo,
-    peer::{self, Peer, PeerCtx, PeerId, PeerMsg, STEAL_COOLDOWN},
+    peer::{
+        self, Peer, PeerCtx, PeerId, PeerMsg, STEAL_COOLDOWN, STOLEN_COOLDOWN,
+    },
     torrent,
     tracker::{Tracker, TrackerMsg, TrackerTrait, event::Event},
     utils::to_human_readable,
@@ -36,7 +38,7 @@ use std::{
 use tokio::{
     net::TcpStream,
     select, spawn,
-    sync::{Mutex, broadcast, mpsc, oneshot},
+    sync::{broadcast, mpsc, oneshot},
     time::{Instant, interval, interval_at, timeout},
 };
 use tracing::{debug, info, warn};
@@ -191,7 +193,8 @@ impl<M: TorrentSource> Torrent<Idle, M> {
         Ok(Torrent {
             config: self.config.clone(),
             state: Connected {
-                lock: Mutex::new(()),
+                in_endgame: false,
+                stealing: Arc::new(false.into()),
                 tracker_tx,
                 reconnect_interval,
                 heartbeat_interval,
@@ -581,24 +584,42 @@ impl<M: TorrentSource> Torrent<Connected, M> {
 
     pub(crate) async fn steal_block_infos(
         &mut self,
-        mut qnt: usize,
+        // thief need to steal this much
+        needs: usize,
         thief: Arc<PeerCtx>,
     ) -> Result<(), Error> {
         // prevent peers from calling this fn in parallel.
-        let _ = self.state.lock.lock().await;
+        if self.state.stealing.swap(true, Ordering::Acquire) {
+            return Ok(());
+        }
+
+        let mut qnt = needs;
+
+        let steal_flag = self.state.stealing.clone();
+
+        let mut sorted_peers: Vec<_> = self
+            .state
+            .connected_peers
+            .iter()
+            .map(|p| (p.block_infos_len.load(Ordering::Relaxed), p))
+            .collect();
 
         // sort connected peers by richest (more blocks)
-        self.state.connected_peers.sort_by(|a, b| {
-            b.block_infos_len
-                .load(Ordering::Relaxed)
-                .cmp(&a.block_infos_len.load(Ordering::Relaxed))
-        });
+        sorted_peers.sort_by_key(|b| std::cmp::Reverse(b.0));
 
         let thief_tx = thief.tx.clone();
-        tracing::info!("---thief wants {qnt} {:?}", thief.id);
         let mut r = Vec::with_capacity(qnt);
 
-        for victim in &self.state.connected_peers {
+        for (_, victim) in sorted_peers {
+            // if self.state.in_endgame {
+            //     info!(
+            //         "thief wants {needs}: {} of victim: {} has: {}",
+            //         thief.id,
+            //         victim.id,
+            //         victim.block_infos_len.load(Ordering::Relaxed)
+            //     );
+            // }
+
             // don't steal from yourself
             if victim.id == thief.id {
                 continue;
@@ -609,37 +630,40 @@ impl<M: TorrentSource> Torrent<Connected, M> {
             }
 
             // leave a fellow thief alone.
-            if victim.is_stealing.load(Ordering::Relaxed) {
-                continue;
-            }
+            // if victim.is_stealing.load(Ordering::Relaxed) {
+            //     continue;
+            // }
 
-            let victim_mutex = victim.steal_mutex.lock().await;
-            if victim_mutex.elapsed() < STEAL_COOLDOWN {
-                continue;
+            if !self.state.in_endgame {
+                let victim_mutex = victim.steal_mutex.lock().await;
+                if victim_mutex.elapsed() < STOLEN_COOLDOWN {
+                    continue;
+                }
+                drop(victim_mutex);
             }
-            drop(victim_mutex);
 
             let (otx, orx) = oneshot::channel();
-            if victim.tx.send(PeerMsg::Steal(qnt, otx)).await.is_err() {
-                continue;
+            let msg = if self.state.in_endgame {
+                PeerMsg::Clone(qnt, otx)
+            } else {
+                PeerMsg::Steal(qnt, otx)
             };
-            match timeout(Duration::from_millis(200), orx).await {
+            if victim.tx.send(msg).await.is_err() {
+                continue;
+            }
+
+            match timeout(Duration::from_millis(1000), orx).await {
                 Ok(Ok(infos)) => {
-                    let mut victim_mutex = victim.steal_mutex.lock().await;
-                    *victim_mutex = Instant::now();
-                    drop(victim_mutex);
-                    tracing::info!(
-                        "---stolen {} from {}",
-                        infos.len(),
-                        victim.id
-                    );
+                    if !self.state.in_endgame && !infos.is_empty() {
+                        let mut victim_mutex = victim.steal_mutex.lock().await;
+                        *victim_mutex = Instant::now();
+                    }
                     r.extend(infos);
                     qnt = qnt.saturating_sub(r.len());
-                    if qnt == 0 {
-                        break;
-                    }
                 }
-                Err(_) => warn!("deadlocked"),
+                Err(_) => {
+                    warn!("deadlocked");
+                }
                 _ => {}
             }
         }
@@ -647,11 +671,38 @@ impl<M: TorrentSource> Torrent<Connected, M> {
         let info_hash = self.ctx.info_hash.clone();
         let ftx = self.ctx.free_tx.clone();
 
+        let stolen = r.len();
+        assert!(needs > 0, "trying to steal 0 block infos.");
+
+        if !self.state.in_endgame {
+            // if could only steal 80% of what he wanted
+            let ratio = (stolen * 100) / needs;
+            if ratio < 80 {
+                info!("torrent endgame ʕノ•ᴥ•ʔノ ︵ ┻━┻");
+                self.state.in_endgame = true;
+                for p in &self.state.connected_peers {
+                    let tx = p.tx.clone();
+                    tokio::spawn(async move {
+                        let _ = tx.send(PeerMsg::Endgame).await;
+                    });
+                }
+            }
+        }
+
+        let in_endgame = self.state.in_endgame;
+
         tokio::spawn(async move {
-            if thief_tx.send(PeerMsg::Blocks(r.clone())).await.is_err() {
-                let _ = ftx.send(ReturnToDisk::Block(info_hash, r.clone()));
-                thief.is_stealing.store(false, Ordering::Release);
+            let msg = if in_endgame {
+                PeerMsg::Blocks(r.clone())
+            } else {
+                PeerMsg::BlocksStolen(r.clone())
             };
+            if thief_tx.send(msg).await.is_err() {
+                warn!("o_O failed to send Blocks or BlocksStolen");
+                let _ = ftx.send(ReturnToDisk::Block(info_hash, r));
+            }
+            thief.is_stealing.store(false, Ordering::Release);
+            steal_flag.store(false, Ordering::Release);
         });
 
         Ok(())

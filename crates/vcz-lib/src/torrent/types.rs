@@ -15,10 +15,13 @@ use std::{
     fmt::Display,
     net::{IpAddr, SocketAddr},
     ops::Deref,
-    sync::{Arc, atomic::Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 use tokio::{
-    sync::{Mutex, broadcast, oneshot},
+    sync::{broadcast, oneshot},
     time::Interval,
 };
 
@@ -420,8 +423,10 @@ pub(crate) struct Connected {
     /// requests.
     pub stats: Stats,
 
+    pub in_endgame: bool,
+
     /// Lock the torrent so only one peer can do something at a time.
-    pub lock: Mutex<()>,
+    pub stealing: Arc<AtomicBool>,
 
     pub counter: Counter,
 

@@ -39,3 +39,6 @@ urlencoding = { workspace = true }
 vcz-macros = { workspace = true }
 signal-hook = { workspace = true }
 signal-hook-tokio = { workspace = true }
+
+[dev-dependencies]
+memory-stats = "1.2.0"

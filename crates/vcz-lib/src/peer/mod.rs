@@ -56,9 +56,10 @@ impl Peer<Connected> {
 
         let mut metadata_interval = interval(Duration::from_millis(100));
         let mut block_interval = interval(Duration::from_millis(100));
-        let mut endgame_interval = interval(Duration::from_millis(200));
-        let mut rerequest_block_interval = interval(Duration::from_millis(200));
+        // let mut rerequest_block_interval =
+        // interval(Duration::from_millis(200));
         let mut help_interval = interval(Duration::from_millis(10_000));
+        let mut steal_interval = interval(Duration::from_secs(1));
 
         // send interested or uninterested.
         // algorithm:
@@ -88,10 +89,10 @@ impl Peer<Connected> {
                 }
                 _ = help_interval.tick(), if self.can_rerequest() => {
                     let len = self.state.req_man_block.len();
-                    tracing::info!("i: {len} eq: {} u: {}",
-                        self.state.endgame_queue.len(),
-                        self.state.no_more_unique_reqs,
-                        // self.state.req_man_block.queue_len(),
+                    tracing::info!("i: {len} q: {} s: {} a: {}",
+                        self.state.req_man_block.queue_len(),
+                        self.state.ctx.is_stealing.load(Ordering::Relaxed),
+                        self.state.req_man_block.get_available_request_len(),
                     );
                 }
                 _ = block_interval.tick(), if self.can_request() => {
@@ -101,19 +102,17 @@ impl Peer<Connected> {
                     #[cfg(not(feature = "debug"))]
                     self.request_block_infos().await?;
                 }
-                _ = endgame_interval.tick(),
-                    if self.can_request()
-                        && self.state.in_endgame
-                        && self.state.no_more_unique_reqs =>
-                {
-                    self.request_endgame().await?;
-                }
-                _ = rerequest_block_interval.tick(),
-                    if self.can_rerequest() =>
-                {
-                    // #[cfg(not(feature = "debug"))]
-                    // self.rerequest_blocks().await?;
-                }
+                // _ = steal_interval.tick(),
+                //     if self.can_request()
+                // => {
+                //     self.steal().await?;
+                // }
+                // _ = rerequest_block_interval.tick(),
+                //     if self.can_rerequest() =>
+                // {
+                //     // #[cfg(not(feature = "debug"))]
+                //     self.rerequest_blocks().await?;
+                // }
                 _ = interested_interval.tick(),
                     if !self.state.seed_only && !self.state.is_paused
                 => {
@@ -161,20 +160,14 @@ impl Peer<Connected> {
                             let ctx = self.state.ctx.torrent_ctx.clone();
                             let id = self.state.ctx.id.clone();
                             tokio::spawn(async move {
-                                let _ = ctx.tx.send(
-                                    TorrentMsg::Request(id, reqs, queue)
-                                ).await;
+                                let _ = ctx.tx.send(TorrentMsg::Request(id, reqs, queue)).await;
                             });
                         }
                         PeerMsg::Cancel(block_info) => {
-                            if let Some(pos) = self.state.endgame_queue
-                            .iter().position(|v| *v == block_info) {
-                                self.state.endgame_queue.swap_remove(pos);
-                            }
                             self.state
                                 .ctx
                                 .block_infos_len
-                                .store(self.state.req_man_block.len(), Ordering::Release);
+                                .store(self.state.req_man_block.len_with_queue(), Ordering::Release);
                             self.state.req_man_block.fulfill_request(&block_info);
                         }
                         PeerMsg::InterestedAlgorithm => {
@@ -184,31 +177,51 @@ impl Peer<Connected> {
                             self.request_block_infos().await?;
                         }
                         PeerMsg::Steal(qnt, otx) => {
-                            let infos_len = self.state.req_man_block.len();
+                            let infos_len = self.state.req_man_block.len_with_queue();
                             let qnt = qnt.min(infos_len);
-                            let qnt = if qnt >= infos_len { qnt.div_ceil(2) } else { qnt };
-                            let infos = self.state.req_man_block.steal_qnt(qnt);
+                            let qnt =
+                                if qnt >= infos_len { qnt.div_ceil(2) }
+                                else { qnt };
                             self.state
                                 .ctx
                                 .block_infos_len
-                                .store(self.state.req_man_block.len(), Ordering::Release);
+                                .store(self.state.req_man_block.len_with_queue(), Ordering::Release);
+                            let infos = self.state.req_man_block.steal_qnt(qnt);
                             tokio::spawn(async move {
                                 let _ = otx.send(infos);
                             });
                         }
-                        PeerMsg::Blocks(mut blocks) => {
-                            if self.state.in_endgame {
-                                blocks.shuffle(&mut rand::rng());
-                                self.state.endgame_queue.extend(blocks);
-                                continue;
-                            }
-                            self.state.req_man_block.extend(blocks);
+                        PeerMsg::Clone(qnt, otx) => {
+                            let infos_len = self.state.req_man_block.len_with_queue();
+                            let qnt = qnt.min(infos_len);
                             self.state
                                 .ctx
                                 .block_infos_len
-                                .store(self.state.req_man_block.len(), Ordering::Release);
+                                .store(self.state.req_man_block.len_with_queue(), Ordering::Release);
+                            let infos = self.state.req_man_block.clone_qnt(qnt);
+                            tokio::spawn(async move {
+                                let _ = otx.send(infos);
+                            });
+                        }
+                        PeerMsg::BlocksStolen(blocks) => {
+                            self.state.req_man_block.enqueue(&blocks);
+                            self.state
+                                .ctx
+                                .block_infos_len
+                                .store(self.state.req_man_block.len_with_queue(), Ordering::Release);
+                            tracing::info!("(uwu) {} stole {}", self.state.ctx.id, blocks.len());
                             self.state.ctx.is_stealing.store(false, Ordering::Release);
-                            self.state.last_stolen = Some(Instant::now());
+                        }
+                        PeerMsg::Blocks(mut blocks) => {
+                            // shuffle because these blocks are not unique, sent in endgame mode.
+                            blocks.shuffle(&mut rand::rng());
+                            self.state.req_man_block.enqueue(&blocks);
+                            self.state
+                                .ctx
+                                .block_infos_len
+                                .store(self.state.req_man_block.len_with_queue(), Ordering::Release);
+                            tracing::info!("(uwu) {} copied {}", self.state.ctx.id, blocks.len());
+                            self.state.ctx.is_stealing.store(false, Ordering::Release);
                         }
                         PeerMsg::NotInterested => {
                             debug!("> not_interested");
@@ -240,36 +253,11 @@ impl Peer<Connected> {
         }
     }
 
-    #[inline]
-    pub(crate) async fn request_endgame(&mut self) -> Result<(), Error> {
-        let qnt = self.state.req_man_block.get_available_request_len();
-        let qnt = qnt.min(self.state.endgame_queue.len());
-        let blocks: Vec<BlockInfo> =
-            self.state.endgame_queue.drain(0..qnt).collect();
-        let is_empty = blocks.is_empty();
-
-        for block in blocks {
-            if self.state.req_man_block.add_request(block.clone()) {
-                self.feed(Core::Request(block)).await?;
-            }
-        }
-
-        if !is_empty {
-            self.state.sink.flush().await?;
-        }
-
-        Ok(())
-    }
-
     /// Request block infos from Disk.
     /// Must be used after checking that the Peer is able to send blocks with
     /// [`Self::can_request`].
     #[inline]
     pub(crate) async fn request_block_infos(&mut self) -> Result<(), Error> {
-        if self.state.req_man_block.is_empty() && self.state.in_endgame {
-            self.state.no_more_unique_reqs = true;
-        }
-
         // how many blocks this peer can request
         let qnt = self.state.req_man_block.get_available_request_len();
 
@@ -292,6 +280,8 @@ impl Peer<Connected> {
             })
             .await?;
 
+        let mut should_flush = false;
+
         match timeout(Duration::from_millis(500), orx).await {
             Ok(Ok(Ok(blocks))) => {
                 let len = blocks.len();
@@ -300,35 +290,56 @@ impl Peer<Connected> {
                         self.feed(Core::Request(block)).await?;
                     }
                 }
-                if len == 0 {
-                    self.steal().await?;
-                } else {
-                    self.state
-                        .ctx
-                        .block_infos_len
-                        .fetch_add(len, Ordering::Release);
-                    self.state.sink.flush().await?;
+                if len > 0 {
+                    should_flush |= true;
                 }
             }
             Err(_) => warn!("request deadlocked"),
             _ => {}
         };
 
+        let qnt = self.state.req_man_block.get_available_request_len();
+        let blocks = self.state.req_man_block.drain_qnt_queue(qnt);
+        should_flush |= !blocks.is_empty();
+
+        for block in blocks {
+            if self.state.req_man_block.add_request(block.clone()) {
+                self.feed(Core::Request(block)).await?;
+            }
+        }
+
+        if should_flush {
+            self.state.ctx.block_infos_len.store(
+                self.state.req_man_block.len_with_queue(),
+                Ordering::Release,
+            );
+            if timeout(Duration::from_secs(10), self.state.sink.flush())
+                .await
+                .is_err()
+            {
+                warn!("deadlocked flush");
+            }
+        }
+
+        self.steal()?;
+
         Ok(())
     }
 
-    pub(crate) async fn steal(&mut self) -> Result<(), Error> {
+    /// Try to steal (clone) block infos from other peers.
+    ///
+    /// This happens during endgame mode, as in endgame there are no more block
+    /// infos on Disk, if a new peer joins he wouldn't have a way to get block
+    /// infos.
+    pub(crate) fn steal(&mut self) -> Result<(), Error> {
         // if the peer has no block infos to request
-        let nothing_to_request = self.state.req_man_block.is_empty();
+        let nothing_to_request = self.state.req_man_block.is_empty()
+            && self.state.req_man_block.queue_len() == 0;
 
         // if the torrent is beign downloaded and the peer is out of block infos
         // to request, the peer will request more. This usually happens
         // for fast peers at the end of the download.
         if !nothing_to_request {
-            return Ok(());
-        };
-
-        if self.state.ctx.is_stealing.load(Ordering::Relaxed) {
             return Ok(());
         };
 
@@ -339,15 +350,37 @@ impl Peer<Connected> {
             return Ok(());
         }
 
-        self.state.ctx.is_stealing.store(true, Ordering::Release);
+        if self
+            .state
+            .ctx
+            .is_stealing
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            // already stealing
+            return Ok(());
+        }
+
+        let qnt = self.state.req_man_block.get_available_request_len();
+
+        if qnt == 0 {
+            return Ok(());
+        }
 
         let ctx = self.state.ctx.clone();
         let tx = self.state.ctx.torrent_ctx.tx.clone();
-        let qnt = self.state.req_man_block.get_available_request_len();
+        self.state.last_stolen = Some(Instant::now());
 
-        if tx.send(TorrentMsg::StealBlockInfos(qnt, ctx)).await.is_err() {
-            self.state.ctx.is_stealing.store(false, Ordering::Release);
-        };
+        tokio::spawn(async move {
+            if tx
+                .send(TorrentMsg::StealBlockInfos(qnt, ctx.clone()))
+                .await
+                .is_err()
+            {
+                ctx.is_stealing.store(false, Ordering::Release);
+            };
+        });
+
         Ok(())
     }
 
@@ -503,7 +536,6 @@ impl Peer<Connected> {
 
         self.state.req_man_meta.clear();
         self.state.req_man_block.clear();
-        self.state.endgame_queue.clear();
 
         Ok(())
     }
@@ -560,17 +592,18 @@ impl Peer<Connected> {
         self.state.req_man_block.fulfill_request(&block_info);
 
         // ignore unsolicited / duplicate / cancelled blocks
-        if was_fulfilled {
-            return Ok(());
-        }
+        // endgame this if works, stealing no
+        // if was_fulfilled {
+        //     return Ok(());
+        // }
 
         // `downloaded` in the perspective of the local peer.
         self.state.ctx.counter.record_download(block_info.len as u64);
 
-        self.state
-            .ctx
-            .block_infos_len
-            .store(self.state.req_man_block.len(), Ordering::Release);
+        self.state.ctx.block_infos_len.store(
+            self.state.req_man_block.len_with_queue(),
+            Ordering::Release,
+        );
 
         let torrent_ctx = self.state.ctx.torrent_ctx.clone();
         let id = self.state.ctx.id.clone();
@@ -578,7 +611,7 @@ impl Peer<Connected> {
 
         // if in endgame, send cancels to all other peers
         tokio::spawn(async move {
-            if in_endgame && !was_fulfilled {
+            if in_endgame {
                 let _ = torrent_ctx
                     .tx
                     .send(TorrentMsg::Cancel(id, block_info))

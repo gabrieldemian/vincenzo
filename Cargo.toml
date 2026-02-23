@@ -12,6 +12,12 @@ panic = "immediate-abort"
 rpath = false
 strip = true
 
+[profile.release-heaptrack]
+lto = true
+codegen-units = 1
+inherits = "dev"
+debug = 1
+
 [workspace]
 members = [
   "crates/vcz-daemon",

@@ -859,9 +859,7 @@ impl Disk {
 
         result.extend(block_infos.drain(0..qnt.min(block_infos.len())));
 
-        if block_infos.is_empty()
-            && peer_ctx.block_infos_len.load(Ordering::Relaxed) == 0
-        {
+        if block_infos.is_empty() {
             let _ = self.enter_endgame(&peer_ctx.torrent_ctx).await;
         }
 
@@ -904,7 +902,7 @@ impl Disk {
         *in_endgame = true;
 
         // let _ = torrent_ctx.tx.send(TorrentMsg::Endgame).await;
-        info!("endgame ʕノ•ᴥ•ʔノ ︵ ┻━┻");
+        info!("disk endgame ʕノ•ᴥ•ʔノ ︵ ┻━┻");
 
         Ok(())
     }

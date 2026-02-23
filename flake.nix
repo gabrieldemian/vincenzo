@@ -39,6 +39,7 @@
           buildInputs = [
             (writeShellScriptBin "writedump" "sudo tcpdump -i CloudflareWARP -XX 'tcp and port not https' -w dump.pcap")
             rustup
+            heaptrack
             cargo-bloat
             cargo-outdated
             cargo-features-manager

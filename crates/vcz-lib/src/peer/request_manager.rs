@@ -151,15 +151,14 @@ impl<T: Requestable> RequestManager<T> {
 
     /// Drain `qnt` requests and mark them as fulfilled.
     pub(crate) fn steal_qnt(&mut self, qnt: usize) -> Vec<T> {
-        self.try_move_queue(self.limit);
-        let qnt = qnt.min(self.len());
+        let qnt = qnt.min(self.len_with_queue());
         let mut r = Vec::with_capacity(qnt);
-        for _ in 0..qnt {
-            if let Some(v) = self.pop() {
-                r.push(v);
-            }
+        while let Some(v) = self.pop() {
+            r.push(v);
         }
-        self.try_move_queue(self.limit);
+        let remaining = qnt.saturating_sub(r.len());
+        let from_queue = self.drain_qnt_queue(remaining);
+        r.extend(from_queue);
         r
     }
 
@@ -170,12 +169,6 @@ impl<T: Requestable> RequestManager<T> {
             return Some(v);
         }
         None
-    }
-
-    pub(crate) fn extend(&mut self, blocks: Vec<T>) {
-        for block in blocks {
-            self.add_request(block);
-        }
     }
 
     /// Return true if the item was inserted, false if duplicate.
@@ -233,21 +226,6 @@ impl<T: Requestable> RequestManager<T> {
             self.queue.remove(idx);
         }
 
-        self.try_move_queue(self.limit);
-
-        true
-    }
-
-    pub(crate) fn try_move_queue(&mut self, n: usize) -> bool {
-        let n = n.min(self.queue.len());
-        let n = self.get_available_request_len().min(n);
-        if n == 0 {
-            return false;
-        };
-        for _ in 0..n {
-            let v = self.queue.pop().unwrap();
-            self.add_request(v);
-        }
         true
     }
 
@@ -316,10 +294,25 @@ impl<T: Requestable> RequestManager<T> {
         self.limit.saturating_sub(self.len())
     }
 
+    #[inline]
+    pub(crate) fn drain_qnt_queue(&mut self, qnt: usize) -> Vec<T> {
+        self.queue.drain(0..qnt.min(self.queue.len())).collect()
+    }
+
     /// How many in-flight items there are.
     #[inline]
     pub(crate) fn len(&self) -> usize {
         self.index.len()
+    }
+
+    #[inline]
+    pub(crate) fn len_with_queue(&self) -> usize {
+        self.index.len() + self.queue.len()
+    }
+
+    #[inline]
+    pub(crate) fn queue_len(&self) -> usize {
+        self.queue.len()
     }
 
     #[inline]
@@ -344,6 +337,24 @@ impl<T: Requestable> RequestManager<T> {
         self.requests.to_vec()
     }
 
+    #[inline]
+    pub(crate) fn enqueue(&mut self, reqs: &[T]) {
+        self.queue.extend_from_slice(reqs);
+    }
+
+    #[inline]
+    pub(crate) fn clone_qnt(&mut self, qnt: usize) -> Vec<T> {
+        let mut result = Vec::with_capacity(qnt);
+        let from_requests = self.requests.iter().take(qnt).cloned();
+        result.extend(from_requests);
+        if result.len() < qnt {
+            let remaining = qnt - result.len();
+            let from_queue = self.queue.iter().take(remaining).cloned();
+            result.extend(from_queue);
+        }
+        result
+    }
+
     /// Clone queue by `qnt`.
     #[inline]
     pub(crate) fn clone_queue(&mut self) -> Vec<T> {
@@ -358,8 +369,10 @@ impl<T: Requestable> RequestManager<T> {
 
 #[cfg(test)]
 mod tests {
+    use memory_stats::memory_stats;
+
     use super::*;
-    use crate::extensions::BlockInfo;
+    use crate::{extensions::BlockInfo, utils::to_human_readable};
     use std::time::Duration;
 
     #[test]
@@ -807,5 +820,43 @@ mod tests {
         assert_eq!(manager.len(), 0);
         assert!(manager.is_empty());
         assert!(!manager.is_full());
+    }
+
+    #[test]
+    #[ignore]
+    fn estimate_request_manager_memory() {
+        const N: usize = 91_386;
+
+        let before = memory_stats().expect("failed to get memory stats");
+
+        let mut manager = RequestManager::new();
+
+        for i in 0..N {
+            let block = BlockInfo::new(i, 340, 16384);
+            manager.add_request(block);
+        }
+
+        for i in 0..N {
+            let block = BlockInfo::new(i, 340, 16384);
+            let _ = manager.fulfill_request(&block);
+        }
+
+        let after = memory_stats().expect("failed to get memory stats");
+        let used = after.physical_mem - before.physical_mem;
+
+        println!(
+            "memory for {} blocks: {} bytes",
+            N,
+            to_human_readable(used as f64)
+        );
+        println!(
+            "25 peers endgame memory for {} blocks: {} bytes",
+            N,
+            to_human_readable((used * 25 * 25) as f64)
+        );
+        println!("per block: {} bytes", used / N);
+
+        // keep the manager alive to avoid deallocation before measurement
+        std::mem::forget(manager);
     }
 }
