@@ -63,10 +63,9 @@ pub enum TorrentMsg {
 
     /// Clone block infos to the peer.
     ///
-    /// fast downloaders usually become out of block infos during or close to
-    /// endgame mode. This message is sent by this peer to request more blocks
-    /// from another peer chosen by the torrent.
-    StealBlockInfos(usize, Arc<PeerCtx>),
+    /// In the case where peers already exchanged block infos in the endgame
+    /// mode, and the client connects with another peer.
+    WantBlocks(usize, Arc<PeerCtx>),
 
     /// Sent by the tracker on periodic announces to add more peers to be
     /// connected.

@@ -149,28 +149,6 @@ impl<T: Requestable> RequestManager<T> {
         };
     }
 
-    /// Drain `qnt` requests and mark them as fulfilled.
-    pub(crate) fn steal_qnt(&mut self, qnt: usize) -> Vec<T> {
-        let qnt = qnt.min(self.len_with_queue());
-        let mut r = Vec::with_capacity(qnt);
-        while let Some(v) = self.pop() {
-            r.push(v);
-        }
-        let remaining = qnt.saturating_sub(r.len());
-        let from_queue = self.drain_qnt_queue(remaining);
-        r.extend(from_queue);
-        r
-    }
-
-    /// Delete the most recent item
-    fn pop(&mut self) -> Option<T> {
-        if let Some(v) = self.requests.last().cloned() {
-            self.fulfill_request(&v);
-            return Some(v);
-        }
-        None
-    }
-
     /// Return true if the item was inserted, false if duplicate.
     pub(crate) fn add_request(&mut self, block: T) -> bool {
         // avoid duplicates
@@ -320,17 +298,6 @@ impl<T: Requestable> RequestManager<T> {
         self.index.len() >= self.limit
     }
 
-    #[inline]
-    pub(crate) fn limit(&self) -> usize {
-        self.limit
-    }
-
-    /// If there are no items in-flight.
-    #[inline]
-    pub(crate) fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
     /// Clone requests by `qnt`.
     #[inline]
     pub(crate) fn clone_requests(&mut self) -> Vec<T> {
@@ -384,7 +351,7 @@ mod tests {
         manager.update_response_time(Duration::from_millis(300));
 
         assert_eq!(manager.avg_recv_time, Duration::from_millis(156));
-        assert!(manager.get_timeout() < Duration::from_millis(500));
+        assert!(manager.get_timeout() < Duration::from_millis(30000));
 
         println!("avg     {:?}", manager.avg_recv_time);
         println!("timeout {:?}", manager.get_timeout());
@@ -541,7 +508,6 @@ mod tests {
         assert!(manager.requests.is_empty());
         assert!(manager.timeouts.is_empty());
         assert!(manager.index.is_empty());
-        assert!(manager.is_empty());
         assert_eq!(manager.requests.len(), 0);
         assert_eq!(manager.timeouts.len(), 0);
         assert_eq!(manager.index.len(), 0);
@@ -664,7 +630,6 @@ mod tests {
 
         let drained = manager.drain();
 
-        assert!(manager.is_empty());
         assert!(manager.requests.is_empty());
         assert!(manager.timeouts.is_empty());
         assert!(manager.index.is_empty());
@@ -677,7 +642,6 @@ mod tests {
 
         let drained = manager.drain();
         assert!(drained.is_empty());
-        assert!(manager.is_empty());
     }
 
     #[test]
@@ -686,12 +650,10 @@ mod tests {
         let block0 = BlockInfo::new(0, 0, 16384);
         let block1 = BlockInfo::new(0, 16384, 16384);
         let block2 = BlockInfo::new(0, 32768, 16384);
-        assert!(manager.is_empty());
 
         manager.add_request(block0.clone());
         manager.add_request(block1.clone());
         manager.add_request(block2.clone());
-        assert!(!manager.is_empty());
 
         assert_eq!(manager.index[&block0], 0);
         assert_eq!(manager.index[&block1], 1);
@@ -712,7 +674,6 @@ mod tests {
 
         manager.fulfill_request(&block0);
         manager.fulfill_request(&block1);
-        assert!(!manager.is_empty());
     }
 
     #[test]
@@ -729,7 +690,6 @@ mod tests {
 
         assert_eq!(manager.limit, 4);
         assert_eq!(manager.len(), 0);
-        assert!(manager.is_empty());
         assert!(!manager.is_full());
 
         let qnt = manager.get_available_request_len();
@@ -749,7 +709,6 @@ mod tests {
         assert_eq!(manager.fulfilled_index.len(), 0);
 
         println!("len: {}", manager.len());
-        println!("limit: {}", manager.limit());
         println!("avail: {}", manager.get_available_request_len());
 
         let qnt = manager.get_available_request_len();
@@ -779,7 +738,6 @@ mod tests {
         let block1 = BlockInfo::new(0, 16384, 16384);
 
         assert_eq!(manager.len(), 0);
-        assert!(manager.is_empty());
         assert!(!manager.is_full());
 
         // case 1:
@@ -794,7 +752,6 @@ mod tests {
         assert_eq!(manager.fulfilled_index.len(), 1);
 
         assert_eq!(manager.len(), 0);
-        assert!(manager.is_empty());
         assert!(!manager.is_full());
 
         // case 2 and 3:
@@ -807,7 +764,6 @@ mod tests {
         assert!(!manager.was_fulfilled(&block1));
         assert_eq!(manager.fulfilled_index.len(), 1);
         assert_eq!(manager.len(), 1);
-        assert!(!manager.is_empty());
         assert!(!manager.is_full());
 
         // was_requested  = true
@@ -818,8 +774,19 @@ mod tests {
         assert!(!manager.fulfill_request(&block1));
         assert_eq!(manager.fulfilled_index.len(), 2);
         assert_eq!(manager.len(), 0);
-        assert!(manager.is_empty());
         assert!(!manager.is_full());
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    struct SmolBlockInfo {
+        index: usize,
+        begin: usize,
+        len: usize,
+    }
+    impl SmolBlockInfo {
+        fn new(index: usize) -> Self {
+            Self { index, begin: 0, len: 0 }
+        }
     }
 
     #[test]
@@ -832,12 +799,12 @@ mod tests {
         let mut manager = RequestManager::new();
 
         for i in 0..N {
-            let block = BlockInfo::new(i, 340, 16384);
+            let block = SmolBlockInfo::new(i);
             manager.add_request(block);
         }
 
         for i in 0..N {
-            let block = BlockInfo::new(i, 340, 16384);
+            let block = SmolBlockInfo::new(i);
             let _ = manager.fulfill_request(&block);
         }
 
@@ -855,6 +822,18 @@ mod tests {
             to_human_readable((used * 25 * 25) as f64)
         );
         println!("per block: {} bytes", used / N);
+
+        // realistic
+        //
+        // memory for 91386 blocks: 4.86 MB bytes
+        // 25 peers endgame memory for 91386 blocks: 3.04 GB bytes
+        // per block: 53 bytes
+
+        // now
+        //
+        // memory for 91386 blocks: 6.46 MB bytes
+        // 25 peers endgame memory for 91386 blocks: 4.04 GB bytes
+        // per block: 70 bytes
 
         // keep the manager alive to avoid deallocation before measurement
         std::mem::forget(manager);

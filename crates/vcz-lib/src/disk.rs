@@ -10,7 +10,7 @@ use crate::{
         core::{Block, BlockInfo},
     },
     metainfo::{Info, MetaInfo},
-    peer::{PeerCtx, PeerId},
+    peer::PeerCtx,
     torrent::{
         InfoHash, Torrent, TorrentCtx, TorrentMsg, TorrentStatus,
         TorrentStatusErrorCode,
@@ -18,24 +18,17 @@ use crate::{
 };
 use bendy::decoding::FromBencode;
 use bytes::Bytes;
-use futures::future::join_all;
 use lru::LruCache;
-use memmap2::{Mmap, MmapMut};
+use memmap2::{Mmap, MmapMut, UncheckedAdvice};
 use rand::seq::SliceRandom;
-use rayon::iter::{
-    IntoParallelIterator, IntoParallelRefIterator, ParallelIterator,
-};
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use sha1::{Digest, Sha1};
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, HashMap},
     io::ErrorKind,
-    net::SocketAddr,
     num::NonZeroUsize,
     path::{Path, PathBuf},
-    sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    },
+    sync::{Arc, atomic::Ordering},
     time::Duration,
 };
 use tokio::{
@@ -44,7 +37,7 @@ use tokio::{
     sync::{
         Mutex,
         mpsc::{self, Receiver},
-        oneshot::{self, Sender},
+        oneshot::Sender,
     },
     time::{Instant, interval},
 };
@@ -70,12 +63,6 @@ pub enum DiskMsg {
 
     MetadataSize(InfoHash, usize),
 
-    /// The Peer does not have an ID until the handshake, when that happens,
-    /// this message will be sent immediately to add the peer context.
-    NewPeer(Arc<PeerCtx>),
-
-    DeletePeer(SocketAddr),
-
     DeleteTorrent(InfoHash),
 
     FinishedDownload(InfoHash),
@@ -89,7 +76,7 @@ pub enum DiskMsg {
     /// Write the given block to disk, the Disk struct will get the seeked file
     /// automatically.
     WriteBlock {
-        info_hash: InfoHash,
+        ctx: Arc<TorrentCtx>,
         block: Block,
     },
 
@@ -106,11 +93,6 @@ pub enum DiskMsg {
         info_hash: InfoHash,
         recipient: Sender<Vec<MetadataPiece>>,
         qnt: usize,
-    },
-
-    GetPeerCtx {
-        peer_id: PeerId,
-        recipient: Sender<Option<Arc<PeerCtx>>>,
     },
 
     Quit,
@@ -167,11 +149,8 @@ pub struct Disk {
     pub(crate) daemon_ctx: Arc<DaemonCtx>,
     pub(crate) rx: Receiver<DiskMsg>,
     pub(crate) free_rx: mpsc::UnboundedReceiver<ReturnToDisk>,
-    pub(crate) peer_ctxs: Vec<Arc<PeerCtx>>,
     pub torrent_ctxs: HashMap<InfoHash, Arc<TorrentCtx>>,
     pub(crate) piece_strategy: HashMap<InfoHash, PieceStrategy>,
-
-    pub(crate) downloaded_blocks: HashMap<InfoHash, HashSet<BlockInfo>>,
 
     /// How many pieces were downloaded.
     pub(crate) downloaded_pieces_len: HashMap<InfoHash, u64>,
@@ -190,11 +169,7 @@ pub struct Disk {
     pub(crate) metadata_pieces: HashMap<InfoHash, Vec<MetadataPiece>>,
 
     /// A cache of torrent files with pre-computed lengths.
-    pub(crate) torrent_cache: HashMap<InfoHash, TorrentCache>,
-
-    /// Files that need to be flushed, the bitfield is relative to
-    /// `torrent_cache` files.
-    pub(crate) dirty_files: HashMap<InfoHash, Bitfield>,
+    pub(crate) torrent_cache: HashMap<InfoHash, Arc<TorrentCache>>,
 
     /// A LRU cache of file handles to avoid doing a sys call each time the
     /// disk needs to read or write to a file.
@@ -206,10 +181,10 @@ pub struct Disk {
 }
 
 /// Cache capacity of files.
-static FILE_CACHE_CAPACITY: usize = 512;
+const FILE_CACHE_CAPACITY: usize = 512;
 
 /// For how long a file must be inactive to be deleted from the LRU cache.
-static DURATION_LRU_POP: Duration = Duration::from_millis(10_000);
+const DURATION_LRU_POP: Duration = Duration::from_millis(10_000);
 
 impl Disk {
     pub fn new(
@@ -221,7 +196,6 @@ impl Disk {
     ) -> Self {
         Self {
             config,
-            dirty_files: HashMap::new(),
             daemon_ctx,
             free_rx,
             rx,
@@ -233,10 +207,8 @@ impl Disk {
                 NonZeroUsize::new(FILE_CACHE_CAPACITY).unwrap(),
             ),
             torrent_cache: HashMap::new(),
-            downloaded_blocks: HashMap::new(),
             metadata_pieces: HashMap::new(),
             block_cache: HashMap::new(),
-            peer_ctxs: Vec::new(),
             torrent_ctxs: HashMap::new(),
             downloaded_pieces_len: HashMap::new(),
             endgame: HashMap::new(),
@@ -249,8 +221,6 @@ impl Disk {
 
     #[tracing::instrument(name = "disk", skip_all)]
     pub async fn run(&mut self) -> Result<(), Error> {
-        let mut dirty_count_history = Vec::with_capacity(10);
-        let mut flush_interval = interval(Duration::from_millis(1_000));
         let mut heartbeat_interval = interval(Duration::from_millis(1_000));
         let mut lru_cleanup_interval = interval(Duration::from_millis(11_000));
 
@@ -267,10 +237,6 @@ impl Disk {
             select! {
                 Some(msg) = self.rx.recv() => {
                     match msg {
-                        DiskMsg::GetPeerCtx { peer_id, recipient } => {
-                            let p = self.peer_ctxs.iter().find(|p| p.id == peer_id).cloned();
-                            let _ = recipient.send(p);
-                        }
                         DiskMsg::DeleteTorrent(info_hash) => {
                             let path = self.get_metainfo_path(&info_hash)?;
                             info!("deleting {path:?}");
@@ -296,6 +262,7 @@ impl Disk {
                                 MetadataDir::Incomplete,
                                 MetadataDir::Complete
                             ).await;
+                            self.sync_torrent(&info_hash).await?;
                         }
                         DiskMsg::MetadataSize(info_hash, size) => {
                             if self.metadata_pieces.contains_key(
@@ -314,9 +281,6 @@ impl Disk {
                                 pieces,
                             );
                         }
-                        DiskMsg::DeletePeer(addr) => {
-                            self.delete_peer(addr);
-                        }
                         DiskMsg::AddTorrent(torrent, info) => {
                             let _ = self.add_torrent(torrent, info).await;
                         }
@@ -325,10 +289,10 @@ impl Disk {
 
                             let _ = recipient.send(r);
                         }
-                        DiskMsg::WriteBlock { block, info_hash } => {
-                            let r = self.write_block(&info_hash, block).await;
+                        DiskMsg::WriteBlock { block, ctx } => {
+                            let r = self.write_block(ctx.clone(), block).await;
                             if let Err(e) = &r {
-                                self.handle_torrent_err(&info_hash, e).await;
+                                self.handle_torrent_err(ctx, e).await;
                             }
                         }
                         DiskMsg::RequestBlocks { qnt, recipient, peer_ctx } => {
@@ -343,9 +307,6 @@ impl Disk {
                                 .unwrap_or_default();
 
                             let _ = recipient.send(pieces);
-                        }
-                        DiskMsg::NewPeer(peer) => {
-                            self.new_peer(peer);
                         }
                         DiskMsg::Quit => {
                             debug!("Quit");
@@ -370,35 +331,6 @@ impl Disk {
                     let mut iter = to_retain.into_iter();
                     self.last_accessed.retain(|_, _| iter.next().unwrap());
                 }
-                _ = flush_interval.tick() => {
-                    let total_dirty: usize = self.dirty_files.values()
-                        .map(|bits| bits.count_ones())
-                        .sum();
-
-                    dirty_count_history.push(total_dirty);
-
-                    if dirty_count_history.len() > 10 {
-                        dirty_count_history.swap_remove(0);
-                    }
-
-                    let avg_dirty = dirty_count_history.iter().sum::<usize>()
-                        / dirty_count_history.len().max(1);
-
-                    flush_interval = if avg_dirty > 50 {
-                         // aggressive flushing for high activity
-                        interval(Duration::from_millis(10))
-                    } else if avg_dirty > 10 {
-                        interval(Duration::from_millis(100))
-                    } else if avg_dirty > 0 {
-                        interval(Duration::from_millis(500))
-                    } else {
-                        interval(Duration::from_millis(1000));
-                        continue
-                    };
-
-                    self.flush_dirty_files().await;
-                    self.dirty_files.retain(|_, bits| bits.any());
-                }
                 Some(return_to_disk) = self.free_rx.recv() => {
                     match return_to_disk {
                         ReturnToDisk::Block(info_hash, blocks) => {
@@ -419,20 +351,21 @@ impl Disk {
         }
     }
 
-    async fn handle_torrent_err(&self, info_hash: &InfoHash, err: &Error) {
-        let v = self.torrent_ctxs.get(info_hash).cloned().unwrap();
+    async fn handle_torrent_err(&self, ctx: Arc<TorrentCtx>, err: &Error) {
         if let Error::IO(e) = err {
             match e.kind() {
                 ErrorKind::NotFound => {
-                    let _ =
-                        v.tx.send(TorrentMsg::SetTorrentError(
+                    let _ = ctx
+                        .tx
+                        .send(TorrentMsg::SetTorrentError(
                             TorrentStatusErrorCode::FilesMissing,
                         ))
                         .await;
                 }
                 _ => {
-                    let _ =
-                        v.tx.send(TorrentMsg::SetTorrentError(
+                    let _ = ctx
+                        .tx
+                        .send(TorrentMsg::SetTorrentError(
                             TorrentStatusErrorCode::Unknown,
                         ))
                         .await;
@@ -525,12 +458,12 @@ impl Disk {
         for file_meta in file_metadata {
             let path = file_meta.path.as_ref().to_owned();
             // return error if the file doesn't exist
-            if tokio::fs::metadata(&path).await.is_err() {
+            if let Ok(file) = Self::open_file(path).await {
+                let mmap = unsafe { Mmap::map(&file).unwrap() };
+                mmaps.push((file_meta, Arc::new(mmap)));
+            } else {
                 return Err(mmaps);
             };
-            let file = Self::open_file(path).await.expect("cant preopen");
-            let mmap = unsafe { Mmap::map(&file).unwrap() };
-            mmaps.push((file_meta, Arc::new(mmap)));
         }
 
         Ok(mmaps)
@@ -583,6 +516,12 @@ impl Disk {
 
         // reuse the already open file handles and put in the cache.
         for (f, mmap) in file_handles {
+            unsafe {
+                if let Err(e) = mmap.unchecked_advise(UncheckedAdvice::DontNeed)
+                {
+                    panic!("Failed to advise DontNeed on mmap: {}", e);
+                }
+            }
             self.read_mmap_cache.put(f.path.clone(), mmap);
         }
 
@@ -626,27 +565,12 @@ impl Disk {
         let block_infos =
             self.block_infos.entry(info_hash.clone()).or_default();
 
-        self.downloaded_blocks.insert(
-            info_hash.clone(),
-            HashSet::with_capacity(block_infos.len()),
-        );
-
         // create block infos for missing pieces
         for p in downloaded_pieces.iter_zeros() {
             block_infos.extend(info.get_block_infos_of_piece_self(p));
         }
 
-        info!("generated {} blocks", block_infos.len(),);
-
-        let files_count = self
-            .torrent_cache
-            .get(info_hash)
-            .ok_or(Error::TorrentDoesNotExist)?
-            .file_metadata
-            .len();
-
-        self.dirty_files
-            .insert(info_hash.clone(), Bitfield::from_piece(files_count));
+        info!("generated {} blocks", block_infos.len());
 
         let piece_strategy =
             *self.piece_strategy.entry(info_hash.clone()).or_default();
@@ -682,167 +606,110 @@ impl Disk {
 
         self.torrent_cache.insert(
             info.info_hash.clone(),
-            TorrentCache {
+            Arc::new(TorrentCache {
                 file_metadata,
                 piece_length: info.piece_length,
                 total_size: info.get_torrent_size(),
-            },
+            }),
         );
     }
 
-    /// Add a new peer to `peer_ctxs`.
-    pub fn new_peer(&mut self, peer_ctx: Arc<PeerCtx>) {
-        self.peer_ctxs.push(peer_ctx);
-    }
-
-    /// Add a new peer to `peer_ctxs`.
-    pub fn delete_peer(&mut self, remote_addr: SocketAddr) {
-        self.peer_ctxs.retain(|v| v.remote_addr != remote_addr);
-    }
-
-    /// Change the piece download algorithm to rarest-first.
-    ///
-    /// The rarest-first strategy actually begins in random-first,
-    /// until the first piece is downloaded, after that, it finally
-    /// switches to rarest-first.
-    ///
-    /// The function will get the pieces of all peers, and see
-    /// which pieces are the most rare, and reorder the piece
-    /// vector of Disk, where the most rare are the ones to the right.
-    async fn rarest_first(
-        &mut self,
-        info_hash: &InfoHash,
-    ) -> Result<(), Error> {
-        // get all peers of the given torrent `info_hash`
-        let peer_ctxs: Vec<Arc<PeerCtx>> = self
-            .peer_ctxs
-            .iter()
-            .filter(|&v| v.torrent_ctx.info_hash == *info_hash)
-            .cloned()
-            .collect();
-
-        debug!("calculating score of {:?} peers", peer_ctxs.len());
-
-        if peer_ctxs.is_empty() {
-            return Err(Error::NoPeers);
-        }
-
-        let info = self
-            .torrent_info
-            .get_mut(info_hash)
-            .ok_or(Error::TorrentDoesNotExist)?;
-
-        // vec of pieces scores/occurences, where index = piece.
-        let score: Vec<AtomicUsize> =
-            (0..info.pieces()).map(|_| AtomicUsize::new(0)).collect();
-
-        let receivers: Vec<_> = peer_ctxs
-            .par_iter()
-            .filter_map(|ctx| {
-                let (otx, orx) = oneshot::channel();
-                let send_result = ctx
-                    .torrent_ctx
-                    .tx
-                    .try_send(TorrentMsg::GetPeerBitfield(ctx.id.clone(), otx));
-
-                match send_result {
-                    Ok(()) => Some(orx),
-                    Err(_) => None,
-                }
-            })
-            .collect();
-
-        let results = join_all(receivers).await;
-
-        results.into_par_iter().for_each(|result| {
-            if let Ok(Some(peer_pieces)) = result {
-                for (i, item) in peer_pieces.iter().enumerate() {
-                    if *item && i < score.len() {
-                        score[i].fetch_add(1, Ordering::Relaxed);
-                    }
-                }
-            }
-        });
-
-        // index, score
-        let scored_pieces: Vec<(usize, usize)> = (0..info.pieces())
-            .map(|i| (i, score[i].load(Ordering::Relaxed)))
-            .collect();
-
-        let order_map: HashMap<usize, usize> = scored_pieces
-            .iter()
-            .enumerate()
-            .map(|(i, (piece_idx, _))| (*piece_idx, i))
-            .collect();
-
-        let infos = self
-            .block_infos
-            .get_mut(info_hash)
-            .ok_or(Error::TorrentDoesNotExist)?;
-
-        infos.sort_by_cached_key(|info| {
-            order_map
-                .get(&info.index)
-                .copied()
-                .unwrap_or(usize::MAX)
-                .cmp(&info.begin)
-        });
-
-        let piece_strategy =
-            self.piece_strategy.entry(info_hash.clone()).or_default();
-
-        *piece_strategy = PieceStrategy::Rarest;
-
-        Ok(())
-    }
-
-    fn mark_file_dirty(
-        &mut self,
-        info_hash: &InfoHash,
-        file_index: usize,
-    ) -> Result<(), Error> {
-        let dirty_bits = self
-            .dirty_files
-            .get_mut(info_hash)
-            .ok_or(Error::TorrentDoesNotExist)?;
-        dirty_bits.safe_set(file_index);
-        Ok(())
-    }
-
-    /// Return the file index given it's path on the torrent cache.
-    fn get_file_index(
-        &self,
-        info_hash: &InfoHash,
-        path: &Path,
-    ) -> Option<usize> {
-        self.torrent_cache.get(info_hash).and_then(|cache| {
-            cache.file_metadata.iter().position(|meta| *meta.path == *path)
-        })
-    }
-
-    /// Flush files in `self.dirty_files` to disk.
-    async fn flush_dirty_files(&mut self) {
-        for (info_hash, dirty_bits) in &mut self.dirty_files {
-            // portion of `dirty_bits` succesfully flushed
-            let mut clean_bits = Bitfield::from_piece(dirty_bits.len());
-            let Some(cache) = self.torrent_cache.get(info_hash) else {
-                continue;
-            };
-            for file_index in dirty_bits.iter_ones() {
-                if let Some(file_meta) = cache.file_metadata.get(file_index)
-                    && let Some(mmap) =
-                        self.write_mmap_cache.get(&*file_meta.path)
-                {
-                    let mmap = mmap.lock().await;
-                    // keep it marked as dirty if flush failed
-                    if mmap.flush_async().is_ok() {
-                        clean_bits.set(file_index, true);
-                    }
-                }
-            }
-            *dirty_bits &= !clean_bits;
-        }
-    }
+    // Change the piece download algorithm to rarest-first.
+    //
+    // The rarest-first strategy actually begins in random-first,
+    // until the first piece is downloaded, after that, it finally
+    // switches to rarest-first.
+    //
+    // The function will get the pieces of all peers, and see
+    // which pieces are the most rare, and reorder the piece
+    // vector of Disk, where the most rare are the ones to the right.
+    // async fn rarest_first(
+    //     &mut self,
+    //     info_hash: &InfoHash,
+    // ) -> Result<(), Error> {
+    //     // get all peers of the given torrent `info_hash`
+    //     let peer_ctxs: Vec<Arc<PeerCtx>> = self
+    //         .peer_ctxs
+    //         .iter()
+    //         .filter(|&v| v.torrent_ctx.info_hash == *info_hash)
+    //         .cloned()
+    //         .collect();
+    //
+    //     debug!("calculating score of {:?} peers", peer_ctxs.len());
+    //
+    //     if peer_ctxs.is_empty() {
+    //         return Err(Error::NoPeers);
+    //     }
+    //
+    //     let info = self
+    //         .torrent_info
+    //         .get_mut(info_hash)
+    //         .ok_or(Error::TorrentDoesNotExist)?;
+    //
+    //     // vec of pieces scores/occurences, where index = piece.
+    //     let score: Vec<AtomicUsize> =
+    //         (0..info.pieces()).map(|_| AtomicUsize::new(0)).collect();
+    //
+    //     let receivers: Vec<_> = peer_ctxs
+    //         .par_iter()
+    //         .filter_map(|ctx| {
+    //             let (otx, orx) = oneshot::channel();
+    //             let send_result = ctx
+    //                 .torrent_ctx
+    //                 .tx
+    //                 .try_send(TorrentMsg::GetPeerBitfield(ctx.id.clone(),
+    // otx));
+    //
+    //             match send_result {
+    //                 Ok(()) => Some(orx),
+    //                 Err(_) => None,
+    //             }
+    //         })
+    //         .collect();
+    //
+    //     let results = join_all(receivers).await;
+    //
+    //     results.into_par_iter().for_each(|result| {
+    //         if let Ok(Some(peer_pieces)) = result {
+    //             for (i, item) in peer_pieces.iter().enumerate() {
+    //                 if *item && i < score.len() {
+    //                     score[i].fetch_add(1, Ordering::Relaxed);
+    //                 }
+    //             }
+    //         }
+    //     });
+    //
+    //     // index, score
+    //     let scored_pieces: Vec<(usize, usize)> = (0..info.pieces())
+    //         .map(|i| (i, score[i].load(Ordering::Relaxed)))
+    //         .collect();
+    //
+    //     let order_map: HashMap<usize, usize> = scored_pieces
+    //         .iter()
+    //         .enumerate()
+    //         .map(|(i, (piece_idx, _))| (*piece_idx, i))
+    //         .collect();
+    //
+    //     let infos = self
+    //         .block_infos
+    //         .get_mut(info_hash)
+    //         .ok_or(Error::TorrentDoesNotExist)?;
+    //
+    //     infos.sort_by_cached_key(|info| {
+    //         order_map
+    //             .get(&info.index)
+    //             .copied()
+    //             .unwrap_or(usize::MAX)
+    //             .cmp(&info.begin)
+    //     });
+    //
+    //     let piece_strategy =
+    //         self.piece_strategy.entry(info_hash.clone()).or_default();
+    //
+    //     *piece_strategy = PieceStrategy::Rarest;
+    //
+    //     Ok(())
+    // }
 
     /// Request available block infos following the order of PieceStrategy.
     pub async fn request_blocks(
@@ -859,7 +726,9 @@ impl Disk {
 
         result.extend(block_infos.drain(0..qnt.min(block_infos.len())));
 
-        if block_infos.is_empty() {
+        if block_infos.is_empty()
+            && peer_ctx.block_infos_len.load(Ordering::Relaxed) == 0
+        {
             let _ = self.enter_endgame(&peer_ctx.torrent_ctx).await;
         }
 
@@ -901,7 +770,7 @@ impl Disk {
 
         *in_endgame = true;
 
-        // let _ = torrent_ctx.tx.send(TorrentMsg::Endgame).await;
+        let _ = torrent_ctx.tx.send(TorrentMsg::Endgame).await;
         info!("disk endgame ʕノ•ᴥ•ʔノ ︵ ┻━┻");
 
         Ok(())
@@ -978,7 +847,7 @@ impl Disk {
     /// downloaded the first piece, change the algorithm to rarest-first.
     pub async fn write_block(
         &mut self,
-        info_hash: &InfoHash,
+        torrent_ctx: Arc<TorrentCtx>,
         block: Block,
     ) -> Result<(), Error> {
         // Write the block's data to the correct position in the file
@@ -986,15 +855,9 @@ impl Disk {
         let len = block.block.len();
         let index = block.index;
 
-        let torrent_ctx = self
-            .torrent_ctxs
-            .get(info_hash)
-            .ok_or(Error::TorrentDoesNotExist)?
-            .clone();
-
         let cache = self
             .block_cache
-            .get_mut(info_hash)
+            .get_mut(&torrent_ctx.info_hash)
             .ok_or(Error::TorrentDoesNotExist)?
             .entry(index)
             .or_default();
@@ -1011,13 +874,13 @@ impl Disk {
         // check if piece is fully downloaded
         if self
             .block_cache
-            .get(info_hash)
+            .get(&torrent_ctx.info_hash)
             .ok_or(Error::TorrentDoesNotExist)?
             .get(&index)
             .ok_or(Error::PieceInvalid)?
             .iter()
             .fold(0, |acc, v| acc + v.block.len())
-            < self.piece_size(info_hash, index)?
+            < self.piece_size(&torrent_ctx.info_hash, index)?
         {
             return Ok(());
         }
@@ -1025,10 +888,10 @@ impl Disk {
         // piece IS fully downloaded, verify and write
 
         // if the piece is corrupted, generate block infos
-        if self.validate_piece(info_hash, index).await.is_err() {
+        if self.validate_piece(&torrent_ctx.info_hash, index).await.is_err() {
             let info = self
                 .torrent_cache
-                .get(info_hash)
+                .get(&torrent_ctx.info_hash)
                 .ok_or(Error::TorrentDoesNotExist)?;
 
             let info_blocks = Info::get_block_infos_of_piece(
@@ -1040,7 +903,7 @@ impl Disk {
             warn!("piece {index} is corrupted, generating more block infos",);
 
             self.block_infos
-                .get_mut(info_hash)
+                .get_mut(&torrent_ctx.info_hash)
                 .ok_or(Error::TorrentDoesNotExist)?
                 .extend(info_blocks);
 
@@ -1049,7 +912,7 @@ impl Disk {
 
         let downloaded_pieces_len = self
             .downloaded_pieces_len
-            .get_mut(info_hash)
+            .get_mut(&torrent_ctx.info_hash)
             .ok_or(Error::TorrentDoesNotExist)?;
 
         *downloaded_pieces_len += 1;
@@ -1061,7 +924,7 @@ impl Disk {
         if *downloaded_pieces_len == 1
             && *self
                 .piece_strategy
-                .get(info_hash)
+                .get(&torrent_ctx.info_hash)
                 .ok_or(Error::TorrentDoesNotExist)?
                 == PieceStrategy::Random
         {
@@ -1074,7 +937,7 @@ impl Disk {
         }
 
         // write the piece to disk
-        self.write_piece(info_hash, index).await?;
+        self.write_piece(&torrent_ctx.info_hash, index).await?;
 
         Ok(())
     }
@@ -1185,16 +1048,45 @@ impl Disk {
             let mut ops = ops;
             ops.sort_by_key(|(offset, _)| *offset);
 
+            let offset = ops[0].0;
+            let mut len = 0;
+
             for (file_offset, data_range) in ops {
                 let start = file_offset;
                 let end = start + data_range.len();
+                len += data_range.len();
                 mmap[start..end].copy_from_slice(&piece_buffer[data_range]);
             }
+            // todo: manage DONTNEED
+            unsafe {
+                mmap.unchecked_advise_range(
+                    UncheckedAdvice::DontNeed,
+                    offset,
+                    len,
+                )?;
+            }
+        }
 
-            let _ = self.mark_file_dirty(
-                info_hash,
-                self.get_file_index(info_hash, &path).unwrap(),
-            );
+        Ok(())
+    }
+
+    /// Sync all dirty pages of all files of the given torrent.
+    async fn sync_torrent(&mut self, hash: &InfoHash) -> Result<(), Error> {
+        let cache = self
+            .torrent_cache
+            .get(hash)
+            .ok_or(Error::TorrentDoesNotExist)?
+            .clone();
+
+        for f in &cache.file_metadata {
+            let mmap = self.get_cached_write_mmap(&f.path).await?;
+            let mmap = mmap.lock().await;
+            if let Err(e) = mmap.flush_async() {
+                error!(
+                    "Failed to flush file: {:?} with error: {:?}",
+                    f.path, e
+                );
+            };
         }
 
         Ok(())
@@ -1567,7 +1459,7 @@ impl Disk {
                 infos.sort();
             }
             PieceStrategy::Rarest => {
-                self.rarest_first(info_hash).await?;
+                // self.rarest_first(info_hash).await?;
             }
         }
 

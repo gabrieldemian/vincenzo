@@ -66,8 +66,8 @@ impl Torrent<Connected, FromMagnet> {
                         TorrentMsg::OptUnchokeAlgorithm => {
                             self.optimistic_unchoke().await;
                         }
-                        TorrentMsg::StealBlockInfos(qnt, ctx) => {
-                            let _ = self.steal_block_infos(qnt, ctx).await;
+                        TorrentMsg::WantBlocks(qnt, ctx) => {
+                            let _ = self.peer_want_blocks(qnt, ctx).await;
                         }
                         TorrentMsg::AddIdlePeers(peers) => {
                             self.state.idle_peers.extend(peers);

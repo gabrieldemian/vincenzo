@@ -11,7 +11,7 @@ pub static VERSION_PROT: &[u8; 4] = b"0001";
 
 pub const DAEMON_MSG_BOUND: usize = 128;
 pub const DISK_MSG_BOUND: usize = 512;
-pub const PEER_BR_MSG_BOUND: usize = 512;
+pub const PEER_BR_MSG_BOUND: usize = 1024;
 pub const PEER_MSG_BOUND: usize = 32;
 pub const TORRENT_MSG_BOUND: usize = 256;
 pub const TRACKER_MSG_BOUND: usize = 32;

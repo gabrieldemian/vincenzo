@@ -134,11 +134,11 @@ pub async fn setup_leecher_client() -> Result<(SetupRes, impl FnOnce()), Error>
     // wait for the peers to handshake
     sleep(Duration::from_millis(50)).await;
 
-    let s1ctx = get_peer_ctx(&l1.1, s1.0.clone()).await;
-    let s2ctx = get_peer_ctx(&l1.1, s2.0.clone()).await;
-    let s3ctx = get_peer_ctx(&l1.1, s3.0.clone()).await;
-    let s4ctx = get_peer_ctx(&l1.1, s4.0.clone()).await;
-    let l1ctx = get_peer_ctx(&s1.1, l1.0.clone()).await;
+    let s1ctx = get_peer_ctx(&l1.2, s1.0.clone()).await;
+    let s2ctx = get_peer_ctx(&l1.2, s2.0.clone()).await;
+    let s3ctx = get_peer_ctx(&l1.2, s3.0.clone()).await;
+    let s4ctx = get_peer_ctx(&l1.2, s4.0.clone()).await;
+    let l1ctx = get_peer_ctx(&s1.2, l1.0.clone()).await;
 
     assert_eq!(s1ctx.id, s1.0);
     assert_eq!(s2ctx.id, s2.0);
@@ -180,11 +180,11 @@ pub async fn setup_seeder_client() -> Result<(SetupRes, impl FnOnce()), Error> {
     // wait for the peers to handshake
     sleep(Duration::from_millis(50)).await;
 
-    let l1ctx = get_peer_ctx(&s1.1, l1.0.clone()).await;
-    let l2ctx = get_peer_ctx(&s1.1, l2.0.clone()).await;
-    let l3ctx = get_peer_ctx(&s1.1, l3.0.clone()).await;
-    let l4ctx = get_peer_ctx(&s1.1, l4.0.clone()).await;
-    let s1ctx = get_peer_ctx(&l1.1, s1.0.clone()).await;
+    let l1ctx = get_peer_ctx(&s1.2, l1.0.clone()).await;
+    let l2ctx = get_peer_ctx(&s1.2, l2.0.clone()).await;
+    let l3ctx = get_peer_ctx(&s1.2, l3.0.clone()).await;
+    let l4ctx = get_peer_ctx(&s1.2, l4.0.clone()).await;
+    let s1ctx = get_peer_ctx(&l1.2, s1.0.clone()).await;
 
     assert_eq!(l1ctx.id, l1.0);
     assert_eq!(l2ctx.id, l2.0);
@@ -227,8 +227,8 @@ pub async fn setup_pair() -> Result<
     // wait for the peers to handshake
     sleep(Duration::from_millis(50)).await;
 
-    let sctx = get_peer_ctx(&l.1, s.0.clone()).await;
-    let lctx = get_peer_ctx(&s.1, l.0.clone()).await;
+    let sctx = get_peer_ctx(&l.2, s.0.clone()).await;
+    let lctx = get_peer_ctx(&s.2, l.0.clone()).await;
 
     assert_eq!(sctx.id, s.0);
     assert_eq!(lctx.id, l.0);
@@ -237,10 +237,10 @@ pub async fn setup_pair() -> Result<
 }
 
 async fn get_peer_ctx(
-    tx: &mpsc::Sender<DiskMsg>,
+    tx: &mpsc::Sender<TorrentMsg>,
     peer_id: PeerId,
 ) -> Arc<PeerCtx> {
     let (otx, orx) = oneshot::channel();
-    let _ = tx.send(DiskMsg::GetPeerCtx { peer_id, recipient: otx }).await;
+    let _ = tx.send(TorrentMsg::GetPeer(peer_id, otx)).await;
     orx.await.unwrap().unwrap()
 }

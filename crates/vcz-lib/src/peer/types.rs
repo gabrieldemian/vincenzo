@@ -3,7 +3,7 @@ use crate::{
     bitfield::Reserved,
     counter::Counter,
     daemon::{DaemonCtx, DaemonMsg},
-    disk::{DiskMsg, ReturnToDisk},
+    disk::ReturnToDisk,
     error::Error,
     extensions::{
         Core, CoreCodec, Extension, Handshake, HandshakeCodec, MetadataPiece,
@@ -54,9 +54,6 @@ use tracing::debug;
 )]
 #[rkyv(compare(PartialEq, PartialOrd), derive(Debug))]
 pub struct PeerId(pub [u8; 20]);
-
-pub(crate) const STEAL_COOLDOWN: Duration = Duration::from_millis(200);
-pub(crate) const STOLEN_COOLDOWN: Duration = Duration::from_secs(3);
 
 /// The minimum queue len for inflight block infos.
 // Looking at peers from other clients, this is the lowest value that I have
@@ -167,7 +164,6 @@ impl TryFrom<Vec<u8>> for PeerId {
 pub struct PeerCtx {
     /// The last time this peer got stolen.
     pub steal_mutex: Mutex<Instant>,
-    pub is_stealing: AtomicBool,
     pub tx: mpsc::Sender<PeerMsg>,
     pub torrent_ctx: Arc<TorrentCtx>,
     pub direction: Direction,
@@ -217,11 +213,6 @@ pub enum PeerMsg {
 
     /// Send block infos to this peer in endgame mode.
     Blocks(Vec<BlockInfo>),
-
-    /// Send stolen blocks to thief peer.
-    BlocksStolen(Vec<BlockInfo>),
-
-    Steal(usize, oneshot::Sender<Vec<BlockInfo>>),
 
     Clone(usize, oneshot::Sender<Vec<BlockInfo>>),
 
@@ -320,7 +311,6 @@ impl peer::Peer<Idle> {
 
         let ctx = Arc::new(PeerCtx {
             block_infos_len: 0.into(),
-            is_stealing: false.into(),
             steal_mutex: Mutex::new(Instant::now()),
             torrent_ctx,
             counter: Counter::default(),
@@ -335,15 +325,11 @@ impl peer::Peer<Idle> {
             local_addr: local,
         });
 
-        let _ =
-            ctx.torrent_ctx.disk_tx.send(DiskMsg::NewPeer(ctx.clone())).await;
-
         let (sink, stream) = socket.split();
 
         let mut peer = peer::Peer {
             state_log: StateLog::default(),
             state: Connected {
-                last_stolen: None,
                 free_tx: daemon_ctx.free_tx.clone(),
                 is_paused: false,
                 seed_only: false,
@@ -470,7 +456,6 @@ impl peer::Peer<Idle> {
 
         let ctx = PeerCtx {
             block_infos_len: 0.into(),
-            is_stealing: false.into(),
             steal_mutex: Mutex::new(Instant::now()),
             torrent_ctx,
             counter: Counter::default(),
@@ -490,7 +475,6 @@ impl peer::Peer<Idle> {
         let mut peer = peer::Peer {
             state_log: StateLog::default(),
             state: Connected {
-                last_stolen: None,
                 free_tx: daemon_ctx.free_tx.clone(),
                 is_paused: false,
                 seed_only: false,
@@ -558,8 +542,6 @@ impl peer::Peer<Idle> {
 
 /// Peer is downloading / uploading and working well
 pub struct Connected {
-    /// Last time this peer stole from someone
-    pub last_stolen: Option<tokio::time::Instant>,
     pub(crate) stream: SplitStream<Framed<TcpStream, CoreCodec>>,
     pub(crate) sink: SplitSink<Framed<TcpStream, CoreCodec>, Core>,
     pub reserved: Reserved,
