@@ -1023,47 +1023,38 @@ impl Disk {
     ) -> Result<(), Error> {
         let piece_buffer = self.get_piece_buffer(info_hash, piece)?;
 
-        // calculate write operations
+        // a piece can be overlapped in one or many files,
+        // do one write per file.
         let write_ops =
             self.calculate_write_ops(info_hash, piece, &piece_buffer)?;
 
-        // group writes by file
-        let mut file_ops: HashMap<
-            Arc<Path>,
-            Vec<(usize, std::ops::Range<usize>)>,
-        > = HashMap::with_capacity(write_ops.len());
-
-        for (path, file_offset, data_range) in write_ops {
-            file_ops
-                .entry(path.clone())
-                .or_default()
-                .push((file_offset, data_range));
-        }
-
-        for (path, ops) in file_ops {
+        for (path, start, data_range) in write_ops {
             let mmap_arc = self.get_cached_write_mmap(&path).await?;
             let mut mmap = mmap_arc.lock().await;
 
-            // sort ops by offset for sequential write
-            let mut ops = ops;
-            ops.sort_by_key(|(offset, _)| *offset);
+            let len = data_range.len();
+            let end = start + len;
+            mmap[start..end].copy_from_slice(&piece_buffer[data_range.clone()]);
 
-            let offset = ops[0].0;
-            let mut len = 0;
-
-            for (file_offset, data_range) in ops {
-                let start = file_offset;
-                let end = start + data_range.len();
-                len += data_range.len();
-                mmap[start..end].copy_from_slice(&piece_buffer[data_range]);
-            }
-            // todo: manage DONTNEED
+            // a madvise per piece is probably fine.
+            // piece sizes depend on the size of the torrent,
+            // they are optimized to get close to 3000 pieces.
+            // usually, small torrents < 1.5 KB have between 256kb - 512kb.
+            // medium torrents > 10 GB around 4mb - 32mb.
+            // todo: some OSses might not support Free, maybe consider creating
+            // a "last acessed" range and call dontneed if > 30
+            // seconds or something like that.
             unsafe {
-                mmap.unchecked_advise_range(
-                    UncheckedAdvice::DontNeed,
-                    offset,
+                if let Err(e) = mmap.unchecked_advise_range(
+                    UncheckedAdvice::Free,
+                    start,
                     len,
-                )?;
+                ) {
+                    error!(
+                        "Failed to send free advice to file: {path:?} with \
+                         error: {e:?}"
+                    );
+                };
             }
         }
 
@@ -1421,6 +1412,8 @@ impl Disk {
         Ok(())
     }
 
+    /// Get the full path of a metainfo.
+    #[inline]
     fn get_metainfo_path(
         &self,
         info_hash: &InfoHash,
