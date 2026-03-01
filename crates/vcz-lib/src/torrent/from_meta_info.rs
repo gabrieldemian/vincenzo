@@ -45,14 +45,38 @@ impl Torrent<Connected, FromMetaInfo> {
             select! {
                 Some(msg) = self.rx.recv() => {
                     match msg {
-                        TorrentMsg::Request{peer_ctx, qnt, recipient, to_skip} => {
+                        TorrentMsg::FreePendingBlocks(pieces) => {
+                            let r = &mut self.state.peer_pieces_req;
+                            for p in pieces {
+                                r.safe_set(p, false);
+                            }
+                        }
+                        TorrentMsg::Request{peer_ctx, qnt, recipient} => {
                             let pl = self.source.meta_info.info.piece_length;
                             let total_bytes = qnt * BLOCK_LEN;
                             let pieces_wanted = total_bytes.div_ceil(pl);
-                            let Ok(pieces) = self.get_want_pieces(&peer_ctx.id, pieces_wanted) else { continue };
+
+                            let Ok(pieces) = self.get_want_pieces(&peer_ctx.id, pieces_wanted)
+                            else {
+                                let _ = recipient.send(Ok(vec![]));
+                                continue;
+                            };
                             let disk_tx = self.ctx.disk_tx.clone();
+                            let bitfield = self
+                                .state
+                                .peer_pieces
+                                .get(&peer_ctx.id)
+                                .ok_or(Error::PeerDoesNotExist)?
+                                .clone();
                             spawn(async move {
-                                let _ = disk_tx.send(DiskMsg::RequestBlocks { peer_ctx, qnt, pieces , recipient }).await;
+                                let _ = disk_tx
+                                    .send(DiskMsg::RequestBlocks {
+                                        peer_ctx,
+                                        pieces,
+                                        recipient,
+                                        bitfield,
+                                    })
+                                    .await;
                             });
                         }
                         TorrentMsg::SendToAllPeers(sender, reqs, queue) => {
@@ -144,7 +168,7 @@ impl Torrent<Connected, FromMetaInfo> {
                         }
                         TorrentMsg::SetPeerBitfield(id, bitfield) => {
                             let entry = self.state.peer_pieces.entry(id.clone()).or_default();
-                            *entry = bitfield;
+                            **entry = bitfield;
                             let _ = self.gen_missing_pieces(id);
                         }
                         TorrentMsg::PeerHave(id, piece) => {

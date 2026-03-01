@@ -40,13 +40,12 @@ pub enum PeerBrMsg {
 pub enum TorrentMsg {
     Endgame,
     SendToAllPeers(PeerId, Vec<BlockInfo>, Vec<BlockInfo>),
+    FreePendingBlocks(HashSet<usize>),
 
     /// When a peer wants to request blocks.
     Request {
         peer_ctx: Arc<PeerCtx>,
         qnt: usize,
-        /// Block infos to skip
-        to_skip: usize,
         recipient: oneshot::Sender<Result<Vec<BlockInfo>, crate::Error>>,
     },
 
@@ -117,7 +116,7 @@ pub enum TorrentMsg {
     PeerHasPieceNotInLocal(PeerId, oneshot::Sender<Option<usize>>),
 
     /// Clone the peer's bitfield.
-    GetPeerBitfield(PeerId, oneshot::Sender<Option<Bitfield>>),
+    GetPeerBitfield(PeerId, oneshot::Sender<Option<Box<Bitfield>>>),
 
     /// Set a piece of the peer's bitfield to true
     PeerHave(PeerId, usize),
@@ -381,9 +380,14 @@ pub(crate) struct Connected {
     pub metadata_size: Option<usize>,
 
     /// Bitfield of each peer
-    pub peer_pieces: HashMap<PeerId, Bitfield>,
+    pub peer_pieces: HashMap<PeerId, Box<Bitfield>>,
+
     /// Pieces that the remote peer has and the client doesn't.
     pub peer_pieces_diff: HashMap<PeerId, Bitfield>,
+
+    /// Requested peer pieces
+    pub peer_pieces_req:  Bitfield,
+
     pub counter: Counter,
     pub tracker_tx: broadcast::Sender<TrackerMsg>,
     pub reconnect_interval: Interval,

@@ -195,8 +195,7 @@ impl Peer<Connected> {
                                 .ctx
                                 .block_infos_len
                                 .store(self.state.req_man_block.len_with_queue(), Ordering::Release);
-                            tracing::info!("(uwu) received {}", blocks.len());
-                            // self.state.received_dupes = true;
+                            // tracing::info!("(uwu) received {}", blocks.len());
                         }
                         PeerMsg::NotInterested => {
                             debug!("> not_interested");
@@ -228,6 +227,46 @@ impl Peer<Connected> {
         }
     }
 
+    // Want blocks from other peers.
+    // pub(crate) fn want_blocks(&mut self) {
+    //     // if the peer has no block infos to request
+    //     let nothing_to_request = self.state.req_man_block.is_empty()
+    //         && self.state.req_man_block.queue_len() == 0;
+    //
+    //     if !nothing_to_request {
+    //         return;
+    //     };
+    //
+    //     let qnt = self.state.req_man_block.get_available_request_len();
+    //     let ctx = self.state.ctx.clone();
+    //     let tx = self.state.ctx.torrent_ctx.tx.clone();
+    //
+    //     tokio::spawn(async move {
+    //         let _ = tx.send(TorrentMsg::WantBlocks(qnt, ctx.clone())).await;
+    //     });
+    // }
+
+    /// Check for timed out block requests and request them again.
+    #[allow(dead_code)]
+    async fn rerequest_blocks(&mut self) -> Result<(), Error> {
+        let blocks = self.state.req_man_block.get_timeout_blocks_and_update();
+        trace!("rerequesting {} blocks", blocks.len());
+
+        let is_empty = blocks.is_empty();
+        for block in blocks {
+            self.feed(Core::Request(block)).await?;
+        }
+
+        // todo: implement anti-snubbing: some peers dont resend the blocks no
+        // matter how many times we ask for, delay of 30 seconds -> don't
+        // request from them and free the blocks.
+        if !is_empty {
+            self.state.sink.flush().await?;
+        }
+
+        Ok(())
+    }
+
     /// Request block infos from Disk.
     /// Must be used after checking that the Peer is able to send blocks with
     /// [`Self::can_request`].
@@ -248,7 +287,6 @@ impl Peer<Connected> {
                 peer_ctx: self.state.ctx.clone(),
                 qnt,
                 recipient: otx,
-                to_skip: self.state.req_man_block.len(),
             })
             .await?;
 
@@ -291,46 +329,6 @@ impl Peer<Connected> {
             {
                 warn!("deadlocked flush");
             }
-        }
-
-        Ok(())
-    }
-
-    // Want blocks from other peers.
-    // pub(crate) fn want_blocks(&mut self) {
-    //     // if the peer has no block infos to request
-    //     let nothing_to_request = self.state.req_man_block.is_empty()
-    //         && self.state.req_man_block.queue_len() == 0;
-    //
-    //     if !nothing_to_request {
-    //         return;
-    //     };
-    //
-    //     let qnt = self.state.req_man_block.get_available_request_len();
-    //     let ctx = self.state.ctx.clone();
-    //     let tx = self.state.ctx.torrent_ctx.tx.clone();
-    //
-    //     tokio::spawn(async move {
-    //         let _ = tx.send(TorrentMsg::WantBlocks(qnt, ctx.clone())).await;
-    //     });
-    // }
-
-    /// Check for timed out block requests and request them again.
-    #[allow(dead_code)]
-    async fn rerequest_blocks(&mut self) -> Result<(), Error> {
-        let blocks = self.state.req_man_block.get_timeout_blocks_and_update();
-        trace!("rerequesting {} blocks", blocks.len());
-
-        let is_empty = blocks.is_empty();
-        for block in blocks {
-            self.feed(Core::Request(block)).await?;
-        }
-
-        // todo: implement anti-snubbing: some peers dont resend the blocks no
-        // matter how many times we ask for, delay of 30 seconds -> don't
-        // request from them and free the blocks.
-        if !is_empty {
-            self.state.sink.flush().await?;
         }
 
         Ok(())
@@ -561,7 +559,7 @@ impl Peer<Connected> {
     /// disk so that other peers can request them.
     pub(crate) fn free_pending_blocks(&mut self) {
         let infos = self.state.req_man_block.drain();
-        tracing::debug!("returning {} blocks", infos.len(),);
+        tracing::debug!("returning {} blocks", infos.len());
 
         if !infos.is_empty() {
             let _ = self.state.free_tx.send(ReturnToDisk::Block(

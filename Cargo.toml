@@ -33,6 +33,7 @@ resolver = "2"
 [workspace.dependencies]
 int-enum = "1.2.0"
 rkyv = { version = "0.8.14", features = ["big_endian", "unaligned"] }
+page_size = "0.6.0"
 lru = "0.16.3"
 bendy = "0.6.1"
 bitvec = "1.0.1"

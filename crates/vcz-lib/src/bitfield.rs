@@ -57,15 +57,15 @@ pub(crate) trait VczBitfield {
         &mut self,
         index: usize,
     ) -> BitRef<'_, bitvec::ptr::Const, u8, Msb0>;
-    fn safe_set(&mut self, _index: usize) {}
+    fn safe_set(&mut self, _index: usize, val: bool) {}
 }
 
 impl VczBitfield for Bitfield {
-    fn safe_set(&mut self, index: usize) {
+    fn safe_set(&mut self, index: usize, val: bool) {
         if self.len() <= index {
             self.resize(index + 1, false);
         }
-        unsafe { self.set_unchecked(index, true) };
+        unsafe { self.set_unchecked(index, val) };
     }
 
     fn safe_get(
@@ -95,11 +95,11 @@ mod tests {
         let mut bitfield = Bitfield::new_and_resize(vec![0], 2);
         assert_eq!(bitfield.len(), 2);
         // 0, 1, 2
-        bitfield.safe_set(2);
+        bitfield.safe_set(2, true);
         assert_eq!(bitfield.len(), 3);
         assert_eq!(bitfield.get(2).unwrap(), true);
 
-        bitfield.safe_set(10);
+        bitfield.safe_set(10, true);
         assert_eq!(bitfield.len(), 11);
         assert_eq!(bitfield.get(10).unwrap(), true);
     }

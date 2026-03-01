@@ -48,7 +48,6 @@ async fn request_block() -> Result<(), Error> {
             peer_ctx: seeder.clone(),
             recipient: otx,
             qnt: 3,
-            to_skip: 0,
         })
         .await?;
 
@@ -71,7 +70,6 @@ async fn request_block() -> Result<(), Error> {
             peer_ctx: seeder.clone(),
             recipient: otx,
             qnt: 3,
-            to_skip: 0,
         })
         .await?;
 
@@ -86,21 +84,21 @@ async fn request_block() -> Result<(), Error> {
         ]
     );
 
-    // let (otx, orx) = oneshot::channel();
-    // ltorrent
-    //     .send(TorrentMsg::Request {
-    //         peer_ctx: seeder.clone(),
-    //         recipient: otx,
-    //         qnt: 3,
-    //     })
-    //     .await?;
-    //
-    // let blocks = orx.await??;
-    //
-    // assert!(
-    //     blocks.is_empty(),
-    //     "disk must not have any more block infos to be requested"
-    // );
+    let (otx, orx) = oneshot::channel();
+    ltorrent
+        .send(TorrentMsg::Request {
+            peer_ctx: seeder.clone(),
+            recipient: otx,
+            qnt: 3,
+        })
+        .await?;
+
+    let blocks = orx.await??;
+
+    assert!(
+        blocks.is_empty(),
+        "disk must not have any more block infos to be requested"
+    );
 
     cleanup();
 
