@@ -1,4 +1,4 @@
-//! Disk is responsible for file I/O of all torrents.
+//! Disk is responsible for file I/O info_hash, pieces all torrents.
 
 use crate::{
     bitfield::{Bitfield, VczBitfield},
@@ -9,11 +9,10 @@ use crate::{
         BLOCK_LEN, MetadataPiece,
         core::{Block, BlockInfo},
     },
-    metainfo::{Info, MetaInfo},
+    metainfo::{Info, InfoHash, MetaInfo},
     peer::PeerCtx,
     torrent::{
-        InfoHash, Torrent, TorrentCtx, TorrentMsg, TorrentStatus,
-        TorrentStatusErrorCode,
+        Torrent, TorrentCtx, TorrentMsg, TorrentStatus, TorrentStatusErrorCode,
     },
 };
 use bendy::decoding::FromBencode;
@@ -84,8 +83,9 @@ pub enum DiskMsg {
     /// requested it.
     RequestBlocks {
         peer_ctx: Arc<PeerCtx>,
-        recipient: Sender<Result<Vec<BlockInfo>, Error>>,
         qnt: usize,
+        pieces: Vec<usize>,
+        recipient: Sender<Result<Vec<BlockInfo>, Error>>,
     },
 
     /// Request a piece of the metadata.
@@ -164,7 +164,9 @@ pub struct Disk {
     pub(crate) torrent_info: HashMap<InfoHash, Arc<Info>>,
 
     /// The block infos of each piece of a torrent.
-    pub(crate) block_infos: HashMap<InfoHash, Vec<BlockInfo>>,
+    pub(crate) block_infos: HashMap<InfoHash, Vec<Vec<BlockInfo>>>,
+
+    pub(crate) requested_pieces: HashMap<InfoHash, Bitfield>,
 
     pub(crate) metadata_pieces: HashMap<InfoHash, Vec<MetadataPiece>>,
 
@@ -206,6 +208,7 @@ impl Disk {
             write_mmap_cache: LruCache::new(
                 NonZeroUsize::new(FILE_CACHE_CAPACITY).unwrap(),
             ),
+            requested_pieces: HashMap::new(),
             torrent_cache: HashMap::new(),
             metadata_pieces: HashMap::new(),
             block_cache: HashMap::new(),
@@ -252,11 +255,13 @@ impl Disk {
                             // self.metadata_pieces.remove_entry(&info_hash);
                             // self.torrent_info.remove_entry(&info_hash);
                             // self.dirty_files.remove_entry(&info_hash);
+                            // self.requested_pieces.remove_entry(&info_hash);
                             // self.peer_ctxs.retain(|v| v.torrent_ctx.info_hash != info_hash);
                         }
                         DiskMsg::FinishedDownload(info_hash) => {
                             self.block_cache.remove_entry(&info_hash);
                             self.block_infos.remove_entry(&info_hash);
+                            self.requested_pieces.remove_entry(&info_hash);
                             let _ = self.move_metainfo_to_dir(
                                 &info_hash,
                                 MetadataDir::Incomplete,
@@ -295,10 +300,11 @@ impl Disk {
                                 self.handle_torrent_err(ctx, e).await;
                             }
                         }
-                        DiskMsg::RequestBlocks { qnt, recipient, peer_ctx } => {
+                        DiskMsg::RequestBlocks { qnt, recipient, peer_ctx, pieces } => {
                             let infos = self
-                                .request_blocks(peer_ctx, qnt)
+                                .request_blocks(peer_ctx, pieces, qnt)
                                 .await;
+                            println!("infos {:#?}", infos);
                             let _ = recipient.send(infos);
                         }
                         DiskMsg::RequestMetadata { qnt, recipient, info_hash } => {
@@ -334,10 +340,12 @@ impl Disk {
                 Some(return_to_disk) = self.free_rx.recv() => {
                     match return_to_disk {
                         ReturnToDisk::Block(info_hash, blocks) => {
-                            self.block_infos
-                                .entry(info_hash)
-                                .or_default()
-                                .extend(blocks);
+                            let infos = self.block_infos
+                                .get_mut(&info_hash)
+                                .ok_or(Error::TorrentDoesNotExist)?;
+                            for block in blocks {
+                                infos[block.index].push(block);
+                            }
                         }
                         ReturnToDisk::Metadata(info_hash, pieces) => {
                             self.metadata_pieces
@@ -551,26 +559,12 @@ impl Disk {
         info_hash: &InfoHash,
         downloaded_pieces: &Bitfield,
     ) -> Result<(), Error> {
-        let info = self
-            .torrent_info
-            .get(info_hash)
-            .ok_or(Error::TorrentDoesNotExist)?;
-
         let downloaded_count = downloaded_pieces.count_ones() as u64;
 
         self.downloaded_pieces_len.insert(info_hash.clone(), downloaded_count);
         self.block_cache.insert(info_hash.clone(), Default::default());
         self.endgame.insert(info_hash.clone(), false);
-
-        let block_infos =
-            self.block_infos.entry(info_hash.clone()).or_default();
-
-        // create block infos for missing pieces
-        for p in downloaded_pieces.iter_zeros() {
-            block_infos.extend(info.get_block_infos_of_piece_self(p));
-        }
-
-        info!("generated {} blocks", block_infos.len());
+        self.block_infos.insert(info_hash.clone(), Vec::new());
 
         let piece_strategy =
             *self.piece_strategy.entry(info_hash.clone()).or_default();
@@ -603,6 +597,11 @@ impl Disk {
                 length: info.file_length.unwrap_or(0),
             });
         }
+
+        self.requested_pieces.insert(
+            info.info_hash.clone(),
+            Bitfield::from_piece(info.pieces.len()),
+        );
 
         self.torrent_cache.insert(
             info.info_hash.clone(),
@@ -712,21 +711,50 @@ impl Disk {
     // }
 
     /// Request available block infos following the order of PieceStrategy.
+    #[inline]
     pub async fn request_blocks(
         &mut self,
         peer_ctx: Arc<PeerCtx>,
-        qnt: usize,
+        pieces: Vec<usize>,
+        mut qnt: usize,
     ) -> Result<Vec<BlockInfo>, Error> {
-        let info_hash = peer_ctx.torrent_ctx.info_hash.clone();
+        println!("pieces_want {pieces:?}");
+        println!("qnt {qnt:?}");
+        let info_hash = &peer_ctx.torrent_ctx.info_hash;
         let mut result = Vec::with_capacity(qnt);
         let block_infos = self
             .block_infos
-            .get_mut(&info_hash)
+            .get_mut(info_hash)
             .ok_or(Error::TorrentDoesNotExist)?;
 
-        result.extend(block_infos.drain(0..qnt.min(block_infos.len())));
+        let pieces_len = pieces.len();
+        let last = *pieces.last().unwrap();
 
-        if block_infos.is_empty()
+        if block_infos.len() < last {
+            let diff = pieces_len - block_infos.len();
+            block_infos.extend(vec![vec![]; diff]);
+        }
+
+        let info = self
+            .torrent_cache
+            .get(info_hash)
+            .ok_or(Error::TorrentDoesNotExist)?;
+
+        for p in pieces {
+            let infos = &mut block_infos[p];
+            if infos.is_empty() {
+                *infos = Info::get_block_infos_of_piece(
+                    info.total_size,
+                    info.piece_length,
+                    p,
+                );
+            }
+            let take = qnt.min(infos.len());
+            result.extend(infos.drain(0..take));
+            qnt = qnt.saturating_sub(take);
+        }
+
+        if result.is_empty()
             && peer_ctx.block_infos_len.load(Ordering::Relaxed) == 0
         {
             let _ = self.enter_endgame(&peer_ctx.torrent_ctx).await;
@@ -904,7 +932,7 @@ impl Disk {
 
             self.block_infos
                 .get_mut(&torrent_ctx.info_hash)
-                .ok_or(Error::TorrentDoesNotExist)?
+                .ok_or(Error::TorrentDoesNotExist)?[index]
                 .extend(info_blocks);
 
             return Ok(());
@@ -921,7 +949,7 @@ impl Disk {
 
         let _ = torrent_ctx.tx.send(TorrentMsg::DownloadedPiece(index)).await;
 
-        if *downloaded_pieces_len == 1
+        if *downloaded_pieces_len == 4
             && *self
                 .piece_strategy
                 .get(&torrent_ctx.info_hash)
@@ -1034,7 +1062,7 @@ impl Disk {
 
             let len = data_range.len();
             let end = start + len;
-            mmap[start..end].copy_from_slice(&piece_buffer[data_range.clone()]);
+            mmap[start..end].copy_from_slice(&piece_buffer[data_range]);
 
             // a madvise per piece is probably fine.
             // piece sizes depend on the size of the torrent,

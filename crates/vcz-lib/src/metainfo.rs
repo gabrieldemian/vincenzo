@@ -1,16 +1,94 @@
 //! Metainfo is a .torrent file with information abouthe Torrent.
 //! From the magnet link, we get the Metainfo from other peers.
 
-use crate::{
-    extensions::core::{BLOCK_LEN, BlockInfo},
-    torrent::InfoHash,
-};
+use crate::extensions::core::{BLOCK_LEN, BlockInfo};
 use bendy::{
     decoding::{self, Decoder, FromBencode, Object, ResultExt},
     encoding::{self, AsString, Error, SingleItemEncoder, ToBencode},
 };
+use rand::Rng;
+use rkyv::{Archive, Deserialize, Serialize};
 use sha1::{Digest, Sha1};
-use std::collections::HashMap;
+use std::{collections::HashMap, fmt::Display, ops::Deref};
+
+#[derive(
+    Eq, PartialEq, Clone, Hash, Default, Archive, Serialize, Deserialize,
+)]
+#[rkyv(compare(PartialEq), derive(Debug))]
+pub struct InfoHash(pub [u8; 20]);
+
+impl InfoHash {
+    pub fn random() -> Self {
+        InfoHash(rand::rng().random())
+    }
+}
+
+impl Display for InfoHash {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", hex::encode(self.0))
+    }
+}
+
+impl Deref for InfoHash {
+    type Target = [u8; 20];
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for InfoHash {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = self.to_string();
+        let s = &s[..0];
+        f.write_str(s)
+    }
+}
+
+impl From<InfoHash> for [u8; 20] {
+    fn from(value: InfoHash) -> Self {
+        value.0
+    }
+}
+
+impl From<InfoHash> for String {
+    fn from(value: InfoHash) -> Self {
+        value.to_string()
+    }
+}
+
+impl TryInto<InfoHash> for String {
+    type Error = String;
+    fn try_into(self) -> Result<InfoHash, Self::Error> {
+        let buff = hex::decode(self).map_err(|e| e.to_string())?;
+        let hash = InfoHash::try_from(buff)?;
+        Ok(hash)
+    }
+}
+
+impl From<[u8; 20]> for InfoHash {
+    fn from(value: [u8; 20]) -> Self {
+        Self(value)
+    }
+}
+
+impl From<[u8; 20]> for ArchivedInfoHash {
+    fn from(value: [u8; 20]) -> Self {
+        Self(value)
+    }
+}
+
+impl TryFrom<Vec<u8>> for InfoHash {
+    type Error = &'static str;
+    fn try_from(value: Vec<u8>) -> Result<Self, Self::Error> {
+        if value.len() != 20 {
+            return Err("The infohash must have exactly 20 bytes");
+        }
+        let mut buff = [0u8; 20];
+        buff[..20].copy_from_slice(&value[..20]);
+        Ok(InfoHash(buff))
+    }
+}
 
 /// Metainfo is a .torrent file with information about the Torrent.
 /// From the magnet link, we get the Metainfo from other peers.
@@ -131,34 +209,6 @@ impl Info {
         let mut hasher = Sha1::new();
         hasher.update(buf);
         InfoHash(hasher.finalize().into())
-    }
-
-    pub(crate) fn get_block_infos_of_piece_self(
-        &self,
-        piece_index: usize,
-    ) -> Vec<BlockInfo> {
-        let total_size = self.get_torrent_size();
-        let piece_length = self.piece_length;
-        let piece_start = piece_index * piece_length;
-        let piece_end = (piece_start + piece_length).min(total_size);
-        let piece_size = piece_end - piece_start;
-
-        // calculate all blocks for this piece in one go
-        let num_blocks = piece_size.div_ceil(BLOCK_LEN);
-        let mut blocks = Vec::with_capacity(num_blocks);
-
-        for block_index in 0..num_blocks {
-            let begin = block_index * BLOCK_LEN;
-            let len = if block_index == num_blocks - 1 {
-                piece_size - begin
-            } else {
-                BLOCK_LEN
-            };
-
-            blocks.push(BlockInfo { index: piece_index, begin, len });
-        }
-
-        blocks
     }
 
     /// Only get block infos of a piece.

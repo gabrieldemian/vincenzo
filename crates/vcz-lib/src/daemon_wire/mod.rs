@@ -2,7 +2,8 @@
 
 use crate::{
     error::Error,
-    torrent::{ArchivedTorrentState, InfoHash, TorrentState},
+    metainfo::InfoHash,
+    torrent::{ArchivedTorrentState, TorrentState},
 };
 use bytes::{Buf, BufMut, BytesMut};
 use int_enum::IntEnum;

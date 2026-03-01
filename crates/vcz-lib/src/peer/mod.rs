@@ -159,7 +159,7 @@ impl Peer<Connected> {
                             let ctx = self.state.ctx.torrent_ctx.clone();
                             let id = self.state.ctx.id.clone();
                             tokio::spawn(async move {
-                                let _ = ctx.tx.send(TorrentMsg::Request(id, reqs, queue)).await;
+                                let _ = ctx.tx.send(TorrentMsg::SendToAllPeers(id, reqs, queue)).await;
                             });
                         }
                         PeerMsg::Cancel(block_info) => {
@@ -243,11 +243,12 @@ impl Peer<Connected> {
         self.state
             .ctx
             .torrent_ctx
-            .disk_tx
-            .send(DiskMsg::RequestBlocks {
-                recipient: otx,
-                qnt,
+            .tx
+            .send(TorrentMsg::Request {
                 peer_ctx: self.state.ctx.clone(),
+                qnt,
+                recipient: otx,
+                to_skip: self.state.req_man_block.len(),
             })
             .await?;
 
@@ -422,7 +423,7 @@ impl Peer<Connected> {
 
     /// Run interested algorithm.
     #[inline]
-    pub(crate) async fn interested(&mut self) -> Result<(), Error> {
+    pub(crate) async fn interested(&mut self) -> Result<Option<usize>, Error> {
         let (otx, orx) = oneshot::channel();
 
         self.state
@@ -452,7 +453,7 @@ impl Peer<Connected> {
             self.state_log[1] = '-';
             self.state.sink.send(Core::NotInterested).await?;
         }
-        Ok(())
+        Ok(should_be_interested)
     }
 
     #[inline]
@@ -549,10 +550,7 @@ impl Peer<Connected> {
             }
             let _ = torrent_ctx
                 .disk_tx
-                .send(DiskMsg::WriteBlock {
-                    block,
-                    ctx: torrent_ctx.clone(),
-                })
+                .send(DiskMsg::WriteBlock { block, ctx: torrent_ctx.clone() })
                 .await;
         });
 

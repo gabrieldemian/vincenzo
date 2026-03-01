@@ -158,7 +158,6 @@ impl ExtMsgHandler<Core> for Peer<peer::Connected> {
             }
             Core::Cancel(block_info) => {
                 debug!("< cancel {block_info:?}");
-                self.state.incoming_requests.retain(|v| *v != block_info);
             }
             Core::Request(b @ BlockInfo { index, begin, .. }) => {
                 debug!("< request {b:?}");
@@ -171,7 +170,6 @@ impl ExtMsgHandler<Core> for Peer<peer::Connected> {
                     return Ok(());
                 }
 
-                self.state.incoming_requests.push(b.clone());
                 let (tx, rx) = oneshot::channel();
 
                 self.state

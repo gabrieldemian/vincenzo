@@ -31,3 +31,5 @@ pub mod peer;
 pub mod torrent;
 pub mod tracker;
 pub mod utils;
+
+pub use error::*;

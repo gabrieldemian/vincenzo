@@ -14,7 +14,8 @@ use ratatui::{
 use tokio::sync::mpsc;
 use vcz_lib::{
     magnet::Magnet,
-    torrent::{InfoHash, TorrentState, TorrentStatus},
+    metainfo::InfoHash,
+    torrent::{TorrentState, TorrentStatus},
     utils::to_human_readable,
 };
 

@@ -18,7 +18,16 @@ impl Torrent<Connected, FromMagnet> {
             select! {
                 Some(msg) = self.rx.recv() => {
                     match msg {
-                        TorrentMsg::Request(sender, reqs, queue) => {
+                        TorrentMsg::Request{peer_ctx, qnt, recipient, to_skip} => {
+                            let pl = self.source.info.as_ref().unwrap().piece_length;
+                            let pieces_wanted = qnt.div_ceil(pl);
+                            let disk_tx = self.ctx.disk_tx.clone();
+                            let Ok(pieces) = self.get_want_pieces(&peer_ctx.id, pieces_wanted) else { continue };
+                            spawn(async move {
+                                let _ = disk_tx.send(DiskMsg::RequestBlocks { peer_ctx, qnt, pieces, recipient }).await;
+                            });
+                        }
+                        TorrentMsg::SendToAllPeers(sender, reqs, queue) => {
                             for p in &self.state.connected_peers {
                                 if p.id == sender { continue };
                                 let tx = p.tx.clone();
@@ -100,12 +109,12 @@ impl Torrent<Connected, FromMagnet> {
                             let _ = tx.send(bitfield);
                         }
                         TorrentMsg::SetPeerBitfield(id, bitfield) => {
-                            let entry = self.state.peer_pieces.entry(id).or_default();
+                            let entry = self.state.peer_pieces.entry(id.clone()).or_default();
                             *entry = bitfield;
+                            let _ = self.gen_missing_pieces(id);
                         }
                         TorrentMsg::PeerHave(id, piece) => {
-                            let bitfield = self.state.peer_pieces.entry(id).or_default();
-                            bitfield.safe_set(piece);
+                            self.peer_have(id, piece);
                         }
                         TorrentMsg::GetConnectedPeers(otx) => {
                             let _ = otx.send(self.state.connected_peers.clone());
@@ -229,8 +238,7 @@ impl Torrent<Connected, FromMagnet> {
             ))
             .await?;
 
-        // todo: not really using self.source.info for anything except to return
-        // a boolean.
+        // todo: consider transforming this peer to a "FromMetaInfo"
         self.source.info = Some(downloaded_info);
         self.status = TorrentStatus::Downloading;
 

@@ -11,8 +11,8 @@ use crate::{
     bitfield::Reserved,
     error::Error,
     extensions::{CoreId, ExtMsg, Extension, PSTR_LEN, core::PSTR},
+    metainfo::InfoHash,
     peer::PeerId,
-    torrent::InfoHash,
 };
 use bendy::{decoding::FromBencode, encoding::ToBencode};
 use bytes::{Buf, BufMut, BytesMut};

@@ -8,10 +8,10 @@ use crate::{
     disk::{DiskMsg, ReturnToDisk},
     error::Error,
     magnet::Magnet,
+    metainfo::InfoHash,
     peer::{self, Peer, PeerId},
     torrent::{
-        self, InfoHash, Torrent, TorrentCtx, TorrentMsg, TorrentState,
-        TorrentStatus,
+        self, Torrent, TorrentCtx, TorrentMsg, TorrentState, TorrentStatus,
     },
     utils::to_human_readable,
 };

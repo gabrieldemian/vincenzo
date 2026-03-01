@@ -1,5 +1,5 @@
 use crate::Input;
-use vcz_lib::torrent::{InfoHash, TorrentState};
+use vcz_lib::{metainfo::InfoHash, torrent::TorrentState};
 
 /// A new component to be rendered on the UI.
 /// Used in conjunction with [`Action`]

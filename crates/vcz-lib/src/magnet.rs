@@ -1,6 +1,6 @@
 //! Handle magnet link
 
-use crate::torrent::InfoHash;
+use crate::metainfo::InfoHash;
 use magnet_url::Magnet as Magnet_;
 use std::{
     collections::HashMap,

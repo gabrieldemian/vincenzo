@@ -20,7 +20,7 @@ mod common;
 async fn download() -> Result<(), Error> {
     let (leecher, seeder, cleanup) = common::setup_pair().await?;
     let (ldisk_tx, _ltorrent, leecher) = leecher;
-    let (_sdisk_tx, storrent, seeder) = seeder;
+    let (sdisk_tx, storrent, seeder) = seeder;
 
     // ! leecher and seeder are in switched perspectives.
     // but the torrent txs are in the right perspective.
@@ -46,7 +46,7 @@ async fn download() -> Result<(), Error> {
     // leecher should have received the blocks and written to disk.
     // `ReadBlock` reads it from disk, so we know the download worked.
     let (otx, orx) = oneshot::channel();
-    ldisk_tx
+    sdisk_tx
         .send(DiskMsg::ReadBlock {
             block_info: BlockInfo::new(0, 0, BLOCK_LEN),
             info_hash: leecher.torrent_ctx.info_hash.clone(),
@@ -64,7 +64,7 @@ async fn download() -> Result<(), Error> {
     // bee.txt = 0x02
 
     let (otx, orx) = oneshot::channel();
-    ldisk_tx
+    sdisk_tx
         .send(DiskMsg::ReadBlock {
             block_info: BlockInfo::new(1, 0, BLOCK_LEN),
             info_hash: leecher.torrent_ctx.info_hash.clone(),
@@ -77,7 +77,7 @@ async fn download() -> Result<(), Error> {
     assert_eq!(block.len(), BLOCK_LEN);
 
     let (otx, orx) = oneshot::channel();
-    ldisk_tx
+    sdisk_tx
         .send(DiskMsg::ReadBlock {
             block_info: BlockInfo::new(2, 0, BLOCK_LEN),
             info_hash: leecher.torrent_ctx.info_hash.clone(),
@@ -90,7 +90,7 @@ async fn download() -> Result<(), Error> {
     assert_eq!(block.len(), BLOCK_LEN);
 
     let (otx, orx) = oneshot::channel();
-    ldisk_tx
+    sdisk_tx
         .send(DiskMsg::ReadBlock {
             block_info: BlockInfo::new(3, 0, BLOCK_LEN),
             info_hash: leecher.torrent_ctx.info_hash.clone(),
@@ -103,7 +103,7 @@ async fn download() -> Result<(), Error> {
     assert_eq!(block.len(), BLOCK_LEN);
 
     let (otx, orx) = oneshot::channel();
-    ldisk_tx
+    sdisk_tx
         .send(DiskMsg::ReadBlock {
             block_info: BlockInfo::new(4, 0, BLOCK_LEN),
             info_hash: leecher.torrent_ctx.info_hash.clone(),
@@ -116,7 +116,7 @@ async fn download() -> Result<(), Error> {
     assert_eq!(block.len(), BLOCK_LEN);
 
     let (otx, orx) = oneshot::channel();
-    ldisk_tx
+    sdisk_tx
         .send(DiskMsg::ReadBlock {
             block_info: BlockInfo::new(5, 0, BLOCK_LEN),
             info_hash: leecher.torrent_ctx.info_hash.clone(),

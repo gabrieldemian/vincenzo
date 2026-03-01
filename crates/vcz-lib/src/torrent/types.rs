@@ -3,18 +3,16 @@ use crate::{
     counter::Counter,
     extensions::core::BlockInfo,
     magnet::Magnet,
-    metainfo::{Info, MetaInfo},
+    metainfo::{Info, InfoHash, MetaInfo},
     peer::{self, Peer, PeerCtx, PeerId},
     torrent::{self, Torrent},
     tracker::TrackerMsg,
 };
-use rand::Rng;
 use rkyv::{Archive, Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     fmt::Display,
     net::{IpAddr, SocketAddr},
-    ops::Deref,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -41,7 +39,16 @@ pub enum PeerBrMsg {
 #[derive(Debug)]
 pub enum TorrentMsg {
     Endgame,
-    Request(PeerId, Vec<BlockInfo>, Vec<BlockInfo>),
+    SendToAllPeers(PeerId, Vec<BlockInfo>, Vec<BlockInfo>),
+
+    /// When a peer wants to request blocks.
+    Request {
+        peer_ctx: Arc<PeerCtx>,
+        qnt: usize,
+        /// Block infos to skip
+        to_skip: usize,
+        recipient: oneshot::Sender<Result<Vec<BlockInfo>, crate::Error>>,
+    },
 
     /// Make the torrent run the unchoke algorithm.
     UnchokeAlgorithm,
@@ -126,85 +133,6 @@ pub enum TorrentMsg {
     Quit,
 
     Cancel(PeerId, BlockInfo),
-}
-
-#[derive(
-    Eq, PartialEq, Clone, Hash, Default, Archive, Serialize, Deserialize,
-)]
-#[rkyv(compare(PartialEq), derive(Debug))]
-pub struct InfoHash(pub [u8; 20]);
-
-impl InfoHash {
-    pub fn random() -> Self {
-        InfoHash(rand::rng().random())
-    }
-}
-
-impl Display for InfoHash {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", hex::encode(self.0))
-    }
-}
-
-impl Deref for InfoHash {
-    type Target = [u8; 20];
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl std::fmt::Debug for InfoHash {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let s = self.to_string();
-        let s = &s[..0];
-        f.write_str(s)
-    }
-}
-
-impl From<InfoHash> for [u8; 20] {
-    fn from(value: InfoHash) -> Self {
-        value.0
-    }
-}
-
-impl From<InfoHash> for String {
-    fn from(value: InfoHash) -> Self {
-        value.to_string()
-    }
-}
-
-impl TryInto<InfoHash> for String {
-    type Error = String;
-    fn try_into(self) -> Result<InfoHash, Self::Error> {
-        let buff = hex::decode(self).map_err(|e| e.to_string())?;
-        let hash = InfoHash::try_from(buff)?;
-        Ok(hash)
-    }
-}
-
-impl From<[u8; 20]> for InfoHash {
-    fn from(value: [u8; 20]) -> Self {
-        Self(value)
-    }
-}
-
-impl From<[u8; 20]> for ArchivedInfoHash {
-    fn from(value: [u8; 20]) -> Self {
-        Self(value)
-    }
-}
-
-impl TryFrom<Vec<u8>> for InfoHash {
-    type Error = &'static str;
-    fn try_from(value: Vec<u8>) -> Result<Self, Self::Error> {
-        if value.len() != 20 {
-            return Err("The infohash must have exactly 20 bytes");
-        }
-        let mut buff = [0u8; 20];
-        buff[..20].copy_from_slice(&value[..20]);
-        Ok(InfoHash(buff))
-    }
 }
 
 #[derive(
@@ -377,6 +305,7 @@ pub(crate) trait TorrentSource {
     fn info_hash(&self) -> InfoHash;
     /// Get torrent size
     fn size(&self) -> u64;
+    // fn piece_size(&self) -> u64;
 }
 
 pub(crate) struct FromMagnet {
@@ -422,18 +351,15 @@ pub(crate) struct Connected {
     /// requests.
     pub stats: Stats,
 
-    pub in_endgame: bool,
-
     /// Lock the torrent so only one peer can do something at a time.
     pub stealing: Arc<AtomicBool>,
-
-    pub counter: Counter,
 
     /// If using a Magnet link, the info will be downloaded in pieces
     /// and those pieces may come in different order,
     /// After it is complete, it will be encoded into [`Info`]
     pub info_pieces: BTreeMap<u64, Vec<u8>>,
 
+    // todo: is this redundant?
     /// The size of the entire torrent in disk, in bytes.
     pub size: u64,
 
@@ -441,7 +367,7 @@ pub(crate) struct Connected {
     /// Will be removed from this vec as we connect with them, and added as we
     /// request more peers to the tracker.
     pub idle_peers: HashSet<SocketAddr>,
-
+    pub error_peers: Vec<Peer<peer::PeerError>>,
     pub connected_peers: Vec<Arc<PeerCtx>>,
 
     /// Maximum of 3 unchoked peers as per the protocol + the optimistically
@@ -451,14 +377,14 @@ pub(crate) struct Connected {
     /// Only one optimistically unchoked peer for 30 seconds.
     pub opt_unchoked_peer: Option<Arc<PeerCtx>>,
 
-    pub error_peers: Vec<Peer<peer::PeerError>>,
-
     /// Size of the `info` bencoded string.
     pub metadata_size: Option<usize>,
 
-    /// Pieces that all peers have.
+    /// Bitfield of each peer
     pub peer_pieces: HashMap<PeerId, Bitfield>,
-
+    /// Pieces that the remote peer has and the client doesn't.
+    pub peer_pieces_diff: HashMap<PeerId, Bitfield>,
+    pub counter: Counter,
     pub tracker_tx: broadcast::Sender<TrackerMsg>,
     pub reconnect_interval: Interval,
     pub heartbeat_interval: Interval,

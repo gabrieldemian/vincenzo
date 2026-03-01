@@ -20,7 +20,7 @@ use crate::{
     disk::{DiskMsg, ReturnToDisk},
     error::Error,
     extensions::BLOCK_LEN,
-    metainfo::MetaInfo,
+    metainfo::{InfoHash, MetaInfo},
     peer::{self, Peer, PeerCtx, PeerId, PeerMsg},
     torrent,
     tracker::{Tracker, TrackerMsg, TrackerTrait, event::Event},
@@ -51,8 +51,8 @@ pub(crate) struct Torrent<S: State, M: TorrentSource> {
     pub status: TorrentStatus,
     rx: mpsc::Receiver<TorrentMsg>,
 
-    /// Bitfield representing the presence or absence of pieces for our local
-    /// peer, where each bit is a piece.
+    // last_recv: Instant,
+    // inflight: Vec<BlockInfo>,
     bitfield: Bitfield,
     state: S,
     pub source: M,
@@ -191,7 +191,6 @@ impl<M: TorrentSource> Torrent<Idle, M> {
         Ok(Torrent {
             config: self.config.clone(),
             state: Connected {
-                in_endgame: false,
                 stealing: Arc::new(false.into()),
                 tracker_tx,
                 reconnect_interval,
@@ -200,6 +199,7 @@ impl<M: TorrentSource> Torrent<Idle, M> {
                 optimistic_unchoke_interval,
                 unchoke_interval,
                 peer_pieces: HashMap::default(),
+                peer_pieces_diff: HashMap::default(),
                 counter: Counter::default(),
                 size,
                 unchoked_peers: Vec::with_capacity(3),
@@ -460,6 +460,10 @@ impl<M: TorrentSource> Torrent<Connected, M> {
 
         self.bitfield.safe_set(piece);
 
+        for diff in self.state.peer_pieces_diff.values_mut() {
+            diff.set(piece, false);
+        }
+
         let _ = self.ctx.btx.send(PeerBrMsg::HavePiece(piece));
 
         let total_pieces = self.bitfield.len();
@@ -620,10 +624,6 @@ impl<M: TorrentSource> Torrent<Connected, M> {
 
             match timeout(Duration::from_millis(1000), orx).await {
                 Ok(Ok(infos)) => {
-                    if !self.state.in_endgame && !infos.is_empty() {
-                        let mut victim_mutex = victim.steal_mutex.lock().await;
-                        *victim_mutex = Instant::now();
-                    }
                     r.extend(infos);
                     qnt = qnt.saturating_sub(r.len());
                 }
@@ -822,23 +822,75 @@ impl<M: TorrentSource> Torrent<Connected, M> {
         }
     }
 
-    /// Return the first piece that the remote peer has and the local client
-    /// hasn't.
+    #[inline]
+    pub(crate) fn peer_have(&mut self, id: PeerId, piece: usize) {
+        let bitfield = self.state.peer_pieces.entry(id.clone()).or_default();
+        bitfield.safe_set(piece);
+        let no_bitfield = !self.state.peer_pieces_diff.contains_key(&id);
+        let diff = self
+            .state
+            .peer_pieces_diff
+            .entry(id.clone())
+            .or_insert(Bitfield::from_piece(piece));
+        diff.set(piece, !self.bitfield.safe_get(piece));
+        if no_bitfield {
+            let _ = self.gen_missing_pieces(id);
+        }
+    }
+
+    #[inline]
     pub(crate) fn peer_has_piece_not_in_local(
         &self,
         peer_id: &PeerId,
     ) -> Option<usize> {
-        let local = &self.bitfield;
-
-        // if local has no pieces, return the first piece that remote has
-        if local.count_ones() == 0 {
+        if self.bitfield.count_ones() == 0 {
             return Some(0);
-        };
+        }
+        self.get_missing_pieces(peer_id)
+            .map(|v| v.first_one().unwrap_or_default())
+    }
 
-        let remote = self.state.peer_pieces.get(peer_id)?;
+    #[inline]
+    pub(crate) fn get_missing_pieces(
+        &self,
+        peer_id: &PeerId,
+    ) -> Option<Bitfield> {
+        self.state.peer_pieces_diff.get(peer_id).cloned()
+    }
 
-        remote
-            .iter_ones()
-            .find(|&piece_index| !unsafe { *local.get_unchecked(piece_index) })
+    #[inline]
+    pub(crate) fn gen_missing_pieces(
+        &mut self,
+        peer_id: PeerId,
+    ) -> Result<(), Error> {
+        let bitfield_len = self.bitfield.len();
+        let remote = self
+            .state
+            .peer_pieces
+            .get(&peer_id)
+            .ok_or(Error::PeerDoesNotExist)?;
+        let diff = self
+            .state
+            .peer_pieces_diff
+            .entry(peer_id)
+            .or_insert_with(|| Bitfield::from_piece(bitfield_len));
+        *diff = remote.clone() & !self.bitfield.clone();
+        Ok(())
+    }
+
+    #[inline]
+    pub(crate) fn get_want_pieces(
+        &mut self,
+        peer_id: &PeerId,
+        pieces: usize,
+    ) -> Result<Vec<usize>, Error> {
+        let mut r = Vec::with_capacity(pieces);
+        let diff = self
+            .state
+            .peer_pieces_diff
+            .get(peer_id)
+            .ok_or(Error::PeerDoesNotExist)?;
+        r.extend(diff.iter_ones().take(pieces));
+        Ok(r)
     }
 }

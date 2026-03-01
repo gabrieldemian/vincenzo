@@ -8,8 +8,9 @@ use self::event::Event;
 use crate::{
     config::ResolvedConfig,
     error::Error,
+    metainfo::InfoHash,
     peer::PeerId,
-    torrent::{InfoHash, Stats, TorrentMsg},
+    torrent::{Stats, TorrentMsg},
 };
 use std::{
     fmt::Debug,

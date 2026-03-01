@@ -1,6 +1,5 @@
 use crate::{
     PEER_MSG_BOUND, VERSION_PROT,
-    bitfield::Reserved,
     counter::Counter,
     daemon::{DaemonCtx, DaemonMsg},
     disk::ReturnToDisk,
@@ -31,11 +30,10 @@ use std::{
 use tokio::{
     net::TcpStream,
     sync::{
-        Mutex,
         mpsc::{self, Receiver},
         oneshot,
     },
-    time::{Instant, timeout},
+    time::timeout,
 };
 use tokio_util::codec::Framed;
 use tracing::debug;
@@ -162,8 +160,6 @@ impl TryFrom<Vec<u8>> for PeerId {
 /// Ctx that is shared with Torrent and Disk;
 #[derive(Debug)]
 pub struct PeerCtx {
-    /// The last time this peer got stolen.
-    pub steal_mutex: Mutex<Instant>,
     pub tx: mpsc::Sender<PeerMsg>,
     pub torrent_ctx: Arc<TorrentCtx>,
     pub direction: Direction,
@@ -311,7 +307,6 @@ impl peer::Peer<Idle> {
 
         let ctx = Arc::new(PeerCtx {
             block_infos_len: 0.into(),
-            steal_mutex: Mutex::new(Instant::now()),
             torrent_ctx,
             counter: Counter::default(),
             am_interested: false.into(),
@@ -337,14 +332,10 @@ impl peer::Peer<Idle> {
                 extension: None,
                 sink,
                 stream,
-                incoming_requests: Vec::with_capacity(
-                    DEFAULT_REQUEST_QUEUE_LEN as usize,
-                ),
                 req_man_block: RequestManager::new(),
                 req_man_meta: RequestManager::new(),
                 have_info: false,
                 in_endgame: false,
-                reserved: peer_handshake.reserved,
                 rx,
             },
         };
@@ -456,7 +447,6 @@ impl peer::Peer<Idle> {
 
         let ctx = PeerCtx {
             block_infos_len: 0.into(),
-            steal_mutex: Mutex::new(Instant::now()),
             torrent_ctx,
             counter: Counter::default(),
             am_interested: false.into(),
@@ -482,14 +472,11 @@ impl peer::Peer<Idle> {
                 extension: None,
                 sink,
                 stream,
-                incoming_requests: Vec::with_capacity(
-                    DEFAULT_REQUEST_QUEUE_LEN as usize,
-                ),
                 req_man_block: RequestManager::new(),
                 req_man_meta: RequestManager::new(),
                 have_info: false,
                 in_endgame: false,
-                reserved: peer_handshake.reserved,
+                // reserved: peer_handshake.reserved,
                 rx,
             },
         };
@@ -544,13 +531,12 @@ impl peer::Peer<Idle> {
 pub struct Connected {
     pub(crate) stream: SplitStream<Framed<TcpStream, CoreCodec>>,
     pub(crate) sink: SplitSink<Framed<TcpStream, CoreCodec>, Core>,
-    pub reserved: Reserved,
-    pub rx: Receiver<PeerMsg>,
-    pub free_tx: mpsc::UnboundedSender<ReturnToDisk>,
+    pub(crate) rx: Receiver<PeerMsg>,
+    pub(crate) free_tx: mpsc::UnboundedSender<ReturnToDisk>,
     pub(crate) extension: Option<Extension>,
 
     /// Context of the Peer which is shared for anyone who needs it.
-    pub ctx: Arc<PeerCtx>,
+    pub(crate) ctx: Arc<PeerCtx>,
 
     /// Our pending requests that we sent to peer. It represents the blocks
     /// that we are expecting.
@@ -561,27 +547,20 @@ pub struct Connected {
 
     pub(crate) req_man_meta: RequestManager<MetadataPiece>,
 
-    /// The requests we got from peer.
-    ///
-    /// The request's entry is removed from here when the block is transmitted
-    /// or when the peer cancels it. If a peer sends a request and cancels it
-    /// before the disk read is done, the read block is dropped.
-    pub incoming_requests: Vec<BlockInfo>,
-
     /// This is a cache of have_info on Torrent
     /// to avoid using locks or atomics.
-    pub have_info: bool,
+    pub(crate) have_info: bool,
 
     /// Whether we're in endgame mode.
-    pub in_endgame: bool,
+    pub(crate) in_endgame: bool,
 
     /// If the torrent was fully downloaded, all peers will become seed only.
     /// They will only seed but not download anything anymore.
-    pub seed_only: bool,
+    pub(crate) seed_only: bool,
 
     /// If the client manually paused the local peer, preventing it from
     /// downloading and uploading but keeping connections.
-    pub is_paused: bool,
+    pub(crate) is_paused: bool,
 }
 
 /// Tried to do an oubound connection but peer couldn't be reached.

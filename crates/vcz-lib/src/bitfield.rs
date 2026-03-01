@@ -3,6 +3,7 @@ use bitvec::prelude::*;
 
 /// Bitfield where index = piece.
 pub type Bitfield = BitVec<u8, Msb0>;
+pub type BitfieldStack<A> = BitArray<A, Msb0>;
 
 /// Reserved bytes exchanged during handshake.
 type ReservedAlias = BitArray<[u8; 8], bitvec::prelude::Msb0>;
@@ -52,7 +53,6 @@ pub(crate) trait VczBitfield {
         unsafe { s.set_len(len) };
         s
     }
-    #[cfg(test)]
     fn safe_get(
         &mut self,
         index: usize,
@@ -67,7 +67,7 @@ impl VczBitfield for Bitfield {
         }
         unsafe { self.set_unchecked(index, true) };
     }
-    #[cfg(test)]
+
     fn safe_get(
         &mut self,
         index: usize,

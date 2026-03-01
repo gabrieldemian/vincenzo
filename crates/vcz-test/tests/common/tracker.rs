@@ -5,7 +5,7 @@ use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4},
 };
 use tokio::net::UdpSocket;
-use vcz_lib::{error::Error, peer::PeerId, torrent::InfoHash, tracker};
+use vcz_lib::{error::Error, peer::PeerId, tracker};
 
 pub static DEFAULT_ADDR: SocketAddr =
     SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 1337);
@@ -172,6 +172,7 @@ mod tests {
     use std::time::Duration;
     use tokio::time::timeout;
     use vcz_lib::{
+        metainfo::InfoHash,
         peer::PeerId,
         tracker::{ANNOUNCE_RES_BUF_LEN, action::Action, event::Event},
     };

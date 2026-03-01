@@ -6,7 +6,7 @@ use ratatui::{
     },
 };
 use tokio::time::Instant;
-use vcz_lib::{torrent::InfoHash, utils::to_human_readable};
+use vcz_lib::{metainfo::InfoHash, utils::to_human_readable};
 
 use crate::PALETTE;
 

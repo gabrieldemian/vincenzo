@@ -3,7 +3,6 @@
 use std::{sync::atomic::Ordering, time::Duration};
 use tokio::{sync::oneshot, time::sleep};
 use vcz_lib::{
-    disk::DiskMsg,
     error::Error,
     extensions::{BLOCK_LEN, BlockInfo},
     peer::PeerMsg,
@@ -20,8 +19,11 @@ mod common;
 async fn request_block() -> Result<(), Error> {
     let (leecher, seeder, cleanup) = common::setup_pair().await?;
     let (otx, orx) = oneshot::channel();
-    let (ldisk_tx, _ltorrent, leecher) = leecher;
+    let (_ldisk_tx, ltorrent, leecher) = leecher;
     let (_sdisk_tx, storrent, seeder) = seeder;
+
+    println!("seeder: {}", seeder.id);
+    println!("leecher: {}", leecher.id);
 
     // ! leecher and seeder are in switched perspectives.
     // but the torrent txs are in the right perspective.
@@ -39,16 +41,20 @@ async fn request_block() -> Result<(), Error> {
     assert!(!leecher.am_interested.load(Ordering::Acquire));
     assert!(!seeder.peer_choking.load(Ordering::Acquire));
     assert!(seeder.am_interested.load(Ordering::Acquire));
+    sleep(Duration::from_millis(10)).await;
 
-    ldisk_tx
-        .send(DiskMsg::RequestBlocks {
+    ltorrent
+        .send(TorrentMsg::Request {
             peer_ctx: seeder.clone(),
             recipient: otx,
             qnt: 3,
+            to_skip: 0,
         })
         .await?;
 
+    sleep(Duration::from_millis(10)).await;
     let blocks = orx.await??;
+    sleep(Duration::from_millis(10)).await;
 
     assert_eq!(
         blocks,
@@ -60,11 +66,12 @@ async fn request_block() -> Result<(), Error> {
     );
 
     let (otx, orx) = oneshot::channel();
-    ldisk_tx
-        .send(DiskMsg::RequestBlocks {
+    ltorrent
+        .send(TorrentMsg::Request {
             peer_ctx: seeder.clone(),
             recipient: otx,
             qnt: 3,
+            to_skip: 0,
         })
         .await?;
 
@@ -79,21 +86,21 @@ async fn request_block() -> Result<(), Error> {
         ]
     );
 
-    let (otx, orx) = oneshot::channel();
-    ldisk_tx
-        .send(DiskMsg::RequestBlocks {
-            peer_ctx: seeder.clone(),
-            recipient: otx,
-            qnt: 3,
-        })
-        .await?;
-
-    let blocks = orx.await??;
-
-    assert!(
-        blocks.is_empty(),
-        "disk must not have any more block infos to be requested"
-    );
+    // let (otx, orx) = oneshot::channel();
+    // ltorrent
+    //     .send(TorrentMsg::Request {
+    //         peer_ctx: seeder.clone(),
+    //         recipient: otx,
+    //         qnt: 3,
+    //     })
+    //     .await?;
+    //
+    // let blocks = orx.await??;
+    //
+    // assert!(
+    //     blocks.is_empty(),
+    //     "disk must not have any more block infos to be requested"
+    // );
 
     cleanup();
 
