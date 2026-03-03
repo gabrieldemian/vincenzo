@@ -42,7 +42,7 @@ impl Peer<Connected> {
     /// on the peer wire protocol.
     #[tracing::instrument(name = "peer", skip_all,
         fields(
-            // state = %self.state_log,
+            state = %self.state_log,
             id = %self.state.ctx.id,
         )
     )]
@@ -54,12 +54,9 @@ impl Peer<Connected> {
             .send(TorrentMsg::PeerConnected(self.state.ctx.clone()))
             .await?;
 
-        let mut metadata_interval = interval(Duration::from_millis(100));
+        let mut metadata_interval = interval(Duration::from_millis(300));
         let mut block_interval = interval(Duration::from_millis(300));
-        // let mut rerequest_block_interval =
-        // interval(Duration::from_millis(200));
         let mut help_interval = interval(Duration::from_millis(10_000));
-        // let mut want_blocks_interval = interval(Duration::from_secs(5));
 
         // send interested or uninterested.
         // algorithm:
@@ -101,17 +98,6 @@ impl Peer<Connected> {
                     #[cfg(not(feature = "debug"))]
                     self.request_block_infos().await?;
                 }
-                // _ = want_blocks_interval.tick(),
-                //     if self.can_request() && self.state.in_endgame
-                // => {
-                //     self.want_blocks();
-                // }
-                // _ = rerequest_block_interval.tick(),
-                //     if self.can_rerequest() =>
-                // {
-                //     // #[cfg(not(feature = "debug"))]
-                //     self.rerequest_blocks().await?;
-                // }
                 _ = interested_interval.tick(),
                     if !self.state.seed_only && !self.state.is_paused
                 => {
@@ -127,13 +113,11 @@ impl Peer<Connected> {
                             self.send(Core::Have(piece)).await?;
                         }
                         PeerBrMsg::Pause => {
-                            debug!("pause");
                             self.state.is_paused = true;
                             self.state.ctx.tx.send(PeerMsg::Choke).await?;
                             self.state.ctx.tx.send(PeerMsg::NotInterested).await?;
                         }
                         PeerBrMsg::Resume => {
-                            debug!("resume");
                             self.state.is_paused = false;
                         }
                         PeerBrMsg::Seedonly => {
@@ -144,7 +128,6 @@ impl Peer<Connected> {
                             return Ok(());
                         }
                         PeerBrMsg::HaveInfo => {
-                            debug!("have_info");
                             self.state.have_info = true;
                             self.state.req_man_meta.clear();
                         }
@@ -188,7 +171,7 @@ impl Peer<Connected> {
                             });
                         }
                         PeerMsg::Blocks(mut blocks) => {
-                            // shuffle because these blocks are not unique, sent in endgame mode.
+                            // shuffle because these blocks are not (globally) unique, sent in endgame mode.
                             blocks.shuffle(&mut rand::rng());
                             self.state.req_man_block.enqueue(&blocks);
                             self.state
@@ -292,7 +275,7 @@ impl Peer<Connected> {
 
         let mut should_flush = false;
 
-        match timeout(Duration::from_millis(500), orx).await {
+        match timeout(Duration::from_millis(3_000), orx).await {
             Ok(Ok(Ok(blocks))) => {
                 let len = blocks.len();
                 for block in blocks {
@@ -304,7 +287,7 @@ impl Peer<Connected> {
                     should_flush |= true;
                 }
             }
-            Err(_) => warn!("request deadlocked"),
+            Err(_) => debug!("request deadlocked"),
             _ => {}
         };
 
@@ -402,9 +385,9 @@ impl Peer<Connected> {
         Ok(())
     }
 
+    #[inline]
     /// Send a message to sink and record upload rate, but the sink is not
     /// flushed.
-    #[inline]
     pub(crate) async fn feed(&mut self, core: Core) -> Result<(), Error> {
         self.state.ctx.counter.record_upload(4 + core.len() as u64);
         self.state.sink.feed(core).await?;
@@ -419,8 +402,8 @@ impl Peer<Connected> {
         Ok(())
     }
 
-    /// Run interested algorithm.
     #[inline]
+    /// Run interested algorithm.
     pub(crate) async fn interested(&mut self) -> Result<Option<usize>, Error> {
         let (otx, orx) = oneshot::channel();
 
@@ -442,6 +425,8 @@ impl Peer<Connected> {
         if should_be_interested.is_some() && !am_interested {
             self.state.ctx.am_interested.store(true, Ordering::Release);
             self.state_log[1] = 'i';
+            tracing::Span::current()
+                .record("state", format_args!("{}", self.state_log));
             self.send(Core::Interested).await?;
         }
 
@@ -449,17 +434,22 @@ impl Peer<Connected> {
         if should_be_interested.is_none() && am_interested {
             self.state.ctx.am_interested.store(false, Ordering::Release);
             self.state_log[1] = '-';
+            tracing::Span::current()
+                .record("state", format_args!("{}", self.state_log));
             self.state.sink.send(Core::NotInterested).await?;
         }
         Ok(should_be_interested)
     }
 
-    #[inline]
     /// Enter seed only mode and send Cancel's for in-flight block infos.
+    #[inline]
     pub(crate) async fn seed_only(&mut self) -> Result<(), Error> {
         self.state.seed_only = true;
 
         if self.state.ctx.am_interested.load(Ordering::Acquire) {
+            self.state_log[1] = '-';
+            tracing::Span::current()
+                .record("state", format_args!("{}", self.state_log));
             self.state.ctx.tx.send(PeerMsg::NotInterested).await?;
         }
 
@@ -506,10 +496,7 @@ impl Peer<Connected> {
 
     /// Handle a block sent by the core codec.
     #[inline]
-    pub(crate) async fn handle_block(
-        &mut self,
-        block: Block,
-    ) -> Result<(), Error> {
+    pub(crate) fn handle_block(&mut self, block: Block) -> Result<(), Error> {
         let block_info = BlockInfo::from(&block);
 
         // this block could have been fulfilled by another peer on endgame.
@@ -557,9 +544,10 @@ impl Peer<Connected> {
 
     /// Take outgoing block infos and metadata pieces and send them back to the
     /// disk so that other peers can request them.
+    #[inline]
     pub(crate) fn free_pending_blocks(&mut self) {
         let infos = self.state.req_man_block.drain();
-        tracing::debug!("returning {} blocks", infos.len());
+        debug!("returning {} blocks", infos.len());
 
         if !infos.is_empty() {
             let _ = self.state.free_tx.send(ReturnToDisk::Block(
@@ -569,7 +557,7 @@ impl Peer<Connected> {
         }
 
         let metas = self.state.req_man_meta.drain();
-        debug!("returning {} pieces", metas.len());
+        debug!("returning {} meta pieces", metas.len());
 
         if !metas.is_empty() {
             let _ = self.state.free_tx.send(ReturnToDisk::Metadata(
@@ -591,6 +579,7 @@ impl Peer<Connected> {
         self.state.req_man_meta.set_limit(n as usize);
         self.state.req_man_block.set_limit(n as usize);
 
+        // todo: how can I not need to do this disgusting garbage?
         if let Some(meta_size) = ext.metadata_size {
             self.state
                 .ctx

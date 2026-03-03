@@ -45,12 +45,6 @@ impl Torrent<Connected, FromMetaInfo> {
             select! {
                 Some(msg) = self.rx.recv() => {
                     match msg {
-                        TorrentMsg::FreePendingBlocks(pieces) => {
-                            let r = &mut self.state.peer_pieces_req;
-                            for p in pieces {
-                                r.safe_set(p, false);
-                            }
-                        }
                         TorrentMsg::Request{peer_ctx, qnt, recipient} => {
                             let pl = self.source.meta_info.info.piece_length;
                             let total_bytes = qnt * BLOCK_LEN;

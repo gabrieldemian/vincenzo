@@ -40,7 +40,6 @@ pub enum PeerBrMsg {
 pub enum TorrentMsg {
     Endgame,
     SendToAllPeers(PeerId, Vec<BlockInfo>, Vec<BlockInfo>),
-    FreePendingBlocks(HashSet<usize>),
 
     /// When a peer wants to request blocks.
     Request {

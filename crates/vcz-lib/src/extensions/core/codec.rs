@@ -122,6 +122,8 @@ impl ExtMsgHandler<Core> for Peer<peer::Connected> {
             Core::Unchoke => {
                 self.state.ctx.peer_choking.store(false, Ordering::Release);
                 self.state_log[2] = 'u';
+                tracing::Span::current()
+                    .record("state", format_args!("{}", self.state_log));
                 debug!("< unchoke");
             }
             Core::Choke => {
@@ -129,16 +131,22 @@ impl ExtMsgHandler<Core> for Peer<peer::Connected> {
                 self.state.ctx.peer_choking.store(true, Ordering::Release);
                 self.free_pending_blocks();
                 self.state_log[2] = '-';
+                tracing::Span::current()
+                    .record("state", format_args!("{}", self.state_log));
             }
             Core::Interested => {
                 debug!("< interested",);
                 self.state.ctx.peer_interested.store(true, Ordering::Release);
                 self.state_log[3] = 'i';
+                tracing::Span::current()
+                    .record("state", format_args!("{}", self.state_log));
             }
             Core::NotInterested => {
                 debug!("< not_interested");
                 self.state.ctx.peer_interested.store(false, Ordering::Release);
                 self.state_log[3] = '-';
+                tracing::Span::current()
+                    .record("state", format_args!("{}", self.state_log));
             }
             Core::Have(piece) => {
                 debug!("< have {piece}");
@@ -154,7 +162,7 @@ impl ExtMsgHandler<Core> for Peer<peer::Connected> {
                     .await?;
             }
             Core::Piece(block) => {
-                self.handle_block(block).await?;
+                self.handle_block(block)?;
             }
             Core::Cancel(block_info) => {
                 debug!("< cancel {block_info:?}");

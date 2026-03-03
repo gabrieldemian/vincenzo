@@ -187,7 +187,7 @@ pub struct Disk {
 const FILE_CACHE_CAPACITY: usize = 512;
 
 /// For how long a file must be inactive to be deleted from the LRU cache.
-const DURATION_LRU_POP: Duration = Duration::from_millis(10_000);
+const DURATION_LRU_POP: Duration = Duration::from_millis(30_000);
 
 impl Disk {
     pub fn new(
@@ -1068,9 +1068,9 @@ impl Disk {
             // they are optimized to get close to 3000 pieces.
             // usually, small torrents < 1.5 KB have between 256kb - 512kb.
             // medium torrents > 10 GB around 4mb - 32mb.
-            // todo: some OSses might not support Free, maybe consider creating
-            // a "last acessed" range and call dontneed if > 30
-            // seconds or something like that.
+            // todo: consider creating a "last acessed" range and call dontneed
+            // if > 30 seconds or something like that. because this advice here
+            // only works for downloads.
             unsafe {
                 if let Err(e) = mmap.unchecked_advise_range(
                     UncheckedAdvice::DontNeed,
@@ -1089,6 +1089,7 @@ impl Disk {
     }
 
     /// Sync all dirty pages of all files of the given torrent.
+    #[inline]
     async fn sync_torrent(&mut self, hash: &InfoHash) -> Result<(), Error> {
         let cache = self
             .torrent_cache
@@ -1112,6 +1113,7 @@ impl Disk {
 
     /// Get the correct piece size, the last piece of a torrent
     /// might be smaller than the other pieces.
+    #[inline]
     fn piece_size(
         &self,
         info_hash: &InfoHash,
@@ -1132,6 +1134,7 @@ impl Disk {
 
     /// Get the base path of a torrent directory.
     /// Which is always "download_dir/name_of_torrent".
+    #[inline]
     pub fn base_path(&self, info_hash: &InfoHash) -> PathBuf {
         let info = self.torrent_info.get(info_hash).unwrap();
         let mut base = self.config.download_dir.clone();
@@ -1139,6 +1142,7 @@ impl Disk {
         base
     }
 
+    #[inline]
     async fn get_cached_read_mmap(
         &mut self,
         path: &Arc<Path>,
@@ -1159,6 +1163,7 @@ impl Disk {
         Ok(mmap)
     }
 
+    #[inline]
     async fn get_cached_write_mmap(
         &mut self,
         path: &Arc<Path>,
@@ -1219,6 +1224,7 @@ impl Disk {
     }
 
     /// Add a new torrent to Disk that came from the frontend.
+    #[inline]
     async fn add_torrent(
         &mut self,
         torrent_ctx: Arc<TorrentCtx>,
@@ -1291,6 +1297,7 @@ impl Disk {
         path.exists()
     }
 
+    #[inline]
     fn get_path_of(&self, dir: MetadataDir) -> PathBuf {
         match dir {
             MetadataDir::Queue => self.queue_torrents_path(),
@@ -1341,6 +1348,7 @@ impl Disk {
         Ok(())
     }
 
+    #[inline]
     fn verify_piece(
         piece_index: usize,
         mmaps: &[(&FileMetadata, Arc<Mmap>)],
@@ -1403,6 +1411,7 @@ impl Disk {
     /// The function will get the blocks in cache,
     /// if the cache was cleared, the function will not work.
     #[tracing::instrument(skip(self, info_hash))]
+    #[inline]
     pub async fn validate_piece(
         &mut self,
         info_hash: &InfoHash,

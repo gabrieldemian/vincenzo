@@ -18,12 +18,6 @@ impl Torrent<Connected, FromMagnet> {
             select! {
                 Some(msg) = self.rx.recv() => {
                     match msg {
-                        TorrentMsg::FreePendingBlocks(pieces) => {
-                            let r = &mut self.state.peer_pieces_req;
-                            for p in pieces {
-                                r.safe_set(p, false);
-                            }
-                        }
                         TorrentMsg::Request{peer_ctx, qnt, recipient} => {
                             let pl = self.source.info.as_ref().unwrap().piece_length;
                             let pieces_wanted = qnt.div_ceil(pl);

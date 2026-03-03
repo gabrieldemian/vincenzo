@@ -476,7 +476,6 @@ impl peer::Peer<Idle> {
                 req_man_meta: RequestManager::new(),
                 have_info: false,
                 in_endgame: false,
-                // reserved: peer_handshake.reserved,
                 rx,
             },
         };
