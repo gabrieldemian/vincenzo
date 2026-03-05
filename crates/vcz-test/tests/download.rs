@@ -19,7 +19,7 @@ mod common;
 #[tokio::test]
 async fn download() -> Result<(), Error> {
     let (leecher, seeder, cleanup) = common::setup_pair().await?;
-    let (ldisk_tx, _ltorrent, leecher) = leecher;
+    let (_ldisk_tx, _ltorrent, leecher) = leecher;
     let (sdisk_tx, storrent, seeder) = seeder;
 
     // ! leecher and seeder are in switched perspectives.

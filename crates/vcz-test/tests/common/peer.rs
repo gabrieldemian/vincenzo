@@ -28,8 +28,13 @@ impl PeerBuilder<Leecher> {
         spawn(async move { daemon.run().await });
         let info_hash = metainfo.info.info_hash.clone();
         disk.read_metainfos_and_add(MetadataDir::Queue).await?;
-        let torrent_tx = disk.torrent_ctxs.get(&info_hash).unwrap().tx.clone();
-        disk.set_piece_strategy(&info_hash, PieceStrategy::Sequential).await?;
+        sleep(Duration::from_millis(50)).await;
+        let torrent_tx = disk
+            .torrent_ctxs
+            .get(&info_hash)
+            .expect("no torrent_ctx leecher")
+            .tx
+            .clone();
         spawn(async move { disk.run().await });
         Ok((p.0, disk_tx, torrent_tx))
     }
@@ -44,14 +49,19 @@ impl PeerBuilder<Seeder> {
         self,
     ) -> Result<(PeerId, mpsc::Sender<DiskMsg>, mpsc::Sender<TorrentMsg>), Error>
     {
-        let (mut disk, mut daemon, metainfo) = setup_complete_torrent().await?;
+        let (mut disk, mut daemon, metainfo) = setup_complete_torrent()?;
         let p = get_p(&daemon);
         let disk_tx = disk.tx.clone();
         spawn(async move { daemon.run().await });
         let info_hash = metainfo.info.info_hash.clone();
+        sleep(Duration::from_millis(50)).await;
         disk.read_metainfos_and_add(MetadataDir::Complete).await?;
-        let torrent_tx = disk.torrent_ctxs.get(&info_hash).unwrap().tx.clone();
-        disk.set_piece_strategy(&info_hash, PieceStrategy::Sequential).await?;
+        let torrent_tx = disk
+            .torrent_ctxs
+            .get(&info_hash)
+            .expect("no torrent_ctx for seeder")
+            .tx
+            .clone();
         spawn(async move { disk.run().await });
         Ok((p.0, disk_tx, torrent_tx))
     }

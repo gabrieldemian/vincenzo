@@ -32,14 +32,14 @@ pub struct Config {
 
     /// Default 500
     #[argh(option, description = "max global TCP connections")]
-    pub max_global_peers: Option<u32>,
+    pub max_global_peers: Option<usize>,
 
     /// Default 50
     #[argh(
         option,
         description = "max peers in each torrent, capped by `max_global_peers"
     )]
-    pub max_torrent_peers: Option<u32>,
+    pub max_torrent_peers: Option<usize>,
 
     #[argh(option, description = "if the client addr is ipv6")]
     pub is_ipv6: Option<bool>,
@@ -87,7 +87,7 @@ impl Config {
         Ok(Config::merge(file_config, cli_config).resolve())
     }
 
-    #[cfg(feature = "debug")]
+    #[cfg(feature = "integration-test")]
     pub fn load_test() -> ResolvedConfig {
         let test_files_dir =
             Self::find_workspace_root().unwrap().join("test-files");
@@ -131,7 +131,7 @@ impl Config {
     }
 
     /// Get the workspace root path
-    #[cfg(feature = "debug")]
+    #[cfg(feature = "integration-test")]
     fn find_workspace_root() -> Option<PathBuf> {
         let mut cur = std::env::current_dir().ok()?;
         // cur.parent()?.parent().map(|v| v.into())
@@ -244,6 +244,10 @@ impl Config {
         s.parse::<u32>().map_err(|e| e.into())
     }
 
+    fn parse_usize(s: &str) -> Result<usize, Error> {
+        s.parse::<usize>().map_err(|e| e.into())
+    }
+
     fn parse_quoted_string(raw: &str) -> Result<String, Error> {
         let trimmed = raw.trim();
         if !trimmed.starts_with('"') || !trimmed.ends_with('"') {
@@ -296,10 +300,10 @@ impl Config {
         let local_peer_port =
             map.get("local_peer_port").map(|v| Self::parse_u16(v).into_ok());
         let max_global_peers =
-            map.get("max_global_peers").map(|v| Self::parse_u32(v).into_ok());
+            map.get("max_global_peers").map(|v| Self::parse_usize(v).into_ok());
         let key = map.get("key").map(|v| Self::parse_u32(v).into_ok());
         let max_torrent_peers =
-            map.get("max_torrent_peers").map(|v| Self::parse_u32(v).into_ok());
+            map.get("max_torrent_peers").map(|v| Self::parse_usize(v).into_ok());
         let daemon_addr = map
             .get("daemon_addr")
             .map(|v| Self::parse_quoted_string(v).into_ok());
@@ -338,8 +342,8 @@ pub struct ResolvedConfig {
     pub config_file: PathBuf,
     pub daemon_addr: SocketAddr,
     pub local_peer_port: u16,
-    pub max_global_peers: u32,
-    pub max_torrent_peers: u32,
+    pub max_global_peers: usize,
+    pub max_torrent_peers: usize,
     pub is_ipv6: bool,
     pub log: bool,
     pub quit_after_complete: bool,

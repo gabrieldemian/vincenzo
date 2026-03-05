@@ -173,7 +173,7 @@ impl TrackerTrait for Tracker<Udp> {
             transaction_id: rand::random(),
             ip_address: 0,
             key: self.config.key,
-            num_want: self.config.max_torrent_peers,
+            num_want: self.config.max_torrent_peers as u32,
             port: self.config.local_peer_port,
             compact: 1,
         };

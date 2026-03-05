@@ -3,11 +3,9 @@ use crate::{PEER_MSG_BOUND, TORRENT_MSG_BOUND, extensions::BLOCK_LEN};
 use bendy::encoding::ToBencode;
 
 impl Torrent<Connected, FromMetaInfo> {
-    /// Run the Torrent main event loop to listen to internal [`TorrentMsg`].
-    #[tracing::instrument(name = "torrent", skip_all,
-        fields(info = ?self.source.info_hash())
-    )]
-    pub async fn run(&mut self) -> Result<(), Error> {
+    pub(super) async fn inner_run(
+        mut self,
+    ) -> Result<Option<Torrent<Connected, FromMetaInfo>>, Error> {
         debug!("running torrent: {:?}", self.name);
 
         match self.status {
@@ -45,6 +43,9 @@ impl Torrent<Connected, FromMetaInfo> {
             select! {
                 Some(msg) = self.rx.recv() => {
                     match msg {
+                        TorrentMsg::Promote => {
+                            // todo
+                        }
                         TorrentMsg::Request{peer_ctx, qnt, recipient} => {
                             let pl = self.source.meta_info.info.piece_length;
                             let total_bytes = qnt * BLOCK_LEN;
@@ -152,10 +153,6 @@ impl Torrent<Connected, FromMetaInfo> {
                         TorrentMsg::HaveInfo(tx) => {
                             let _ = tx.send(true);
                         }
-                        TorrentMsg::GetMetadataSize(tx) => {
-                            let m = self.source.meta_info.info.metadata_size;
-                            let _ = tx.send(Some(m));
-                        }
                         TorrentMsg::GetPeerBitfield(id, tx) => {
                             let bitfield = self.state.peer_pieces.get(&id).cloned();
                             let _ = tx.send(bitfield);
@@ -195,7 +192,7 @@ impl Torrent<Connected, FromMetaInfo> {
                         }
                         TorrentMsg::Quit => {
                             self.quit();
-                            return Ok(());
+                            return Ok(None);
                         }
                         _ => {}
                     }
@@ -206,7 +203,6 @@ impl Torrent<Connected, FromMetaInfo> {
                 _ = self.state.reconnect_interval.tick(),
                     if !matches!(self.status, TorrentStatus::Error(_)) =>
                 {
-                    // self.reconnect_interval().await;
                     let _ = self.spawn_outbound_peers(true).await;
                 }
                 _ = self.state.log_rates_interval.tick() => {
@@ -218,9 +214,26 @@ impl Torrent<Connected, FromMetaInfo> {
                 // for the unchoke algorithm, the local client is interested in the best
                 // uploaders (from their perspctive) (tit-for-tat)
                 _ = self.state.unchoke_interval.tick() => {
-                    #[cfg(not(feature = "debug"))]
+                    #[cfg(not(feature = "integration-test"))]
                     self.unchoke().await;
                 }
+            }
+        }
+    }
+
+    /// Run the Torrent main event loop to listen to internal [`TorrentMsg`].
+    #[tracing::instrument(name = "torrent", skip_all,
+        fields(info = ?self.source.meta_info.info.info_hash)
+    )]
+    pub async fn run(self) -> Result<(), Error> {
+        match self.inner_run().await {
+            Ok(o) => match o {
+                Some(me) => return Box::pin(me.run()).await,
+                None => Ok(()),
+            },
+            Err(e) => {
+                println!("error running torrent {e:?}");
+                Err(e)
             }
         }
     }
@@ -246,13 +259,14 @@ impl Torrent<Idle, FromMetaInfo> {
             tx,
             disk_tx,
             info_hash: meta_info.info.info_hash.clone(),
+            metadata_size,
         });
 
         Self {
             config,
             bitfield,
             source: FromMetaInfo { meta_info },
-            state: Idle { metadata_size },
+            state: Idle {},
             name,
             status: TorrentStatus::default(),
             daemon_ctx,

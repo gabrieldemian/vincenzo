@@ -62,8 +62,6 @@ pub enum DiskMsg {
     /// just after the metainfo was downloaded.
     AddTorrent(Arc<TorrentCtx>, Arc<Info>),
 
-    MetadataSize(InfoHash, usize),
-
     DeleteTorrent(InfoHash),
 
     FinishedDownload(InfoHash),
@@ -94,6 +92,7 @@ pub enum DiskMsg {
     RequestMetadata {
         info_hash: InfoHash,
         recipient: Sender<Vec<MetadataPiece>>,
+        metadata_size: usize,
         qnt: usize,
     },
 
@@ -269,23 +268,6 @@ impl Disk {
                             ).await;
                             self.sync_torrent(&info_hash).await?;
                         }
-                        DiskMsg::MetadataSize(info_hash, size) => {
-                            if self.metadata_pieces.contains_key(
-                                &info_hash,
-                            ) { continue };
-
-                            let pieces = size.div_ceil(BLOCK_LEN);
-                            info!("meta pieces {pieces}");
-
-                            let pieces =
-                                (0..pieces)
-                                .map(MetadataPiece).collect();
-
-                            self.metadata_pieces.insert(
-                                info_hash,
-                                pieces,
-                            );
-                        }
                         DiskMsg::AddTorrent(torrent, info) => {
                             let _ = self.add_torrent(torrent, info).await;
                         }
@@ -306,9 +288,9 @@ impl Disk {
                                 .await;
                             let _ = recipient.send(infos);
                         }
-                        DiskMsg::RequestMetadata { qnt, recipient, info_hash } => {
+                        DiskMsg::RequestMetadata { qnt, recipient, info_hash, metadata_size } => {
                             let pieces = self
-                                .request_metadata(&info_hash, qnt)
+                                .request_metadata(&info_hash, qnt, metadata_size)
                                 .unwrap_or_default();
 
                             let _ = recipient.send(pieces);
@@ -568,7 +550,7 @@ impl Disk {
         let piece_strategy =
             *self.piece_strategy.entry(info_hash.clone()).or_default();
 
-        self.set_piece_strategy(info_hash, piece_strategy).await?;
+        self.set_piece_strategy(info_hash, piece_strategy)?;
 
         Ok(())
     }
@@ -758,15 +740,24 @@ impl Disk {
     }
 
     /// Request available metadata pieces.
+    #[inline]
     pub fn request_metadata(
         &mut self,
         info_hash: &InfoHash,
         qnt: usize,
+        metadata_size: usize,
     ) -> Result<Vec<MetadataPiece>, Error> {
-        let metas = self
-            .metadata_pieces
-            .get_mut(info_hash)
-            .ok_or(Error::TorrentDoesNotExist)?;
+        let metas = self.metadata_pieces.get_mut(info_hash);
+        let metas = match metas {
+            Some(metas) => metas,
+            None => {
+                let pieces = metadata_size.div_ceil(BLOCK_LEN);
+                info!("meta pieces {pieces}");
+                let pieces = (0..pieces).map(MetadataPiece).collect();
+                self.metadata_pieces.insert(info_hash.clone(), pieces);
+                self.metadata_pieces.get_mut(info_hash).unwrap()
+            }
+        };
 
         if metas.is_empty() {
             return Ok(vec![]);
@@ -1468,7 +1459,7 @@ impl Disk {
         Err(Error::TorrentDoesNotExist)
     }
 
-    pub async fn set_piece_strategy(
+    pub fn set_piece_strategy(
         &mut self,
         info_hash: &InfoHash,
         s: PieceStrategy,

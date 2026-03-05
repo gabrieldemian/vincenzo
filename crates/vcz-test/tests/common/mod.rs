@@ -33,7 +33,7 @@ use vcz_lib::{
     DISK_MSG_BOUND,
     config::{Config, ResolvedConfig},
     daemon::Daemon,
-    disk::{Disk, DiskMsg, PieceStrategy, ReturnToDisk},
+    disk::{Disk, DiskMsg, ReturnToDisk},
     error::Error,
     metainfo::MetaInfo,
     peer::{PeerCtx, PeerId},
@@ -41,11 +41,11 @@ use vcz_lib::{
 };
 
 /// Setup a torrent that is fully downloaded on disk.
-async fn setup_complete_torrent() -> Result<(Disk, Daemon, MetaInfo), Error> {
+fn setup_complete_torrent() -> Result<(Disk, Daemon, MetaInfo), Error> {
     // `load_test` points to the complete location which is inside the repo.
     let mut config = Config::load_test();
     config.key = rand::random();
-    setup_client(Arc::new(config)).await
+    setup_client(Arc::new(config))
 }
 
 /// Setup a torrent that doesn't have any files from the torrent.
@@ -54,7 +54,7 @@ async fn setup_incomplete_torrent() -> Result<(Disk, Daemon, MetaInfo), Error> {
     config.download_dir = "/tmp/fakedownload".into();
     config.metadata_dir = "/tmp/fakemetadata".into();
     config.key = rand::random();
-    let r = setup_client(Arc::new(config)).await?;
+    let r = setup_client(Arc::new(config))?;
     let mut p = r.0.config.metadata_dir.clone();
     // right now downloads start by adding metainfo files on the queue folder.
     p.push("queue");
@@ -82,7 +82,7 @@ fn cleanup() {
 ///
 /// Create a [`Disk`] and [`Daemon`] and the [`MetaInfo`] of the test torrent
 /// but doesn't spawn any event loops or send any messages.
-async fn setup_client(
+fn setup_client(
     config: Arc<ResolvedConfig>,
 ) -> Result<(Disk, Daemon, MetaInfo), Error> {
     let (disk_tx, disk_rx) = mpsc::channel::<DiskMsg>(DISK_MSG_BOUND);
@@ -232,7 +232,6 @@ pub async fn setup_pair() -> Result<
 
     assert_eq!(sctx.id, s.0);
     assert_eq!(lctx.id, l.0);
-
     Ok(((l.1, l.2, lctx), (s.1, s.2, sctx), || cleanup()))
 }
 
@@ -242,5 +241,5 @@ async fn get_peer_ctx(
 ) -> Arc<PeerCtx> {
     let (otx, orx) = oneshot::channel();
     let _ = tx.send(TorrentMsg::GetPeer(peer_id, otx)).await;
-    orx.await.unwrap().unwrap()
+    orx.await.expect("aaa").expect("bbbbb")
 }

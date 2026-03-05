@@ -95,13 +95,13 @@ impl Peer<Connected> {
                     // some intervals are only ran in production (not debug)
                     // because I want to run this deterministically
                     // and manually in integration tests.
-                    #[cfg(not(feature = "debug"))]
+                    #[cfg(not(feature = "integration-test"))]
                     self.request_block_infos().await?;
                 }
                 _ = interested_interval.tick(),
                     if !self.state.seed_only && !self.state.is_paused
                 => {
-                    #[cfg(not(feature = "debug"))]
+                    #[cfg(not(feature = "integration-test"))]
                     self.interested().await?;
                 }
                 _ = keep_alive_interval.tick() => {
@@ -341,6 +341,12 @@ impl Peer<Connected> {
                 recipient: otx,
                 qnt,
                 info_hash: self.state.ctx.torrent_ctx.info_hash.clone(),
+                metadata_size: self
+                    .state
+                    .extension
+                    .as_ref()
+                    .and_then(|v| v.metadata_size)
+                    .unwrap_or_default(),
             })
             .await?;
 
@@ -578,17 +584,6 @@ impl Peer<Connected> {
 
         self.state.req_man_meta.set_limit(n as usize);
         self.state.req_man_block.set_limit(n as usize);
-
-        // todo: how can I not need to do this disgusting garbage?
-        if let Some(meta_size) = ext.metadata_size {
-            self.state
-                .ctx
-                .torrent_ctx
-                .tx
-                .send(TorrentMsg::MetadataSize(meta_size))
-                .await?;
-        }
-
         self.state.extension = Some(ext);
 
         Ok(())

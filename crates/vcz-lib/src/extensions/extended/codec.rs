@@ -6,10 +6,8 @@ use crate::{
     error::Error,
     extensions::{ExtMsg, ExtMsgHandler, ExtendedMessage},
     peer::{self, Direction, Peer},
-    torrent::TorrentMsg,
 };
 use bendy::encoding::ToBencode;
-use tokio::sync::oneshot;
 
 impl ExtMsgHandler<Extension> for Peer<peer::Connected> {
     type Error = Error;
@@ -17,16 +15,7 @@ impl ExtMsgHandler<Extension> for Peer<peer::Connected> {
     async fn handle_msg(&mut self, msg: Extension) -> Result<(), Self::Error> {
         // send ours extended msg if outbound
         if self.state.ctx.direction == Direction::Outbound {
-            let metadata_size = {
-                let (otx, orx) = oneshot::channel();
-                self.state
-                    .ctx
-                    .torrent_ctx
-                    .tx
-                    .send(TorrentMsg::GetMetadataSize(otx))
-                    .await?;
-                orx.await?
-            };
+            let metadata_size = self.state.ctx.torrent_ctx.metadata_size;
             let ext = Extension::supported(metadata_size).to_bencode()?;
             self.feed(ExtendedMessage(Extension::ID, ext).into()).await?;
         }

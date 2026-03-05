@@ -200,6 +200,7 @@ impl Info {
 
     /// Calculate how many blocks there are per piece
     #[inline]
+    #[cfg(test)]
     pub(crate) fn blocks_per_piece(&self) -> usize {
         self.piece_length.div_ceil(BLOCK_LEN)
     }

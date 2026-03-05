@@ -16,7 +16,7 @@ use crate::{
     bitfield::{Bitfield, VczBitfield},
     config::ResolvedConfig,
     counter::Counter,
-    daemon::{DaemonCtx, DaemonMsg},
+    daemon::{CONNECTED_PEERS, DaemonCtx, DaemonMsg},
     disk::{DiskMsg, ReturnToDisk},
     error::Error,
     extensions::BLOCK_LEN,
@@ -50,9 +50,6 @@ pub(crate) struct Torrent<S: State, M: TorrentSource> {
     daemon_ctx: Arc<DaemonCtx>,
     pub status: TorrentStatus,
     rx: mpsc::Receiver<TorrentMsg>,
-
-    // last_recv: Instant,
-    // inflight: Vec<BlockInfo>,
     bitfield: Bitfield,
     state: S,
     pub source: M,
@@ -66,6 +63,7 @@ pub struct TorrentCtx {
     pub tx: mpsc::Sender<TorrentMsg>,
     pub btx: broadcast::Sender<PeerBrMsg>,
     pub info_hash: InfoHash,
+    pub metadata_size: Option<usize>,
 }
 
 impl<M: TorrentSource> Torrent<Idle, M> {
@@ -75,17 +73,6 @@ impl<M: TorrentSource> Torrent<Idle, M> {
     /// The function will return when it receives an announce from the first
     /// tracker, the other ones will be awaited for in the background.
     pub(crate) async fn start(self) -> Result<Torrent<Connected, M>, Error> {
-        if let Some(metadata_size) = self.state.metadata_size {
-            let _ = self
-                .daemon_ctx
-                .tx
-                .send(DaemonMsg::SetMetadataSize(
-                    metadata_size,
-                    self.ctx.info_hash.clone(),
-                ))
-                .await;
-        }
-
         let org_trackers = self.source.organize_trackers();
         let udp_trackers = org_trackers.get("udp").unwrap().clone();
         let udp_trackers_len = udp_trackers.len();
@@ -204,14 +191,11 @@ impl<M: TorrentSource> Torrent<Idle, M> {
                 size,
                 unchoked_peers: Vec::with_capacity(3),
                 opt_unchoked_peer: None,
-                error_peers: Vec::with_capacity(
-                    self.config.max_torrent_peers as usize,
-                ),
+                error_peers: Vec::with_capacity(self.config.max_torrent_peers),
                 stats,
                 idle_peers: idle_peers.into_iter().collect(),
-                metadata_size: self.state.metadata_size,
                 connected_peers: Vec::with_capacity(
-                    self.config.max_torrent_peers as usize,
+                    self.config.max_torrent_peers,
                 ),
                 info_pieces: BTreeMap::new(),
                 peer_pieces_req: Bitfield::from_piece(self.bitfield.len()),
@@ -266,6 +250,52 @@ impl<M: TorrentSource, S: torrent::State> Torrent<S, M> {
     }
 }
 
+impl Torrent<Connected, FromMetaInfo> {
+    async fn downloaded_piece(&mut self, piece: usize) {
+        debug!("downloaded_piece {piece}");
+
+        self.bitfield.safe_set(piece, true);
+        // self.state.peer_pieces_req.set(piece, false);
+
+        for diff in self.state.peer_pieces_diff.values_mut() {
+            diff.safe_set(piece, false);
+        }
+
+        let _ = self.ctx.btx.send(PeerBrMsg::HavePiece(piece));
+
+        let total_pieces = self.bitfield.len();
+        let downloaded_pieces = self.bitfield.count_ones();
+
+        debug!("downloaded pieces {}", downloaded_pieces);
+
+        let is_download_complete = downloaded_pieces >= total_pieces;
+
+        if !is_download_complete && self.status != TorrentStatus::Seeding {
+            return;
+        }
+
+        info!("downloaded entire torrent, entering seed only mode.");
+        self.status = TorrentStatus::Seeding;
+
+        let _ = self.state.tracker_tx.send(TrackerMsg::Announce {
+            event: Event::Completed,
+            downloaded: self.state.counter.total_download(),
+            uploaded: self.state.counter.total_upload(),
+            left: 0,
+        });
+
+        let _ = self
+            .ctx
+            .disk_tx
+            .send(DiskMsg::FinishedDownload(
+                self.source.meta_info.info.info_hash.clone(),
+            ))
+            .await;
+
+        let _ = self.ctx.btx.send(PeerBrMsg::Seedonly);
+    }
+}
+
 impl<M: TorrentSource> Torrent<Connected, M> {
     async fn reconnect_peers(&self) -> Result<(), Error> {
         // trace!(
@@ -275,7 +305,7 @@ impl<M: TorrentSource> Torrent<Connected, M> {
         // );
         // let ctx = self.ctx.clone();
         // let daemon_ctx = self.daemon_ctx.clone();
-        // let metadata_size = self.state.metadata_size;
+        // let metadata_size = self.ctx.metadata_size;
         // let is_seed_only = self.status == TorrentStatus::Seeding;
         //
         // for p in &self.state.error_peers {
@@ -432,72 +462,6 @@ impl<M: TorrentSource> Torrent<Connected, M> {
         }
     }
 
-    async fn metadata_size(&mut self, metadata_size: usize) {
-        if self.state.metadata_size.is_some() {
-            return;
-        };
-        self.state.metadata_size = Some(metadata_size);
-
-        let info_hash = self.ctx.info_hash.clone();
-
-        let _ = self
-            .daemon_ctx
-            .tx
-            .send(DaemonMsg::SetMetadataSize(
-                metadata_size,
-                self.ctx.info_hash.clone(),
-            ))
-            .await;
-
-        let _ = self
-            .ctx
-            .disk_tx
-            .send(DiskMsg::MetadataSize(info_hash, metadata_size))
-            .await;
-    }
-
-    async fn downloaded_piece(&mut self, piece: usize) {
-        debug!("downloaded_piece {piece}");
-
-        self.bitfield.safe_set(piece, true);
-        // self.state.peer_pieces_req.set(piece, false);
-
-        for diff in self.state.peer_pieces_diff.values_mut() {
-            diff.safe_set(piece, false);
-        }
-
-        let _ = self.ctx.btx.send(PeerBrMsg::HavePiece(piece));
-
-        let total_pieces = self.bitfield.len();
-        let downloaded_pieces = self.bitfield.count_ones();
-
-        debug!("downloaded pieces {}", downloaded_pieces);
-
-        let is_download_complete = downloaded_pieces >= total_pieces;
-
-        if !is_download_complete && self.status != TorrentStatus::Seeding {
-            return;
-        }
-
-        info!("downloaded entire torrent, entering seed only mode.");
-        self.status = TorrentStatus::Seeding;
-
-        let _ = self.state.tracker_tx.send(TrackerMsg::Announce {
-            event: Event::Completed,
-            downloaded: self.state.counter.total_download(),
-            uploaded: self.state.counter.total_upload(),
-            left: 0,
-        });
-
-        let _ = self
-            .ctx
-            .disk_tx
-            .send(DiskMsg::FinishedDownload(self.source.info_hash()))
-            .await;
-
-        let _ = self.ctx.btx.send(PeerBrMsg::Seedonly);
-    }
-
     async fn peer_error(&mut self, addr: SocketAddr) {
         self.state.error_peers.push(Peer::<peer::PeerError>::new(addr));
         self.state.connected_peers.retain(|v| v.remote_addr != addr);
@@ -511,17 +475,14 @@ impl<M: TorrentSource> Torrent<Connected, M> {
         {
             self.state.opt_unchoked_peer = None;
         }
-
-        let _ =
-            self.daemon_ctx.tx.send(DaemonMsg::DecrementConnectedPeers).await;
+        CONNECTED_PEERS.fetch_sub(1, Ordering::Acquire);
     }
 
     async fn peer_connected(&mut self, ctx: Arc<PeerCtx>) {
         self.state.connected_peers.push(ctx.clone());
         self.state.error_peers.retain(|v| v.state.addr != ctx.remote_addr);
         self.state.idle_peers.remove(&ctx.remote_addr);
-        let _ =
-            self.daemon_ctx.tx.send(DaemonMsg::IncrementConnectedPeers).await;
+        CONNECTED_PEERS.fetch_add(1, Ordering::Acquire);
     }
 
     fn toggle_pause(&mut self) {
@@ -567,20 +528,18 @@ impl<M: TorrentSource> Torrent<Connected, M> {
 
     /// Return a number of available connections that the torrent can do.
     async fn available_connections(&self) -> Result<usize, Error> {
-        let (otx, orx) = oneshot::channel();
-        self.daemon_ctx.tx.send(DaemonMsg::GetConnectedPeers(otx)).await?;
-        let daemon_connected_peers = orx.await?;
+        let daemon_connected_peers = CONNECTED_PEERS.load(Ordering::Relaxed);
         let max_global_peers = self.config.max_global_peers;
         let max_torrent_peers = self.config.max_torrent_peers;
         let currently_active = self.state.connected_peers.len();
 
-        if currently_active >= max_torrent_peers as usize
+        if currently_active >= max_torrent_peers
             || daemon_connected_peers >= max_global_peers
         {
             return Ok(0);
         }
 
-        Ok(max_torrent_peers as usize - currently_active)
+        Ok(max_torrent_peers - currently_active)
     }
 
     pub(crate) async fn peer_want_blocks(
@@ -662,7 +621,7 @@ impl<M: TorrentSource> Torrent<Connected, M> {
         let ctx = self.ctx.clone();
         let daemon_ctx = self.daemon_ctx.clone();
         let to_request = self.available_connections().await?;
-        let metadata_size = self.state.metadata_size;
+        let metadata_size = self.ctx.metadata_size;
         let is_seed_only = self.status == TorrentStatus::Seeding;
 
         for peer in self.state.idle_peers.iter().take(to_request).cloned() {

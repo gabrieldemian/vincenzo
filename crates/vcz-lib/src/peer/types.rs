@@ -1,7 +1,7 @@
 use crate::{
     PEER_MSG_BOUND, VERSION_PROT,
     counter::Counter,
-    daemon::{DaemonCtx, DaemonMsg},
+    daemon::DaemonCtx,
     disk::ReturnToDisk,
     error::Error,
     extensions::{
@@ -372,7 +372,6 @@ impl peer::Peer<Idle> {
         let local = socket.local_addr()?;
 
         let mut socket = Framed::new(socket, HandshakeCodec);
-        let (otx, orx) = oneshot::channel();
 
         // wait and validate their handshake
         let peer_handshake = match socket.next().await {
@@ -396,15 +395,12 @@ impl peer::Peer<Idle> {
         // in an inbound connection, the client can only know which torrent the
         // peer wants when the peer sends their first handshake, so we send a
         // message to the daemon to get it.
-        daemon_ctx
-            .tx
-            .send(DaemonMsg::GetMetadataSize(
-                otx,
-                peer_handshake.info_hash.clone(),
-            ))
-            .await?;
 
-        let metadata_size = orx.await?;
+        let tctx = daemon_ctx.torrent_ctxs.lock().await;
+        let metadata_size =
+            tctx.get(&peer_handshake.info_hash).unwrap().metadata_size;
+        let torrent_ctx = tctx.get(&peer_handshake.info_hash).cloned();
+        drop(tctx);
 
         if let Some(ext) = &mut our_handshake.ext {
             ext.metadata_size = metadata_size;
@@ -417,17 +413,7 @@ impl peer::Peer<Idle> {
 
         socket.send(our_handshake).await?;
 
-        let (otx, orx) = oneshot::channel();
-
-        daemon_ctx
-            .tx
-            .send(DaemonMsg::GetTorrentCtx(
-                otx,
-                peer_handshake.info_hash.clone(),
-            ))
-            .await?;
-
-        let Some(torrent_ctx) = orx.await? else {
+        let Some(torrent_ctx) = torrent_ctx else {
             return Err(Error::TorrentDoesNotExist);
         };
 

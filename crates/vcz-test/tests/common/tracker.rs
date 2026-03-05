@@ -49,7 +49,9 @@ impl MockTracker {
     pub async fn run(&mut self) -> Result<(), Error> {
         let mut buf = [0u8; 99];
         loop {
-            let (len, who) = self.socket.recv_from(&mut buf).await?;
+            let Ok((len, who)) = self.socket.recv_from(&mut buf).await else {
+                continue;
+            };
             let _ = self.handle_packet(&buf[..len], who).await;
         }
     }

@@ -5,11 +5,9 @@ use crate::{
 use bendy::decoding::FromBencode;
 
 impl Torrent<Connected, FromMagnet> {
-    /// Run the Torrent main event loop to listen to internal [`TorrentMsg`].
-    #[tracing::instrument(name = "torrent", skip_all,
-        fields(info = ?self.source.info_hash())
-    )]
-    pub async fn run(&mut self) -> Result<(), Error> {
+    pub(self) async fn inner_run(
+        mut self,
+    ) -> Result<Option<Torrent<Connected, FromMetaInfo>>, Error> {
         debug!("running torrent: {:?}", self.name);
 
         self.status = TorrentStatus::DownloadingMetainfo;
@@ -18,6 +16,9 @@ impl Torrent<Connected, FromMagnet> {
             select! {
                 Some(msg) = self.rx.recv() => {
                     match msg {
+                        TorrentMsg::Promote => {
+                            return Ok(Some(self.promote()));
+                        },
                         TorrentMsg::Request{peer_ctx, qnt, recipient} => {
                             let pl = self.source.info.as_ref().unwrap().piece_length;
                             let pieces_wanted = qnt.div_ceil(pl);
@@ -117,10 +118,6 @@ impl Torrent<Connected, FromMagnet> {
                         TorrentMsg::HaveInfo(tx) => {
                             let _ = tx.send(self.source.info.is_some());
                         }
-                        TorrentMsg::GetMetadataSize(tx) => {
-                            let m = self.state.metadata_size;
-                            let _ = tx.send(m);
-                        }
                         TorrentMsg::GetPeerBitfield(id, tx) => {
                             let bitfield = self.state.peer_pieces.get(&id).cloned();
                             let _ = tx.send(bitfield);
@@ -139,14 +136,10 @@ impl Torrent<Connected, FromMagnet> {
                         TorrentMsg::ReadPeerByIp(ip, port, otx) => {
                             self.read_peer_by_ip(ip, port, otx);
                         }
-                        TorrentMsg::MetadataSize(metadata_size) => {
-                            self.metadata_size(metadata_size).await;
-                        }
                         TorrentMsg::ReadBitfield(oneshot) => {
                             let _ = oneshot.send(self.bitfield.clone());
                         }
-                        TorrentMsg::DownloadedPiece(piece) => {
-                            self.downloaded_piece(piece).await;
+                        TorrentMsg::DownloadedPiece(_) => {
                         }
                         TorrentMsg::PeerError(addr) => {
                             self.peer_error(addr).await;
@@ -166,7 +159,7 @@ impl Torrent<Connected, FromMagnet> {
                         }
                         TorrentMsg::Quit => {
                             self.quit();
-                            return Ok(());
+                            return Ok(None);
                         }
                     }
                 }
@@ -176,7 +169,6 @@ impl Torrent<Connected, FromMagnet> {
                 _ = self.state.reconnect_interval.tick(),
                     if !matches!(self.status, TorrentStatus::Error(_)) =>
                 {
-                    // self.reconnect_interval().await;
                     let _ = self.spawn_outbound_peers(self.source.info.is_some()).await;
                 }
                 _ = self.state.log_rates_interval.tick() => {
@@ -188,10 +180,21 @@ impl Torrent<Connected, FromMagnet> {
                 // for the unchoke algorithm, the local client is interested in the best
                 // uploaders (from their perspctive) (tit-for-tat)
                 _ = self.state.unchoke_interval.tick() => {
-                    #[cfg(not(feature = "debug"))]
+                    #[cfg(not(feature = "integration-test"))]
                     self.unchoke().await;
                 }
             }
+        }
+    }
+
+    /// Run the Torrent main event loop to listen to internal [`TorrentMsg`].
+    pub async fn run(self) -> Result<(), Error> {
+        match self.inner_run().await {
+            Ok(o) => match o {
+                Some(me) => me.run().await,
+                None => Ok(()),
+            },
+            Err(e) => Err(e),
         }
     }
 
@@ -225,11 +228,10 @@ impl Torrent<Connected, FromMagnet> {
             });
 
         let downloaded_info = Arc::new(Info::from_bencode(&info_bytes)?);
-        self.state.metadata_size = Some(downloaded_info.metadata_size);
 
         // validate the hash of the downloaded info
         // against the hash of the magnet link
-        if self.source.info_hash() != downloaded_info.info_hash {
+        if self.source.magnet.parse_xt_infohash() != downloaded_info.info_hash {
             warn!("invalid info hash for info: {:?}", downloaded_info.name);
             self.state.info_pieces.clear();
             return Err(Error::PieceInvalid);
@@ -255,12 +257,38 @@ impl Torrent<Connected, FromMagnet> {
             ))
             .await?;
 
-        // todo: consider transforming this peer to a "FromMetaInfo"
         self.source.info = Some(downloaded_info);
         self.status = TorrentStatus::Downloading;
-
         let _ = self.ctx.btx.send(PeerBrMsg::HaveInfo);
+        self.ctx.tx.send(TorrentMsg::Promote).await?;
+
         Ok(())
+    }
+
+    pub(crate) fn promote(self) -> Torrent<Connected, FromMetaInfo> {
+        let trackers = self.source.magnet.0.trackers().to_vec();
+        let meta_info = MetaInfo {
+            announce_list: Some(vec![trackers]),
+            ..Default::default()
+        };
+        Torrent {
+            ctx: Arc::new(TorrentCtx {
+                metadata_size: Some(meta_info.info.metadata_size),
+                disk_tx: self.ctx.disk_tx.clone(),
+                free_tx: self.ctx.free_tx.clone(),
+                tx: self.ctx.tx.clone(),
+                btx: self.ctx.btx.clone(),
+                info_hash: self.ctx.info_hash.clone(),
+            }),
+            status: self.status,
+            config: self.config,
+            daemon_ctx: self.daemon_ctx,
+            rx: self.rx,
+            name: self.name,
+            state: self.state,
+            source: FromMetaInfo { meta_info },
+            bitfield: self.bitfield,
+        }
     }
 }
 
@@ -281,15 +309,15 @@ impl Torrent<Idle, FromMagnet> {
             tx,
             disk_tx,
             info_hash: magnet.parse_xt_infohash(),
+            metadata_size: None,
         });
-        let metadata_size = None;
 
         Self {
             config,
             bitfield: Bitfield::default(),
             name: magnet.parse_dn(),
             source: FromMagnet { magnet, info: None },
-            state: Idle { metadata_size },
+            state: Idle {},
             status: TorrentStatus::default(),
             daemon_ctx,
             ctx,
