@@ -237,7 +237,6 @@ impl<M: TorrentSource> From<&Torrent<torrent::Connected, M>> for TorrentState {
         Self {
             name: value.name.clone(),
             stats: value.state.stats.clone(),
-            // todo: info_hash
             info_hash: InfoHash::default(),
             size: value.state.size,
             status: value.status,
@@ -388,7 +387,6 @@ pub(crate) struct Connected {
     pub tracker_tx: broadcast::Sender<TrackerMsg>,
     pub reconnect_interval: Interval,
     pub heartbeat_interval: Interval,
-    pub log_rates_interval: Interval,
     pub optimistic_unchoke_interval: Interval,
     pub unchoke_interval: Interval,
 }

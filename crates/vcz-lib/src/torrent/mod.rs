@@ -163,8 +163,6 @@ impl<M: TorrentSource> Torrent<Idle, M> {
         // send state to the daemon
         let heartbeat_interval = interval(Duration::from_secs(1));
 
-        let log_rates_interval = interval(Duration::from_secs(5));
-
         // unchoke the slowest interested peer and unchoke a random one.
         let optimistic_unchoke_interval = interval(Duration::from_secs(30));
 
@@ -182,7 +180,6 @@ impl<M: TorrentSource> Torrent<Idle, M> {
                 tracker_tx,
                 reconnect_interval,
                 heartbeat_interval,
-                log_rates_interval,
                 optimistic_unchoke_interval,
                 unchoke_interval,
                 peer_pieces: HashMap::default(),
@@ -397,6 +394,7 @@ impl<M: TorrentSource> Torrent<Connected, M> {
         }
     }
 
+    #[cfg(feature = "ui-test")]
     fn log_rates_interval(&self) {
         let downloaded =
             self.state.counter.total_download().min(self.state.size);

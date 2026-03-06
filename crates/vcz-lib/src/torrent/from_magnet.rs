@@ -171,9 +171,6 @@ impl Torrent<Connected, FromMagnet> {
                 {
                     let _ = self.spawn_outbound_peers(self.source.info.is_some()).await;
                 }
-                _ = self.state.log_rates_interval.tick() => {
-                    self.log_rates_interval();
-                }
                 _ = self.state.optimistic_unchoke_interval.tick() => {
                     self.optimistic_unchoke().await;
                 }

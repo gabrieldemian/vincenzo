@@ -417,17 +417,6 @@ impl peer::Peer<Idle> {
             return Err(Error::TorrentDoesNotExist);
         };
 
-        let (otx, orx) = oneshot::channel();
-        torrent_ctx
-            .tx
-            .send(TorrentMsg::GetPeer(peer_handshake.peer_id.clone(), otx))
-            .await?;
-
-        let peer_ctx = orx.await?;
-        if peer_ctx.is_some() {
-            return Err(Error::NoDuplicatePeer);
-        }
-
         let socket = socket.map_codec(|_| CoreCodec);
         let (tx, rx) = mpsc::channel::<PeerMsg>(PEER_MSG_BOUND);
 
