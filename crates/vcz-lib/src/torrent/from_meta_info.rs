@@ -20,11 +20,6 @@ impl Torrent<Connected, FromMetaInfo> {
             }
         }
 
-        self.state.counter = Counter::from_total_download(
-            self.bitfield.count_ones() as u64
-                * self.source.meta_info.info.piece_length as u64,
-        );
-
         {
             let info_bytes = self.source.meta_info.info.to_bencode()?;
             let info_size = self.source.meta_info.info.metadata_size;
@@ -42,7 +37,7 @@ impl Torrent<Connected, FromMetaInfo> {
             select! {
                 Some(msg) = self.rx.recv() => {
                     match msg {
-                        TorrentMsg::Promote => {
+                        TorrentMsg::Promote(_info) => {
                             // todo
                         }
                         TorrentMsg::Request{peer_ctx, qnt, recipient} => {
@@ -130,32 +125,12 @@ impl Torrent<Connected, FromMetaInfo> {
                         TorrentMsg::GetTorrentStatus(otx) => {
                             let _ = otx.send(self.status);
                         }
-                        TorrentMsg::GetAnnounceData(otx) => {
-                            let downloaded = self.state.counter.total_download();
-                            let uploaded = self.state.counter.total_upload();
-                            let left = self.source.size()
-                                .saturating_sub(downloaded);
-                            let _ = otx.send((downloaded, uploaded, left));
-                        }
-                        TorrentMsg::GetAnnounceList(otx) => {
-                            let mut v = vec![self.source.meta_info.announce.clone()];
-
-                            if let Some(l) = self.source.meta_info.announce_list.clone() {
-                                v.extend(l.into_iter().flatten());
-                            }
-
-                            let _ = otx.send(v);
-                        }
                         TorrentMsg::PeerHasPieceNotInLocal(id, tx) => {
                             let r = self.peer_has_piece_not_in_local(&id);
                             let _ = tx.send(r);
                         }
                         TorrentMsg::HaveInfo(tx) => {
                             let _ = tx.send(true);
-                        }
-                        TorrentMsg::GetPeerBitfield(id, tx) => {
-                            let bitfield = self.state.peer_pieces.get(&id).cloned();
-                            let _ = tx.send(bitfield);
                         }
                         TorrentMsg::SetPeerBitfield(id, bitfield) => {
                             let entry = self.state.peer_pieces.entry(id.clone()).or_default();
@@ -164,12 +139,6 @@ impl Torrent<Connected, FromMetaInfo> {
                         }
                         TorrentMsg::PeerHave(id, piece) => {
                             self.peer_have(id, piece);
-                        }
-                        TorrentMsg::GetConnectedPeers(otx) => {
-                            let _ = otx.send(self.state.connected_peers.clone());
-                        }
-                        TorrentMsg::ReadPeerByIp(ip, port, otx) => {
-                            self.read_peer_by_ip(ip, port, otx);
                         }
                         TorrentMsg::ReadBitfield(oneshot) => {
                             let _ = oneshot.send(self.bitfield.clone());
@@ -245,12 +214,17 @@ impl Torrent<Idle, FromMetaInfo> {
         bitfield: Bitfield,
     ) -> Torrent<Idle, FromMetaInfo> {
         let name = meta_info.info.name.clone();
-        let metadata_size = Some(meta_info.info.metadata_size);
+        let metadata_size = meta_info.info.metadata_size.into();
 
         let (tx, rx) = mpsc::channel::<TorrentMsg>(TORRENT_MSG_BOUND);
         let (btx, _brx) = broadcast::channel::<PeerBrMsg>(PEER_MSG_BOUND);
 
         let ctx = Arc::new(TorrentCtx {
+            size: (meta_info.info.get_torrent_size() as u64).into(),
+            counter: Counter::from_total_download(
+                bitfield.count_ones() as u64
+                    * meta_info.info.piece_length as u64,
+            ),
             free_tx: daemon_ctx.free_tx.clone(),
             btx,
             tx,

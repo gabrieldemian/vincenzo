@@ -1,4 +1,3 @@
-use crate::utils::to_human_readable;
 use std::{
     sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
@@ -6,8 +5,8 @@ use std::{
 
 /// Exponential Moving Average (EMA) smoothing factor
 /// Higher values = more responsive to changes, lower values = smoother
-static EMA_ALPHA: f64 = 0.3;
-static EMA_ALPHA_COMPLIMENT: f64 = 1.0 - EMA_ALPHA;
+const EMA_ALPHA: f64 = 0.3;
+const EMA_ALPHA_COMPLIMENT: f64 = 1.0 - EMA_ALPHA;
 
 /// Counter of rates, used in downloaded and uploaded.
 #[derive(Debug)]
@@ -53,55 +52,65 @@ impl Counter {
     }
 
     /// Record downloaded bytes
+    #[inline]
     pub fn record_download(&self, bytes: u64) {
         self.total_downloaded.fetch_add(bytes, Ordering::Relaxed);
         self.window_downloaded.fetch_add(bytes, Ordering::Relaxed);
     }
 
     /// Record uploaded bytes
+    #[inline]
     pub fn record_upload(&self, bytes: u64) {
         self.total_uploaded.fetch_add(bytes, Ordering::Relaxed);
         self.window_uploaded.fetch_add(bytes, Ordering::Relaxed);
     }
 
+    #[inline]
     pub(crate) fn download_rate_f64(&self) -> f64 {
         let bits = self.ema_download.load(Ordering::Relaxed);
         f64::from_bits(bits)
     }
 
+    #[inline]
     pub(crate) fn upload_rate_f64(&self) -> f64 {
         let bits = self.ema_upload.load(Ordering::Relaxed);
         f64::from_bits(bits)
     }
 
+    #[inline]
+    pub(crate) fn upload_rate_u64(&self) -> u64 {
+        self.ema_upload.load(Ordering::Relaxed)
+    }
+
+    #[inline]
     pub(crate) fn window_uploaded_u64(&self) -> u64 {
         self.window_uploaded.load(Ordering::Relaxed)
     }
 
+    #[inline]
     pub(crate) fn window_downloaded_u64(&self) -> u64 {
         self.window_downloaded.load(Ordering::Relaxed)
     }
 
+    #[inline]
     pub(crate) fn download_rate_u64(&self) -> u64 {
         self.ema_download.load(Ordering::Relaxed)
     }
 
+    #[inline]
     pub(crate) fn total_download(&self) -> u64 {
         self.total_downloaded.load(Ordering::Relaxed)
     }
 
+    #[inline]
     pub(crate) fn total_upload(&self) -> u64 {
         self.total_uploaded.load(Ordering::Relaxed)
     }
 
+    #[cfg(test)]
     pub(crate) fn download_rate(&self) -> String {
+        use crate::utils::to_human_readable;
         let mut v = to_human_readable(self.download_rate_f64());
-        v.push_str("/s");
-        v
-    }
-
-    pub(crate) fn upload_rate(&self) -> String {
-        let mut v = to_human_readable(self.upload_rate_f64());
         v.push_str("/s");
         v
     }

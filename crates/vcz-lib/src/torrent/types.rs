@@ -1,6 +1,5 @@
 use crate::{
     bitfield::Bitfield,
-    counter::Counter,
     extensions::core::BlockInfo,
     magnet::Magnet,
     metainfo::{Info, InfoHash, MetaInfo},
@@ -38,7 +37,7 @@ pub enum PeerBrMsg {
 /// Messages used to control the local peer or the state of the torrent.
 #[derive(Debug)]
 pub enum TorrentMsg {
-    Promote,
+    Promote(Box<Info>),
     Endgame,
     SendToAllPeers(PeerId, Vec<BlockInfo>, Vec<BlockInfo>),
 
@@ -77,9 +76,6 @@ pub enum TorrentMsg {
     /// connected.
     AddIdlePeers(HashSet<SocketAddr>),
 
-    /// downloaded, uploaded, left
-    GetAnnounceData(oneshot::Sender<(u64, u64, u64)>),
-
     GetTorrentStatus(oneshot::Sender<TorrentStatus>),
 
     HaveInfo(oneshot::Sender<bool>),
@@ -92,13 +88,6 @@ pub enum TorrentMsg {
 
     ReadBitfield(oneshot::Sender<Bitfield>),
 
-    GetAnnounceList(oneshot::Sender<Vec<String>>),
-
-    /// Sent when the peer is acting as a relay for the holepunch protocol.
-    ReadPeerByIp(IpAddr, u16, oneshot::Sender<Option<Arc<PeerCtx>>>),
-
-    GetConnectedPeers(oneshot::Sender<Vec<Arc<PeerCtx>>>),
-
     PeerConnected(Arc<PeerCtx>),
 
     /// When we can't do a TCP connection with the ip of the Peer.
@@ -109,9 +98,6 @@ pub enum TorrentMsg {
     /// If the remote peer has a piece in which the local hasn't
     /// Returns Some with the absent piece or None if local has it.
     PeerHasPieceNotInLocal(PeerId, oneshot::Sender<Option<usize>>),
-
-    /// Clone the peer's bitfield.
-    GetPeerBitfield(PeerId, oneshot::Sender<Option<Box<Bitfield>>>),
 
     /// Set a piece of the peer's bitfield to true
     PeerHave(PeerId, usize),
@@ -238,15 +224,15 @@ impl<M: TorrentSource> From<&Torrent<torrent::Connected, M>> for TorrentState {
             name: value.name.clone(),
             stats: value.state.stats.clone(),
             info_hash: InfoHash::default(),
-            size: value.source.size(),
+            size: value.ctx.size.load(Ordering::Relaxed),
             status: value.status,
-            downloaded: value.state.counter.total_download(),
-            uploaded: value.state.counter.total_upload(),
+            downloaded: value.ctx.counter.total_download(),
+            uploaded: value.ctx.counter.total_upload(),
             bitfield: value.bitfield.clone().into_vec(),
             idle_peers: value.state.idle_peers.len() as u8,
             connected_peers: value.state.connected_peers.len() as u8,
-            download_rate: value.state.counter.download_rate_f64(),
-            upload_rate: value.state.counter.upload_rate_f64(),
+            download_rate: value.ctx.counter.download_rate_f64(),
+            upload_rate: value.ctx.counter.upload_rate_f64(),
             downloading_from,
         }
     }
@@ -308,14 +294,11 @@ pub(crate) trait State {}
 /// If the torrent came from a magnet or metainfo.
 pub(crate) trait TorrentSource {
     fn organize_trackers(&self) -> HashMap<&str, Vec<String>>;
-    // fn info_hash(&self) -> InfoHash;
-    // Get torrent size
-    fn size(&self) -> u64;
 }
 
 pub(crate) struct FromMagnet {
     pub magnet: Magnet,
-    pub info: Option<Arc<Info>>,
+    // pub info: Option<Arc<Info>>,
 }
 
 pub(crate) struct FromMetaInfo {
@@ -326,16 +309,10 @@ impl TorrentSource for FromMagnet {
     fn organize_trackers(&self) -> HashMap<&str, Vec<String>> {
         self.magnet.organize_trackers()
     }
-    fn size(&self) -> u64 {
-        self.magnet.length().unwrap_or(0)
-    }
 }
 impl TorrentSource for FromMetaInfo {
     fn organize_trackers(&self) -> HashMap<&str, Vec<String>> {
         self.meta_info.organize_trackers()
-    }
-    fn size(&self) -> u64 {
-        self.meta_info.info.get_torrent_size() as u64
     }
 }
 
@@ -379,8 +356,6 @@ pub(crate) struct Connected {
     /// Requested peer pieces
     pub peer_pieces_req: Bitfield,
 
-    // todo: move counter to ctx and remove TorrentMsg::GetAnnounceData
-    pub counter: Counter,
     pub tracker_tx: broadcast::Sender<TrackerMsg>,
     pub reconnect_interval: Interval,
     pub heartbeat_interval: Interval,
