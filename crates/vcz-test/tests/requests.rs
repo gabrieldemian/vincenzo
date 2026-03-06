@@ -9,8 +9,6 @@ use vcz_lib::{
     torrent::TorrentMsg,
 };
 
-use crate::common::SetupRes;
-
 mod common;
 
 /// Simulate a local leecher requesting blocks from a seeder.

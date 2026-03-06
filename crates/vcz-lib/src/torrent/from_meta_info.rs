@@ -20,7 +20,6 @@ impl Torrent<Connected, FromMetaInfo> {
             }
         }
 
-        self.state.size = self.source.meta_info.info.get_torrent_size() as u64;
         self.state.counter = Counter::from_total_download(
             self.bitfield.count_ones() as u64
                 * self.source.meta_info.info.piece_length as u64,
@@ -134,7 +133,8 @@ impl Torrent<Connected, FromMetaInfo> {
                         TorrentMsg::GetAnnounceData(otx) => {
                             let downloaded = self.state.counter.total_download();
                             let uploaded = self.state.counter.total_upload();
-                            let left = self.state.size.saturating_sub(downloaded);
+                            let left = self.source.size()
+                                .saturating_sub(downloaded);
                             let _ = otx.send((downloaded, uploaded, left));
                         }
                         TorrentMsg::GetAnnounceList(otx) => {

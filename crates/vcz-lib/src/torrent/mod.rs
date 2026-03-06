@@ -185,7 +185,6 @@ impl<M: TorrentSource> Torrent<Idle, M> {
                 peer_pieces: HashMap::default(),
                 peer_pieces_diff: HashMap::default(),
                 counter: Counter::default(),
-                size,
                 unchoked_peers: Vec::with_capacity(3),
                 opt_unchoked_peer: None,
                 error_peers: Vec::with_capacity(self.config.max_torrent_peers),
@@ -434,7 +433,7 @@ impl<M: TorrentSource> Torrent<Connected, M> {
 
         let mut torrent_state: TorrentState = (&*self).into();
         torrent_state.downloaded =
-            torrent_state.downloaded.min(self.state.size);
+            torrent_state.downloaded.min(self.source.size());
 
         let _ = self
             .daemon_ctx
@@ -501,7 +500,7 @@ impl<M: TorrentSource> Torrent<Connected, M> {
 
         if self.status == TorrentStatus::Paused {
             self.status =
-                if self.state.counter.total_download() >= self.state.size {
+                if self.state.counter.total_download() >= self.source.size() {
                     TorrentStatus::Seeding
                 } else {
                     TorrentStatus::Downloading
@@ -520,7 +519,7 @@ impl<M: TorrentSource> Torrent<Connected, M> {
             event: Event::Stopped,
             downloaded,
             uploaded: self.state.counter.total_upload(),
-            left: self.state.size.saturating_sub(downloaded),
+            left: self.source.size().saturating_sub(downloaded),
         });
     }
 

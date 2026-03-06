@@ -238,7 +238,7 @@ impl<M: TorrentSource> From<&Torrent<torrent::Connected, M>> for TorrentState {
             name: value.name.clone(),
             stats: value.state.stats.clone(),
             info_hash: InfoHash::default(),
-            size: value.state.size,
+            size: value.source.size(),
             status: value.status,
             downloaded: value.state.counter.total_download(),
             uploaded: value.state.counter.total_upload(),
@@ -356,10 +356,6 @@ pub(crate) struct Connected {
     /// After it is complete, it will be encoded into [`Info`]
     pub info_pieces: BTreeMap<u64, Vec<u8>>,
 
-    // todo: is this redundant?
-    /// The size of the entire torrent in disk, in bytes.
-    pub size: u64,
-
     /// Idle peers returned from an announce request to the tracker.
     /// Will be removed from this vec as we connect with them, and added as we
     /// request more peers to the tracker.
@@ -383,6 +379,7 @@ pub(crate) struct Connected {
     /// Requested peer pieces
     pub peer_pieces_req: Bitfield,
 
+    // todo: move counter to ctx and remove TorrentMsg::GetAnnounceData
     pub counter: Counter,
     pub tracker_tx: broadcast::Sender<TrackerMsg>,
     pub reconnect_interval: Interval,

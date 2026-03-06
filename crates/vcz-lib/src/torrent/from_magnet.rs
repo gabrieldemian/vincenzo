@@ -102,7 +102,8 @@ impl Torrent<Connected, FromMagnet> {
                         TorrentMsg::GetAnnounceData(otx) => {
                             let downloaded = self.state.counter.total_download();
                             let uploaded = self.state.counter.total_upload();
-                            let left = self.state.size.saturating_sub(downloaded);
+                            let left = self.source.size()
+                                .saturating_sub(downloaded);
                             let _ = otx.send((downloaded, uploaded, left));
                         }
                         TorrentMsg::GetAnnounceList(otx) => {
@@ -243,7 +244,6 @@ impl Torrent<Connected, FromMagnet> {
             downloaded_info.blocks_count(),
         );
 
-        self.state.size = downloaded_info.get_torrent_size() as u64;
         self.bitfield = Bitfield::from_piece(downloaded_info.pieces());
 
         self.ctx
