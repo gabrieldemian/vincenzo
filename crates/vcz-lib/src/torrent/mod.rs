@@ -41,7 +41,7 @@ use tokio::{
     sync::{broadcast, mpsc, oneshot},
     time::{Instant, interval, interval_at, timeout},
 };
-use tracing::{debug, info, warn};
+use tracing::{debug, info, instrument, warn};
 
 /// This is the main entity responsible for the high-level management of
 /// a torrent download or upload.
@@ -130,7 +130,7 @@ impl<M: TorrentSource> Torrent<Connected, M> {
                         connected_peer.state.seed_only = is_seed_only;
 
                         if let Err(r) = connected_peer.run().await {
-                            debug!(
+                            tracing::trace!(
                                 "{} peer loop stopped due to an error: {r:?}",
                                 connected_peer.state.ctx.remote_addr
                             );
@@ -456,6 +456,7 @@ impl<M: TorrentSource> Torrent<Idle, M> {
     ///
     /// The function will return when it receives an announce from the first
     /// tracker, the other ones will be awaited for in the background.
+    #[instrument(skip_all, name = "torrent", fields(ih = %self.ctx.info_hash))]
     pub(crate) async fn start(self) -> Result<Torrent<Connected, M>, Error> {
         let org_trackers = self.source.organize_trackers();
         let udp_trackers = org_trackers.get("udp").unwrap().clone();
@@ -466,7 +467,7 @@ impl<M: TorrentSource> Torrent<Idle, M> {
             return Err(Error::NoUDPTracker);
         }
 
-        info!("connecting to {} udp trackers", udp_trackers.len());
+        debug!("connecting to {} udp trackers", udp_trackers.len());
 
         let (tracker_tx, _tracker_rx) =
             broadcast::channel::<TrackerMsg>(TRACKER_MSG_BOUND);
@@ -493,7 +494,11 @@ impl<M: TorrentSource> Torrent<Idle, M> {
                 .await
                 {
                     Ok((st, peers)) => {
-                        info!("connected to a tracker");
+                        debug!(
+                            tracker = tracker,
+                            "announced and got {} peers",
+                            peers.len()
+                        );
                         if first_response_tx
                             .try_send((peers.clone(), st))
                             .is_ok()

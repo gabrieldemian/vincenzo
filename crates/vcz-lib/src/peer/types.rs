@@ -270,7 +270,7 @@ impl peer::Peer<Idle> {
         let mut socket = Framed::new(socket, HandshakeCodec);
         let info_hash = &torrent_ctx.info_hash;
 
-        tracing::debug!("{remote} sending outbound handshake");
+        tracing::trace!("{remote} sending outbound handshake");
 
         let mut local_handshake =
             Handshake::new(info_hash.clone(), daemon_ctx.local_peer_id.clone());

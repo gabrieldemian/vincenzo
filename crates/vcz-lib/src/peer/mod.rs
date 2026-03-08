@@ -80,7 +80,7 @@ impl Peer<Connected> {
                 }
                 _ = help_interval.tick() => {
                     let len = self.state.req_man_block.len();
-                    tracing::info!("i: {len} q: {} a: {}",
+                    debug!("i: {len} q: {} a: {}",
                         self.state.req_man_block.queue_len(),
                         self.state.req_man_block.get_available_request_len(),
                     );
@@ -118,7 +118,7 @@ impl Peer<Connected> {
                             self.seed_only().await?;
                         }
                         PeerBrMsg::Quit => {
-                            debug!("quit");
+                            tracing::trace!("quit");
                             return Ok(());
                         }
                         PeerBrMsg::HaveInfo => {
@@ -175,28 +175,28 @@ impl Peer<Connected> {
                             // tracing::info!("(owo) received {}", blocks.len());
                         }
                         PeerMsg::NotInterested => {
-                            debug!("> not_interested");
+                            trace!("> not_interested");
                             self.state.ctx.am_interested.store(false, Ordering::Release);
                             self.state_log[1] = '-';
                             self.update_log();
                             self.send(Core::NotInterested).await?;
                         }
                         PeerMsg::Interested => {
-                            debug!("> interested");
+                            trace!("> interested");
                             self.state.ctx.am_interested.store(true, Ordering::Release);
                             self.state_log[1] = 'i';
                             self.update_log();
                             self.send(Core::Interested).await?;
                         }
                         PeerMsg::Choke => {
-                            debug!("> choke");
+                            trace!("> choke");
                             self.state.ctx.am_choking.store(true, Ordering::Release);
                             self.state_log[0] = '-';
                             self.update_log();
                             self.send(Core::Choke).await?;
                         }
                         PeerMsg::Unchoke => {
-                            debug!("> unchoke");
+                            trace!("> unchoke");
                             self.state.ctx.am_choking.store(false, Ordering::Release);
                             self.state_log[0] = 'u';
                             self.update_log();
@@ -492,18 +492,18 @@ impl Peer<Connected> {
             && !self.state.is_paused
     }
 
-    #[inline]
-    pub(crate) fn can_rerequest(&self) -> bool {
-        let am_interested =
-            self.state.ctx.am_interested.load(Ordering::Acquire);
-        let peer_choking = self.state.ctx.peer_choking.load(Ordering::Acquire);
-
-        am_interested
-            && !peer_choking
-            && self.state.have_info
-            && !self.state.seed_only
-            && !self.state.is_paused
-    }
+    // #[inline]
+    // pub(crate) fn can_rerequest(&self) -> bool {
+    //     let am_interested =
+    //         self.state.ctx.am_interested.load(Ordering::Acquire);
+    //     let peer_choking = self.state.ctx.peer_choking.load(Ordering::Acquire);
+    //
+    //     am_interested
+    //         && !peer_choking
+    //         && self.state.have_info
+    //         && !self.state.seed_only
+    //         && !self.state.is_paused
+    // }
 
     /// Handle a block sent by the core codec.
     #[inline]
@@ -556,6 +556,7 @@ impl Peer<Connected> {
     /// Take outgoing block infos and metadata pieces and send them back to the
     /// disk so that other peers can request them.
     #[inline]
+    #[tracing::instrument(skip_all, name = "peer", fields(id = %self.state.ctx.id, state = %self.state_log))]
     pub(crate) fn free_pending_blocks(&mut self) {
         let infos = self.state.req_man_block.drain();
         debug!("returning {} blocks", infos.len());

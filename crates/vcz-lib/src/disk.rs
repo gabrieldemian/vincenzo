@@ -391,8 +391,6 @@ impl Disk {
         metainfo: MetaInfo,
         metadata_dir: MetadataDir,
     ) -> Result<(), Error> {
-        debug!("new torrent {:?}", metainfo.info.info_hash);
-
         let info_hash = metainfo.info.info_hash.clone();
         let info = Arc::new(metainfo.info.clone());
 
@@ -421,7 +419,6 @@ impl Disk {
         let dp = downloaded_pieces.count_ones();
         let is_complete = dp >= metainfo.info.pieces();
         let info_hash = metainfo.info.info_hash.clone();
-        info!("downloaded {dp} pieces");
 
         let mut torrent = Torrent::new_metainfo(
             self.config.clone(),
@@ -540,7 +537,7 @@ impl Disk {
             downloaded_pieces.set(piece_index, result);
         }
 
-        info!(
+        tracing::debug!(
             "computed {} pieces, {} downloaded",
             downloaded_pieces.len(),
             downloaded_pieces.count_ones()

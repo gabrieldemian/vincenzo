@@ -12,7 +12,7 @@ use int_enum::IntEnum;
 use std::sync::atomic::Ordering;
 use tokio::{io, sync::oneshot};
 use tokio_util::codec::{Decoder, Encoder};
-use tracing::{debug, error};
+use tracing::{error, trace};
 use vcz_macros::Extension;
 
 impl Core {
@@ -100,10 +100,10 @@ impl ExtMsgHandler<Core> for Peer<peer::Connected> {
             // handled by the extended messages
             Core::Extended(_) => {}
             Core::KeepAlive => {
-                debug!("< keepalive");
+                trace!("< keepalive");
             }
             Core::Bitfield(bitfield) => {
-                debug!(
+                trace!(
                     "< bitfield len: {} ones: {}",
                     bitfield.len(),
                     bitfield.count_ones()
@@ -123,29 +123,29 @@ impl ExtMsgHandler<Core> for Peer<peer::Connected> {
                 self.state.ctx.peer_choking.store(false, Ordering::Release);
                 self.state_log[2] = 'u';
                 self.update_log();
-                debug!("< unchoke");
+                trace!("< unchoke");
             }
             Core::Choke => {
-                debug!("< choke");
+                trace!("< choke");
                 self.state.ctx.peer_choking.store(true, Ordering::Release);
                 self.free_pending_blocks();
                 self.state_log[2] = '-';
                 self.update_log();
             }
             Core::Interested => {
-                debug!("< interested",);
+                trace!("< interested",);
                 self.state.ctx.peer_interested.store(true, Ordering::Release);
                 self.state_log[3] = 'i';
                 self.update_log();
             }
             Core::NotInterested => {
-                debug!("< not_interested");
+                trace!("< not_interested");
                 self.state.ctx.peer_interested.store(false, Ordering::Release);
                 self.state_log[3] = '-';
                 self.update_log();
             }
             Core::Have(piece) => {
-                debug!("< have {piece}");
+                trace!("< have {piece}");
 
                 self.state
                     .ctx
@@ -161,10 +161,10 @@ impl ExtMsgHandler<Core> for Peer<peer::Connected> {
                 self.handle_block(block)?;
             }
             Core::Cancel(block_info) => {
-                debug!("< cancel {block_info:?}");
+                trace!("< cancel {block_info:?}");
             }
             Core::Request(b @ BlockInfo { index, begin, .. }) => {
-                debug!("< request {b:?}");
+                trace!("< request {b:?}");
 
                 if !self.state.ctx.peer_interested.load(Ordering::Acquire) {
                     return Ok(());

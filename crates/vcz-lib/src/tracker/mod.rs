@@ -77,7 +77,8 @@ pub trait TrackerTrait: Sized {
 /// The generic `P` stands for "Protocol".
 /// Currently, only UDP and HTTP are supported.
 pub(crate) struct Tracker<P: Protocol> {
-    tracker_addr: SocketAddr,
+    addr: SocketAddr,
+    // todo: maybe add a field for the URL of the tracker.
     torrent_ctx: Arc<TorrentCtx>,
     local_peer_id: PeerId,
     rx: broadcast::Receiver<TrackerMsg>,
@@ -147,14 +148,15 @@ impl TrackerTrait for Tracker<Udp> {
         Ok(())
     }
 
+    #[tracing::instrument(skip(self), name = "tracker", fields(addr = %self.addr))]
     async fn announce(
         &mut self,
         event: Event,
     ) -> Result<(Stats, Vec<SocketAddr>), Error> {
-        tracing::trace!("announcing {event:#?} to tracker");
+        tracing::trace!("announce");
 
-        let downloaded = self.torrent_ctx.counter.download_rate_u64();
-        let uploaded = self.torrent_ctx.counter.upload_rate_u64();
+        let downloaded = self.torrent_ctx.counter.total_download();
+        let uploaded = self.torrent_ctx.counter.total_upload();
         let left = self
             .torrent_ctx
             .size
@@ -237,13 +239,14 @@ impl TrackerTrait for Tracker<Udp> {
         &self,
         buf: &[u8],
     ) -> Result<Vec<SocketAddr>, Error> {
-        let is_ipv6 = self.tracker_addr.is_ipv6();
+        let is_ipv6 = self.addr.is_ipv6();
         self::parse_compact_peer_list(is_ipv6, buf)
     }
 
     /// Bind UDP socket and send a connect handshake,
     /// to one of the trackers.
     #[inline]
+    #[tracing::instrument(skip_all, name = "tracker", fields(addr = tracker))]
     async fn connect_to_tracker(
         tracker: &str,
         local_peer_id: PeerId,
@@ -254,13 +257,13 @@ impl TrackerTrait for Tracker<Udp> {
         let socket = match Self::new_udp_socket(tracker).await {
             Ok(socket) => socket,
             Err(_) => {
-                debug!("could not connect to tracker");
+                debug!("could not connect");
                 return Err(Error::TrackerResponse);
             }
         };
 
         let mut tracker = Tracker {
-            tracker_addr: socket.peer_addr().unwrap(),
+            addr: socket.peer_addr().unwrap(),
             interval: 0,
             torrent_ctx,
             local_peer_id,
@@ -299,7 +302,7 @@ impl Tracker<Udp> {
     }
 
     #[tracing::instrument(name = "tracker", skip_all,
-        fields(addr = %self.tracker_addr)
+        fields(addr = %self.addr)
     )]
     #[inline]
     pub async fn run(&mut self) -> Result<(), Error> {

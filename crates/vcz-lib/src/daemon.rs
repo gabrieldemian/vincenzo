@@ -116,7 +116,7 @@ impl Daemon {
         let (tx, rx) = mpsc::channel::<DaemonMsg>(DAEMON_MSG_BOUND);
 
         let local_peer_id = PeerId::generate();
-        info!("local peer id: {local_peer_id}");
+        info!("local peer id: {}", String::from_utf8_lossy(&local_peer_id.0));
 
         Self {
             config,
@@ -153,7 +153,7 @@ impl Daemon {
             loop {
                 select! {
                     Ok((socket, addr)) = local_socket.accept() => {
-                        info!("received inbound connection from {addr}");
+                        tracing::trace!("received inbound connection from {addr}");
 
                         let daemon_ctx = daemon_ctx.clone();
 
@@ -164,7 +164,7 @@ impl Daemon {
                                 idle_peer.inbound_handshake(socket, daemon_ctx).await?;
 
                             if let Err(r) = connected_peer.run().await {
-                                debug!(
+                                tracing::trace!(
                                     "{} peer loop stopped due to an error: {r:?}",
                                     connected_peer.state.ctx.remote_addr
                                 );
@@ -290,7 +290,7 @@ impl Daemon {
         let mut test_interval = interval(Duration::from_secs(1));
         let signals_task = tokio::spawn(Daemon::handle_signals(signals, _tx));
 
-        debug!("running event loop");
+        tracing::trace!("running event loop");
 
         'outer: loop {
             select! {
