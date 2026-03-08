@@ -27,7 +27,7 @@ use crate::{
 use rand::Rng;
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
-    net::{IpAddr, SocketAddr},
+    net::SocketAddr,
     sync::{
         Arc,
         atomic::{AtomicU64, AtomicUsize, Ordering},
@@ -333,23 +333,6 @@ impl<M: TorrentSource> Torrent<Connected, M> {
             .tx
             .send(DaemonMsg::TorrentState(Box::new(torrent_state)))
             .await;
-    }
-
-    fn read_peer_by_ip(
-        &self,
-        ip: IpAddr,
-        port: u16,
-        otx: oneshot::Sender<Option<Arc<PeerCtx>>>,
-    ) {
-        if let Some(peer_ctx) =
-            self.state.connected_peers.iter().find(|&p| {
-                p.remote_addr.ip() == ip && port == p.remote_addr.port()
-            })
-        {
-            let _ = otx.send(Some(peer_ctx.clone()));
-        } else {
-            let _ = otx.send(None);
-        }
     }
 
     async fn peer_error(&mut self, addr: SocketAddr) {

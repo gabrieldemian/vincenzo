@@ -228,13 +228,19 @@ impl Disk {
         let mut lru_cleanup_interval = interval(Duration::from_millis(11_000));
 
         // ensure the necessary folders are created.
-        tokio::fs::create_dir_all(self.incomplete_torrents_path()).await?;
-        tokio::fs::create_dir_all(self.complete_torrents_path()).await?;
-        tokio::fs::create_dir_all(self.queue_torrents_path()).await?;
+        #[cfg(not(feature = "ui-test"))]
+        {
+            tokio::fs::create_dir_all(self.incomplete_torrents_path()).await?;
+            tokio::fs::create_dir_all(self.complete_torrents_path()).await?;
+            tokio::fs::create_dir_all(self.queue_torrents_path()).await?;
+        }
 
         // load .torrent files into the client.
-        self.read_metainfos_and_add(MetadataDir::Complete).await?;
-        self.read_metainfos_and_add(MetadataDir::Incomplete).await?;
+        #[cfg(not(feature = "ui-test"))]
+        {
+            self.read_metainfos_and_add(MetadataDir::Incomplete).await?;
+            self.read_metainfos_and_add(MetadataDir::Complete).await?;
+        }
 
         'outer: loop {
             select! {
