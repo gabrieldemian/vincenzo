@@ -17,55 +17,34 @@ impl Torrent<Connected, FromMagnet> {
             select! {
                 Some(msg) = self.rx.recv() => {
                     match msg {
-                        // magnet can never answer these msgs.
+                        // a torrent from magnet can never answer these msgs.
                         TorrentMsg::Endgame => { }
                         TorrentMsg::Cancel(..) => { }
                         TorrentMsg::DownloadedPiece(_) => { }
                         TorrentMsg::Request { .. } => {}
                         TorrentMsg::WantBlocks(..) => { }
+                        TorrentMsg::UnchokeAlgorithm => { }
+                        TorrentMsg::GetUnchokedPeers(..) => { }
+                        TorrentMsg::OptUnchokeAlgorithm => { }
+                        TorrentMsg::PeerHasPieceNotInLocal(..) => { }
 
                         TorrentMsg::Promote(info) => {
-                            return Ok(Some(self.promote(info)));
+                            return Ok(Some(self.promote(*info)));
                         },
-                        TorrentMsg::SendToAllPeers(sender, reqs, queue) => {
-                            for p in &self.state.connected_peers {
-                                if p.id == sender { continue };
-                                let tx = p.tx.clone();
-                                let mut blocks = reqs.clone();
-                                blocks.extend(queue.clone());
-                                tokio::spawn(async move {
-                                    let _ = tx.send(PeerMsg::Blocks(blocks)).await;
-                                });
-                            }
+                        TorrentMsg::BroadcastBlockInfos(sender, reqs, queue) => {
+                            self.broadcast_block_infos(sender, reqs, queue);
                         }
                         TorrentMsg::SetTorrentError(code) => {
                             self.status = TorrentStatus::Error(code);
                         }
                         TorrentMsg::GetPeer(peer_id, sender) => {
-                            let _ =
-                                sender.send(
-                                    self.state.connected_peers
-                                        .iter().find(|p| p.id == peer_id).cloned()
-                                );
-                        }
-                        TorrentMsg::GetUnchokedPeers(sender) => {
-                            let _ = sender.send(self.state.unchoked_peers.clone());
-                        }
-                        TorrentMsg::UnchokeAlgorithm => {
-                            self.unchoke().await;
-                        }
-                        TorrentMsg::OptUnchokeAlgorithm => {
-                            self.optimistic_unchoke().await;
+                            self.get_peer(peer_id, sender);
                         }
                         TorrentMsg::AddIdlePeers(peers) => {
                             self.state.idle_peers.extend(peers);
                         }
                         TorrentMsg::GetTorrentStatus(otx) => {
                             let _ = otx.send(self.status);
-                        }
-                        TorrentMsg::PeerHasPieceNotInLocal(id, tx) => {
-                            let r = self.peer_has_piece_not_in_local(&id);
-                            let _ = tx.send(r);
                         }
                         TorrentMsg::HaveInfo(tx) => {
                             let _ = tx.send(false);
@@ -186,13 +165,13 @@ impl Torrent<Connected, FromMagnet> {
 
     pub(crate) fn promote(
         self,
-        info: Box<Info>,
+        info: Info,
     ) -> Torrent<Connected, FromMetaInfo> {
         let trackers = self.source.magnet.0.trackers().to_vec();
         self.ctx.metadata_size.store(info.metadata_size, Ordering::Release);
         let meta_info = MetaInfo {
             announce_list: Some(vec![trackers]),
-            info: *info,
+            info,
             ..Default::default()
         };
         Torrent {

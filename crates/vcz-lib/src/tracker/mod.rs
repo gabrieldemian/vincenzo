@@ -93,6 +93,7 @@ pub enum TrackerMsg {
 }
 
 impl TrackerTrait for Tracker<Udp> {
+    #[inline]
     async fn connect(&mut self) -> Result<(), Error> {
         let req = connect::Request::new();
         let mut buf = [0u8; connect::Response::LEN];
@@ -231,6 +232,7 @@ impl TrackerTrait for Tracker<Udp> {
         Ok((stats, peers))
     }
 
+    #[inline]
     fn parse_compact_peer_list(
         &self,
         buf: &[u8],
@@ -241,6 +243,7 @@ impl TrackerTrait for Tracker<Udp> {
 
     /// Bind UDP socket and send a connect handshake,
     /// to one of the trackers.
+    #[inline]
     async fn connect_to_tracker(
         tracker: &str,
         local_peer_id: PeerId,
@@ -279,6 +282,7 @@ impl Tracker<Udp> {
     /// Connect is the first step in getting the file
     /// Create an UDP Socket for the given tracker address
     #[tracing::instrument(skip(addr))]
+    #[inline]
     pub async fn new_udp_socket<A: ToSocketAddrs + std::fmt::Debug>(
         addr: A,
     ) -> Result<UdpSocket, Error> {
@@ -297,6 +301,7 @@ impl Tracker<Udp> {
     #[tracing::instrument(name = "tracker", skip_all,
         fields(addr = %self.tracker_addr)
     )]
+    #[inline]
     pub async fn run(&mut self) -> Result<(), Error> {
         tracing::trace!("running tracker");
 

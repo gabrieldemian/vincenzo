@@ -22,6 +22,7 @@ use tokio::{
     time::Interval,
 };
 
+// todo: consider deleting this and only use the normal .tx
 /// Broadcasted messages for all peers in a torrent.
 #[derive(Debug, Clone)]
 pub enum PeerBrMsg {
@@ -37,9 +38,14 @@ pub enum PeerBrMsg {
 /// Messages used to control the local peer or the state of the torrent.
 #[derive(Debug)]
 pub enum TorrentMsg {
+    /// Promote a `FromMagnet` torrent to a `FromMetaInfo`.
     Promote(Box<Info>),
+
+    /// Sent by Disk. Send Endgame messages to all peers.
     Endgame,
-    SendToAllPeers(PeerId, Vec<BlockInfo>, Vec<BlockInfo>),
+
+    /// Send block infos to all peers.
+    BroadcastBlockInfos(PeerId, Vec<BlockInfo>, Vec<BlockInfo>),
 
     /// When a peer wants to request blocks.
     Request {

@@ -141,7 +141,7 @@ impl Peer<Connected> {
                             let ctx = self.state.ctx.torrent_ctx.clone();
                             let id = self.state.ctx.id.clone();
                             tokio::spawn(async move {
-                                let _ = ctx.tx.send(TorrentMsg::SendToAllPeers(id, reqs, queue)).await;
+                                let _ = ctx.tx.send(TorrentMsg::BroadcastBlockInfos(id, reqs, queue)).await;
                             });
                         }
                         PeerMsg::Cancel(block_info) => {

@@ -12,9 +12,9 @@ pub static DEFAULT_ADDR: SocketAddr =
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Clone)]
 pub(crate) struct PeerInfo {
-    pub connection_id: u64,
-    pub key: u32,
-    pub addr: SocketAddr,
+    pub(crate) connection_id: u64,
+    pub(crate) key: u32,
+    pub(crate) addr: SocketAddr,
 }
 
 pub(crate) struct MockTracker {
@@ -32,11 +32,11 @@ pub(crate) struct MockTracker {
 }
 
 impl MockTracker {
-    pub async fn new() -> Result<Self, Error> {
+    pub(crate) async fn new() -> Result<Self, Error> {
         Self::from(DEFAULT_ADDR).await
     }
 
-    pub async fn from(addr: SocketAddr) -> Result<Self, Error> {
+    pub(crate) async fn from(addr: SocketAddr) -> Result<Self, Error> {
         let socket = UdpSocket::bind(addr).await?;
         Ok(Self {
             socket,
@@ -46,7 +46,7 @@ impl MockTracker {
         })
     }
 
-    pub async fn run(&mut self) -> Result<(), Error> {
+    pub(crate) async fn run(&mut self) -> Result<(), Error> {
         let mut buf = [0u8; 99];
         loop {
             let Ok((len, who)) = self.socket.recv_from(&mut buf).await else {
@@ -56,7 +56,8 @@ impl MockTracker {
         }
     }
 
-    pub async fn handle_packet(
+    #[inline]
+    pub(crate) async fn handle_packet(
         &mut self,
         buf: &[u8],
         who: SocketAddr,
