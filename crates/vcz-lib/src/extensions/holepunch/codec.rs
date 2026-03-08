@@ -42,23 +42,23 @@ impl ExtMsgHandler<Holepunch> for Peer<peer::Connected> {
                 // 2. send Connect msg to the src peer.
                 // 3. send Connect msg to the target peer.
 
-                let (otx, orx) = oneshot::channel();
+                // let (otx, orx) = oneshot::channel();
 
-                self.state
-                    .ctx
-                    .torrent_ctx
-                    .tx
-                    .send(TorrentMsg::ReadPeerByIp(
-                        msg.addr.into(),
-                        msg.port,
-                        otx,
-                    ))
-                    .await?;
+                // self.state
+                //     .ctx
+                //     .torrent_ctx
+                //     .tx
+                //     .send(TorrentMsg::ReadPeerByIp(
+                //         msg.addr.into(),
+                //         msg.port,
+                //         otx,
+                //     ))
+                //     .await?;
 
                 //
                 // send connect to the src
                 //
-                let Some(_peer_ctx) = orx.await? else {
+                // let Some(_peer_ctx) = orx.await? else {
                     // peer.state
                     //     .sink
                     //     .send(
@@ -70,8 +70,8 @@ impl ExtMsgHandler<Holepunch> for Peer<peer::Connected> {
                     //         .into(),
                     //     )
                     //     .await?;
-                    return Ok(());
-                };
+                //     return Ok(());
+                // };
 
                 // if the peer doesn't support the holepunch protocol.
                 // if peer.state.ext_states.holepunch.is_none() {

@@ -13,7 +13,8 @@ exclude = ["*.log"]
 
 [features]
 favor-xdg-style = []
-debug = []
+integration-test = []
+ui-test = []
 default = ["favor-xdg-style"]
 
 [dependencies]

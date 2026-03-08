@@ -1,6 +1,8 @@
 //! A daemon that runs on the background and handles everything
 //! that is not the UI.
 
+pub static CONNECTED_PEERS: AtomicUsize = AtomicUsize::new(0);
+
 use crate::{
     DAEMON_MSG_BOUND,
     config::ResolvedConfig,
@@ -24,14 +26,14 @@ use signal_hook_tokio::Signals;
 use std::{
     collections::HashMap,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
-    sync::Arc,
+    sync::{Arc, atomic::AtomicUsize},
     time::Duration,
 };
 use tokio::{
     net::{TcpListener, TcpStream},
     select, spawn,
     sync::{
-        mpsc,
+        Mutex, mpsc,
         oneshot::{self},
     },
     task::JoinHandle,
@@ -55,13 +57,7 @@ use tracing::{debug, info, warn};
 pub struct Daemon {
     pub disk_tx: mpsc::Sender<DiskMsg>,
     pub ctx: Arc<DaemonCtx>,
-    pub(crate) torrent_ctxs: HashMap<InfoHash, Arc<TorrentCtx>>,
-    pub(crate) metadata_sizes: HashMap<InfoHash, Option<usize>>,
     pub config: Arc<ResolvedConfig>,
-
-    /// Connected peers of all torrents
-    connected_peers: u32,
-
     local_peer_handle: Option<JoinHandle<()>>,
 
     /// States of all Torrents, updated each second by the Torrent struct.
@@ -71,6 +67,7 @@ pub struct Daemon {
 
 /// Context of the [`Daemon`] that may be shared between other types.
 pub struct DaemonCtx {
+    pub(crate) torrent_ctxs: Mutex<HashMap<InfoHash, Arc<TorrentCtx>>>,
     pub(crate) tx: mpsc::Sender<DaemonMsg>,
     pub free_tx: mpsc::UnboundedSender<ReturnToDisk>,
     pub local_peer_id: PeerId,
@@ -83,14 +80,7 @@ pub(crate) enum DaemonMsg {
     /// Tell Daemon to add a new torrent and it will immediately
     /// announce to a tracker, connect to the peers, and start the download.
     NewTorrentMagnet(Box<magnet_url::Magnet>),
-
     AddTorrentMetaInfo(Box<Torrent<torrent::Idle, torrent::FromMetaInfo>>),
-    GetConnectedPeers(oneshot::Sender<u32>),
-    GetMetadataSize(oneshot::Sender<Option<usize>>, InfoHash),
-    SetMetadataSize(usize, InfoHash),
-    GetTorrentCtx(oneshot::Sender<Option<Arc<TorrentCtx>>>, InfoHash),
-    IncrementConnectedPeers,
-    DecrementConnectedPeers,
     DeleteTorrent(InfoHash),
 
     GetAllTorrentState(oneshot::Sender<Vec<TorrentState>>),
@@ -130,14 +120,16 @@ impl Daemon {
 
         Self {
             config,
-            connected_peers: 0,
-            metadata_sizes: HashMap::default(),
             disk_tx,
             rx,
             local_peer_handle: None,
-            torrent_ctxs: HashMap::new(),
             torrent_states: Vec::new(),
-            ctx: Arc::new(DaemonCtx { tx, local_peer_id, free_tx }),
+            ctx: Arc::new(DaemonCtx {
+                tx,
+                torrent_ctxs: Mutex::new(HashMap::new()),
+                local_peer_id,
+                free_tx,
+            }),
         }
     }
 
@@ -176,6 +168,7 @@ impl Daemon {
                                     "{} peer loop stopped due to an error: {r:?}",
                                     connected_peer.state.ctx.remote_addr
                                 );
+                                connected_peer.free_pending_blocks();
                                 connected_peer.state.ctx.torrent_ctx.tx
                                     .send(
                                         TorrentMsg::PeerError(
@@ -183,7 +176,6 @@ impl Daemon {
                                         )
                                     )
                                 .await?;
-                                connected_peer.free_pending_blocks();
                                 return Err(r);
                             }
 
@@ -219,22 +211,24 @@ impl Daemon {
         &mut self,
         info_hash: &InfoHash,
     ) -> Result<(), Error> {
-        let Some(ctx) = self.torrent_ctxs.get(info_hash) else {
+        let mut torrent_ctxs = self.ctx.torrent_ctxs.lock().await;
+        let Some(ctx) = torrent_ctxs.get(info_hash) else {
             return Ok(());
         };
         let _ = ctx.tx.send(TorrentMsg::Quit).await;
         let _ =
             ctx.disk_tx.send(DiskMsg::DeleteTorrent(info_hash.clone())).await;
         self.torrent_states.retain(|v| *v.info_hash != **info_hash);
-        self.torrent_ctxs.remove(info_hash);
+        torrent_ctxs.remove(info_hash);
         Ok(())
     }
 
     async fn quit_all_torrents(&mut self) -> Result<(), Error> {
-        for ctx in self.torrent_ctxs.values() {
+        let mut torrent_ctxs = self.ctx.torrent_ctxs.lock().await;
+        for ctx in torrent_ctxs.values() {
             let _ = ctx.tx.send(TorrentMsg::Quit).await;
         }
-        self.torrent_ctxs.clear();
+        torrent_ctxs.clear();
         Ok(())
     }
 
@@ -273,14 +267,16 @@ impl Daemon {
     #[tracing::instrument(name = "daemon", skip_all)]
     pub async fn run(&mut self) -> Result<(), Error> {
         let token = CancellationToken::new();
-        let socket = TcpListener::bind(self.config.daemon_addr).await.unwrap();
+        let socket = TcpListener::bind(self.config.daemon_addr)
+            .await
+            .expect("could not bind TCP socket of daemon.");
         info!("listening on: {}", self.config.daemon_addr);
 
         let ctx = self.ctx.clone();
 
         self.local_peer_handle = Some(self.run_local_peer().await?);
 
-        #[cfg(feature = "debug")]
+        #[cfg(feature = "ui-test")]
         self.add_test_torrents().await;
 
         let signals = Signals::new([SIGHUP, SIGTERM, SIGINT, SIGQUIT])?;
@@ -304,36 +300,10 @@ impl Daemon {
                         DaemonMsg::AddTorrentMetaInfo(torrent) => {
                             let _ = self.add_torrent_meta_info(torrent).await;
                         }
-                        DaemonMsg::GetTorrentCtx(tx, info_hash) => {
-                            let ctx = self.torrent_ctxs.get(&info_hash).cloned();
-                            let _ = tx.send(ctx);
-                        }
-                        DaemonMsg::GetMetadataSize(tx, info_hash) => {
-                            let Some(metadata_size) =
-                                self.metadata_sizes.get(&info_hash).cloned()
-                            else { continue } ;
-
-                            let _ = tx.send(metadata_size);
-                        }
-                        DaemonMsg::SetMetadataSize(metadata, info_hash) => {
-                            let Some(metadata_size) =
-                                self.metadata_sizes.get_mut(&info_hash)
-                            else { continue };
-                            *metadata_size = Some(metadata);
-                        }
-                        DaemonMsg::GetConnectedPeers(tx) => {
-                            let _ = tx.send(self.connected_peers);
-                        }
                         DaemonMsg::DeleteTorrent(info_hash) => {
                             info!("deleting torrent {info_hash:?}");
                             let _ = self.delete_torrent(&info_hash).await;
                         }
-                        DaemonMsg::IncrementConnectedPeers => self.connected_peers += 1,
-                        DaemonMsg::DecrementConnectedPeers => {
-                            if self.connected_peers > 0 {
-                                self.connected_peers -= 1;
-                            }
-                        },
                         DaemonMsg::GetAllTorrentState(tx) => {
                             let _ = tx.send(self.torrent_states.clone());
                         }
@@ -403,7 +373,7 @@ impl Daemon {
                     }
                 }
                 _ = test_interval.tick() => {
-                    #[cfg(feature = "debug")]
+                    #[cfg(feature = "ui-test")]
                     self.tick_test().await;
                 }
                 Ok((socket, addr)) = socket.accept() => {
@@ -505,10 +475,9 @@ impl Daemon {
         &self,
         info_hash: &InfoHash,
     ) -> Result<(), Error> {
-        let ctx = self
-            .torrent_ctxs
-            .get(info_hash)
-            .ok_or(Error::TorrentDoesNotExist)?;
+        let torrent_ctxs = self.ctx.torrent_ctxs.lock().await;
+        let ctx =
+            torrent_ctxs.get(info_hash).ok_or(Error::TorrentDoesNotExist)?;
 
         ctx.tx.send(TorrentMsg::TogglePause).await?;
 
@@ -545,10 +514,12 @@ impl Daemon {
             magnet,
         );
 
-        self.torrent_ctxs.insert(info_hash, torrent.ctx.clone());
+        let mut torrent_ctxs = self.ctx.torrent_ctxs.lock().await;
+        torrent_ctxs.insert(info_hash, torrent.ctx.clone());
+        drop(torrent_ctxs);
 
         spawn(async move {
-            let mut torrent = torrent.start().await?;
+            let torrent = torrent.start().await?;
             torrent.run().await?;
             Ok::<(), Error>(())
         });
@@ -568,13 +539,13 @@ impl Daemon {
             return Err(Error::NoDuplicateTorrent);
         }
 
-        self.metadata_sizes
-            .insert(info.info_hash.clone(), Some(info.metadata_size));
-        self.torrent_ctxs.insert(info.info_hash.clone(), torrent.ctx.clone());
+        let mut torrent_ctxs = self.ctx.torrent_ctxs.lock().await;
+        torrent_ctxs.insert(info.info_hash.clone(), torrent.ctx.clone());
+        drop(torrent_ctxs);
         self.torrent_states.push((&torrent).into());
 
         spawn(async move {
-            let mut torrent = torrent.start().await?;
+            let torrent = torrent.start().await?;
             torrent.run().await?;
             Ok::<(), Error>(())
         });
@@ -582,7 +553,7 @@ impl Daemon {
         Ok(())
     }
 
-    #[cfg(feature = "debug")]
+    #[cfg(feature = "ui-test")]
     async fn add_test_torrents(&mut self) {
         use crate::torrent::{Stats, TorrentStatusErrorCode};
         self.torrent_states.extend([
@@ -675,7 +646,7 @@ impl Daemon {
         ]);
     }
 
-    #[cfg(feature = "debug")]
+    #[cfg(feature = "ui-test")]
     async fn tick_test(&mut self) {
         let TorrentState {
             download_rate,

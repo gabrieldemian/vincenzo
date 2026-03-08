@@ -10,4 +10,4 @@ edition = "2024"
 bendy = { workspace = true }
 rand = { workspace = true }
 tokio = { workspace = true }
-vcz-lib = { workspace = true, features = ["debug"] }
+vcz-lib = { workspace = true, features = ["integration-test"] }

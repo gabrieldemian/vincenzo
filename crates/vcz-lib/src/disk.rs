@@ -62,8 +62,6 @@ pub enum DiskMsg {
     /// just after the metainfo was downloaded.
     AddTorrent(Arc<TorrentCtx>, Arc<Info>),
 
-    MetadataSize(InfoHash, usize),
-
     DeleteTorrent(InfoHash),
 
     FinishedDownload(InfoHash),
@@ -94,6 +92,7 @@ pub enum DiskMsg {
     RequestMetadata {
         info_hash: InfoHash,
         recipient: Sender<Vec<MetadataPiece>>,
+        metadata_size: usize,
         qnt: usize,
     },
 
@@ -229,13 +228,19 @@ impl Disk {
         let mut lru_cleanup_interval = interval(Duration::from_millis(11_000));
 
         // ensure the necessary folders are created.
-        tokio::fs::create_dir_all(self.incomplete_torrents_path()).await?;
-        tokio::fs::create_dir_all(self.complete_torrents_path()).await?;
-        tokio::fs::create_dir_all(self.queue_torrents_path()).await?;
+        #[cfg(not(feature = "ui-test"))]
+        {
+            tokio::fs::create_dir_all(self.incomplete_torrents_path()).await?;
+            tokio::fs::create_dir_all(self.complete_torrents_path()).await?;
+            tokio::fs::create_dir_all(self.queue_torrents_path()).await?;
+        }
 
         // load .torrent files into the client.
-        self.read_metainfos_and_add(MetadataDir::Complete).await?;
-        self.read_metainfos_and_add(MetadataDir::Incomplete).await?;
+        #[cfg(not(feature = "ui-test"))]
+        {
+            self.read_metainfos_and_add(MetadataDir::Incomplete).await?;
+            self.read_metainfos_and_add(MetadataDir::Complete).await?;
+        }
 
         'outer: loop {
             select! {
@@ -245,46 +250,30 @@ impl Disk {
                             let path = self.get_metainfo_path(&info_hash)?;
                             info!("deleting {path:?}");
                             // tokio::fs::remove_file(path).await?;
-                            // self.torrent_cache.remove_entry(&info_hash);
                             // self.block_cache.remove_entry(&info_hash);
-                            // self.torrent_ctxs.remove_entry(&info_hash);
                             // self.downloaded_pieces_len.remove_entry(&info_hash);
                             // self.endgame.remove_entry(&info_hash);
-                            // self.downloaded_blocks.remove_entry(&info_hash);
-                            // self.piece_strategy.remove_entry(&info_hash);
-                            // self.block_infos.remove_entry(&info_hash);
                             // self.metadata_pieces.remove_entry(&info_hash);
+                            // self.piece_strategy.remove_entry(&info_hash);
+                            // self.torrent_cache.remove_entry(&info_hash);
+                            // self.torrent_ctxs.remove_entry(&info_hash);
                             // self.torrent_info.remove_entry(&info_hash);
-                            // self.dirty_files.remove_entry(&info_hash);
-                            // self.requested_pieces.remove_entry(&info_hash);
-                            // self.peer_ctxs.retain(|v| v.torrent_ctx.info_hash != info_hash);
                         }
                         DiskMsg::FinishedDownload(info_hash) => {
                             self.block_cache.remove_entry(&info_hash);
+                            self.downloaded_pieces_len.remove_entry(&info_hash);
+                            self.endgame.remove_entry(&info_hash);
+                            self.metadata_pieces.remove_entry(&info_hash);
+                            self.piece_strategy.remove_entry(&info_hash);
                             self.queue.remove_entry(&info_hash);
+                            self.torrent_ctxs.remove_entry(&info_hash);
+                            self.torrent_info.remove_entry(&info_hash);
                             let _ = self.move_metainfo_to_dir(
                                 &info_hash,
                                 MetadataDir::Incomplete,
                                 MetadataDir::Complete
                             ).await;
                             self.sync_torrent(&info_hash).await?;
-                        }
-                        DiskMsg::MetadataSize(info_hash, size) => {
-                            if self.metadata_pieces.contains_key(
-                                &info_hash,
-                            ) { continue };
-
-                            let pieces = size.div_ceil(BLOCK_LEN);
-                            info!("meta pieces {pieces}");
-
-                            let pieces =
-                                (0..pieces)
-                                .map(MetadataPiece).collect();
-
-                            self.metadata_pieces.insert(
-                                info_hash,
-                                pieces,
-                            );
                         }
                         DiskMsg::AddTorrent(torrent, info) => {
                             let _ = self.add_torrent(torrent, info).await;
@@ -306,9 +295,9 @@ impl Disk {
                                 .await;
                             let _ = recipient.send(infos);
                         }
-                        DiskMsg::RequestMetadata { qnt, recipient, info_hash } => {
+                        DiskMsg::RequestMetadata { qnt, recipient, info_hash, metadata_size } => {
                             let pieces = self
-                                .request_metadata(&info_hash, qnt)
+                                .request_metadata(&info_hash, qnt, metadata_size)
                                 .unwrap_or_default();
 
                             let _ = recipient.send(pieces);
@@ -568,7 +557,7 @@ impl Disk {
         let piece_strategy =
             *self.piece_strategy.entry(info_hash.clone()).or_default();
 
-        self.set_piece_strategy(info_hash, piece_strategy).await?;
+        self.set_piece_strategy(info_hash, piece_strategy)?;
 
         Ok(())
     }
@@ -758,15 +747,24 @@ impl Disk {
     }
 
     /// Request available metadata pieces.
+    #[inline]
     pub fn request_metadata(
         &mut self,
         info_hash: &InfoHash,
         qnt: usize,
+        metadata_size: usize,
     ) -> Result<Vec<MetadataPiece>, Error> {
-        let metas = self
-            .metadata_pieces
-            .get_mut(info_hash)
-            .ok_or(Error::TorrentDoesNotExist)?;
+        let metas = self.metadata_pieces.get_mut(info_hash);
+        let metas = match metas {
+            Some(metas) => metas,
+            None => {
+                let pieces = metadata_size.div_ceil(BLOCK_LEN);
+                info!("meta pieces {pieces}");
+                let pieces = (0..pieces).map(MetadataPiece).collect();
+                self.metadata_pieces.insert(info_hash.clone(), pieces);
+                self.metadata_pieces.get_mut(info_hash).unwrap()
+            }
+        };
 
         if metas.is_empty() {
             return Ok(vec![]);
@@ -1468,7 +1466,7 @@ impl Disk {
         Err(Error::TorrentDoesNotExist)
     }
 
-    pub async fn set_piece_strategy(
+    pub fn set_piece_strategy(
         &mut self,
         info_hash: &InfoHash,
         s: PieceStrategy,

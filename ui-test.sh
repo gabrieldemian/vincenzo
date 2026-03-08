@@ -1,2 +1,2 @@
 #!/usr/bin/env bash
-cargo run -F vcz-lib/debug -p vcz-ui
+cargo run -F vcz-lib/ui-test -p vcz-ui

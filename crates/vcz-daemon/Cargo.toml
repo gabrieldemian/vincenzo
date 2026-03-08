@@ -7,9 +7,6 @@ edition = "2024"
 name = "vczd"
 path = "src/main.rs"
 
-[features]
-debug = []
-
 [dependencies]
 futures = { workspace = true }
 hex = { workspace = true }

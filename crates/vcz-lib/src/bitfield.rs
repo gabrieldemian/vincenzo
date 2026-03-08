@@ -57,7 +57,7 @@ pub(crate) trait VczBitfield {
         &mut self,
         index: usize,
     ) -> BitRef<'_, bitvec::ptr::Const, u8, Msb0>;
-    fn safe_set(&mut self, _index: usize, val: bool) {}
+    fn safe_set(&mut self, index: usize, val: bool);
 }
 
 impl VczBitfield for Bitfield {

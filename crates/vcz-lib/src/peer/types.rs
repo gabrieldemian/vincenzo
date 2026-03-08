@@ -1,7 +1,7 @@
 use crate::{
     PEER_MSG_BOUND, VERSION_PROT,
     counter::Counter,
-    daemon::{DaemonCtx, DaemonMsg},
+    daemon::DaemonCtx,
     disk::ReturnToDisk,
     error::Error,
     extensions::{
@@ -23,7 +23,7 @@ use std::{
     ops::{Deref, DerefMut},
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicUsize},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -164,6 +164,8 @@ pub struct PeerCtx {
     pub torrent_ctx: Arc<TorrentCtx>,
     pub direction: Direction,
     pub id: PeerId,
+    // todo: consider removing this, the only use of this is in "want_blocks"
+    // which may be deleted.
     pub block_infos_len: AtomicUsize,
 
     /// Remote addr of this peer.
@@ -259,7 +261,6 @@ impl peer::Peer<Idle> {
         socket: TcpStream,
         daemon_ctx: Arc<DaemonCtx>,
         torrent_ctx: Arc<TorrentCtx>,
-        metadata_size: Option<usize>,
     ) -> Result<peer::Peer<Connected>, Error> {
         let remote = socket.peer_addr()?;
         let local = socket.local_addr()?;
@@ -272,7 +273,11 @@ impl peer::Peer<Idle> {
             Handshake::new(info_hash.clone(), daemon_ctx.local_peer_id.clone());
 
         if let Some(ext) = local_handshake.ext.as_mut() {
-            ext.metadata_size = Some(metadata_size.unwrap_or(0));
+            let metadata_size =
+                torrent_ctx.metadata_size.load(Ordering::Relaxed);
+            let metadata_size =
+                if metadata_size == 0 { None } else { Some(metadata_size) };
+            ext.metadata_size = metadata_size;
         }
 
         socket.send(local_handshake.clone()).await?;
@@ -372,7 +377,6 @@ impl peer::Peer<Idle> {
         let local = socket.local_addr()?;
 
         let mut socket = Framed::new(socket, HandshakeCodec);
-        let (otx, orx) = oneshot::channel();
 
         // wait and validate their handshake
         let peer_handshake = match socket.next().await {
@@ -396,17 +400,23 @@ impl peer::Peer<Idle> {
         // in an inbound connection, the client can only know which torrent the
         // peer wants when the peer sends their first handshake, so we send a
         // message to the daemon to get it.
-        daemon_ctx
-            .tx
-            .send(DaemonMsg::GetMetadataSize(
-                otx,
-                peer_handshake.info_hash.clone(),
-            ))
-            .await?;
 
-        let metadata_size = orx.await?;
+        let tctx = daemon_ctx.torrent_ctxs.lock().await;
+        let metadata_size = tctx
+            .get(&peer_handshake.info_hash)
+            .unwrap()
+            .metadata_size
+            .load(Ordering::Relaxed);
+        let torrent_ctx = tctx.get(&peer_handshake.info_hash).cloned();
+        drop(tctx);
+
+        let Some(torrent_ctx) = torrent_ctx else {
+            return Err(Error::TorrentDoesNotExist);
+        };
 
         if let Some(ext) = &mut our_handshake.ext {
+            let metadata_size =
+                if metadata_size == 0 { None } else { Some(metadata_size) };
             ext.metadata_size = metadata_size;
         }
 
@@ -416,31 +426,6 @@ impl peer::Peer<Idle> {
         }
 
         socket.send(our_handshake).await?;
-
-        let (otx, orx) = oneshot::channel();
-
-        daemon_ctx
-            .tx
-            .send(DaemonMsg::GetTorrentCtx(
-                otx,
-                peer_handshake.info_hash.clone(),
-            ))
-            .await?;
-
-        let Some(torrent_ctx) = orx.await? else {
-            return Err(Error::TorrentDoesNotExist);
-        };
-
-        let (otx, orx) = oneshot::channel();
-        torrent_ctx
-            .tx
-            .send(TorrentMsg::GetPeer(peer_handshake.peer_id.clone(), otx))
-            .await?;
-
-        let peer_ctx = orx.await?;
-        if peer_ctx.is_some() {
-            return Err(Error::NoDuplicatePeer);
-        }
 
         let socket = socket.map_codec(|_| CoreCodec);
         let (tx, rx) = mpsc::channel::<PeerMsg>(PEER_MSG_BOUND);

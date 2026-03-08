@@ -39,9 +39,11 @@ impl Deref for InfoHash {
 
 impl std::fmt::Debug for InfoHash {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let s = self.to_string();
-        let s = &s[..0];
-        f.write_str(s)
+        // we are interested in reading only a part to differentiate torrents
+        // from themselves, this is human readable.
+        let start = hex::encode(&self.0[..2]);
+        let end = hex::encode(&self.0[18..]);
+        write!(f, "{}...{}", start, end)
     }
 }
 
@@ -200,6 +202,7 @@ impl Info {
 
     /// Calculate how many blocks there are per piece
     #[inline]
+    #[cfg(test)]
     pub(crate) fn blocks_per_piece(&self) -> usize {
         self.piece_length.div_ceil(BLOCK_LEN)
     }

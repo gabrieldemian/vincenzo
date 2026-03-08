@@ -5,125 +5,49 @@ use crate::{
 use bendy::decoding::FromBencode;
 
 impl Torrent<Connected, FromMagnet> {
-    /// Run the Torrent main event loop to listen to internal [`TorrentMsg`].
-    #[tracing::instrument(name = "torrent", skip_all,
-        fields(info = ?self.source.info_hash())
-    )]
-    pub async fn run(&mut self) -> Result<(), Error> {
+    pub(self) async fn inner_run(
+        mut self,
+    ) -> Result<Option<Torrent<Connected, FromMetaInfo>>, Error> {
         debug!("running torrent: {:?}", self.name);
 
         self.status = TorrentStatus::DownloadingMetainfo;
+        let _ = self.spawn_outbound_peers(false).await;
 
         loop {
             select! {
                 Some(msg) = self.rx.recv() => {
                     match msg {
-                        TorrentMsg::Request{peer_ctx, qnt, recipient} => {
-                            let pl = self.source.info.as_ref().unwrap().piece_length;
-                            let pieces_wanted = qnt.div_ceil(pl);
-                            let disk_tx = self.ctx.disk_tx.clone();
-                            let Ok(pieces) = self.get_want_pieces(&peer_ctx.id, pieces_wanted)
-                            else {
-                                let _ = recipient.send(Err(Error::PeerDoesNotExist));
-                                continue;
-                            };
-                            let bitfield = self
-                                .state
-                                .peer_pieces
-                                .get(&peer_ctx.id)
-                                .ok_or(Error::PeerDoesNotExist)?
-                                .clone();
-                            spawn(async move {
-                                let _ = disk_tx
-                                    .send(DiskMsg::RequestBlocks {
-                                        peer_ctx,
-                                        pieces,
-                                        recipient,
-                                        bitfield,
-                                    })
-                                    .await;
-                            });
-                        }
-                        TorrentMsg::SendToAllPeers(sender, reqs, queue) => {
-                            for p in &self.state.connected_peers {
-                                if p.id == sender { continue };
-                                let tx = p.tx.clone();
-                                let mut blocks = reqs.clone();
-                                blocks.extend(queue.clone());
-                                tokio::spawn(async move {
-                                    let _ = tx.send(PeerMsg::Blocks(blocks)).await;
-                                });
-                            }
-                        }
-                        TorrentMsg::Endgame => {
-                            for p in &self.state.connected_peers {
-                                let tx = p.tx.clone();
-                                tokio::spawn(async move {
-                                    let _ = tx.send(PeerMsg::Endgame).await;
-                                });
-                            }
-                        }
-                        TorrentMsg::Cancel(sender, block_info) => {
-                            for p in &self.state.connected_peers {
-                                if p.id == sender { continue };
-                                let b = block_info.clone();
-                                let tx = p.tx.clone();
-                                tokio::spawn(async move {
-                                    let _ = tx.send(PeerMsg::Cancel(b)).await;
-                                });
-                            }
+                        // a torrent from magnet can never answer these msgs.
+                        TorrentMsg::Endgame => { }
+                        TorrentMsg::Cancel(..) => { }
+                        TorrentMsg::DownloadedPiece(_) => { }
+                        TorrentMsg::Request { .. } => {}
+                        TorrentMsg::WantBlocks(..) => { }
+                        TorrentMsg::UnchokeAlgorithm => { }
+                        TorrentMsg::GetUnchokedPeers(..) => { }
+                        TorrentMsg::OptUnchokeAlgorithm => { }
+                        TorrentMsg::PeerHasPieceNotInLocal(..) => { }
+
+                        TorrentMsg::Promote(info) => {
+                            return Ok(Some(self.promote(*info)));
+                        },
+                        TorrentMsg::BroadcastBlockInfos(sender, reqs, queue) => {
+                            self.broadcast_block_infos(sender, reqs, queue);
                         }
                         TorrentMsg::SetTorrentError(code) => {
                             self.status = TorrentStatus::Error(code);
                         }
                         TorrentMsg::GetPeer(peer_id, sender) => {
-                            let _ =
-                                sender.send(
-                                    self.state.connected_peers
-                                        .iter().find(|p| p.id == peer_id).cloned()
-                                );
-                        }
-                        TorrentMsg::GetUnchokedPeers(sender) => {
-                            let _ = sender.send(self.state.unchoked_peers.clone());
-                        }
-                        TorrentMsg::UnchokeAlgorithm => {
-                            self.unchoke().await;
-                        }
-                        TorrentMsg::OptUnchokeAlgorithm => {
-                            self.optimistic_unchoke().await;
-                        }
-                        TorrentMsg::WantBlocks(qnt, ctx) => {
-                            let _ = self.peer_want_blocks(qnt, ctx).await;
+                            self.get_peer(peer_id, sender);
                         }
                         TorrentMsg::AddIdlePeers(peers) => {
                             self.state.idle_peers.extend(peers);
                         }
-                        TorrentMsg::GetAnnounceData(otx) => {
-                            let downloaded = self.state.counter.total_download();
-                            let uploaded = self.state.counter.total_upload();
-                            let left = self.state.size.saturating_sub(downloaded);
-                            let _ = otx.send((downloaded, uploaded, left));
-                        }
-                        TorrentMsg::GetAnnounceList(otx) => {
-                            let _ = otx.send(self.source.magnet.trackers().into());
-                        }
                         TorrentMsg::GetTorrentStatus(otx) => {
                             let _ = otx.send(self.status);
                         }
-                        TorrentMsg::PeerHasPieceNotInLocal(id, tx) => {
-                            let r = self.peer_has_piece_not_in_local(&id);
-                            let _ = tx.send(r);
-                        }
                         TorrentMsg::HaveInfo(tx) => {
-                            let _ = tx.send(self.source.info.is_some());
-                        }
-                        TorrentMsg::GetMetadataSize(tx) => {
-                            let m = self.state.metadata_size;
-                            let _ = tx.send(m);
-                        }
-                        TorrentMsg::GetPeerBitfield(id, tx) => {
-                            let bitfield = self.state.peer_pieces.get(&id).cloned();
-                            let _ = tx.send(bitfield);
+                            let _ = tx.send(false);
                         }
                         TorrentMsg::SetPeerBitfield(id, bitfield) => {
                             let entry = self.state.peer_pieces.entry(id.clone()).or_default();
@@ -133,20 +57,8 @@ impl Torrent<Connected, FromMagnet> {
                         TorrentMsg::PeerHave(id, piece) => {
                             self.peer_have(id, piece);
                         }
-                        TorrentMsg::GetConnectedPeers(otx) => {
-                            let _ = otx.send(self.state.connected_peers.clone());
-                        }
-                        TorrentMsg::ReadPeerByIp(ip, port, otx) => {
-                            self.read_peer_by_ip(ip, port, otx);
-                        }
-                        TorrentMsg::MetadataSize(metadata_size) => {
-                            self.metadata_size(metadata_size).await;
-                        }
                         TorrentMsg::ReadBitfield(oneshot) => {
                             let _ = oneshot.send(self.bitfield.clone());
-                        }
-                        TorrentMsg::DownloadedPiece(piece) => {
-                            self.downloaded_piece(piece).await;
                         }
                         TorrentMsg::PeerError(addr) => {
                             self.peer_error(addr).await;
@@ -166,32 +78,25 @@ impl Torrent<Connected, FromMagnet> {
                         }
                         TorrentMsg::Quit => {
                             self.quit();
-                            return Ok(());
+                            return Ok(None);
                         }
                     }
                 }
                 _ = self.state.heartbeat_interval.tick() => {
                     self.heartbeat_interval().await;
                 }
-                _ = self.state.reconnect_interval.tick(),
-                    if !matches!(self.status, TorrentStatus::Error(_)) =>
-                {
-                    // self.reconnect_interval().await;
-                    let _ = self.spawn_outbound_peers(self.source.info.is_some()).await;
-                }
-                _ = self.state.log_rates_interval.tick() => {
-                    self.log_rates_interval();
-                }
-                _ = self.state.optimistic_unchoke_interval.tick() => {
-                    self.optimistic_unchoke().await;
-                }
-                // for the unchoke algorithm, the local client is interested in the best
-                // uploaders (from their perspctive) (tit-for-tat)
-                _ = self.state.unchoke_interval.tick() => {
-                    #[cfg(not(feature = "debug"))]
-                    self.unchoke().await;
-                }
             }
+        }
+    }
+
+    /// Run the Torrent main event loop to listen to internal [`TorrentMsg`].
+    pub async fn run(self) -> Result<(), Error> {
+        match self.inner_run().await {
+            Ok(o) => match o {
+                Some(me) => me.run().await,
+                None => Ok(()),
+            },
+            Err(e) => Err(e),
         }
     }
 
@@ -201,10 +106,6 @@ impl Torrent<Connected, FromMagnet> {
         index: u64,
         bytes: Vec<u8>,
     ) -> Result<(), Error> {
-        if self.source.info.is_some() {
-            return Ok(());
-        };
-
         self.state.info_pieces.entry(index).or_default().extend(bytes);
 
         let has_info_downloaded =
@@ -224,12 +125,14 @@ impl Torrent<Connected, FromMagnet> {
                 acc
             });
 
-        let downloaded_info = Arc::new(Info::from_bencode(&info_bytes)?);
-        self.state.metadata_size = Some(downloaded_info.metadata_size);
+        let info = Info::from_bencode(&info_bytes)?;
+        self.ctx.tx.send(TorrentMsg::Promote(Box::new(info.clone()))).await?;
+
+        let downloaded_info = Arc::new(info);
 
         // validate the hash of the downloaded info
         // against the hash of the magnet link
-        if self.source.info_hash() != downloaded_info.info_hash {
+        if self.source.magnet.parse_xt_infohash() != downloaded_info.info_hash {
             warn!("invalid info hash for info: {:?}", downloaded_info.name);
             self.state.info_pieces.clear();
             return Err(Error::PieceInvalid);
@@ -244,7 +147,6 @@ impl Torrent<Connected, FromMagnet> {
             downloaded_info.blocks_count(),
         );
 
-        self.state.size = downloaded_info.get_torrent_size() as u64;
         self.bitfield = Bitfield::from_piece(downloaded_info.pieces());
 
         self.ctx
@@ -255,12 +157,34 @@ impl Torrent<Connected, FromMagnet> {
             ))
             .await?;
 
-        // todo: consider transforming this peer to a "FromMetaInfo"
-        self.source.info = Some(downloaded_info);
         self.status = TorrentStatus::Downloading;
-
         let _ = self.ctx.btx.send(PeerBrMsg::HaveInfo);
+
         Ok(())
+    }
+
+    pub(crate) fn promote(
+        self,
+        info: Info,
+    ) -> Torrent<Connected, FromMetaInfo> {
+        let trackers = self.source.magnet.0.trackers().to_vec();
+        self.ctx.metadata_size.store(info.metadata_size, Ordering::Release);
+        let meta_info = MetaInfo {
+            announce_list: Some(vec![trackers]),
+            info,
+            ..Default::default()
+        };
+        Torrent {
+            ctx: self.ctx,
+            status: self.status,
+            config: self.config,
+            daemon_ctx: self.daemon_ctx,
+            rx: self.rx,
+            name: self.name,
+            state: self.state,
+            source: FromMetaInfo { meta_info },
+            bitfield: self.bitfield,
+        }
     }
 }
 
@@ -274,22 +198,25 @@ impl Torrent<Idle, FromMagnet> {
     ) -> Torrent<Idle, FromMagnet> {
         let (tx, rx) = mpsc::channel::<TorrentMsg>(TORRENT_MSG_BOUND);
         let (btx, _brx) = broadcast::channel::<PeerBrMsg>(PEER_BR_MSG_BOUND);
+        let size = magnet.0.length().unwrap_or(u64::MAX);
 
         let ctx = Arc::new(TorrentCtx {
+            counter: Counter::new(),
+            size: size.into(),
             free_tx,
             btx,
             tx,
             disk_tx,
             info_hash: magnet.parse_xt_infohash(),
+            metadata_size: 0.into(),
         });
-        let metadata_size = None;
 
         Self {
             config,
             bitfield: Bitfield::default(),
             name: magnet.parse_dn(),
-            source: FromMagnet { magnet, info: None },
-            state: Idle { metadata_size },
+            source: FromMagnet { magnet },
+            state: Idle {},
             status: TorrentStatus::default(),
             daemon_ctx,
             ctx,
