@@ -164,6 +164,8 @@ pub struct PeerCtx {
     pub torrent_ctx: Arc<TorrentCtx>,
     pub direction: Direction,
     pub id: PeerId,
+    // todo: consider removing this, the only use of this is in "want_blocks"
+    // which may be deleted.
     pub block_infos_len: AtomicUsize,
 
     /// Remote addr of this peer.

@@ -33,7 +33,6 @@ use tracing::{debug, trace, warn};
 #[extensions(Core, Metadata, Extension)]
 pub(crate) struct Peer<S: PeerState> {
     pub state: S,
-    /// am_choking[0], am_interested[1], peer_choking[2], peer_interested[3]
     pub state_log: StateLog,
 }
 
@@ -178,7 +177,7 @@ impl Peer<Connected> {
                                 .ctx
                                 .block_infos_len
                                 .store(self.state.req_man_block.len_with_queue(), Ordering::Release);
-                            // tracing::info!("(uwu) received {}", blocks.len());
+                            // tracing::info!("(owo) received {}", blocks.len());
                         }
                         PeerMsg::NotInterested => {
                             debug!("> not_interested");
@@ -318,6 +317,7 @@ impl Peer<Connected> {
     }
 
     /// Request available metadata pieces.
+    #[inline]
     pub(crate) async fn request_metadata(&mut self) -> Result<(), Error> {
         let Some(ut_metadata) =
             self.state.extension.as_ref().and_then(|v| v.m.ut_metadata)
@@ -368,6 +368,7 @@ impl Peer<Connected> {
     }
 
     /// Check for timedout metadata requests and request them again.
+    #[inline]
     pub(crate) async fn rerequest_metadata(&mut self) -> Result<(), Error> {
         let Some(ut_metadata) =
             self.state.extension.as_ref().and_then(|v| v.m.ut_metadata)
@@ -391,25 +392,27 @@ impl Peer<Connected> {
         Ok(())
     }
 
-    #[inline]
     /// Send a message to sink and record upload rate, but the sink is not
     /// flushed.
+    #[inline]
     pub(crate) async fn feed(&mut self, core: Core) -> Result<(), Error> {
-        self.state.ctx.counter.record_upload(4 + core.len() as u64);
+        let len = core.len() as u64;
         self.state.sink.feed(core).await?;
+        self.state.ctx.counter.record_upload(4 + len);
         Ok(())
     }
 
     /// Send a message to sink and record upload rate and flush.
     #[inline]
     pub(crate) async fn send(&mut self, core: Core) -> Result<(), Error> {
-        self.state.ctx.counter.record_upload(4 + core.len() as u64);
+        let len = core.len() as u64;
         self.state.sink.send(core).await?;
+        self.state.ctx.counter.record_upload(4 + len);
         Ok(())
     }
 
-    #[inline]
     /// Run interested algorithm.
+    #[inline]
     pub(crate) async fn interested(&mut self) -> Result<Option<usize>, Error> {
         let (otx, orx) = oneshot::channel();
 

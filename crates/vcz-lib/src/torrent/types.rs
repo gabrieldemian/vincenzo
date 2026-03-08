@@ -11,7 +11,7 @@ use rkyv::{Archive, Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     fmt::Display,
-    net::{IpAddr, SocketAddr},
+    net::SocketAddr,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},

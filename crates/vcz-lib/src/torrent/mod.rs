@@ -269,6 +269,10 @@ impl Torrent<Connected, FromMetaInfo> {
             .await;
 
         let _ = self.ctx.btx.send(PeerBrMsg::Seedonly);
+
+        self.state.peer_pieces_req.clear();
+        self.state.peer_pieces_diff.clear();
+        self.state.peer_pieces.clear();
     }
 }
 

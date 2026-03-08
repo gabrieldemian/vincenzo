@@ -244,23 +244,24 @@ impl Disk {
                             let path = self.get_metainfo_path(&info_hash)?;
                             info!("deleting {path:?}");
                             // tokio::fs::remove_file(path).await?;
-                            // self.torrent_cache.remove_entry(&info_hash);
                             // self.block_cache.remove_entry(&info_hash);
-                            // self.torrent_ctxs.remove_entry(&info_hash);
                             // self.downloaded_pieces_len.remove_entry(&info_hash);
                             // self.endgame.remove_entry(&info_hash);
-                            // self.downloaded_blocks.remove_entry(&info_hash);
-                            // self.piece_strategy.remove_entry(&info_hash);
-                            // self.block_infos.remove_entry(&info_hash);
                             // self.metadata_pieces.remove_entry(&info_hash);
+                            // self.piece_strategy.remove_entry(&info_hash);
+                            // self.torrent_cache.remove_entry(&info_hash);
+                            // self.torrent_ctxs.remove_entry(&info_hash);
                             // self.torrent_info.remove_entry(&info_hash);
-                            // self.dirty_files.remove_entry(&info_hash);
-                            // self.requested_pieces.remove_entry(&info_hash);
-                            // self.peer_ctxs.retain(|v| v.torrent_ctx.info_hash != info_hash);
                         }
                         DiskMsg::FinishedDownload(info_hash) => {
                             self.block_cache.remove_entry(&info_hash);
+                            self.downloaded_pieces_len.remove_entry(&info_hash);
+                            self.endgame.remove_entry(&info_hash);
+                            self.metadata_pieces.remove_entry(&info_hash);
+                            self.piece_strategy.remove_entry(&info_hash);
                             self.queue.remove_entry(&info_hash);
+                            self.torrent_ctxs.remove_entry(&info_hash);
+                            self.torrent_info.remove_entry(&info_hash);
                             let _ = self.move_metainfo_to_dir(
                                 &info_hash,
                                 MetadataDir::Incomplete,
