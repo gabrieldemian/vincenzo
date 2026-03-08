@@ -43,7 +43,7 @@ impl std::fmt::Debug for InfoHash {
         // from themselves, this is human readable.
         let start = hex::encode(&self.0[..2]);
         let end = hex::encode(&self.0[18..]);
-        write!(f, "{}...{}", start, end)
+        write!(f, "{}..{}", start, end)
     }
 }
 

@@ -18,6 +18,7 @@ ui-test = []
 default = ["favor-xdg-style"]
 
 [dependencies]
+tracing-subscriber = { workspace = true }
 int-enum = { workspace = true }
 page_size = { workspace = true }
 rkyv = { workspace = true }

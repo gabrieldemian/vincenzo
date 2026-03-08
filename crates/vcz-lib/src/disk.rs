@@ -62,7 +62,7 @@ pub enum DiskMsg {
     /// just after the metainfo was downloaded.
     AddTorrent(Arc<TorrentCtx>, Arc<Info>),
 
-    DeleteTorrent(InfoHash),
+    DeleteTorrent(InfoHash, bool),
 
     FinishedDownload(InfoHash),
 
@@ -246,18 +246,33 @@ impl Disk {
             select! {
                 Some(msg) = self.rx.recv() => {
                     match msg {
-                        DiskMsg::DeleteTorrent(info_hash) => {
-                            let path = self.get_metainfo_path(&info_hash)?;
-                            info!("deleting {path:?}");
-                            // tokio::fs::remove_file(path).await?;
-                            // self.block_cache.remove_entry(&info_hash);
-                            // self.downloaded_pieces_len.remove_entry(&info_hash);
-                            // self.endgame.remove_entry(&info_hash);
-                            // self.metadata_pieces.remove_entry(&info_hash);
-                            // self.piece_strategy.remove_entry(&info_hash);
-                            // self.torrent_cache.remove_entry(&info_hash);
-                            // self.torrent_ctxs.remove_entry(&info_hash);
-                            // self.torrent_info.remove_entry(&info_hash);
+                        DiskMsg::DeleteTorrent(info_hash, also_from_disk) => {
+                            let metainfo_path = self.get_metainfo_path(&info_hash)?;
+                            let Some(files_path) = self.torrent_cache.get(&info_hash)
+                                else { continue };
+                            let files_path = &files_path.file_metadata[0].path;
+
+                            info!("metainfo {metainfo_path:?}");
+                            info!("disk path {files_path:?}");
+
+                            tokio::fs::remove_file(metainfo_path).await?;
+                            
+                            if also_from_disk {
+                                if files_path.is_file() {
+                                    tokio::fs::remove_file(files_path).await?;
+                                } else {
+                                    tokio::fs::remove_dir_all(files_path).await?;
+                                }
+                            }
+
+                            self.block_cache.remove_entry(&info_hash);
+                            self.downloaded_pieces_len.remove_entry(&info_hash);
+                            self.endgame.remove_entry(&info_hash);
+                            self.metadata_pieces.remove_entry(&info_hash);
+                            self.piece_strategy.remove_entry(&info_hash);
+                            self.torrent_cache.remove_entry(&info_hash);
+                            self.torrent_ctxs.remove_entry(&info_hash);
+                            self.torrent_info.remove_entry(&info_hash);
                         }
                         DiskMsg::FinishedDownload(info_hash) => {
                             self.block_cache.remove_entry(&info_hash);

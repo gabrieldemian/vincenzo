@@ -106,7 +106,9 @@ impl Display for StateLog {
 
 impl Display for PeerId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", String::from_utf8_lossy(&self.0))
+        // shorter line when logging
+        <Self as std::fmt::Debug>::fmt(self, f)
+        // write!(f, "{}", String::from_utf8_lossy(&self.0))
     }
 }
 
@@ -121,8 +123,9 @@ impl TryInto<PeerId> for String {
 
 impl std::fmt::Debug for PeerId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let s = self.to_string();
-        f.write_str(&s)
+        let start = String::from_utf8_lossy(&self.0[..7]);
+        let end = String::from_utf8_lossy(&self.0[16..]);
+        write!(f, "{}..{}", start, end)
     }
 }
 
@@ -570,3 +573,16 @@ impl peer::Peer<PeerError> {
 impl PeerState for PeerError {}
 impl PeerState for Connected {}
 impl PeerState for Idle {}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_debug() {
+        let i = PeerId::generate();
+        println!("{i}");
+        println!("{i:?}");
+        println!("{i:#?}");
+    }
+}

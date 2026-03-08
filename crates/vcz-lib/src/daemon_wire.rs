@@ -47,8 +47,8 @@ pub enum Message {
     /// Pause/Resume the torrent with the given info_hash.
     TogglePause(InfoHash),
 
-    /// Delete a torrent but doesn't delete any files from disk.
-    DeleteTorrent(InfoHash),
+    /// Delete a torrent and optionally also delete it from disk.
+    DeleteTorrent(InfoHash, bool),
 
     /// Ask the Daemon to send a [`TorrentState`] of the torrent with the given
     GetTorrentState(InfoHash),
@@ -129,12 +129,13 @@ impl Encoder<Message> for DaemonCodec {
                 buf.put_u8(MessageId::TogglePause as u8);
                 buf.extend_from_slice(&*info_hash);
             }
-            Message::DeleteTorrent(info_hash) => {
-                let msg_len = 1 + info_hash.len() as u32;
+            Message::DeleteTorrent(info_hash, also_from_disk) => {
+                let msg_len = 1 + info_hash.len() as u32 + 1;
 
                 buf.put_u32(msg_len);
                 buf.put_u8(MessageId::DeleteTorrent as u8);
                 buf.extend_from_slice(&*info_hash);
+                buf.put_u8(if also_from_disk { 1 } else { 0 });
             }
             Message::PrintTorrentStatus => {
                 let msg_len = 1;
@@ -256,8 +257,9 @@ impl Decoder for DaemonCodec {
             MessageId::DeleteTorrent => {
                 let mut payload = [0u8; 20_usize];
                 buf.copy_to_slice(&mut payload);
+                let also_from_disk = buf.get_u8() == 1;
 
-                Message::DeleteTorrent(payload.into())
+                Message::DeleteTorrent(payload.into(), also_from_disk)
             }
             MessageId::PrintTorrentStatus => Message::PrintTorrentStatus,
             MessageId::Quit => Message::Quit,

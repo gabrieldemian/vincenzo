@@ -108,8 +108,12 @@ impl<'a> TorrentList<'a> {
     fn delete_torrent(&mut self) {
         let Some(_active_idx) = self.state.selected() else { return };
         let Some(active_info_hash) = &self.active_torrent else { return };
+        let Some(popup) = &self.delete_popup else { return };
 
-        let _ = self.tx.send(Action::DeleteTorrent(active_info_hash.clone()));
+        let _ = self.tx.send(Action::DeleteTorrent(
+            active_info_hash.clone(),
+            popup.also_delete_from_disk,
+        ));
 
         self.state.select(None);
         self.active_torrent = None;
@@ -281,11 +285,11 @@ impl<'a> Page for TorrentList<'a> {
         }
 
         if let Some(confirm) = self.delete_popup.as_mut() {
-            let area = centered_rect(60, 20, area);
+            let area = centered_rect(50, 8, area);
             f.render_widget(Clear, area);
             confirm.draw(f, area);
         } else if let Some(textarea) = self.textarea.as_mut() {
-            let area = centered_rect(60, 20, area);
+            let area = centered_rect(60, 8, area);
             f.render_widget(Clear, area);
             textarea.draw(f, area);
         }

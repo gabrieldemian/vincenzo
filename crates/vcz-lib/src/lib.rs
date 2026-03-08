@@ -17,6 +17,7 @@ pub const TORRENT_MSG_BOUND: usize = 256;
 pub const TRACKER_MSG_BOUND: usize = 32;
 
 pub mod bitfield;
+pub mod deduped_layer;
 pub mod config;
 pub mod counter;
 pub mod daemon;

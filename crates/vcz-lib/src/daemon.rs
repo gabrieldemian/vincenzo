@@ -81,7 +81,7 @@ pub(crate) enum DaemonMsg {
     /// announce to a tracker, connect to the peers, and start the download.
     NewTorrentMagnet(Box<magnet_url::Magnet>),
     AddTorrentMetaInfo(Box<Torrent<torrent::Idle, torrent::FromMetaInfo>>),
-    DeleteTorrent(InfoHash),
+    DeleteTorrent(InfoHash, bool),
 
     GetAllTorrentState(oneshot::Sender<Vec<TorrentState>>),
 
@@ -210,14 +210,17 @@ impl Daemon {
     async fn delete_torrent(
         &mut self,
         info_hash: &InfoHash,
+        also_from_disk: bool,
     ) -> Result<(), Error> {
         let mut torrent_ctxs = self.ctx.torrent_ctxs.lock().await;
         let Some(ctx) = torrent_ctxs.get(info_hash) else {
             return Ok(());
         };
         let _ = ctx.tx.send(TorrentMsg::Quit).await;
-        let _ =
-            ctx.disk_tx.send(DiskMsg::DeleteTorrent(info_hash.clone())).await;
+        let _ = ctx
+            .disk_tx
+            .send(DiskMsg::DeleteTorrent(info_hash.clone(), also_from_disk))
+            .await;
         self.torrent_states.retain(|v| *v.info_hash != **info_hash);
         torrent_ctxs.remove(info_hash);
         Ok(())
@@ -300,9 +303,9 @@ impl Daemon {
                         DaemonMsg::AddTorrentMetaInfo(torrent) => {
                             let _ = self.add_torrent_meta_info(torrent).await;
                         }
-                        DaemonMsg::DeleteTorrent(info_hash) => {
-                            info!("deleting torrent {info_hash:?}");
-                            let _ = self.delete_torrent(&info_hash).await;
+                        DaemonMsg::DeleteTorrent(info_hash, also_from_disk) => {
+                            info!("deleting torrent {info_hash} also from disk {also_from_disk}");
+                            let _ = self.delete_torrent(&info_hash, also_from_disk).await;
                         }
                         DaemonMsg::GetAllTorrentState(tx) => {
                             let _ = tx.send(self.torrent_states.clone());
@@ -433,8 +436,10 @@ impl Daemon {
         // when sent remotely via TCP (i.e UI on remote server),
         // or locally on the same binary (i.e CLI).
         match msg {
-            Message::DeleteTorrent(info_hash) => {
-                let _ = tx.send(DaemonMsg::DeleteTorrent(info_hash)).await;
+            Message::DeleteTorrent(info_hash, also_from_disk) => {
+                let _ = tx
+                    .send(DaemonMsg::DeleteTorrent(info_hash, also_from_disk))
+                    .await;
             }
             Message::NewTorrent(magnet) => {
                 info!("new_torrent: {:?}", magnet.hash());

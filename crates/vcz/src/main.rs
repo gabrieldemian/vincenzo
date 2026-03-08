@@ -40,6 +40,7 @@ impl<S> Filter<S> for LogEnabledFilter {
 async fn main() -> Result<(), Error> {
     let config = Arc::new(Config::load()?);
     let log_path = Config::get_log_path();
+    // todo: make this work with vcz_lib::MutableLayer
     let file_appender =
         RollingFileAppender::new(Rotation::WEEKLY, log_path, "vcz.log");
     let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);

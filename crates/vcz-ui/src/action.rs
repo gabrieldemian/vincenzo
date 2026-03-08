@@ -25,7 +25,7 @@ pub enum Action {
     Input(Input),
     NewTorrent(magnet_url::Magnet),
     TogglePause(InfoHash),
-    DeleteTorrent(InfoHash),
+    DeleteTorrent(InfoHash, bool),
     TorrentState(TorrentState),
     TorrentStates(Vec<TorrentState>),
 }

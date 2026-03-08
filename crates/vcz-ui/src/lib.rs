@@ -18,9 +18,9 @@ pub use palette::*;
 
 /// Return a floating centered Rect
 fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
-    let vertical = Layout::vertical([Constraint::Percentage(percent_y)])
+    let vertical = Layout::vertical([Constraint::Length(percent_y)])
         .flex(Flex::Center);
-    let horizontal = Layout::horizontal([Constraint::Percentage(percent_x)])
+    let horizontal = Layout::horizontal([Constraint::Length(percent_x)])
         .flex(Flex::Center);
     let [area] = vertical.areas(r);
     let [area] = horizontal.areas(area);

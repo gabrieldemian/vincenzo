@@ -7,13 +7,13 @@ use tokio::{
     sync::mpsc,
 };
 use tokio_util::codec::Framed;
-use tracing::Level;
-use tracing_subscriber::FmtSubscriber;
+use tracing_subscriber::layer::SubscriberExt;
 use vcz_lib::{
     DISK_MSG_BOUND,
     config::Config,
     daemon::Daemon,
     daemon_wire::{DaemonCodec, Message},
+    deduped_layer::MutableLayer,
     disk::{Disk, DiskMsg, ReturnToDisk},
     error::Error,
 };
@@ -22,12 +22,14 @@ use vcz_lib::{
 async fn main() -> Result<(), Error> {
     let config = Arc::new(Config::load()?);
 
-    let subscriber = FmtSubscriber::builder()
-        .without_time()
-        .with_target(false)
-        .with_file(false)
-        .with_max_level(Level::INFO)
-        .finish();
+    let layer = MutableLayer::new().with_max_level(tracing::level_filters::LevelFilter::DEBUG);
+    let subscriber = tracing_subscriber::registry().with(layer);
+    // let subscriber = tracing_subscriber::fmt()
+    //     .without_time()
+    //     .with_target(false)
+    //     .with_file(false)
+    //     .with_max_level(Level::INFO)
+    //     .finish();
 
     tracing::subscriber::set_global_default(subscriber)
         .expect("setting default subscriber failed");

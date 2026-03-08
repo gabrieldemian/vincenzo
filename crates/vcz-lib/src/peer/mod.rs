@@ -39,12 +39,7 @@ pub(crate) struct Peer<S: PeerState> {
 impl Peer<Connected> {
     /// Start the event loop of the Peer, listen to messages sent by others
     /// on the peer wire protocol.
-    #[tracing::instrument(name = "peer", skip_all,
-        fields(
-            state = %self.state_log,
-            id = %self.state.ctx.id,
-        )
-    )]
+    #[tracing::instrument(skip_all, name = "peer", fields(id = %self.state.ctx.id, state = %self.state_log))]
     pub(crate) async fn run(&mut self) -> Result<(), Error> {
         self.state
             .ctx
@@ -83,7 +78,7 @@ impl Peer<Connected> {
                     self.request_metadata().await?;
                     self.rerequest_metadata().await?;
                 }
-                _ = help_interval.tick(), if self.can_rerequest() => {
+                _ = help_interval.tick() => {
                     let len = self.state.req_man_block.len();
                     tracing::info!("i: {len} q: {} a: {}",
                         self.state.req_man_block.queue_len(),
@@ -183,24 +178,28 @@ impl Peer<Connected> {
                             debug!("> not_interested");
                             self.state.ctx.am_interested.store(false, Ordering::Release);
                             self.state_log[1] = '-';
+                            self.update_log();
                             self.send(Core::NotInterested).await?;
                         }
                         PeerMsg::Interested => {
                             debug!("> interested");
                             self.state.ctx.am_interested.store(true, Ordering::Release);
                             self.state_log[1] = 'i';
+                            self.update_log();
                             self.send(Core::Interested).await?;
                         }
                         PeerMsg::Choke => {
                             debug!("> choke");
                             self.state.ctx.am_choking.store(true, Ordering::Release);
                             self.state_log[0] = '-';
+                            self.update_log();
                             self.send(Core::Choke).await?;
                         }
                         PeerMsg::Unchoke => {
                             debug!("> unchoke");
                             self.state.ctx.am_choking.store(false, Ordering::Release);
                             self.state_log[0] = 'u';
+                            self.update_log();
                             self.send(Core::Unchoke).await?;
                         }
                     }
@@ -434,8 +433,7 @@ impl Peer<Connected> {
         if should_be_interested.is_some() && !am_interested {
             self.state.ctx.am_interested.store(true, Ordering::Release);
             self.state_log[1] = 'i';
-            tracing::Span::current()
-                .record("state", format_args!("{}", self.state_log));
+            self.update_log();
             self.send(Core::Interested).await?;
         }
 
@@ -443,11 +441,16 @@ impl Peer<Connected> {
         if should_be_interested.is_none() && am_interested {
             self.state.ctx.am_interested.store(false, Ordering::Release);
             self.state_log[1] = '-';
-            tracing::Span::current()
-                .record("state", format_args!("{}", self.state_log));
+            self.update_log();
             self.state.sink.send(Core::NotInterested).await?;
         }
         Ok(should_be_interested)
+    }
+
+    pub(crate) fn update_log(&self) {
+        let span = tracing::Span::current();
+        let _ = span.enter();
+        span.record("state", format_args!("{}", self.state_log));
     }
 
     /// Enter seed only mode and send Cancel's for in-flight block infos.
@@ -457,8 +460,7 @@ impl Peer<Connected> {
 
         if self.state.ctx.am_interested.load(Ordering::Acquire) {
             self.state_log[1] = '-';
-            tracing::Span::current()
-                .record("state", format_args!("{}", self.state_log));
+            // self.update_log();
             self.state.ctx.tx.send(PeerMsg::NotInterested).await?;
         }
 

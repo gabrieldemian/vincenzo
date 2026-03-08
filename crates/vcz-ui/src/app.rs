@@ -172,8 +172,8 @@ impl App {
                     Action::NewTorrent(magnet) => {
                         sink.send(Message::NewTorrent(magnet.clone())).await?;
                     }
-                    Action::DeleteTorrent(info_hash) => {
-                        sink.send(Message::DeleteTorrent(info_hash)).await?;
+                    Action::DeleteTorrent(info_hash, also_from_disk) => {
+                        sink.send(Message::DeleteTorrent(info_hash, also_from_disk)).await?;
                     }
                     _ => self.page.handle_action(action, &mut self.state),
                 }
