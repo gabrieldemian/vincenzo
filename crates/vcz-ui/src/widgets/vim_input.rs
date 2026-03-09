@@ -31,13 +31,23 @@ impl fmt::Display for Mode {
 
 impl Mode {
     pub(crate) fn block<'a>(&self) -> Block<'a> {
-        let help = match self {
-            Self::Normal => "Esc -> quit, i -> insert mode",
-            Self::Insert => "Esc -> normal mode, Enter -> submit",
-            Self::Operator(_) => "move cursor to apply operator",
+        let help: Line = match self {
+            Self::Normal => Line::from(vec![
+                Span::raw(" [Esc]").style(PALETTE.purple),
+                Span::raw(" [i] ").style(PALETTE.purple),
+            ]),
+            Self::Insert => Line::from(vec![
+                Span::raw(" [Esc]").style(PALETTE.purple),
+                Span::raw(" [Enter] ").style(PALETTE.purple),
+            ]),
+            Self::Operator(_) => " move cursor to apply operator ".into(),
         };
-        let title = format!("{} MODE ({})", self, help);
-        Block::default().borders(Borders::ALL).title(title)
+        let title = Span::raw(format!(" {self} ")).style(self.color());
+        Block::default()
+            .borders(Borders::ALL)
+            .title_top(" Add new torrent with magnet url ")
+            .title_bottom(title)
+            .title_bottom(help)
     }
 
     pub(crate) fn color(&self) -> Color {
@@ -55,7 +65,7 @@ impl Mode {
 }
 
 // How the Vim emulation state transitions
-pub enum Transition {
+pub(crate) enum Transition {
     Nop,
     Mode(Mode),
     Pending(Input),
@@ -63,7 +73,7 @@ pub enum Transition {
 }
 
 /// Vim-like input with modes.
-pub struct VimInput<'a> {
+pub(crate) struct VimInput<'a> {
     pub mode: Mode,
     pending: Input,
     chars_per_line: usize,
@@ -83,7 +93,7 @@ impl Default for VimInput<'_> {
             mode: m,
             pending: Input::default(),
             chars_per_line: 50,
-            lines: Vec::default(),
+            lines: vec!["".to_string()],
             cursor: (0, 0),
             block: m.block(),
             style: Style::default(),
@@ -96,7 +106,7 @@ impl Default for VimInput<'_> {
 
 impl<'a> VimInput<'a> {
     /// Return true if should quit the input.
-    pub fn handle_event(&mut self, e: &Input) -> bool {
+    pub(crate) fn handle_event(&mut self, e: &Input) -> bool {
         match self.transition(e) {
             Transition::Mode(mode) if self.mode != mode => {
                 self.set_block(mode.block());
@@ -110,66 +120,71 @@ impl<'a> VimInput<'a> {
         false
     }
 
-    pub fn draw(&mut self, frame: &mut Frame, area: Rect) {
+    pub(crate) fn draw(&mut self, frame: &mut Frame, area: Rect) {
         let block_inner = self.block.inner(area);
         let lines_count = block_inner.height as usize;
 
         self.chars_per_line = block_inner.width as usize;
         self.area = block_inner;
-        self.chars_per_line = area.width as usize;
 
-        self.ensure_cursor_in_bounds();
-
-        // render only visible lines
-        let mut lines = Vec::new();
+        let mut lines = Vec::with_capacity(lines_count);
         let start_line = self.scroll_offset;
         let end_line = (self.scroll_offset + lines_count).min(self.lines.len());
 
+        let cursor_style = self.mode.cursor_style();
+
+        // render only visible lines
         for i in start_line..end_line {
             let line = &self.lines[i];
-            let mut spans = Vec::new();
+            let spans = if i == self.cursor.0 {
+                let line_str = line.as_str();
+                let cursor_pos = self.cursor.1;
 
-            if i == self.cursor.0 {
-                if line.is_empty() {
-                    spans.push(Span::styled(" ", self.mode.cursor_style()));
-                } else {
-                    for (j, c) in line.chars().enumerate() {
-                        if j == self.cursor.1 {
-                            spans.push(Span::styled(
-                                " ",
-                                self.mode.cursor_style(),
-                            ));
-                        } else {
-                            spans.push(Span::raw(c.to_string()));
+                match line_str.char_indices().nth(cursor_pos) {
+                    // make the char at cursor_pos have a background of
+                    // cursor_style
+                    Some((byte_idx, ch)) => {
+                        let before = &line_str[..byte_idx];
+                        let after = &line_str[byte_idx + ch.len_utf8()..];
+                        let mut spans = Vec::with_capacity(3);
+                        if !before.is_empty() {
+                            spans.push(before.into());
                         }
+                        spans.push(Span::styled(ch.to_string(), cursor_style));
+                        if !after.is_empty() {
+                            spans.push(after.into());
+                        }
+                        spans
                     }
-
-                    if self.cursor.1 >= line.len() {
-                        spans.push(Span::styled(" ", self.mode.cursor_style()));
+                    None => {
+                        let mut spans = Vec::with_capacity(2);
+                        if !line_str.is_empty() {
+                            spans.push(line_str.into());
+                        }
+                        spans.push(Span::styled(" ", cursor_style));
+                        spans
                     }
                 }
             } else {
-                spans.push(Span::raw(line.clone()));
-            }
+                vec![Span::raw(line)]
+            };
 
-            // add scroll indicators if needed
-            if i == start_line && self.scroll_offset > 0 {
-                let mut indicator_spans =
-                    vec![Span::styled("↑", PALETTE.purple), Span::raw(" ")];
-                indicator_spans.extend(spans);
-                lines.push(Line::from(indicator_spans));
+            let line = if i == start_line && self.scroll_offset > 0 {
+                let mut indicator = vec![Span::styled(" ↑ ", PALETTE.purple)];
+                indicator.extend(spans);
+                Line::from(indicator)
             } else if i == end_line - 1 && end_line < self.lines.len() {
-                let mut indicator_spans =
-                    vec![Span::styled("↓", PALETTE.purple), Span::raw(" ")];
-                indicator_spans.extend(spans);
-                lines.push(Line::from(indicator_spans));
+                let mut indicator = vec![Span::styled(" ↓ ", PALETTE.purple)];
+                indicator.extend(spans);
+                Line::from(indicator)
             } else {
-                lines.push(Line::from(spans));
-            }
+                Line::from(spans)
+            };
+            lines.push(line);
         }
 
         while lines.len() < lines_count {
-            lines.push(Line::from(""));
+            lines.push("".into());
         }
 
         let list = List::new(lines).block(self.block.clone());
@@ -177,14 +192,14 @@ impl<'a> VimInput<'a> {
     }
 
     fn adjust_scroll_offset(&mut self) {
-        let visible_height = self.area.height as usize;
-
-        // If cursor is above visible area, scroll up
+        // if cursor is above visible area, scroll up
         if self.cursor.0 < self.scroll_offset {
             self.scroll_offset = self.cursor.0;
         }
 
-        // If cursor is below visible area, scroll down
+        let visible_height = self.area.height as usize;
+
+        // if cursor is below visible area, scroll down
         let bottom_line = self.scroll_offset + visible_height - 1;
         if self.cursor.0 > bottom_line {
             self.scroll_offset = self.cursor.0 - visible_height + 1;
@@ -192,46 +207,6 @@ impl<'a> VimInput<'a> {
 
         let max_scroll = self.lines.len().saturating_sub(visible_height);
         self.scroll_offset = self.scroll_offset.min(max_scroll).max(0);
-    }
-
-    pub fn set_block(&mut self, block: Block<'a>) {
-        self.block = block;
-    }
-
-    pub fn set_style(&mut self, style: Style) {
-        self.style = style;
-    }
-
-    pub fn set_cursor_style(&mut self, style: Style) {
-        self.cursor_style = style;
-    }
-
-    pub fn set_placeholder_text(&mut self, _text: &'a str) {}
-
-    pub fn lines(&self) -> &Vec<String> {
-        &self.lines
-    }
-
-    fn ensure_cursor_in_bounds(&mut self) {
-        if self.lines.is_empty() {
-            self.lines.push(String::new());
-            return;
-        }
-
-        // ensure cursor row is within bounds
-        if self.cursor.0 >= self.lines.len() {
-            self.cursor.0 = self.lines.len() - 1;
-        }
-
-        // ensure cursor column is within bounds for the current line
-        let max_col = self.lines[self.cursor.0].len();
-        if self.cursor.1 > max_col {
-            self.cursor.1 = max_col;
-        }
-
-        let max_scroll =
-            self.lines.len().saturating_sub(self.area.height as usize);
-        self.scroll_offset = self.scroll_offset.min(max_scroll);
     }
 
     fn insert_char(&mut self, c: char) {
@@ -255,56 +230,62 @@ impl<'a> VimInput<'a> {
         self.cursor.1 += 1;
 
         // only check for line breaking if the line might be too long
-        if line.len() >= self.chars_per_line {
+        if line.len() > self.chars_per_line {
             self.break_lines_from(row);
         }
 
-        self.ensure_cursor_in_bounds();
         self.adjust_scroll_offset();
     }
 
+    #[inline]
     fn break_lines_from(&mut self, start_row: usize) {
         let mut current_row = start_row;
-
         while current_row < self.lines.len() {
-            let line = &self.lines[current_row];
+            let mut line = std::mem::take(&mut self.lines[current_row]);
+            let line_len_chars = line.chars().count();
 
-            if line.len() <= self.chars_per_line {
+            if line_len_chars <= self.chars_per_line {
+                // line fits; put it back and move on
+                self.lines[current_row] = line;
                 current_row += 1;
                 continue;
             }
 
-            let line_width = UnicodeWidthStr::width(line.as_str());
-
-            if line_width <= self.chars_per_line {
-                current_row += 1;
-                continue;
+            let mut split_byte = 0;
+            for (chars_so_far, (byte_idx, _)) in line.char_indices().enumerate()
+            {
+                if chars_so_far == self.chars_per_line {
+                    split_byte = byte_idx;
+                    break;
+                }
             }
 
-            let break_pos = self.chars_per_line.min(line.len());
-
-            if break_pos == 0 || break_pos == line.len() {
-                current_row += 1;
-                continue;
+            if split_byte == 0 {
+                split_byte = line.len();
             }
 
-            // split the line
-            let remainder = line[break_pos..].to_string();
-            self.lines[current_row] = line[..break_pos].to_string();
+            // split the line: `line` now holds the prefix (first
+            // `chars_per_line` chars)
+            let mut remainder = line.split_off(split_byte);
+            self.lines[current_row] = line;
 
-            // insert the remainder
+            // insert the remainder into the next line
             if current_row + 1 < self.lines.len() {
                 let next_line =
                     std::mem::take(&mut self.lines[current_row + 1]);
-                self.lines[current_row + 1] = remainder + &next_line;
+                remainder.push_str(&next_line);
+                self.lines[current_row + 1] = remainder;
             } else {
                 self.lines.insert(current_row + 1, remainder);
             }
 
-            // adjust cursor position
-            if self.cursor.0 == current_row && self.cursor.1 >= break_pos {
+            // adjust cursor if it was on the split line and after the split
+            // point
+            if self.cursor.0 == current_row
+                && self.cursor.1 >= self.chars_per_line
+            {
                 self.cursor.0 += 1;
-                self.cursor.1 -= break_pos;
+                self.cursor.1 -= self.chars_per_line;
             }
 
             current_row += 1;
@@ -351,7 +332,6 @@ impl<'a> VimInput<'a> {
             self.cursor.0 -= 1;
             self.cursor.1 = self.lines[self.cursor.0].len();
         }
-        self.ensure_cursor_in_bounds();
         self.adjust_scroll_offset();
     }
 
@@ -362,7 +342,6 @@ impl<'a> VimInput<'a> {
             self.cursor.0 += 1;
             self.cursor.1 = 0;
         }
-        self.ensure_cursor_in_bounds();
         self.adjust_scroll_offset();
     }
 
@@ -371,7 +350,6 @@ impl<'a> VimInput<'a> {
             self.cursor.0 -= 1;
             self.cursor.1 = self.cursor.1.min(self.lines[self.cursor.0].len());
         }
-        self.ensure_cursor_in_bounds();
         self.adjust_scroll_offset();
     }
 
@@ -380,7 +358,6 @@ impl<'a> VimInput<'a> {
             self.cursor.0 += 1;
             self.cursor.1 = self.cursor.1.min(self.lines[self.cursor.0].len());
         }
-        self.ensure_cursor_in_bounds();
         self.adjust_scroll_offset();
     }
 
@@ -395,8 +372,6 @@ impl<'a> VimInput<'a> {
             self.cursor.0 = self.cursor.0.saturating_sub(scroll_amount);
             self.cursor.1 = self.cursor.1.min(self.lines[self.cursor.0].len());
         }
-
-        self.ensure_cursor_in_bounds();
     }
 
     // Scroll down by X lines
@@ -413,8 +388,6 @@ impl<'a> VimInput<'a> {
                 (self.cursor.0 + scroll_amount).min(self.lines.len() - 1);
             self.cursor.1 = self.cursor.1.min(self.lines[self.cursor.0].len());
         }
-
-        self.ensure_cursor_in_bounds();
     }
 
     fn handle_normal_mode(&mut self, input: &Input) -> Transition {
@@ -501,7 +474,7 @@ impl<'a> VimInput<'a> {
         }
     }
 
-    pub fn transition(&mut self, input: &Input) -> Transition {
+    pub(crate) fn transition(&mut self, input: &Input) -> Transition {
         if input.key == Key::Null {
             return Transition::Nop;
         }
@@ -516,10 +489,26 @@ impl<'a> VimInput<'a> {
             Mode::Operator(_) => Transition::Nop,
         }
     }
+
+    pub(crate) fn set_block(&mut self, block: Block<'a>) {
+        self.block = block;
+    }
+
+    pub(crate) fn set_style(&mut self, style: Style) {
+        self.style = style;
+    }
+
+    pub(crate) fn set_cursor_style(&mut self, style: Style) {
+        self.cursor_style = style;
+    }
+
+    pub(crate) fn set_placeholder_text(&mut self, _text: &'a str) {}
 }
 
-pub fn validate_magnet<'a>(textarea: &mut VimInput<'a>) -> Option<Magnet> {
-    let magnet_str = textarea.lines().join("");
+pub(crate) fn validate_magnet<'a>(
+    textarea: &mut VimInput<'a>,
+) -> Option<Magnet> {
+    let magnet_str = textarea.lines.join("");
     let magnet_str = magnet_str.trim();
     let magnet = magnet_url::Magnet::new(magnet_str);
 
