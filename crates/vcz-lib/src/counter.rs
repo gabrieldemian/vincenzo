@@ -78,11 +78,6 @@ impl Counter {
     }
 
     #[inline]
-    pub(crate) fn upload_rate_u64(&self) -> u64 {
-        self.ema_upload.load(Ordering::Relaxed)
-    }
-
-    #[inline]
     pub(crate) fn window_uploaded_u64(&self) -> u64 {
         self.window_uploaded.load(Ordering::Relaxed)
     }

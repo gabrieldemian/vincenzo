@@ -299,7 +299,7 @@ pub(crate) trait State {}
 
 /// If the torrent came from a magnet or metainfo.
 pub(crate) trait TorrentSource {
-    fn organize_trackers(&self) -> HashMap<&str, Vec<String>>;
+    fn organize_trackers(&self) -> Vec<String>;
 }
 
 pub(crate) struct FromMagnet {
@@ -312,12 +312,12 @@ pub(crate) struct FromMetaInfo {
 }
 
 impl TorrentSource for FromMagnet {
-    fn organize_trackers(&self) -> HashMap<&str, Vec<String>> {
+    fn organize_trackers(&self) -> Vec<String> {
         self.magnet.organize_trackers()
     }
 }
 impl TorrentSource for FromMetaInfo {
-    fn organize_trackers(&self) -> HashMap<&str, Vec<String>> {
+    fn organize_trackers(&self) -> Vec<String> {
         self.meta_info.organize_trackers()
     }
 }

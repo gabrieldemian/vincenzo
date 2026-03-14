@@ -16,7 +16,7 @@ const DOWNLOAD_DIR: &str = "Downloads";
 /// | ------- | ------------------------------------- | ---------------------------------------- |
 /// | Linux   | `$XDG_CONFIG_HOME` or `$HOME`/.config | /home/alice/.config                      |
 /// | macOS   | `$HOME`/Library/Application Support   | /Users/Alice/Library/Application Support |
-/// | Windows | `%APPDATA%`\Roaming                 | C:\Users\Alice\AppData\Roaming           |
+/// | Windows | `%APPDATA%`\Roaming                   | C:\Users\Alice\AppData\Roaming           |
 ///
 /// NOTE: if the feature `favor-xdg-style` is enabled, `$HOME/.config` is
 /// favorized.

@@ -22,7 +22,7 @@ tracing-subscriber = { workspace = true }
 int-enum = { workspace = true }
 page_size = { workspace = true }
 rkyv = { workspace = true }
-lru = { workspace = true }
+quick_cache = { workspace = true }
 bendy = { workspace = true }
 rayon = { workspace = true }
 memmap2 = { workspace = true }

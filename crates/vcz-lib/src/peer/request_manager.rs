@@ -697,8 +697,7 @@ mod tests {
         let qnt = qnt.min(blocks.len());
         assert!(qnt == blocks.len());
 
-        for block in 0..qnt {
-            let block = &blocks[block];
+        for block in blocks.iter().take(qnt) {
             let added = manager.add_request(block.clone());
             assert!(added);
             assert!(!manager.was_fulfilled(block));

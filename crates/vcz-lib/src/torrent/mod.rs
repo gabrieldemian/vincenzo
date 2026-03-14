@@ -458,10 +458,8 @@ impl<M: TorrentSource> Torrent<Idle, M> {
     /// tracker, the other ones will be awaited for in the background.
     #[instrument(skip_all, name = "torrent", fields(ih = %self.ctx.info_hash))]
     pub(crate) async fn start(self) -> Result<Torrent<Connected, M>, Error> {
-        let org_trackers = self.source.organize_trackers();
-        let udp_trackers = org_trackers.get("udp").unwrap().clone();
+        let udp_trackers = self.source.organize_trackers();
         let udp_trackers_len = udp_trackers.len();
-        drop(org_trackers);
 
         if udp_trackers.is_empty() {
             return Err(Error::NoUDPTracker);

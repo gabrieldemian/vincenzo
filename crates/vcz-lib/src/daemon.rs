@@ -40,7 +40,7 @@ use tokio::{
     time::interval,
 };
 use tokio_util::{codec::Framed, sync::CancellationToken};
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 /// The daemon is the highest-level entity in the library.
 /// It owns [`Disk`] and [`Torrent`]s, which owns Peers.

@@ -34,7 +34,7 @@ resolver = "2"
 int-enum = "1.2.0"
 rkyv = { version = "0.8.14", features = ["big_endian", "unaligned"] }
 page_size = "0.6.0"
-lru = "0.16.3"
+quick_cache = "0.6.19"
 bendy = "0.6.1"
 bitvec = "1.0.1"
 bytes = "1.11.0"
