@@ -49,7 +49,7 @@ async fn download() -> Result<(), Error> {
     sdisk_tx
         .send(DiskMsg::ReadBlock {
             block_info: BlockInfo::new(0, 0, BLOCK_LEN),
-            info_hash: leecher.torrent_ctx.info_hash.clone(),
+            ctx: leecher.torrent_ctx.clone(),
             recipient: otx,
         })
         .await?;
@@ -67,7 +67,7 @@ async fn download() -> Result<(), Error> {
     sdisk_tx
         .send(DiskMsg::ReadBlock {
             block_info: BlockInfo::new(1, 0, BLOCK_LEN),
-            info_hash: leecher.torrent_ctx.info_hash.clone(),
+            ctx: leecher.torrent_ctx.clone(),
             recipient: otx,
         })
         .await?;
@@ -80,7 +80,7 @@ async fn download() -> Result<(), Error> {
     sdisk_tx
         .send(DiskMsg::ReadBlock {
             block_info: BlockInfo::new(2, 0, BLOCK_LEN),
-            info_hash: leecher.torrent_ctx.info_hash.clone(),
+            ctx: leecher.torrent_ctx.clone(),
             recipient: otx,
         })
         .await?;
@@ -93,7 +93,7 @@ async fn download() -> Result<(), Error> {
     sdisk_tx
         .send(DiskMsg::ReadBlock {
             block_info: BlockInfo::new(3, 0, BLOCK_LEN),
-            info_hash: leecher.torrent_ctx.info_hash.clone(),
+            ctx: leecher.torrent_ctx.clone(),
             recipient: otx,
         })
         .await?;
@@ -106,7 +106,7 @@ async fn download() -> Result<(), Error> {
     sdisk_tx
         .send(DiskMsg::ReadBlock {
             block_info: BlockInfo::new(4, 0, BLOCK_LEN),
-            info_hash: leecher.torrent_ctx.info_hash.clone(),
+            ctx: leecher.torrent_ctx.clone(),
             recipient: otx,
         })
         .await?;
@@ -119,7 +119,7 @@ async fn download() -> Result<(), Error> {
     sdisk_tx
         .send(DiskMsg::ReadBlock {
             block_info: BlockInfo::new(5, 0, BLOCK_LEN),
-            info_hash: leecher.torrent_ctx.info_hash.clone(),
+            ctx: leecher.torrent_ctx.clone(),
             recipient: otx,
         })
         .await?;

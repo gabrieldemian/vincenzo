@@ -237,7 +237,7 @@ impl Torrent<Idle, FromMetaInfo> {
 impl Torrent<Connected, FromMetaInfo> {
     #[inline]
     async fn downloaded_piece(&mut self, piece: usize) {
-        debug!("downloaded_piece {piece}");
+        tracing::trace!("downloaded_piece {piece}");
 
         self.bitfield.safe_set(piece, true);
 
@@ -250,15 +250,13 @@ impl Torrent<Connected, FromMetaInfo> {
         let total_pieces = self.bitfield.len();
         let downloaded_pieces = self.bitfield.count_ones();
 
-        debug!("downloaded pieces {}", downloaded_pieces);
-
         let is_download_complete = downloaded_pieces >= total_pieces;
 
         if !is_download_complete && self.status != TorrentStatus::Seeding {
             return;
         }
 
-        info!("downloaded entire torrent, entering seed only mode.");
+        info!("download complete, seeding.");
         self.status = TorrentStatus::Seeding;
 
         let _ = self

@@ -183,7 +183,7 @@ impl ExtMsgHandler<Core> for Peer<peer::Connected> {
                     .send(DiskMsg::ReadBlock {
                         block_info: b,
                         recipient: tx,
-                        info_hash: self.state.ctx.torrent_ctx.info_hash.clone(),
+                        ctx: self.state.ctx.torrent_ctx.clone(),
                     })
                     .await?;
 

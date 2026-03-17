@@ -71,7 +71,7 @@ pub enum DiskMsg {
     FinishedDownload(InfoHash),
 
     ReadBlock {
-        info_hash: InfoHash,
+        ctx: Arc<TorrentCtx>,
         block_info: BlockInfo,
         recipient: Sender<Result<Bytes, Error>>,
     },
@@ -321,8 +321,11 @@ impl Disk {
                         DiskMsg::AddTorrent(torrent, info) => {
                             let _ = self.add_torrent(torrent, info).await;
                         }
-                        DiskMsg::ReadBlock { block_info, recipient, info_hash } => {
-                            let r = self.read_block(&info_hash, &block_info);
+                        DiskMsg::ReadBlock { block_info, recipient, ctx } => {
+                            let r = self.read_block(&ctx.info_hash, &block_info);
+                            if let Err(e) = &r {
+                                self.handle_torrent_err(ctx, e).await;
+                            }
                             let _ = recipient.send(r);
                         }
                         DiskMsg::WriteBlock { block, ctx } => {
@@ -972,7 +975,7 @@ impl Disk {
 
         *downloaded_pieces_len += 1;
 
-        debug!("piece {index} is valid.");
+        tracing::trace!("piece {index} is valid.");
 
         let _ = torrent_ctx.tx.send(TorrentMsg::DownloadedPiece(index)).await;
 

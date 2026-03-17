@@ -290,8 +290,6 @@ impl Daemon {
         let mut test_interval = interval(Duration::from_secs(1));
         let signals_task = tokio::spawn(Daemon::handle_signals(signals, _tx));
 
-        tracing::trace!("running event loop");
-
         'outer: loop {
             select! {
                 // Listen to internal mpsc messages
