@@ -49,7 +49,7 @@ signal-hook = "0.4.3"
 signal-hook-tokio = { version = "0.4.0", features = ["futures-v0_3"] }
 sha1 = { version = "0.10.6", features = ["sha1-asm"] }
 thiserror = "2.0.18"
-tokio = { version = "1.49.0", features = ["fs", "io-util", "macros", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "1.49.0", features = ["io-util", "macros", "rt-multi-thread", "sync", "time"] }
 tokio-util = { version = "0.7.18", features = ["codec"] }
 tracing = "0.1.44"
 tracing-appender = "0.2.4"

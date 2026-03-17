@@ -258,9 +258,9 @@ impl Disk {
         // ensure the necessary folders are created.
         #[cfg(not(feature = "ui-test"))]
         {
-            tokio::fs::create_dir_all(self.incomplete_torrents_path()).await?;
-            tokio::fs::create_dir_all(self.complete_torrents_path()).await?;
-            tokio::fs::create_dir_all(self.queue_torrents_path()).await?;
+            std::fs::create_dir_all(self.incomplete_torrents_path())?;
+            std::fs::create_dir_all(self.complete_torrents_path())?;
+            std::fs::create_dir_all(self.queue_torrents_path())?;
         }
 
         // load .torrent files into the client.
@@ -283,13 +283,13 @@ impl Disk {
                             info!("metainfo {metainfo_path:?}");
                             info!("disk path {files_path:?}");
 
-                            tokio::fs::remove_file(metainfo_path).await?;
+                            std::fs::remove_file(metainfo_path)?;
 
                             if also_from_disk {
                                 if files_path.is_file() {
-                                    tokio::fs::remove_file(files_path).await?;
+                                    std::fs::remove_file(files_path)?;
                                 } else {
-                                    tokio::fs::remove_dir_all(files_path).await?;
+                                    std::fs::remove_dir_all(files_path)?;
                                 }
                             }
 
@@ -315,7 +315,7 @@ impl Disk {
                                 &info_hash,
                                 MetadataDir::Incomplete,
                                 MetadataDir::Complete
-                            ).await;
+                            );
                             self.sync_torrent(&info_hash).await?;
                         }
                         DiskMsg::AddTorrent(torrent, info) => {
@@ -419,7 +419,7 @@ impl Disk {
 
         if metadata_dir == MetadataDir::Queue {
             // create folders, files, and preallocate them with zeroes.
-            self.pre_alloc_files(&info_hash).await?;
+            self.pre_alloc_files(&info_hash)?;
         }
 
         let mut is_err = false;
@@ -459,7 +459,7 @@ impl Disk {
                 MetadataDir::Incomplete,
                 MetadataDir::Complete,
             )
-            .await?;
+            ?;
         }
 
         self.torrent_ctxs.insert(info_hash.clone(), torrent.ctx.clone());
@@ -1197,14 +1197,11 @@ impl Disk {
         Ok(mmap)
     }
 
-    async fn pre_alloc_files(
-        &mut self,
-        info_hash: &InfoHash,
-    ) -> Result<(), Error> {
+    fn pre_alloc_files(&mut self, info_hash: &InfoHash) -> Result<(), Error> {
         if let Some(cache) = self.torrent_cache.get(info_hash) {
             for meta in &cache.file_metadata {
                 if let Some(parent) = meta.path.parent() {
-                    tokio::fs::create_dir_all(parent).await?;
+                    std::fs::create_dir_all(parent)?;
                 }
 
                 if let Ok(file) = Self::open_file(&meta.path) {
@@ -1260,7 +1257,7 @@ impl Disk {
         self.compute_torrent_cache(&info);
 
         // create folders, files, and preallocate them.
-        self.pre_alloc_files(&info_hash).await?;
+        self.pre_alloc_files(&info_hash)?;
 
         let downloaded_pieces = self.compute_downloaded_pieces(&info).await?;
 
@@ -1275,7 +1272,7 @@ impl Disk {
     }
 
     /// Move the torrent metainfo to the torrents/complete folder
-    async fn move_metainfo_to_dir(
+    fn move_metainfo_to_dir(
         &self,
         info: &InfoHash,
         from_dir: MetadataDir,
@@ -1291,7 +1288,7 @@ impl Disk {
         to_path.push(info.to_string());
         to_path.set_extension("torrent");
 
-        let _ = tokio::fs::rename(from_path, to_path).await;
+        let _ = std::fs::rename(from_path, to_path);
 
         Ok(())
     }
@@ -1327,20 +1324,20 @@ impl Disk {
     ) -> Result<(), Error> {
         // ~/.config/vincenzo/torrents/incomplete
         let path = self.get_path_of(metadata_dir);
-        let mut entries = tokio::fs::read_dir(path).await?;
+        let mut entries = std::fs::read_dir(path)?;
 
-        while let Some(entry) = entries.next_entry().await? {
+        while let Some(Ok(entry)) = entries.next() {
             // ~/.config/vincenzo/torrents/incomplete/file.torrent
             let file_name = entry.path();
 
-            let Ok(bytes) = tokio::fs::read(&file_name).await else { continue };
+            let Ok(bytes) = std::fs::read(&file_name) else { continue };
             let Ok(metainfo) = MetaInfo::from_bencode(&bytes) else { continue };
 
             if metadata_dir == MetadataDir::Queue {
                 let mut new_name = file_name.clone();
                 new_name.set_file_name(metainfo.info.info_hash.to_string());
                 new_name.set_extension("torrent");
-                tokio::fs::rename(file_name, new_name).await?;
+                std::fs::rename(file_name, new_name)?;
             }
 
             // skip duplicate
@@ -1353,8 +1350,7 @@ impl Disk {
                     &metainfo.info.info_hash,
                     MetadataDir::Queue,
                     MetadataDir::Incomplete,
-                )
-                .await?;
+                )?;
             }
             self.new_torrent_metainfo(metainfo, metadata_dir).await?;
         }
