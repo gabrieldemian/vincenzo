@@ -1,5 +1,7 @@
 use super::*;
-use crate::{PEER_MSG_BOUND, TORRENT_MSG_BOUND, extensions::BLOCK_LEN};
+use crate::{
+    PEER_MSG_BOUND, TORRENT_MSG_BOUND, extensions::BLOCK_LEN, metainfo::Info,
+};
 use bendy::encoding::ToBencode;
 
 impl Torrent<Connected, FromMetaInfo> {
@@ -21,8 +23,8 @@ impl Torrent<Connected, FromMetaInfo> {
         }
 
         {
-            let info_bytes = self.source.meta_info.info.to_bencode()?;
-            let info_size = self.source.meta_info.info.metadata_size;
+            let info_bytes = self.source.meta.info.to_bencode()?;
+            let info_size = self.source.meta.info.metadata_size;
             let meta_pieces = info_size.div_ceil(BLOCK_LEN);
             let info_pieces = &mut self.state.info_pieces;
 
@@ -41,7 +43,7 @@ impl Torrent<Connected, FromMetaInfo> {
                         TorrentMsg::DownloadedInfoPiece(..) => {}
 
                         TorrentMsg::Request{peer_ctx, qnt, recipient} => {
-                            let pl = self.source.meta_info.info.piece_length;
+                            let pl = self.source.meta.info.piece_length;
                             let total_bytes = qnt * BLOCK_LEN;
                             let pieces_wanted = total_bytes.div_ceil(pl);
 
@@ -176,7 +178,7 @@ impl Torrent<Connected, FromMetaInfo> {
 
     /// Run the Torrent main event loop to listen to internal [`TorrentMsg`].
     #[tracing::instrument(name = "torrent", skip_all,
-        fields(info = ?self.source.meta_info.info.info_hash)
+        fields(info = ?self.source.meta.info.info_hash)
     )]
     pub async fn run(self) -> Result<(), Error> {
         match self.inner_run().await {
@@ -197,33 +199,33 @@ impl Torrent<Idle, FromMetaInfo> {
         config: Arc<ResolvedConfig>,
         disk_tx: mpsc::Sender<DiskMsg>,
         daemon_ctx: Arc<DaemonCtx>,
-        meta_info: MetaInfo,
+        meta: Arc<MetaInfo>,
         bitfield: Bitfield,
     ) -> Torrent<Idle, FromMetaInfo> {
-        let name = meta_info.info.name.clone();
-        let metadata_size = meta_info.info.metadata_size.into();
+        let info = &meta.info;
+        let name = info.name.clone();
+        let metadata_size = info.metadata_size.into();
 
         let (tx, rx) = mpsc::channel::<TorrentMsg>(TORRENT_MSG_BOUND);
         let (btx, _brx) = broadcast::channel::<PeerBrMsg>(PEER_MSG_BOUND);
 
         let ctx = Arc::new(TorrentCtx {
-            size: (meta_info.info.get_torrent_size() as u64).into(),
+            size: (info.get_torrent_size() as u64).into(),
             counter: Counter::from_total_download(
-                bitfield.count_ones() as u64
-                    * meta_info.info.piece_length as u64,
+                bitfield.count_ones() as u64 * info.piece_length as u64,
             ),
             free_tx: daemon_ctx.free_tx.clone(),
             btx,
             tx,
             disk_tx,
-            info_hash: meta_info.info.info_hash.clone(),
+            info_hash: info.info_hash.clone(),
             metadata_size,
         });
 
         Self {
             config,
             bitfield,
-            source: FromMetaInfo { meta_info },
+            source: FromMetaInfo { meta },
             state: Idle {},
             name,
             status: TorrentStatus::default(),
@@ -268,7 +270,7 @@ impl Torrent<Connected, FromMetaInfo> {
             .ctx
             .disk_tx
             .send(DiskMsg::FinishedDownload(
-                self.source.meta_info.info.info_hash.clone(),
+                self.source.meta.info.info_hash.clone(),
             ))
             .await;
 

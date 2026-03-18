@@ -39,7 +39,7 @@ pub enum PeerBrMsg {
 #[derive(Debug)]
 pub enum TorrentMsg {
     /// Promote a `FromMagnet` torrent to a `FromMetaInfo`.
-    Promote(Box<Info>),
+    Promote(Arc<MetaInfo>),
 
     /// Sent by Disk. Send Endgame messages to all peers.
     Endgame,
@@ -197,7 +197,7 @@ impl From<&Torrent<torrent::Idle, FromMetaInfo>> for TorrentState {
             name: value.name.clone(),
             status: TorrentStatus::ConnectingTrackers,
             bitfield: value.bitfield.clone().into(),
-            info_hash: value.source.meta_info.info.info_hash.clone(),
+            info_hash: value.source.meta.info.info_hash.clone(),
             ..Default::default()
         }
     }
@@ -304,11 +304,10 @@ pub(crate) trait TorrentSource {
 
 pub(crate) struct FromMagnet {
     pub magnet: Magnet,
-    // pub info: Option<Arc<Info>>,
 }
 
 pub(crate) struct FromMetaInfo {
-    pub meta_info: MetaInfo,
+    pub meta: Arc<MetaInfo>,
 }
 
 impl TorrentSource for FromMagnet {
@@ -318,7 +317,7 @@ impl TorrentSource for FromMagnet {
 }
 impl TorrentSource for FromMetaInfo {
     fn organize_trackers(&self) -> Vec<String> {
-        self.meta_info.organize_trackers()
+        self.meta.organize_trackers()
     }
 }
 

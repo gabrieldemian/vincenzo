@@ -535,15 +535,15 @@ impl Daemon {
         torrent: Box<Torrent<torrent::Idle, torrent::FromMetaInfo>>,
     ) -> Result<(), Error> {
         let torrent = *torrent;
-        let info = &torrent.source.meta_info.info;
+        let hash = &torrent.source.meta.info.info_hash;
 
-        if self.torrent_states.iter().any(|v| v.info_hash == info.info_hash) {
+        if self.torrent_states.iter().any(|v| v.info_hash == *hash) {
             warn!("this torrent is already present");
             return Err(Error::NoDuplicateTorrent);
         }
 
         let mut torrent_ctxs = self.ctx.torrent_ctxs.lock().await;
-        torrent_ctxs.insert(info.info_hash.clone(), torrent.ctx.clone());
+        torrent_ctxs.insert(hash.clone(), torrent.ctx.clone());
         drop(torrent_ctxs);
         self.torrent_states.push((&torrent).into());
 

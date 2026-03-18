@@ -28,8 +28,8 @@ impl Torrent<Connected, FromMagnet> {
                         TorrentMsg::OptUnchokeAlgorithm => { }
                         TorrentMsg::PeerHasPieceNotInLocal(..) => { }
 
-                        TorrentMsg::Promote(info) => {
-                            return Ok(Some(self.promote(*info)));
+                        TorrentMsg::Promote(meta) => {
+                            return Ok(Some(self.promote(meta)));
                         },
                         TorrentMsg::BroadcastBlockInfos(sender, reqs, queue) => {
                             self.broadcast_block_infos(sender, reqs, queue);
@@ -125,38 +125,31 @@ impl Torrent<Connected, FromMagnet> {
                 acc
             });
 
-        let info = Info::from_bencode(&info_bytes)?;
-        self.ctx.tx.send(TorrentMsg::Promote(Box::new(info.clone()))).await?;
-
-        let downloaded_info = Arc::new(info);
+        let _info = Info::from_bencode(&info_bytes)?;
+        let info = Arc::new(_info.clone());
 
         // validate the hash of the downloaded info
         // against the hash of the magnet link
-        if self.source.magnet.parse_xt_infohash() != downloaded_info.info_hash {
-            warn!("invalid info hash for info: {:?}", downloaded_info.name);
+        if self.source.magnet.parse_xt_infohash() != info.info_hash {
+            warn!("invalid info hash for info: {:?}", info.name);
             self.state.info_pieces.clear();
             return Err(Error::PieceInvalid);
         }
 
-        debug!("name: {:?}", downloaded_info.name);
-        debug!("files: {:?}", downloaded_info.files);
-        debug!("piece_length: {:?}", downloaded_info.piece_length);
-        info!(
-            "pieces: {}, blocks: {}",
-            downloaded_info.pieces(),
-            downloaded_info.blocks_count(),
-        );
+        debug!("name: {:?}", info.name);
+        debug!("files: {:?}", info.files);
+        debug!("piece_length: {:?}", info.piece_length);
+        info!("pieces: {}, blocks: {}", info.pieces(), info.blocks_count(),);
 
-        self.bitfield = Bitfield::from_piece(downloaded_info.pieces());
-
-        self.ctx
-            .disk_tx
-            .send(DiskMsg::AddTorrent(
-                self.ctx.clone(),
-                downloaded_info.clone(),
-            ))
-            .await?;
-
+        self.bitfield = Bitfield::from_piece(info.pieces());
+        let meta = MetaInfo {
+            announce_list: Some(vec![self.source.magnet.trackers().to_vec()]),
+            info: _info,
+            ..Default::default()
+        };
+        let meta = Arc::new(meta);
+        self.ctx.tx.send(TorrentMsg::Promote(meta.clone())).await?;
+        self.ctx.disk_tx.send(DiskMsg::AddTorrent(meta)).await?;
         self.status = TorrentStatus::Downloading;
         let _ = self.ctx.btx.send(PeerBrMsg::HaveInfo);
 
@@ -165,15 +158,11 @@ impl Torrent<Connected, FromMagnet> {
 
     pub(crate) fn promote(
         self,
-        info: Info,
+        meta: Arc<MetaInfo>,
     ) -> Torrent<Connected, FromMetaInfo> {
-        let trackers = self.source.magnet.0.trackers().to_vec();
-        self.ctx.metadata_size.store(info.metadata_size, Ordering::Release);
-        let meta_info = MetaInfo {
-            announce_list: Some(vec![trackers]),
-            info,
-            ..Default::default()
-        };
+        self.ctx
+            .metadata_size
+            .store(meta.info.metadata_size, Ordering::Release);
         Torrent {
             ctx: self.ctx,
             status: self.status,
@@ -182,7 +171,7 @@ impl Torrent<Connected, FromMagnet> {
             rx: self.rx,
             name: self.name,
             state: self.state,
-            source: FromMetaInfo { meta_info },
+            source: FromMetaInfo { meta },
             bitfield: self.bitfield,
         }
     }
