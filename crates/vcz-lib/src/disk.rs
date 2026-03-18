@@ -281,36 +281,45 @@ impl Disk {
                 Some(msg) = self.rx.recv() => {
                     match msg {
                         DiskMsg::DeleteTorrent(info_hash, also_from_disk) => {
-                            let metainfo_path = self.get_metainfo_path(&info_hash)?;
-                            let files_path = torrent_data!(self, &info_hash, torrent_cache)?;
+                            let Ok(metainfo_path) = self.get_metainfo_path(&info_hash) else {
+                                continue;
+                            };
+                            let Ok(files_path) = torrent_data!(self, &info_hash, torrent_cache) else {
+                                continue;
+                            };
                             let files_path = &files_path.file_metadata[0].path;
 
                             info!("metainfo {metainfo_path:?}");
                             info!("disk path {files_path:?}");
 
-                            std::fs::remove_file(metainfo_path)?;
+                            let _ = std::fs::remove_file(metainfo_path);
 
                             if also_from_disk {
                                 if files_path.is_file() {
-                                    std::fs::remove_file(files_path)?;
+                                    let _ = std::fs::remove_file(files_path);
                                 } else {
-                                    std::fs::remove_dir_all(files_path)?;
+                                    let _ = std::fs::remove_dir_all(files_path);
                                 }
                             }
 
-                            self.torrents.remove_entry(&info_hash);
+                            self.torrents.remove(&info_hash);
                         }
                         DiskMsg::FinishedDownload(info_hash) => {
-                            self.torrents.remove_entry(&info_hash);
+                            let _ = self.sync_torrent(&info_hash).await;
                             let _ = self.move_metainfo_to_dir(
                                 &info_hash,
                                 MetadataDir::Incomplete,
                                 MetadataDir::Complete
                             );
-                            self.sync_torrent(&info_hash).await?;
+                            let Some(v) = self.torrents.get_mut(&info_hash) else {
+                                continue;
+                            };
+                            v.queue.clear();
+                            v.block_cache.clear();
+                            v.metadata_pieces.clear();
                         }
-                        DiskMsg::AddTorrent(info) => {
-                            let _ = self.new_torrent_metainfo(info, MetadataDir::Incomplete);
+                        DiskMsg::AddTorrent(meta) => {
+                            let _ = self.new_torrent(meta, MetadataDir::Queue).await;
                         }
                         DiskMsg::ReadBlock { block_info, recipient, ctx } => {
                             let r = self.read_block(&ctx.info_hash, &block_info);
@@ -353,11 +362,16 @@ impl Disk {
                 Some(return_to_disk) = self.free_rx.recv() => {
                     match return_to_disk {
                         ReturnToDisk::Block(info_hash, blocks) => {
-                            let infos = torrent_data_mut!(self, &info_hash, queue)?;
+                            let Ok(infos) = torrent_data_mut!(self, &info_hash, queue) else {
+                                continue;
+                            };
                             infos.extend(blocks);
                         }
                         ReturnToDisk::Metadata(info_hash, pieces) => {
-                            torrent_data_mut!(self, &info_hash, metadata_pieces)?.extend(pieces);
+                            let Ok(m) = torrent_data_mut!(self, &info_hash, metadata_pieces) else {
+                                continue;
+                            };
+                            m.extend(pieces);
                         }
                     };
                 }
@@ -388,30 +402,10 @@ impl Disk {
         };
     }
 
-    fn new_torrent_data(&mut self, info: Arc<Info>) {
-        self.torrents.insert(
-            info.info_hash.clone(),
-            TorrentData {
-                downloaded_pieces_len: 0,
-                requested_pieces_len: 0,
-                endgame: false,
-                piece_tracker: Arc::new(RwLock::new(PieceTracker {
-                    last_accessed: Box::new([]),
-                })),
-                torrent_info: info,
-                metadata_pieces: Vec::new(),
-                piece_strategy: PieceStrategy::default(),
-                block_cache: BTreeMap::default(),
-                queue: Vec::new(),
-                torrent_cache: Arc::new(TorrentCache::default()),
-            },
-        );
-    }
-
     /// Create a new torrent from a [`MetaInfo`] and send a
-    /// [`DaemonMsg::AddTorrentMetaInfo`].
+    /// [`DaemonMsg::AddTorrent`].
     #[tracing::instrument(skip_all, fields(name = %meta.info.name))]
-    pub async fn new_torrent_metainfo(
+    pub async fn new_torrent(
         &mut self,
         meta: Arc<MetaInfo>,
         metadata_dir: MetadataDir,
@@ -468,12 +462,13 @@ impl Disk {
 
         self.daemon_ctx
             .tx
-            .send(DaemonMsg::AddTorrentMetaInfo(Box::new(torrent)))
+            .send(DaemonMsg::AddTorrent(Box::new(torrent)))
             .await?;
 
         Ok(())
     }
 
+    #[inline]
     fn preopen_files<'a>(
         &self,
         file_metadata: &'a [FileMetadata],
@@ -1259,7 +1254,7 @@ impl Disk {
                 )?;
             }
             let meta = Arc::new(metainfo);
-            self.new_torrent_metainfo(meta, metadata_dir).await?;
+            self.new_torrent(meta, metadata_dir).await?;
         }
         Ok(())
     }
@@ -1489,5 +1484,26 @@ impl Disk {
             }
         });
         Ok(())
+    }
+
+    #[inline]
+    fn new_torrent_data(&mut self, info: Arc<Info>) {
+        self.torrents.insert(
+            info.info_hash.clone(),
+            TorrentData {
+                downloaded_pieces_len: 0,
+                requested_pieces_len: 0,
+                endgame: false,
+                piece_tracker: Arc::new(RwLock::new(PieceTracker {
+                    last_accessed: Box::new([]),
+                })),
+                torrent_info: info,
+                metadata_pieces: Vec::new(),
+                piece_strategy: PieceStrategy::default(),
+                block_cache: BTreeMap::default(),
+                queue: Vec::new(),
+                torrent_cache: Arc::new(TorrentCache::default()),
+            },
+        );
     }
 }

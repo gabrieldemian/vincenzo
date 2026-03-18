@@ -2,7 +2,7 @@ use crate::{
     bitfield::Bitfield,
     extensions::core::BlockInfo,
     magnet::Magnet,
-    metainfo::{Info, InfoHash, MetaInfo},
+    metainfo::{InfoHash, MetaInfo},
     peer::{self, Peer, PeerCtx, PeerId},
     torrent::{self, Torrent},
     tracker::TrackerMsg,

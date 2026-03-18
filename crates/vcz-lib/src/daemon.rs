@@ -80,7 +80,7 @@ pub(crate) enum DaemonMsg {
     /// Tell Daemon to add a new torrent and it will immediately
     /// announce to a tracker, connect to the peers, and start the download.
     NewTorrentMagnet(Box<magnet_url::Magnet>),
-    AddTorrentMetaInfo(Box<Torrent<torrent::Idle, torrent::FromMetaInfo>>),
+    AddTorrent(Box<Torrent<torrent::Idle, torrent::FromMetaInfo>>),
     DeleteTorrent(InfoHash, bool),
 
     GetAllTorrentState(oneshot::Sender<Vec<TorrentState>>),
@@ -298,7 +298,7 @@ impl Daemon {
                         DaemonMsg::NewTorrentMagnet(magnet) => {
                             let _ = self.new_torrent_magnet(magnet).await;
                         }
-                        DaemonMsg::AddTorrentMetaInfo(torrent) => {
+                        DaemonMsg::AddTorrent(torrent) => {
                             let _ = self.add_torrent_meta_info(torrent).await;
                         }
                         DaemonMsg::DeleteTorrent(info_hash, also_from_disk) => {

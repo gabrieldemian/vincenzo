@@ -30,7 +30,7 @@ impl PeerBuilder<Leecher> {
         disk.read_metainfos_and_add(MetadataDir::Queue).await?;
         sleep(Duration::from_millis(50)).await;
         let torrent_tx = disk
-            .torrent_ctxs
+            .ctx
             .get(&info_hash)
             .expect("no torrent_ctx leecher")
             .tx
@@ -57,7 +57,7 @@ impl PeerBuilder<Seeder> {
         sleep(Duration::from_millis(50)).await;
         disk.read_metainfos_and_add(MetadataDir::Complete).await?;
         let torrent_tx = disk
-            .torrent_ctxs
+            .ctx
             .get(&info_hash)
             .expect("no torrent_ctx for seeder")
             .tx

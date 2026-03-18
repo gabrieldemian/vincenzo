@@ -1,7 +1,5 @@
 use super::*;
-use crate::{
-    PEER_MSG_BOUND, TORRENT_MSG_BOUND, extensions::BLOCK_LEN, metainfo::Info,
-};
+use crate::{PEER_MSG_BOUND, TORRENT_MSG_BOUND, extensions::BLOCK_LEN};
 use bendy::encoding::ToBencode;
 
 impl Torrent<Connected, FromMetaInfo> {
