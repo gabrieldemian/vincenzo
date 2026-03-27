@@ -1,7 +1,10 @@
 //! Metainfo is a .torrent file with information abouthe Torrent.
 //! From the magnet link, we get the Metainfo from other peers.
 
-use crate::extensions::core::{BLOCK_LEN, BlockInfo};
+use crate::{
+    bitfield::Bitfield,
+    extensions::core::{BLOCK_LEN, BlockInfo},
+};
 use bendy::{
     decoding::{self, Decoder, FromBencode, Object, ResultExt},
     encoding::{self, AsString, Error, SingleItemEncoder, ToBencode},
@@ -272,11 +275,21 @@ impl Info {
         }
     }
 
+    #[inline]
+    pub(crate) fn compute_downloaded(&self, bitfield: &Bitfield) -> usize {
+        let ones = bitfield.count_ones();
+        let last = bitfield.last_one();
+        let mut r = ones.saturating_sub(1) * self.piece_length;
+        if let Some(last) = last {
+            r += self.piece_length(last);
+        }
+        r
+    }
+
     /// Get the size (in bytes) of a piece.
-    #[cfg(test)]
-    pub fn piece_length(&self, piece_index: usize) -> usize {
+    pub fn piece_length(&self, piece: usize) -> usize {
         let total_size = self.get_torrent_size();
-        if piece_index == self.pieces() - 1 {
+        if piece == self.pieces() - 1 {
             let remainder = total_size % self.piece_length;
             if remainder == 0 { self.piece_length } else { remainder }
         } else {

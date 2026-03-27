@@ -210,7 +210,7 @@ impl Torrent<Idle, FromMetaInfo> {
         let ctx = Arc::new(TorrentCtx {
             size: (info.get_torrent_size() as u64).into(),
             counter: Counter::from_total_download(
-                bitfield.count_ones() as u64 * info.piece_length as u64,
+                info.compute_downloaded(&bitfield) as u64,
             ),
             free_tx: daemon_ctx.free_tx.clone(),
             btx,
