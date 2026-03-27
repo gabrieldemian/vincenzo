@@ -1,6 +1,5 @@
 //! Disk is responsible for file I/O info_hash, pieces all torrents.
 
-// extern crate page_size;
 use crate::{
     bitfield::{Bitfield, VczBitfield},
     config::ResolvedConfig,
@@ -26,7 +25,7 @@ use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use sha1::{Digest, Sha1};
 use std::{
     collections::HashMap,
-    fs::{File, OpenOptions},
+    fs::File,
     io::ErrorKind,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, RwLock, atomic::Ordering},
@@ -186,9 +185,7 @@ pub struct Disk {
     pub torrents: HashMap<InfoHash, TorrentData>,
 }
 
-pub struct PieceTracker {
-    last_accessed: Box<[u64]>,
-}
+pub struct PieceTracker(Box<[u64]>);
 
 impl PieceTracker {
     fn record(&mut self, piece: usize) {
@@ -196,7 +193,7 @@ impl PieceTracker {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_millis() as u64;
-        self.last_accessed[piece] = now;
+        self.0[piece] = now;
     }
 }
 
@@ -551,7 +548,9 @@ impl Disk {
 
         for (piece, result) in piece_results.into_iter().enumerate() {
             downloaded_pieces.set(piece, result);
-            downloaded_per_piece[piece] = info.piece_length(piece);
+            if result {
+                downloaded_per_piece[piece] = info.piece_length(piece);
+            }
         }
 
         *torrent_data_mut!(self, &info.info_hash, downloaded_per_piece)? =
@@ -580,9 +579,8 @@ impl Disk {
         let mut lock = torrent_data!(self, &info.info_hash, piece_tracker)?
             .write()
             .expect("lock piece_tracker compute_torrent_cache");
-
         let last_accessed = vec![0; num_pieces].into_boxed_slice();
-        *lock = PieceTracker { last_accessed };
+        *lock = PieceTracker(last_accessed);
         drop(lock);
 
         if let Some(files) = &info.files {
@@ -678,6 +676,7 @@ impl Disk {
         Ok(v)
     }
 
+    #[inline]
     async fn enter_endgame(
         &mut self,
         torrent_ctx: &Arc<TorrentCtx>,
@@ -709,21 +708,9 @@ impl Disk {
             .map_err(|e| e.into())
     }
 
-    pub fn open_file_dont_create(
-        path: impl AsRef<Path>,
-    ) -> Result<File, Error> {
-        let path = path.as_ref().to_owned();
-        OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(false)
-            .truncate(false)
-            .open(&path)
-            .map_err(|e| e.into())
-    }
-
     /// Read the corresponding bytes of a block info from disk.
-    pub fn read_block(
+    #[inline]
+    pub(crate) fn read_block(
         &self,
         info_hash: &InfoHash,
         block_info: &BlockInfo,
@@ -763,7 +750,8 @@ impl Disk {
     ///
     /// If the download algorithm of the pieces is "Random", and it has
     /// downloaded the first piece, change the algorithm to rarest-first.
-    pub async fn write_block(
+    #[inline]
+    pub(crate) async fn write_block(
         &mut self,
         torrent_ctx: Arc<TorrentCtx>,
         block: Block,
@@ -934,7 +922,7 @@ impl Disk {
     /// Get the base path of a torrent directory.
     /// Which is always "download_dir/name_of_torrent".
     #[inline]
-    pub fn base_path(&self, info_hash: &InfoHash) -> PathBuf {
+    pub(crate) fn base_path(&self, info_hash: &InfoHash) -> PathBuf {
         let info = torrent_data!(self, info_hash, torrent_info).unwrap();
         let mut base = self.config.download_dir.clone();
         base.push(&info.name);
@@ -1164,7 +1152,7 @@ impl Disk {
     /// if the cache was cleared, the function will not work.
     #[inline]
     #[tracing::instrument(skip(self, info_hash))]
-    pub fn validate_piece(
+    fn validate_piece(
         &mut self,
         info_hash: &InfoHash,
         piece: usize,
@@ -1222,7 +1210,7 @@ impl Disk {
         Err(Error::TorrentDoesNotExist)
     }
 
-    pub fn set_piece_strategy(
+    fn set_piece_strategy(
         &mut self,
         info_hash: &InfoHash,
         s: PieceStrategy,
@@ -1305,7 +1293,7 @@ impl Disk {
             let tracker = tracker.piece_tracker.read().unwrap();
             let torrent = torrent_data!(self, info_hash, torrent_cache)?;
 
-            for (piece_idx, &last) in tracker.last_accessed.iter().enumerate() {
+            for (piece_idx, &last) in tracker.0.iter().enumerate() {
                 if last != 0 && now.saturating_sub(last) > COLD_PIECE_THRESHOLD
                 {
                     self.advise_piece_cold(torrent, piece_idx)
@@ -1334,17 +1322,17 @@ impl Disk {
     }
 
     #[inline]
-    fn new_torrent_data(&mut self, info: Arc<Info>) {
+    fn new_torrent_data(&mut self, torrent_info: Arc<Info>) {
         self.torrents.insert(
-            info.info_hash.clone(),
+            torrent_info.info_hash.clone(),
             TorrentData {
                 requested_pieces_len: 0,
                 downloaded_per_piece: Vec::new(),
                 endgame: false,
-                piece_tracker: Arc::new(RwLock::new(PieceTracker {
-                    last_accessed: Box::new([]),
-                })),
-                torrent_info: info,
+                piece_tracker: Arc::new(RwLock::new(PieceTracker(
+                    Box::new([]),
+                ))),
+                torrent_info,
                 metadata_pieces: Vec::new(),
                 piece_strategy: PieceStrategy::default(),
                 queue: Vec::new(),

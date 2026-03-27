@@ -278,10 +278,13 @@ impl Info {
     #[inline]
     pub(crate) fn compute_downloaded(&self, bitfield: &Bitfield) -> usize {
         let ones = bitfield.count_ones();
-        let last = bitfield.last_one();
+        // todo: last_one actually panicks, maybe it's a bug on their side.
+        let last = bitfield.last();
         let mut r = ones.saturating_sub(1) * self.piece_length;
-        if let Some(last) = last {
-            r += self.piece_length(last);
+        if let Some(last) = last
+            && *last
+        {
+            r += self.piece_length(bitfield.len() - 1);
         }
         r
     }
