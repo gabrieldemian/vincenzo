@@ -157,7 +157,7 @@ impl TrackerTrait for Tracker<Udp> {
         let uploaded = self.torrent_ctx.counter.total_upload();
         let left = self
             .torrent_ctx
-            .size
+            .disk_size
             .load(Ordering::Relaxed)
             .saturating_sub(downloaded);
 

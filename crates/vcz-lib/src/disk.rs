@@ -763,8 +763,6 @@ impl Disk {
             return Ok(());
         }
 
-        // piece IS fully downloaded, verify and write
-
         // if the piece is corrupted, generate block infos
         if self.validate_piece(&torrent_ctx.info_hash, index).is_err() {
             let info =
@@ -856,6 +854,7 @@ impl Disk {
         Ok(write_ops)
     }
 
+    // todo: delete me if performance of writing by block is good
     #[allow(clippy::type_complexity)]
     fn calculate_write_ops(
         &self,

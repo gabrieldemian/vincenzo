@@ -512,7 +512,6 @@ impl Daemon {
         let torrent = Torrent::new_magnet(
             self.config.clone(),
             self.disk_tx.clone(),
-            self.ctx.free_tx.clone(),
             self.ctx.clone(),
             magnet,
         );

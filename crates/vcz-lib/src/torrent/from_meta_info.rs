@@ -208,11 +208,10 @@ impl Torrent<Idle, FromMetaInfo> {
         let (btx, _brx) = broadcast::channel::<PeerBrMsg>(PEER_MSG_BOUND);
 
         let ctx = Arc::new(TorrentCtx {
-            size: (info.get_torrent_size() as u64).into(),
+            disk_size: (info.get_torrent_size() as u64).into(),
             counter: Counter::from_total_download(
                 info.compute_downloaded(&bitfield) as u64,
             ),
-            free_tx: daemon_ctx.free_tx.clone(),
             btx,
             tx,
             disk_tx,
@@ -384,7 +383,7 @@ impl Torrent<Connected, FromMetaInfo> {
         }
 
         let info_hash = self.ctx.info_hash.clone();
-        let ftx = self.ctx.free_tx.clone();
+        let ftx = self.daemon_ctx.free_tx.clone();
 
         tokio::spawn(async move {
             if r.is_empty() {

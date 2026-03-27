@@ -181,7 +181,6 @@ impl Torrent<Idle, FromMagnet> {
     pub fn new_magnet(
         config: Arc<ResolvedConfig>,
         disk_tx: mpsc::Sender<DiskMsg>,
-        free_tx: mpsc::UnboundedSender<ReturnToDisk>,
         daemon_ctx: Arc<DaemonCtx>,
         magnet: Magnet,
     ) -> Torrent<Idle, FromMagnet> {
@@ -191,8 +190,7 @@ impl Torrent<Idle, FromMagnet> {
 
         let ctx = Arc::new(TorrentCtx {
             counter: Counter::new(),
-            size: size.into(),
-            free_tx,
+            disk_size: size.into(),
             btx,
             tx,
             disk_tx,

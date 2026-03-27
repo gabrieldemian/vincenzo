@@ -230,7 +230,7 @@ impl<M: TorrentSource> From<&Torrent<torrent::Connected, M>> for TorrentState {
             name: value.name.clone(),
             stats: value.state.stats.clone(),
             info_hash: value.ctx.info_hash.clone(),
-            size: value.ctx.size.load(Ordering::Relaxed),
+            size: value.ctx.disk_size.load(Ordering::Relaxed),
             status: value.status,
             downloaded: value.ctx.counter.total_download(),
             uploaded: value.ctx.counter.total_upload(),

@@ -60,10 +60,9 @@ pub(crate) struct Torrent<S: State, M: TorrentSource> {
 /// Context of [`Torrent`] that can be shared between other types
 #[derive(Debug)]
 pub struct TorrentCtx {
-    pub size: AtomicU64,
+    pub disk_size: AtomicU64,
     pub counter: Counter,
     pub disk_tx: mpsc::Sender<DiskMsg>,
-    pub free_tx: mpsc::UnboundedSender<ReturnToDisk>,
     pub tx: mpsc::Sender<TorrentMsg>,
     pub btx: broadcast::Sender<PeerBrMsg>,
     pub info_hash: InfoHash,
@@ -85,8 +84,9 @@ impl<M: TorrentSource> Torrent<Connected, M> {
         self.ctx.counter.update_rates();
 
         let mut torrent_state: TorrentState = (&*self).into();
-        torrent_state.downloaded =
-            torrent_state.downloaded.min(self.ctx.size.load(Ordering::Relaxed));
+        torrent_state.downloaded = torrent_state
+            .downloaded
+            .min(self.ctx.disk_size.load(Ordering::Relaxed));
 
         let _ = self
             .daemon_ctx
@@ -234,7 +234,7 @@ impl<M: TorrentSource> Torrent<Connected, M> {
 
         if self.status == TorrentStatus::Paused {
             self.status = if self.ctx.counter.total_download()
-                >= self.ctx.size.load(Ordering::Relaxed)
+                >= self.ctx.disk_size.load(Ordering::Relaxed)
             {
                 TorrentStatus::Seeding
             } else {
