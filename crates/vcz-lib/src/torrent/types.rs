@@ -184,7 +184,7 @@ impl From<&Torrent<torrent::Idle, FromMagnet>> for TorrentState {
         Self {
             name: value.name.clone(),
             status: TorrentStatus::ConnectingTrackers,
-            bitfield: value.bitfield.clone().into(),
+            bitfield: value.bitfield.clone().to_bytes(),
             info_hash: value.source.magnet.parse_xt_infohash(),
             ..Default::default()
         }
@@ -234,7 +234,7 @@ impl<M: TorrentSource> From<&Torrent<torrent::Connected, M>> for TorrentState {
             status: value.status,
             downloaded: value.ctx.counter.total_download(),
             uploaded: value.ctx.counter.total_upload(),
-            bitfield: value.bitfield.clone().into_vec(),
+            bitfield: value.bitfield.to_bytes(),
             idle_peers: value.state.idle_peers.len() as u8,
             connected_peers: value.state.connected_peers.len() as u8,
             download_rate: value.ctx.counter.download_rate_f64(),

@@ -36,7 +36,7 @@ rkyv = { version = "0.8.14", features = ["big_endian", "unaligned"] }
 page_size = "0.6.0"
 quick_cache = "0.6.19"
 bendy = "0.6.1"
-bitvec = "1.0.1"
+bit-vec = "0.9.1"
 bytes = "1.11.0"
 argh = "0.1.14"
 futures = "0.3.31"

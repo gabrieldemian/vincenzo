@@ -26,7 +26,7 @@ quick_cache = { workspace = true }
 bendy = { workspace = true }
 rayon = { workspace = true }
 memmap2 = { workspace = true }
-bitvec = { workspace = true }
+bit-vec = { workspace = true }
 bytes = { workspace = true }
 argh = { workspace = true }
 futures = { workspace = true }

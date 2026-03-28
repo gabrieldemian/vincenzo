@@ -8,6 +8,7 @@ mod from_magnet;
 mod from_meta_info;
 mod types;
 
+use bit_vec::BitVec;
 // re-exports
 pub use types::*;
 
@@ -386,7 +387,7 @@ impl<M: TorrentSource> Torrent<Connected, M> {
             .state
             .peer_pieces_diff
             .entry(id.clone())
-            .or_insert(Bitfield::from_piece(piece));
+            .or_insert(BitVec::from_elem_general(piece, false));
         diff.safe_set(piece, !self.bitfield.safe_get(piece));
         if no_bitfield {
             let _ = self.gen_missing_pieces(id);
@@ -411,12 +412,16 @@ impl<M: TorrentSource> Torrent<Connected, M> {
             .get(&peer_id)
             .ok_or(Error::PeerDoesNotExist)?;
         let bitfield_len = remote.len();
-        let diff = self
-            .state
-            .peer_pieces_diff
-            .entry(peer_id)
-            .or_insert_with(|| Bitfield::from_piece(bitfield_len));
-        *diff = *remote.clone() & !self.bitfield.clone();
+        let diff =
+            self.state.peer_pieces_diff.entry(peer_id).or_insert_with(|| {
+                BitVec::from_elem_general(bitfield_len, false)
+            });
+        let mut r = remote.clone();
+        let mut b = self.bitfield.clone();
+        b.negate();
+        r.and(&b);
+        *diff = *r;
+        println!("b {b} diff {diff}");
         Ok(())
     }
 
@@ -435,8 +440,15 @@ impl<M: TorrentSource> Torrent<Connected, M> {
         let req = &mut self.state.peer_pieces_req;
         let mut pieces = Vec::with_capacity(pieces_wanted);
 
-        for piece in diff.iter_ones() {
-            if *req.safe_get(piece) {
+        println!("diff {diff}");
+        println!("req  {req}");
+
+        // iter over ones
+        for (piece, r) in diff.iter().enumerate() {
+            if !r {
+                continue;
+            };
+            if req.safe_get(piece) {
                 continue;
             }
             req.safe_set(piece, true);
@@ -572,7 +584,10 @@ impl<M: TorrentSource> Torrent<Idle, M> {
                     self.config.max_torrent_peers,
                 ),
                 info_pieces: BTreeMap::new(),
-                peer_pieces_req: Bitfield::from_piece(self.bitfield.len()),
+                peer_pieces_req: BitVec::from_elem_general(
+                    self.bitfield.len(),
+                    false,
+                ),
             },
             source: self.source,
             bitfield: self.bitfield,

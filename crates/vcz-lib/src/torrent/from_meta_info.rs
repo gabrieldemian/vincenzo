@@ -13,7 +13,7 @@ impl Torrent<Connected, FromMetaInfo> {
             _ => {
                 self.status = TorrentStatus::Downloading;
                 let is_seed_only =
-                    self.bitfield.count_ones() >= self.bitfield.len();
+                    self.bitfield.count_ones() as usize >= self.bitfield.len();
                 if is_seed_only {
                     self.status = TorrentStatus::Seeding;
                 }
@@ -120,8 +120,9 @@ impl Torrent<Connected, FromMetaInfo> {
                         TorrentMsg::HaveInfo(tx) => {
                             let _ = tx.send(true);
                         }
-                        TorrentMsg::SetPeerBitfield(id, bitfield) => {
+                        TorrentMsg::SetPeerBitfield(id, mut bitfield) => {
                             let entry = self.state.peer_pieces.entry(id.clone()).or_default();
+                            bitfield.truncate(self.bitfield.len());
                             **entry = bitfield;
                             let _ = self.gen_missing_pieces(id);
                         }
@@ -273,7 +274,6 @@ impl Torrent<Connected, FromMetaInfo> {
 
         let _ = self.ctx.btx.send(PeerBrMsg::Seedonly);
 
-        self.state.peer_pieces_req.clear();
         self.state.peer_pieces_diff.clear();
         self.state.peer_pieces.clear();
     }
@@ -306,8 +306,9 @@ impl Torrent<Connected, FromMetaInfo> {
         if self.bitfield.count_ones() == 0 {
             return Some(0);
         }
-        self.get_missing_pieces(peer_id)
-            .map(|v| v.first_one().unwrap_or_default())
+        self.get_missing_pieces(peer_id).and_then(|diff| {
+            diff.iter().enumerate().find(|(_, b)| *b).map(|(i, _)| i)
+        })
     }
 
     #[inline]

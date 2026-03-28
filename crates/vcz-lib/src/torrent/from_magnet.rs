@@ -3,6 +3,7 @@ use crate::{
     PEER_BR_MSG_BOUND, TORRENT_MSG_BOUND, magnet::Magnet, metainfo::Info,
 };
 use bendy::decoding::FromBencode;
+use bit_vec::BitVec;
 
 impl Torrent<Connected, FromMagnet> {
     pub(self) async fn inner_run(
