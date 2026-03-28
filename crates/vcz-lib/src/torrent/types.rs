@@ -196,7 +196,7 @@ impl From<&Torrent<torrent::Idle, FromMetaInfo>> for TorrentState {
         Self {
             name: value.name.clone(),
             status: TorrentStatus::ConnectingTrackers,
-            bitfield: value.bitfield.clone().into(),
+            bitfield: value.bitfield.clone().to_bytes(),
             info_hash: value.source.meta.info.info_hash.clone(),
             ..Default::default()
         }

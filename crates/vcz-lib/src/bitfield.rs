@@ -27,39 +27,8 @@ impl Reserved {
 }
 
 pub(crate) trait VczBitfield {
-    fn from_piece(piece: usize) -> Bitfield {
-        bitvec![u8, Msb0; 0; piece]
-    }
-    /// Set vector to a new len, in bits.
-    #[cfg(test)]
-    fn new_and_resize(vec: Vec<u8>, len: usize) -> Bitfield {
-        let mut s = Bitfield::from_vec(vec);
-        unsafe { s.set_len(len) };
-        s
-    }
-    fn safe_get(
-        &mut self,
-        index: usize,
-    ) -> BitRef<'_, bitvec::ptr::Const, u8, Msb0>;
     fn safe_set(&mut self, index: usize, val: bool);
-}
-
-impl VczBitfield for BitVec {
-    fn safe_set(&mut self, index: usize, val: bool) {
-        if index >= self.len() {
-            let needed = index + 1 - self.len();
-            self.extend(BitVec::from_elem(needed, false));
-        }
-        self.set(index, val);
-    }
-
-    fn safe_get(&mut self, index: usize) -> bool {
-        if index >= self.len() {
-            let needed = index + 1 - self.len();
-            self.extend(BitVec::from_elem(needed, false));
-        }
-        unsafe { self.get_unchecked(index) }
-    }
+    fn safe_get(&mut self, index: usize) -> bool;
 }
 
 impl VczBitfield for Bitfield {
@@ -85,15 +54,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn from_piece() {
-        let bitfield = BitVec::from_elem(1407, false);
-        assert_eq!(bitfield.len(), 1407);
-    }
-
-    #[test]
     fn safe_set() {
         // 0, 1
-        let mut bitfield = BitVec::from_elem(2, false);
+        let mut bitfield = Bitfield::from_elem_general(2, false);
         assert_eq!(bitfield.len(), 2);
         // 0, 1, 2
         bitfield.safe_set(2, true);
@@ -107,7 +70,7 @@ mod tests {
 
     #[test]
     fn safe_get() {
-        let mut bitfield = BitVec::from_elem(1, true);
+        let mut bitfield = Bitfield::from_elem_general(1, true);
         bitfield.safe_set(10, true);
         assert!(bitfield.safe_get(10));
         assert_eq!(bitfield.len(), 11);

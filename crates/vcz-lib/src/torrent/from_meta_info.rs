@@ -250,7 +250,7 @@ impl Torrent<Connected, FromMetaInfo> {
         let total_pieces = self.bitfield.len();
         let downloaded_pieces = self.bitfield.count_ones();
 
-        let is_download_complete = downloaded_pieces >= total_pieces;
+        let is_download_complete = downloaded_pieces as usize >= total_pieces;
 
         if !is_download_complete && self.status != TorrentStatus::Seeding {
             return;

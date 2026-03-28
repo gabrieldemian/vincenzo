@@ -142,7 +142,7 @@ impl Torrent<Connected, FromMagnet> {
         debug!("piece_length: {:?}", info.piece_length);
         info!("pieces: {}, blocks: {}", info.pieces(), info.blocks_count(),);
 
-        self.bitfield = Bitfield::from_piece(info.pieces());
+        self.bitfield = BitVec::from_elem_general(info.pieces(), false);
         let meta = MetaInfo {
             announce_list: Some(vec![self.source.magnet.trackers().to_vec()]),
             info: _info,
