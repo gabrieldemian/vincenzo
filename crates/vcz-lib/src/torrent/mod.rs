@@ -421,7 +421,6 @@ impl<M: TorrentSource> Torrent<Connected, M> {
         b.negate();
         r.and(&b);
         *diff = *r;
-        println!("b {b} diff {diff}");
         Ok(())
     }
 
@@ -439,9 +438,6 @@ impl<M: TorrentSource> Torrent<Connected, M> {
 
         let req = &mut self.state.peer_pieces_req;
         let mut pieces = Vec::with_capacity(pieces_wanted);
-
-        println!("diff {diff}");
-        println!("req  {req}");
 
         // iter over ones
         for (piece, r) in diff.iter().enumerate() {

@@ -29,13 +29,20 @@ impl Reserved {
 pub(crate) trait VczBitfield {
     fn safe_set(&mut self, index: usize, val: bool);
     fn safe_get(&mut self, index: usize) -> bool;
+    fn left_truncate(&mut self, qnt: usize);
 }
 
 impl VczBitfield for Bitfield {
+    fn left_truncate(&mut self, qnt: usize) {
+        for _ in 0..self.len().saturating_sub(qnt) {
+            self.remove(0);
+        }
+    }
+
     fn safe_set(&mut self, index: usize, val: bool) {
         if index >= self.len() {
             let needed = index + 1 - self.len();
-            self.extend(BitVec::from_elem(needed, false));
+            self.grow(needed, false);
         }
         self.set(index, val);
     }
@@ -43,7 +50,7 @@ impl VczBitfield for Bitfield {
     fn safe_get(&mut self, index: usize) -> bool {
         if index >= self.len() {
             let needed = index + 1 - self.len();
-            self.extend(BitVec::from_elem(needed, false));
+            self.grow(needed, false);
         }
         unsafe { self.get_unchecked(index) }
     }

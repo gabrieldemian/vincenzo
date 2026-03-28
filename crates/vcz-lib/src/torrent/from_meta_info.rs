@@ -122,7 +122,7 @@ impl Torrent<Connected, FromMetaInfo> {
                         }
                         TorrentMsg::SetPeerBitfield(id, mut bitfield) => {
                             let entry = self.state.peer_pieces.entry(id.clone()).or_default();
-                            bitfield.truncate(self.bitfield.len());
+                            bitfield.left_truncate(self.bitfield.len());
                             **entry = bitfield;
                             let _ = self.gen_missing_pieces(id);
                         }
