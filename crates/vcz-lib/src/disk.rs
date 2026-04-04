@@ -416,7 +416,7 @@ impl Disk {
         }
 
         let mut is_err = false;
-        let (downloaded_pieces, dp) =
+        let (downloaded_pieces, ones) =
             match self.compute_downloaded_pieces(&info) {
                 Ok(v) => v,
                 Err(Error::TorrentFilesMissing(downloaded_pieces, dp)) => {
@@ -428,7 +428,7 @@ impl Disk {
 
         self.set_piece_strategy(&info_hash, PieceStrategy::default())?;
 
-        let is_complete = dp >= info.pieces();
+        let is_complete = ones >= info.pieces();
         let info_hash = info.info_hash.clone();
 
         let mut torrent = Torrent::new_metainfo(
@@ -751,40 +751,7 @@ impl Disk {
         let len = block.block.len();
         let index = block.index;
 
-        if !self.is_piece_downloaded(index, &torrent_ctx.info_hash)? {
-            return Ok(());
-        }
-
-        // if the piece is corrupted, generate block infos
-        if self.validate_piece(&torrent_ctx.info_hash, index).is_err() {
-            let info =
-                torrent_data!(self, &torrent_ctx.info_hash, torrent_cache)?;
-
-            let info_blocks = Info::get_block_infos_of_piece(
-                info.total_size,
-                info.piece_length,
-                index,
-            );
-
-            warn!("piece {index} is corrupted, generating more block infos",);
-
-            torrent_data_mut!(self, &torrent_ctx.info_hash, queue)?
-                .extend(info_blocks);
-
-            return Ok(());
-        }
-
-        let downloaded_pieces_len = torrent_data_mut!(
-            self,
-            &torrent_ctx.info_hash,
-            downloaded_per_piece
-        )?;
-
-        downloaded_pieces_len[index] += len;
-
         tracing::trace!("piece {index} is valid.");
-
-        let _ = torrent_ctx.tx.send(TorrentMsg::DownloadedPiece(index)).await;
 
         let ops = self.calculate_write_ops_for_block(
             &torrent_ctx.info_hash,
@@ -799,6 +766,49 @@ impl Disk {
             mmap[file_offset..file_offset + range.len()]
                 .copy_from_slice(&b[range]);
         }
+
+        let downloaded_pieces_len = torrent_data_mut!(
+            self,
+            &torrent_ctx.info_hash,
+            downloaded_per_piece
+        )?;
+
+        let Some(downloaded_piece_len) = downloaded_pieces_len.get_mut(index) else {
+            return Ok(());
+        };
+        *downloaded_piece_len += len;
+
+        if !self.is_piece_downloaded(index, &torrent_ctx.info_hash)? {
+            return Ok(());
+        }
+
+        // if the piece is corrupted, generate block infos
+        if self.validate_piece(&torrent_ctx.info_hash, index).is_err() {
+            warn!("piece {index} is corrupted");
+
+            let info =
+                torrent_data!(self, &torrent_ctx.info_hash, torrent_cache)?;
+
+            let info_blocks = Info::get_block_infos_of_piece(
+                info.total_size,
+                info.piece_length,
+                index,
+            );
+
+            torrent_data_mut!(self, &torrent_ctx.info_hash, queue)?
+                .extend(info_blocks);
+
+            let downloaded_pieces_len = torrent_data_mut!(
+                self,
+                &torrent_ctx.info_hash,
+                downloaded_per_piece
+            )?;
+
+            downloaded_pieces_len[index] = 0;
+
+            return Ok(());
+        }
+        let _ = torrent_ctx.tx.send(TorrentMsg::DownloadedPiece(index)).await;
 
         Ok(())
     }

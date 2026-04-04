@@ -172,26 +172,6 @@ impl<M: TorrentSource> Torrent<Connected, M> {
     }
 
     #[inline]
-    fn broadcast_block_infos(
-        &self,
-        sender: PeerId,
-        reqs: Vec<BlockInfo>,
-        queue: Vec<BlockInfo>,
-    ) {
-        for p in &self.state.connected_peers {
-            if p.id == sender {
-                continue;
-            };
-            let tx = p.tx.clone();
-            let mut blocks = reqs.clone();
-            blocks.extend(queue.clone());
-            tokio::spawn(async move {
-                let _ = tx.send(PeerMsg::Blocks(blocks)).await;
-            });
-        }
-    }
-
-    #[inline]
     async fn peer_error(&mut self, addr: SocketAddr) {
         self.state.error_peers.push(Peer::<peer::PeerError>::new(addr));
         self.state.connected_peers.retain(|v| v.remote_addr != addr);
@@ -392,14 +372,6 @@ impl<M: TorrentSource> Torrent<Connected, M> {
         if no_bitfield {
             let _ = self.gen_missing_pieces(id);
         }
-    }
-
-    #[inline]
-    pub(crate) fn get_missing_pieces(
-        &self,
-        peer_id: &PeerId,
-    ) -> Option<Bitfield> {
-        self.state.peer_pieces_diff.get(peer_id).cloned()
     }
 
     pub(crate) fn gen_missing_pieces(

@@ -28,13 +28,11 @@ impl Torrent<Connected, FromMagnet> {
                         TorrentMsg::GetUnchokedPeers(..) => { }
                         TorrentMsg::OptUnchokeAlgorithm => { }
                         TorrentMsg::PeerHasPieceNotInLocal(..) => { }
+                        TorrentMsg::BroadcastBlockInfos(..) => { }
 
                         TorrentMsg::Promote(meta) => {
                             return Ok(Some(self.promote(meta)));
                         },
-                        TorrentMsg::BroadcastBlockInfos(sender, reqs, queue) => {
-                            self.broadcast_block_infos(sender, reqs, queue);
-                        }
                         TorrentMsg::SetTorrentError(code) => {
                             self.status = TorrentStatus::Error(code);
                         }

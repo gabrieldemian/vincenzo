@@ -68,8 +68,8 @@ impl Torrent<Connected, FromMetaInfo> {
                                     .await;
                             });
                         }
-                        TorrentMsg::BroadcastBlockInfos(sender, reqs, queue) => {
-                            self.broadcast_block_infos(sender, reqs, queue);
+                        TorrentMsg::BroadcastBlockInfos(ctx, reqs) => {
+                            self.broadcast_block_infos(&ctx.id, reqs);
                         }
                         TorrentMsg::Endgame => {
                             for p in &self.state.connected_peers {
@@ -81,7 +81,7 @@ impl Torrent<Connected, FromMetaInfo> {
                         }
                         TorrentMsg::Cancel(sender, block_info) => {
                             for p in &self.state.connected_peers {
-                                if p.id == sender { continue };
+                                if p.id == sender.id { continue };
                                 let b = block_info.clone();
                                 let tx = p.tx.clone();
                                 tokio::spawn(async move {
@@ -122,7 +122,7 @@ impl Torrent<Connected, FromMetaInfo> {
                         }
                         TorrentMsg::SetPeerBitfield(id, mut bitfield) => {
                             let entry = self.state.peer_pieces.entry(id.clone()).or_default();
-                            bitfield.left_truncate(self.bitfield.len());
+                            bitfield.truncate(self.bitfield.len());
                             **entry = bitfield;
                             let _ = self.gen_missing_pieces(id);
                         }
@@ -191,6 +191,20 @@ impl Torrent<Connected, FromMetaInfo> {
             }
         }
     }
+
+    #[inline]
+    fn broadcast_block_infos(&self, sender: &PeerId, reqs: Vec<BlockInfo>) {
+        for p in &self.state.connected_peers {
+            if p.id == *sender {
+                continue;
+            };
+            let tx = p.tx.clone();
+            let blocks = reqs.clone();
+            tokio::spawn(async move {
+                let _ = tx.send(PeerMsg::Blocks(blocks)).await;
+            });
+        }
+    }
 }
 
 impl Torrent<Idle, FromMetaInfo> {
@@ -211,7 +225,7 @@ impl Torrent<Idle, FromMetaInfo> {
         let ctx = Arc::new(TorrentCtx {
             disk_size: (info.get_torrent_size() as u64).into(),
             counter: Counter::from_total_download(
-                info.compute_downloaded(&bitfield) as u64,
+                info.downloaded_bytes(&bitfield) as u64,
             ),
             btx,
             tx,
@@ -219,6 +233,9 @@ impl Torrent<Idle, FromMetaInfo> {
             info_hash: info.info_hash.clone(),
             metadata_size,
         });
+
+        // 694067611
+        debug!("counter {}", ctx.counter.total_download());
 
         Self {
             config,
@@ -306,7 +323,7 @@ impl Torrent<Connected, FromMetaInfo> {
         if self.bitfield.count_ones() == 0 {
             return Some(0);
         }
-        self.get_missing_pieces(peer_id).and_then(|diff| {
+        self.state.peer_pieces_diff.get(peer_id).and_then(|diff| {
             diff.iter().enumerate().find(|(_, b)| *b).map(|(i, _)| i)
         })
     }

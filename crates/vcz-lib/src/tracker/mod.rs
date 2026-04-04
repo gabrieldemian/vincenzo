@@ -101,9 +101,9 @@ impl TrackerTrait for Tracker<Udp> {
         let mut len: usize = 0;
 
         self.state.socket.send(&req.serialize()?).await?;
-        let mut retransmit = 30;
+        let mut retransmit = 15;
 
-        for i in 1..=7 {
+        for i in 0..7 {
             match timeout(
                 Duration::from_secs(retransmit),
                 self.state.socket.recv(&mut buf),

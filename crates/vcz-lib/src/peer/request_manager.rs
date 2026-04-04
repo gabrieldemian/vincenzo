@@ -229,6 +229,10 @@ impl<T: Requestable> RequestManager<T> {
         timed_out_blocks
     }
 
+    pub(crate) fn get_last_timestamp(&self) -> Option<Instant> {
+        self.timeouts.peek().map(|v| v.0.0)
+    }
+
     /// Get timed out blocks and calculate a new timeout.
     pub(crate) fn get_timeout_blocks_and_update(&mut self) -> Vec<T> {
         // assume around 25% of blocks are timed out
@@ -301,7 +305,9 @@ impl<T: Requestable> RequestManager<T> {
     /// Clone requests by `qnt`.
     #[inline]
     pub(crate) fn clone_requests(&mut self) -> Vec<T> {
-        self.requests.to_vec()
+        let mut v = self.requests.to_vec();
+        v.extend(self.queue.clone());
+        v
     }
 
     #[inline]
@@ -320,12 +326,6 @@ impl<T: Requestable> RequestManager<T> {
             result.extend(from_queue);
         }
         result
-    }
-
-    /// Clone queue by `qnt`.
-    #[inline]
-    pub(crate) fn clone_queue(&mut self) -> Vec<T> {
-        self.queue.to_vec()
     }
 
     #[inline]

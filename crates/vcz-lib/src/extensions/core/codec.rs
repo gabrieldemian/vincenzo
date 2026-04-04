@@ -120,13 +120,13 @@ impl ExtMsgHandler<Core> for Peer<peer::Connected> {
                     .await?;
             }
             Core::Unchoke => {
+                tracing::trace!("< unchoke");
                 self.state.ctx.peer_choking.store(false, Ordering::Release);
                 self.state_log[2] = 'u';
                 self.update_log();
-                trace!("< unchoke");
             }
             Core::Choke => {
-                trace!("< choke");
+                tracing::trace!("< choke");
                 self.state.ctx.peer_choking.store(true, Ordering::Release);
                 self.free_pending_blocks();
                 self.state_log[2] = '-';

@@ -45,7 +45,7 @@ pub enum TorrentMsg {
     Endgame,
 
     /// Send block infos to all peers.
-    BroadcastBlockInfos(PeerId, Vec<BlockInfo>, Vec<BlockInfo>),
+    BroadcastBlockInfos(Arc<PeerCtx>, Vec<BlockInfo>),
 
     /// When a peer wants to request blocks.
     Request {
@@ -118,7 +118,7 @@ pub enum TorrentMsg {
     /// When torrent is being gracefully shutdown
     Quit,
 
-    Cancel(PeerId, BlockInfo),
+    Cancel(Arc<PeerCtx>, BlockInfo),
 }
 
 #[derive(

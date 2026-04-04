@@ -341,9 +341,11 @@ impl peer::Peer<Idle> {
                 sink,
                 stream,
                 req_man_block: RequestManager::new(),
+                endgame_queue: Vec::new(),
                 req_man_meta: RequestManager::new(),
                 have_info: false,
                 in_endgame: false,
+                is_snubbed: false,
                 rx,
             },
         };
@@ -461,9 +463,11 @@ impl peer::Peer<Idle> {
                 sink,
                 stream,
                 req_man_block: RequestManager::new(),
+                endgame_queue: Vec::new(),
                 req_man_meta: RequestManager::new(),
                 have_info: false,
                 in_endgame: false,
+                is_snubbed: false,
                 rx,
             },
         };
@@ -534,6 +538,8 @@ pub struct Connected {
 
     pub(crate) req_man_meta: RequestManager<MetadataPiece>,
 
+    pub(crate) endgame_queue: Vec<BlockInfo>,
+
     /// This is a cache of have_info on Torrent
     /// to avoid using locks or atomics.
     pub(crate) have_info: bool,
@@ -548,6 +554,10 @@ pub struct Connected {
     /// If the client manually paused the local peer, preventing it from
     /// downloading and uploading but keeping connections.
     pub(crate) is_paused: bool,
+
+    /// Peer is not sending blocks even if the client is unchoked and
+    /// interested.
+    pub(crate) is_snubbed: bool,
 }
 
 /// Tried to do an oubound connection but peer couldn't be reached.
