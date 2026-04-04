@@ -156,8 +156,6 @@ pub enum ReturnToDisk {
 pub struct TorrentData {
     /// bytes downloaded per piece, to know when to compute hashes
     downloaded_per_piece: Vec<usize>,
-    /// To track when endgame should start
-    requested_pieces_len: usize,
     endgame: bool,
     piece_tracker: Arc<RwLock<PieceTracker>>,
     torrent_info: Arc<Info>,
@@ -428,7 +426,6 @@ impl Disk {
                 Err(e) => return Err(e),
             };
 
-        *torrent_data_mut!(self, &info_hash, requested_pieces_len)? = dp;
         self.set_piece_strategy(&info_hash, PieceStrategy::default())?;
 
         let is_complete = dp >= info.pieces();
@@ -627,9 +624,7 @@ impl Disk {
             torrent_data!(self, info_hash, torrent_cache)?.total_size;
         let piece_length =
             torrent_data!(self, info_hash, torrent_cache)?.piece_length;
-        let req = torrent_data_mut!(self, info_hash, requested_pieces_len)?;
         let per_piece = piece_length.div_ceil(BLOCK_LEN);
-        let pieces_count = total_size.div_ceil(piece_length);
         let mut result = Vec::with_capacity(per_piece * pieces.len());
 
         for p in pieces {
@@ -638,20 +633,16 @@ impl Disk {
                 piece_length,
                 p,
             ));
-            *req += 1;
         }
 
         let queue = torrent_data_mut!(self, info_hash, queue)?;
-        let is_queue_empty = queue.is_empty();
 
         while let Some(block) = queue.pop_if(|v| bitfield.safe_get(v.index)) {
             result.push(block);
         }
 
-        let req = torrent_data!(self, info_hash, requested_pieces_len)?;
-        if *req >= pieces_count
-            && peer_ctx.block_infos_len.load(Ordering::Relaxed) == 0
-            && is_queue_empty
+        if peer_ctx.block_infos_len.load(Ordering::Relaxed) == 0
+            && queue.is_empty()
             && result.is_empty()
         {
             let _ = self.enter_endgame(&peer_ctx.torrent_ctx).await;
@@ -1326,7 +1317,6 @@ impl Disk {
         self.torrents.insert(
             torrent_info.info_hash.clone(),
             TorrentData {
-                requested_pieces_len: 0,
                 downloaded_per_piece: Vec::new(),
                 endgame: false,
                 piece_tracker: Arc::new(RwLock::new(PieceTracker(

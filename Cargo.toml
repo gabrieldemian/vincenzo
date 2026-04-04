@@ -18,6 +18,9 @@ codegen-units = 1
 inherits = "dev"
 debug = 1
 
+[profile.dev.package."*"]
+debug = false
+
 [workspace]
 members = [
   "crates/vcz-daemon",
