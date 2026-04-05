@@ -23,12 +23,12 @@ impl Torrent<Connected, FromMagnet> {
                         TorrentMsg::Cancel(..) => { }
                         TorrentMsg::DownloadedPiece(_) => { }
                         TorrentMsg::Request { .. } => {}
-                        TorrentMsg::WantBlocks(..) => { }
                         TorrentMsg::UnchokeAlgorithm => { }
                         TorrentMsg::GetUnchokedPeers(..) => { }
                         TorrentMsg::OptUnchokeAlgorithm => { }
                         TorrentMsg::PeerHasPieceNotInLocal(..) => { }
                         TorrentMsg::BroadcastBlockInfos(..) => { }
+                        TorrentMsg::CorruptedPiece(..) => { }
 
                         TorrentMsg::Promote(meta) => {
                             return Ok(Some(self.promote(meta)));

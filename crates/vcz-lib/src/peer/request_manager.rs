@@ -171,6 +171,11 @@ impl<T: Requestable> RequestManager<T> {
         true
     }
 
+    pub(crate) fn unfulfill(&mut self, req: &T) {
+        self.fulfilled_index.remove(req);
+        self.index.remove(req);
+    }
+
     /// Mark request as completed. Return true if the request exists, and false
     /// otherwise.
     pub(crate) fn fulfill_request(&mut self, req: &T) -> bool {

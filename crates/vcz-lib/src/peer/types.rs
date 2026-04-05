@@ -226,6 +226,12 @@ pub enum PeerMsg {
     /// When in endgame mode, the first peer that receives this info,
     /// sends this message to send Cancel's to all other peers.
     Cancel(BlockInfo),
+
+    CorruptedPiece {
+        piece: usize,
+        torrent_length: usize,
+        piece_length: usize,
+    },
 }
 
 /// Determines who initiated the connection.

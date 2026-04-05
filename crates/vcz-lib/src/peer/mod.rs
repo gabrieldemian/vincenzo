@@ -9,13 +9,10 @@ pub(crate) use request_manager::RequestManager;
 pub use types::*;
 
 use crate::{
-    disk::{DiskMsg, ReturnToDisk},
-    error::Error,
-    extensions::{
+    disk::{DiskMsg, ReturnToDisk}, error::Error, extensions::{
         ExtMsgHandler, ExtendedMessage, Extension, Metadata, MetadataPiece,
         core::{Block, BlockInfo, Core},
-    },
-    torrent::{PeerBrMsg, TorrentMsg},
+    }, metainfo::Info, torrent::{PeerBrMsg, TorrentMsg}
 };
 use bendy::encoding::ToBencode;
 use futures::{SinkExt, StreamExt};
@@ -81,10 +78,11 @@ impl Peer<Connected> {
                     self.anti_snubbing().await?;
                     if self.can_request() {
                         let len = self.state.req_man_block.len();
-                        debug!("b {len} q {} e {} l {}",
+                        debug!("b {len} q {} e {} l {} s {}",
                             self.state.req_man_block.queue_len(),
                             self.state.endgame_queue.len(),
                             self.state.req_man_block.get_available_request_len(),
+                            self.state.is_snubbed,
                         );
                     }
                 }
@@ -132,6 +130,18 @@ impl Peer<Connected> {
                 }
                 Some(msg) = self.state.rx.recv() => {
                     match msg {
+                        PeerMsg::CorruptedPiece
+                            { piece, torrent_length, piece_length } => 
+                        {
+                            // debug!("peer generating corrupted {piece} {torrent_length} {piece_length}");
+                            for block in Info::get_block_infos_of_piece(
+                                torrent_length,
+                                piece_length,
+                                piece
+                            ) {
+                                self.state.req_man_block.unfulfill(&block);
+                            }
+                        }
                         PeerMsg::Endgame => {
                             self.state.in_endgame = true;
                             let reqs = self.state.req_man_block.clone_requests();
@@ -544,7 +554,13 @@ impl Peer<Connected> {
         {
             debug!("snubbed");
             self.state.is_snubbed = true;
-            self.free_pending_blocks();
+
+            // don't free in endgame because the blocks of the snubbed peer
+            // are already copied between all peers so having them request it
+            // from the queue is useless.
+            if !self.state.in_endgame {
+                self.free_pending_blocks();
+            }
 
             if !self.state.ctx.am_choking.load(Ordering::Acquire) {
                 self.state.sink.send(Core::Choke).await?;

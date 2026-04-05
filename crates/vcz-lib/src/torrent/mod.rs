@@ -18,7 +18,7 @@ use crate::{
     config::ResolvedConfig,
     counter::Counter,
     daemon::{CONNECTED_PEERS, DaemonCtx, DaemonMsg},
-    disk::{DiskMsg, ReturnToDisk},
+    disk::DiskMsg,
     error::Error,
     extensions::BlockInfo,
     metainfo::{InfoHash, MetaInfo},
@@ -94,6 +94,8 @@ impl<M: TorrentSource> Torrent<Connected, M> {
             .tx
             .send(DaemonMsg::TorrentState(Box::new(torrent_state)))
             .await;
+
+        tracing::trace!("downloaded pieces: {}", self.bitfield.count_ones());
     }
 
     /// Try to connect to all idle peers (if there is capacity) and run their
@@ -360,16 +362,43 @@ impl<M: TorrentSource> Torrent<Connected, M> {
 
     #[inline]
     pub(crate) fn peer_have(&mut self, id: PeerId, piece: usize) {
+        let client_len = self.bitfield.len();
         let bitfield = self.state.peer_pieces.entry(id.clone()).or_default();
-        bitfield.safe_set(piece, true);
-        let no_bitfield = !self.state.peer_pieces_diff.contains_key(&id);
+
+        // if the peer sends a bitfield too small
+        bitfield.grow(client_len.saturating_sub(bitfield.len()), false);
+
+        // when encoding a bitfield, it may not be a multiple of 8
+        bitfield.truncate(client_len);
+
+        bitfield.set(piece, true);
+
+        let no_diff = !self.state.peer_pieces_diff.contains_key(&id);
+
         let diff = self
             .state
             .peer_pieces_diff
             .entry(id.clone())
             .or_insert(BitVec::from_elem_general(piece, false));
-        diff.safe_set(piece, !self.bitfield.safe_get(piece));
-        if no_bitfield {
+
+        // if the peer sends a bitfield too small
+        diff.grow(client_len.saturating_sub(diff.len()), false);
+
+        // when encoding a bitfield, it may not be a multiple of 8
+        diff.truncate(client_len);
+
+        debug_assert!(
+            bitfield.len() >= client_len,
+            "remote peer bitfield must not be smaller than the client \
+             bitfield (peer_have)"
+        );
+        debug_assert!(
+            diff.len() >= client_len,
+            "remote peer diff must not be smaller than the client bitfield \
+             (peer_have)"
+        );
+
+        if no_diff {
             let _ = self.gen_missing_pieces(id);
         }
     }
@@ -383,13 +412,17 @@ impl<M: TorrentSource> Torrent<Connected, M> {
             .peer_pieces
             .get(&peer_id)
             .ok_or(Error::PeerDoesNotExist)?;
-        let bitfield_len = remote.len();
         let diff =
             self.state.peer_pieces_diff.entry(peer_id).or_insert_with(|| {
-                BitVec::from_elem_general(bitfield_len, false)
+                BitVec::from_elem_general(remote.len(), false)
             });
         let mut r = remote.clone();
         let mut b = self.bitfield.clone();
+        debug_assert!(
+            r.len() >= b.len(),
+            "remote peer bitfield must not be smaller than the client \
+             bitfield (gen_missing_pieces)"
+        );
         b.negate();
         r.and(&b);
         *diff = *r;
@@ -419,7 +452,7 @@ impl<M: TorrentSource> Torrent<Connected, M> {
             if req.safe_get(piece) {
                 continue;
             }
-            req.safe_set(piece, true);
+            req.set(piece, true);
             pieces.push(piece);
             if pieces.len() == pieces_wanted {
                 break;
@@ -535,7 +568,6 @@ impl<M: TorrentSource> Torrent<Idle, M> {
         Ok(Torrent {
             config: self.config.clone(),
             state: Connected {
-                stealing: Arc::new(false.into()),
                 tracker_tx,
                 reconnect_interval,
                 heartbeat_interval,

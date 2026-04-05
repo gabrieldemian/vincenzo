@@ -40,6 +40,21 @@ impl Torrent<Connected, FromMetaInfo> {
                         TorrentMsg::Promote(..) => { }
                         TorrentMsg::DownloadedInfoPiece(..) => {}
 
+                        TorrentMsg::SetPeerBitfield(id, mut bitfield) => {
+                            let entry = self.state.peer_pieces.entry(id.clone()).or_default();
+                            let client_len = self.bitfield.len();
+
+                            // if the peer sends a bitfield too small
+                            bitfield.grow(client_len.saturating_sub(bitfield.len()), false);
+
+                            // when encoding a bitfield, it may not be a multiple of 8
+                            bitfield.truncate(client_len);
+
+                            debug_assert!(bitfield.len() >= client_len, "remote peer bitfield must not be smaller than the client bitfield (event loop)");
+
+                            **entry = bitfield;
+                            let _ = self.gen_missing_pieces(id);
+                        }
                         TorrentMsg::Request{peer_ctx, qnt, recipient} => {
                             let pl = self.source.meta.info.piece_length;
                             let total_bytes = qnt * BLOCK_LEN;
@@ -104,9 +119,6 @@ impl Torrent<Connected, FromMetaInfo> {
                         TorrentMsg::OptUnchokeAlgorithm => {
                             self.optimistic_unchoke().await;
                         }
-                        TorrentMsg::WantBlocks(qnt, ctx) => {
-                            let _ = self.want_blocks(qnt, ctx).await;
-                        }
                         TorrentMsg::AddIdlePeers(peers) => {
                             self.state.idle_peers.extend(peers);
                         }
@@ -120,12 +132,6 @@ impl Torrent<Connected, FromMetaInfo> {
                         TorrentMsg::HaveInfo(tx) => {
                             let _ = tx.send(true);
                         }
-                        TorrentMsg::SetPeerBitfield(id, mut bitfield) => {
-                            let entry = self.state.peer_pieces.entry(id.clone()).or_default();
-                            bitfield.truncate(self.bitfield.len());
-                            **entry = bitfield;
-                            let _ = self.gen_missing_pieces(id);
-                        }
                         TorrentMsg::PeerHave(id, piece) => {
                             self.peer_have(id, piece);
                         }
@@ -134,6 +140,21 @@ impl Torrent<Connected, FromMetaInfo> {
                         }
                         TorrentMsg::DownloadedPiece(piece) => {
                             self.downloaded_piece(piece).await;
+                        }
+                        TorrentMsg::CorruptedPiece(piece) => {
+                            self.state.peer_pieces_req.set(piece, false);
+
+                            let torrent_length = self.ctx.disk_size.load(Ordering::Relaxed) as usize;
+                            let piece_length = self.source.meta.info.piece_length;
+
+                            for p in &self.state.connected_peers {
+                                let tx = p.tx.clone();
+                                    let _ = tx.send(PeerMsg::CorruptedPiece{
+                                        piece,
+                                        torrent_length,
+                                        piece_length,
+                                    }).await;
+                            }
                         }
                         TorrentMsg::PeerError(addr) => {
                             self.peer_error(addr).await;
@@ -270,7 +291,7 @@ impl Torrent<Connected, FromMetaInfo> {
             return;
         }
 
-        info!("download complete, seeding.");
+        info!("＼(≧▽≦)／ download complete, seeding.");
         self.status = TorrentStatus::Seeding;
 
         let _ = self
@@ -340,77 +361,5 @@ impl Torrent<Connected, FromMetaInfo> {
             let _ = new_opt.tx.send(PeerMsg::Unchoke).await;
             self.state.opt_unchoked_peer = Some(new_opt);
         }
-    }
-
-    /// When a peer want blocks to download.
-    #[inline]
-    pub(crate) async fn want_blocks(
-        &mut self,
-        needs: usize,
-        peer: Arc<PeerCtx>,
-    ) -> Result<(), Error> {
-        // prevent peers from calling this fn in parallel.
-        if self.state.stealing.swap(true, Ordering::Acquire) {
-            return Ok(());
-        }
-
-        let mut qnt = needs;
-        let steal_flag = self.state.stealing.clone();
-
-        let mut sorted_peers: Vec<_> = self
-            .state
-            .connected_peers
-            .iter()
-            .map(|p| (p.block_infos_len.load(Ordering::Relaxed), p))
-            .collect();
-
-        // sort connected peers by richest (more blocks)
-        sorted_peers.sort_by_key(|b| std::cmp::Reverse(b.0));
-
-        let thief_tx = peer.tx.clone();
-        let mut r = Vec::with_capacity(qnt);
-
-        for (_, victim) in sorted_peers {
-            if victim.id == peer.id {
-                continue;
-            };
-
-            if qnt == 0 {
-                break;
-            }
-
-            let (otx, orx) = oneshot::channel();
-            let msg = PeerMsg::Clone(qnt, otx);
-            if victim.tx.send(msg).await.is_err() {
-                continue;
-            }
-
-            match timeout(Duration::from_millis(1000), orx).await {
-                Ok(Ok(infos)) => {
-                    r.extend(infos);
-                    qnt = qnt.saturating_sub(r.len());
-                }
-                Err(_) => {
-                    warn!("deadlocked");
-                }
-                _ => {}
-            }
-        }
-
-        let info_hash = self.ctx.info_hash.clone();
-        let ftx = self.daemon_ctx.free_tx.clone();
-
-        tokio::spawn(async move {
-            if r.is_empty() {
-                return;
-            };
-            let msg = PeerMsg::Blocks(r.clone());
-            if thief_tx.send(msg).await.is_err() {
-                let _ = ftx.send(ReturnToDisk::Block(info_hash, r));
-            }
-            steal_flag.store(false, Ordering::Release);
-        });
-
-        Ok(())
     }
 }

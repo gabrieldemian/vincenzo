@@ -12,10 +12,7 @@ use std::{
     collections::{BTreeMap, HashMap, HashSet},
     fmt::Display,
     net::SocketAddr,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{Arc, atomic::Ordering},
 };
 use tokio::{
     sync::{broadcast, oneshot},
@@ -72,11 +69,7 @@ pub enum TorrentMsg {
     /// that don't have it and update the UI with stats.
     DownloadedPiece(usize),
 
-    /// Clone block infos to the peer.
-    ///
-    /// In the case where peers already exchanged block infos in the endgame
-    /// mode, and the client connects with another peer.
-    WantBlocks(usize, Arc<PeerCtx>),
+    CorruptedPiece(usize),
 
     /// Sent by the tracker on periodic announces to add more peers to be
     /// connected.
@@ -329,9 +322,6 @@ pub(crate) struct Connected {
     /// Stats of the current Torrent, returned from tracker on announce
     /// requests.
     pub stats: Stats,
-
-    /// Lock the torrent so only one peer can do something at a time.
-    pub stealing: Arc<AtomicBool>,
 
     /// If using a Magnet link, the info will be downloaded in pieces
     /// and those pieces may come in different order,

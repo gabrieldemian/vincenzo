@@ -217,6 +217,7 @@ impl Info {
         piece_index: usize,
     ) -> Vec<BlockInfo> {
         let piece_start = piece_index * piece_length;
+        // this handles the possibility of the last piece being smaller.
         let piece_end = (piece_start + piece_length).min(total_size);
         let piece_size = piece_end - piece_start;
 

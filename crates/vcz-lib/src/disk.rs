@@ -416,15 +416,14 @@ impl Disk {
         }
 
         let mut is_err = false;
-        let (bitfield, ones) =
-            match self.compute_downloaded_pieces(&info) {
-                Ok(v) => v,
-                Err(Error::TorrentFilesMissing(downloaded_pieces, dp)) => {
-                    is_err = true;
-                    (downloaded_pieces, dp)
-                }
-                Err(e) => return Err(e),
-            };
+        let (bitfield, ones) = match self.compute_downloaded_pieces(&info) {
+            Ok(v) => v,
+            Err(Error::TorrentFilesMissing(downloaded_pieces, dp)) => {
+                is_err = true;
+                (downloaded_pieces, dp)
+            }
+            Err(e) => return Err(e),
+        };
 
         self.set_piece_strategy(&info_hash, PieceStrategy::default())?;
 
@@ -635,15 +634,26 @@ impl Disk {
             ));
         }
 
+        let in_endgame = *torrent_data!(self, info_hash, endgame)?;
         let queue = torrent_data_mut!(self, info_hash, queue)?;
 
-        while let Some(block) = queue.pop_if(|v| bitfield.safe_get(v.index)) {
-            result.push(block);
+        // in endgame we copy blocks, otherwise, move.
+        if in_endgame {
+            for block in queue {
+                if bitfield.safe_get(block.index) {
+                    result.push(block.clone());
+                }
+            }
+        } else {
+            while let Some(block) = queue.pop_if(|v| bitfield.safe_get(v.index))
+            {
+                result.push(block);
+            }
         }
 
         if peer_ctx.block_infos_len.load(Ordering::Relaxed) == 0
-            && queue.is_empty()
             && result.is_empty()
+            && !in_endgame
         {
             let _ = self.enter_endgame(&peer_ctx.torrent_ctx).await;
         }
@@ -751,7 +761,19 @@ impl Disk {
         let len = block.block.len();
         let index = block.index;
 
-        tracing::trace!("piece {index} is valid.");
+        let downloaded_pieces_len =
+            torrent_data!(self, &torrent_ctx.info_hash, downloaded_per_piece)?;
+
+        let Some(&downloaded_piece_len) = downloaded_pieces_len.get(index)
+        else {
+            return Ok(());
+        };
+
+        // this if means that this piece was downloaded AND validated.
+        // so this block is a duplicate.
+        if downloaded_piece_len == usize::MAX {
+            return Ok(());
+        }
 
         let ops = self.calculate_write_ops_for_block(
             &torrent_ctx.info_hash,
@@ -773,10 +795,7 @@ impl Disk {
             downloaded_per_piece
         )?;
 
-        let Some(downloaded_piece_len) = downloaded_pieces_len.get_mut(index) else {
-            return Ok(());
-        };
-        *downloaded_piece_len += len;
+        downloaded_pieces_len[index] += len;
 
         if !self.is_piece_downloaded(index, &torrent_ctx.info_hash)? {
             return Ok(());
@@ -805,9 +824,20 @@ impl Disk {
             )?;
 
             downloaded_pieces_len[index] = 0;
+            let _ =
+                torrent_ctx.tx.send(TorrentMsg::CorruptedPiece(index)).await;
 
             return Ok(());
         }
+
+        let downloaded_pieces_len = torrent_data_mut!(
+            self,
+            &torrent_ctx.info_hash,
+            downloaded_per_piece
+        )?;
+
+        tracing::trace!("piece {index} is valid.");
+        downloaded_pieces_len[index] = usize::MAX;
         let _ = torrent_ctx.tx.send(TorrentMsg::DownloadedPiece(index)).await;
 
         Ok(())
