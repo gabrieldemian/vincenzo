@@ -9,7 +9,7 @@ use bendy::{
     decoding::{self, Decoder, FromBencode, Object, ResultExt},
     encoding::{self, AsString, Error, SingleItemEncoder, ToBencode},
 };
-use rand::Rng;
+use rand::RngExt;
 use rkyv::{Archive, Deserialize, Serialize};
 use sha1::{Digest, Sha1};
 use std::{fmt::Display, ops::Deref};

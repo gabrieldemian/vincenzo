@@ -465,7 +465,6 @@ impl Peer<Connected> {
         let was_fulfilled = self.state.req_man_block.was_fulfilled(&block_info);
 
         // ignore unsolicited / duplicate / cancelled blocks
-        // endgame this if works, stealing no
         if was_fulfilled {
             return Ok(());
         }

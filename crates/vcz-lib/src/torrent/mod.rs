@@ -26,7 +26,7 @@ use crate::{
     torrent,
     tracker::{Tracker, TrackerMsg, TrackerTrait, event::Event},
 };
-use rand::Rng;
+use rand::RngExt;
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     net::SocketAddr,

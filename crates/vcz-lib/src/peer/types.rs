@@ -15,7 +15,7 @@ use futures::{
     SinkExt,
     stream::{SplitSink, SplitStream, StreamExt},
 };
-use rand::{Rng, distr::Alphanumeric};
+use rand::{RngExt, distr::Alphanumeric};
 use rkyv::{Archive, Deserialize, Serialize};
 use std::{
     fmt::Display,
