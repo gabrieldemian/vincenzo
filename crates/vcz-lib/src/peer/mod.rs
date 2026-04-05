@@ -76,7 +76,6 @@ impl Peer<Connected> {
                 }
                 _ = metadata_interval.tick(), if !self.state.have_info => {
                     self.request_metadata().await?;
-                    // self.rerequest_metadata().await?;
                 }
                 _ = help_interval.tick() => {
                     self.anti_snubbing().await?;
@@ -215,27 +214,6 @@ impl Peer<Connected> {
         }
     }
 
-    /// Check for timed out block requests and request them again.
-    // #[allow(dead_code)]
-    async fn rerequest_blocks(&mut self) -> Result<(), Error> {
-        let blocks = self.state.req_man_block.get_timeout_blocks_and_update();
-        trace!("rerequesting {} blocks", blocks.len());
-
-        let is_empty = blocks.is_empty();
-        for block in blocks {
-            self.feed(Core::Request(block)).await?;
-        }
-
-        // todo: implement anti-snubbing: some peers dont resend the blocks no
-        // matter how many times we ask for, delay of 30 seconds -> don't
-        // request from them and free the blocks.
-        if !is_empty {
-            self.state.sink.flush().await?;
-        }
-
-        Ok(())
-    }
-
     /// Request block infos from Disk.
     /// Must be used after checking that the Peer is able to send blocks with
     /// [`Self::can_request`].
@@ -364,31 +342,6 @@ impl Peer<Connected> {
         Ok(())
     }
 
-    /// Check for timedout metadata requests and request them again.
-    #[inline]
-    pub(crate) async fn rerequest_metadata(&mut self) -> Result<(), Error> {
-        let Some(ut_metadata) =
-            self.state.extension.as_ref().and_then(|v| v.m.ut_metadata)
-        else {
-            return Ok(());
-        };
-
-        let pieces = self.state.req_man_meta.get_timeout_blocks_and_update();
-
-        for piece in &pieces {
-            let msg = Metadata::request(piece.0 as u64);
-            let buf = msg.to_bencode()?;
-            self.feed(Core::Extended(ExtendedMessage(ut_metadata, buf)))
-                .await?;
-        }
-
-        if !pieces.is_empty() {
-            self.state.sink.flush().await?;
-        }
-
-        Ok(())
-    }
-
     /// Send a message to sink and record upload rate, but the sink is not
     /// flushed.
     #[inline]
@@ -491,21 +444,6 @@ impl Peer<Connected> {
             && !self.state.is_paused
             && !self.state.is_snubbed
     }
-
-    // #[inline]
-    // pub(crate) fn can_rerequest(&self) -> bool {
-    //     let am_interested =
-    //         self.state.ctx.am_interested.load(Ordering::Acquire);
-    //     let peer_choking =
-    // self.state.ctx.peer_choking.load(Ordering::Acquire);
-    //
-    //     am_interested
-    //         && !peer_choking
-    //         && self.state.have_info
-    //         && !self.state.seed_only
-    //         && !self.state.is_paused
-    //         && !self.state.is_snubbed
-    // }
 
     /// Handle a block sent by the core codec.
     #[inline]

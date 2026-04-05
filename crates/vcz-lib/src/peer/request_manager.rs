@@ -311,11 +311,6 @@ impl<T: Requestable> RequestManager<T> {
     }
 
     #[inline]
-    pub(crate) fn enqueue(&mut self, reqs: &[T]) {
-        self.queue.extend_from_slice(reqs);
-    }
-
-    #[inline]
     pub(crate) fn clone_qnt(&mut self, qnt: usize) -> Vec<T> {
         let mut result = Vec::with_capacity(qnt);
         let from_requests = self.requests.iter().take(qnt).cloned();

@@ -158,7 +158,9 @@ impl ExtMsgHandler<Core> for Peer<peer::Connected> {
                     .await?;
             }
             Core::Piece(block) => {
-                self.handle_block(block)?;
+                if !self.state.seed_only {
+                    self.handle_block(block)?;
+                }
             }
             Core::Cancel(block_info) => {
                 trace!("< cancel {block_info:?}");
@@ -216,7 +218,7 @@ impl Encoder<Core> for CoreCodec {
             Core::Bitfield(bitfield) => {
                 buf.put_u32(msg_len);
                 buf.put_u8(CoreId::Bitfield as u8);
-                buf.extend_from_slice(bitfield.storage());
+                buf.extend_from_slice(&bitfield.to_bytes());
             }
             Core::Choke => {
                 buf.put_u32(msg_len);

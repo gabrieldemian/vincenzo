@@ -416,7 +416,7 @@ impl Disk {
         }
 
         let mut is_err = false;
-        let (downloaded_pieces, ones) =
+        let (bitfield, ones) =
             match self.compute_downloaded_pieces(&info) {
                 Ok(v) => v,
                 Err(Error::TorrentFilesMissing(downloaded_pieces, dp)) => {
@@ -436,7 +436,7 @@ impl Disk {
             self.tx.clone(),
             self.daemon_ctx.clone(),
             meta,
-            downloaded_pieces,
+            bitfield,
         );
         self.ctx.insert(info_hash.clone(), torrent.ctx.clone());
 

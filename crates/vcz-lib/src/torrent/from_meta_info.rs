@@ -234,9 +234,6 @@ impl Torrent<Idle, FromMetaInfo> {
             metadata_size,
         });
 
-        // 694067611
-        debug!("counter {}", ctx.counter.total_download());
-
         Self {
             config,
             bitfield,
