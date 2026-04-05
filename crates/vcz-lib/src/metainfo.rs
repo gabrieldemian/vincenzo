@@ -1,7 +1,10 @@
 //! Metainfo is a .torrent file with information abouthe Torrent.
 //! From the magnet link, we get the Metainfo from other peers.
 
-use crate::extensions::core::{BLOCK_LEN, BlockInfo};
+use crate::{
+    bitfield::Bitfield,
+    extensions::core::{BLOCK_LEN, BlockInfo},
+};
 use bendy::{
     decoding::{self, Decoder, FromBencode, Object, ResultExt},
     encoding::{self, AsString, Error, SingleItemEncoder, ToBencode},
@@ -9,7 +12,7 @@ use bendy::{
 use rand::Rng;
 use rkyv::{Archive, Deserialize, Serialize};
 use sha1::{Digest, Sha1};
-use std::{collections::HashMap, fmt::Display, ops::Deref};
+use std::{fmt::Display, ops::Deref};
 
 #[derive(
     Eq, PartialEq, Clone, Hash, Default, Archive, Serialize, Deserialize,
@@ -96,6 +99,7 @@ impl TryFrom<Vec<u8>> for InfoHash {
 /// From the magnet link, we get the Metainfo from other peers.
 #[derive(Debug, PartialEq, Clone, Default)]
 pub struct MetaInfo {
+    // todo: should this be an option?
     pub(crate) announce: String,
     pub(crate) announce_list: Option<Vec<Vec<String>>>,
     pub(crate) comment: Option<String>,
@@ -106,32 +110,27 @@ pub struct MetaInfo {
 }
 
 impl MetaInfo {
-    pub(crate) fn organize_trackers(&self) -> HashMap<&str, Vec<String>> {
-        let mut hashmap = HashMap::from([
-            ("udp", vec![]),
-            ("http", vec![]),
-            ("https", vec![]),
-            ("wss", vec![]),
-            ("ws", vec![]),
-        ]);
+    pub(crate) fn organize_trackers(&self) -> Vec<String> {
+        let mut trackers = Vec::new();
+        let mut list = vec![];
 
-        let mut list = vec![self.announce.clone()];
-
-        if let Some(l) = self.announce_list.clone() {
-            list.pop();
-            list.extend(l.into_iter().flatten());
+        if let Some(l) = &self.announce_list {
+            list.extend(l.iter().flatten());
         }
 
         for x in list {
-            let x = x.clone();
-            let mut uri = urlencoding::decode(&x).unwrap().to_string();
+            let Ok(uri) = urlencoding::decode(x) else {
+                tracing::error!("could not urldecode {x}");
+                continue;
+            };
+            let mut uri = uri.to_string();
 
-            let protocol = match x.split_once("%3A") {
+            let prot = match x.split_once("%3A") {
                 Some((protocol, _)) => protocol,
                 None => x.split_once(":").map(|v| v.0).unwrap_or(""),
             };
 
-            if protocol != "udp" {
+            if prot != "udp" {
                 continue;
             }
 
@@ -140,12 +139,10 @@ impl MetaInfo {
             if let Some(i) = uri.find("/announce") {
                 uri = uri[..i].to_string();
             };
-
-            let trackers = hashmap.get_mut(protocol).unwrap();
-            trackers.push(uri.to_string());
+            trackers.push(uri);
         }
 
-        hashmap
+        trackers
     }
 }
 
@@ -220,6 +217,7 @@ impl Info {
         piece_index: usize,
     ) -> Vec<BlockInfo> {
         let piece_start = piece_index * piece_length;
+        // this handles the possibility of the last piece being smaller.
         let piece_end = (piece_start + piece_length).min(total_size);
         let piece_size = piece_end - piece_start;
 
@@ -278,11 +276,23 @@ impl Info {
         }
     }
 
+    #[inline]
+    pub(crate) fn downloaded_bytes(&self, bitfield: &Bitfield) -> usize {
+        let ones = bitfield.count_ones() as usize;
+        let last = bitfield.into_iter().next_back();
+        let mut r = ones.saturating_sub(1) * self.piece_length;
+        if let Some(last) = last
+            && last
+        {
+            r += self.piece_length(bitfield.len());
+        }
+        r
+    }
+
     /// Get the size (in bytes) of a piece.
-    #[cfg(test)]
-    pub fn piece_size(&self, piece_index: usize) -> usize {
+    pub fn piece_length(&self, piece: usize) -> usize {
         let total_size = self.get_torrent_size();
-        if piece_index == self.pieces() - 1 {
+        if piece == self.pieces() - 1 {
             let remainder = total_size % self.piece_length;
             if remainder == 0 { self.piece_length } else { remainder }
         } else {
@@ -565,6 +575,21 @@ mod tests {
         }
     }
 
+    #[test]
+    fn organize_trackers() {
+        let meta = MetaInfo {
+            announce: "".to_string(),
+            announce_list: Some(vec![vec![
+                "http://nyaa.tracker.wf:7777/announce".to_string(),
+                "udp://tracker.opentrackr.org:1337/announce".to_string(),
+                "udp://tracker.torrent.eu.org:451/announce".to_string(),
+            ]]),
+            ..Default::default()
+        };
+        let organized = meta.organize_trackers();
+        println!("{organized:#?}");
+    }
+
     /// piece_length: 15
     /// -------------------
     /// | f: 30           |
@@ -663,8 +688,8 @@ mod tests {
         let blocks = info.get_block_infos().unwrap();
 
         // check the pieces size
-        assert_eq!(info.piece_size(0), 32668);
-        assert_eq!(info.piece_size(1), 110);
+        assert_eq!(info.piece_length(0), 32668);
+        assert_eq!(info.piece_length(1), 110);
 
         assert_eq!(
             *blocks.get(&0).unwrap(),
@@ -692,8 +717,8 @@ mod tests {
         let blocks = info.get_block_infos().unwrap();
 
         // check the pieces size
-        assert_eq!(info.piece_size(0), 32668);
-        assert_eq!(info.piece_size(1), 110);
+        assert_eq!(info.piece_length(0), 32668);
+        assert_eq!(info.piece_length(1), 110);
 
         assert_eq!(
             *blocks.get(&0).unwrap(),
@@ -744,18 +769,18 @@ mod tests {
     #[test]
     fn test_piece_size() {
         let info = create_test_info(32768, BLOCK_LEN);
-        assert_eq!(info.piece_size(0), BLOCK_LEN);
-        assert_eq!(info.piece_size(1), BLOCK_LEN);
+        assert_eq!(info.piece_length(0), BLOCK_LEN);
+        assert_eq!(info.piece_length(1), BLOCK_LEN);
 
         let info = create_test_info(32769, BLOCK_LEN);
-        assert_eq!(info.piece_size(0), BLOCK_LEN);
-        assert_eq!(info.piece_size(1), BLOCK_LEN);
-        assert_eq!(info.piece_size(2), 1); // last piece
+        assert_eq!(info.piece_length(0), BLOCK_LEN);
+        assert_eq!(info.piece_length(1), BLOCK_LEN);
+        assert_eq!(info.piece_length(2), 1); // last piece
 
         // Piece length not divisible by block size
         let info = create_test_info(33000, 17000);
-        assert_eq!(info.piece_size(0), 17000);
-        assert_eq!(info.piece_size(1), 16000);
+        assert_eq!(info.piece_length(0), 17000);
+        assert_eq!(info.piece_length(1), 16000);
     }
 
     #[test]

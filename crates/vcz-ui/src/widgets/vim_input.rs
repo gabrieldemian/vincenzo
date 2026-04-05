@@ -212,7 +212,7 @@ impl<'a> VimInput<'a> {
         }
 
         let max_scroll = self.lines.len().saturating_sub(visible_height);
-        self.scroll_offset = self.scroll_offset.min(max_scroll).max(0);
+        self.scroll_offset = self.scroll_offset.min(max_scroll);
     }
 
     #[inline]

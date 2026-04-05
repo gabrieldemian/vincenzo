@@ -218,15 +218,14 @@ impl App {
             select! {
                 Some(Ok(msg)) = stream.next() => {
                     match msg {
-                        Message::Init(has_torrents) => {
-                            if !has_torrents {
+                        Message::Init(has_torrents)
+                            if !has_torrents => {
                                 let _ = tx.send(
                                     Action::ChangePage(
                                         action::Page::Info
                                     )
                                 );
                             }
-                        }
                         Message::TorrentState(v) => {
                             let _ = tx.send(Action::TorrentState(v));
                         }

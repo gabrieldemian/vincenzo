@@ -1,5 +1,3 @@
-#![feature(if_let_guard)]
-
 use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent,
     MouseEventKind,

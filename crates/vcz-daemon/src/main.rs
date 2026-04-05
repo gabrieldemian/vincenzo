@@ -22,13 +22,14 @@ use vcz_lib::{
 async fn main() -> Result<(), Error> {
     let config = Arc::new(Config::load()?);
 
-    let layer = MutableLayer::new().with_max_level(tracing::level_filters::LevelFilter::DEBUG);
+    let layer = MutableLayer::new()
+        .with_max_level(tracing::level_filters::LevelFilter::DEBUG);
     let subscriber = tracing_subscriber::registry().with(layer);
     // let subscriber = tracing_subscriber::fmt()
     //     .without_time()
     //     .with_target(false)
     //     .with_file(false)
-    //     .with_max_level(Level::INFO)
+    //     .with_max_level(tracing::level_filters::LevelFilter::INFO)
     //     .finish();
 
     tracing::subscriber::set_global_default(subscriber)

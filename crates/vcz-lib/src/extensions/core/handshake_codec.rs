@@ -111,7 +111,7 @@ impl Encoder<Handshake> for HandshakeCodec {
 
         buf.put_u8(PSTR_LEN as u8);
         buf.extend_from_slice(&pstr);
-        buf.extend_from_slice(reserved.0.as_raw_slice());
+        buf.extend_from_slice(&reserved.0);
         buf.extend_from_slice(&info_hash.0);
         buf.extend_from_slice(&peer_id.0);
 

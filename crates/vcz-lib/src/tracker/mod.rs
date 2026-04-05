@@ -101,9 +101,9 @@ impl TrackerTrait for Tracker<Udp> {
         let mut len: usize = 0;
 
         self.state.socket.send(&req.serialize()?).await?;
-        let mut retransmit = 30;
+        let mut retransmit = 15;
 
-        for i in 1..=7 {
+        for i in 0..7 {
             match timeout(
                 Duration::from_secs(retransmit),
                 self.state.socket.recv(&mut buf),
@@ -153,13 +153,11 @@ impl TrackerTrait for Tracker<Udp> {
         &mut self,
         event: Event,
     ) -> Result<(Stats, Vec<SocketAddr>), Error> {
-        tracing::trace!("announce");
-
         let downloaded = self.torrent_ctx.counter.total_download();
         let uploaded = self.torrent_ctx.counter.total_upload();
         let left = self
             .torrent_ctx
-            .size
+            .disk_size
             .load(Ordering::Relaxed)
             .saturating_sub(downloaded);
 
@@ -183,11 +181,11 @@ impl TrackerTrait for Tracker<Udp> {
 
         let mut len = 0_usize;
         let mut res = [0u8; ANNOUNCE_RES_BUF_LEN];
-        let mut retransmit = 30;
+        let mut retransmit = 15;
 
         self.state.socket.send(&req.serialize()?).await?;
 
-        for i in 1..=7 {
+        for i in 0..7 {
             match timeout(
                 Duration::from_secs(retransmit),
                 self.state.socket.recv(&mut res),
@@ -203,6 +201,7 @@ impl TrackerTrait for Tracker<Udp> {
                     return Err(Error::TrackerResponse);
                 }
                 Err(_) => {
+                    // todo: must request a new connection ID when it expires.
                     retransmit = 15 * 2_u64.pow(i);
                     debug!(
                         "tracker announce request was lost, trying again in \
@@ -306,8 +305,6 @@ impl Tracker<Udp> {
     )]
     #[inline]
     pub async fn run(&mut self) -> Result<(), Error> {
-        tracing::trace!("running tracker");
-
         let mut interval = interval_at(
             Instant::now() + Duration::from_secs(self.interval.into()),
             Duration::from_secs(self.interval.into()),

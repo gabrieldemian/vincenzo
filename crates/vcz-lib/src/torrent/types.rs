@@ -2,7 +2,7 @@ use crate::{
     bitfield::Bitfield,
     extensions::core::BlockInfo,
     magnet::Magnet,
-    metainfo::{Info, InfoHash, MetaInfo},
+    metainfo::{InfoHash, MetaInfo},
     peer::{self, Peer, PeerCtx, PeerId},
     torrent::{self, Torrent},
     tracker::TrackerMsg,
@@ -12,10 +12,7 @@ use std::{
     collections::{BTreeMap, HashMap, HashSet},
     fmt::Display,
     net::SocketAddr,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{Arc, atomic::Ordering},
 };
 use tokio::{
     sync::{broadcast, oneshot},
@@ -39,13 +36,13 @@ pub enum PeerBrMsg {
 #[derive(Debug)]
 pub enum TorrentMsg {
     /// Promote a `FromMagnet` torrent to a `FromMetaInfo`.
-    Promote(Box<Info>),
+    Promote(Arc<MetaInfo>),
 
     /// Sent by Disk. Send Endgame messages to all peers.
     Endgame,
 
     /// Send block infos to all peers.
-    BroadcastBlockInfos(PeerId, Vec<BlockInfo>, Vec<BlockInfo>),
+    BroadcastBlockInfos(Arc<PeerCtx>, Vec<BlockInfo>),
 
     /// When a peer wants to request blocks.
     Request {
@@ -72,11 +69,7 @@ pub enum TorrentMsg {
     /// that don't have it and update the UI with stats.
     DownloadedPiece(usize),
 
-    /// Clone block infos to the peer.
-    ///
-    /// In the case where peers already exchanged block infos in the endgame
-    /// mode, and the client connects with another peer.
-    WantBlocks(usize, Arc<PeerCtx>),
+    CorruptedPiece(usize),
 
     /// Sent by the tracker on periodic announces to add more peers to be
     /// connected.
@@ -118,7 +111,7 @@ pub enum TorrentMsg {
     /// When torrent is being gracefully shutdown
     Quit,
 
-    Cancel(PeerId, BlockInfo),
+    Cancel(Arc<PeerCtx>, BlockInfo),
 }
 
 #[derive(
@@ -184,7 +177,7 @@ impl From<&Torrent<torrent::Idle, FromMagnet>> for TorrentState {
         Self {
             name: value.name.clone(),
             status: TorrentStatus::ConnectingTrackers,
-            bitfield: value.bitfield.clone().into(),
+            bitfield: value.bitfield.clone().to_bytes(),
             info_hash: value.source.magnet.parse_xt_infohash(),
             ..Default::default()
         }
@@ -196,8 +189,8 @@ impl From<&Torrent<torrent::Idle, FromMetaInfo>> for TorrentState {
         Self {
             name: value.name.clone(),
             status: TorrentStatus::ConnectingTrackers,
-            bitfield: value.bitfield.clone().into(),
-            info_hash: value.source.meta_info.info.info_hash.clone(),
+            bitfield: value.bitfield.clone().to_bytes(),
+            info_hash: value.source.meta.info.info_hash.clone(),
             ..Default::default()
         }
     }
@@ -230,11 +223,11 @@ impl<M: TorrentSource> From<&Torrent<torrent::Connected, M>> for TorrentState {
             name: value.name.clone(),
             stats: value.state.stats.clone(),
             info_hash: value.ctx.info_hash.clone(),
-            size: value.ctx.size.load(Ordering::Relaxed),
+            size: value.ctx.disk_size.load(Ordering::Relaxed),
             status: value.status,
             downloaded: value.ctx.counter.total_download(),
             uploaded: value.ctx.counter.total_upload(),
-            bitfield: value.bitfield.clone().into_vec(),
+            bitfield: value.bitfield.to_bytes(),
             idle_peers: value.state.idle_peers.len() as u8,
             connected_peers: value.state.connected_peers.len() as u8,
             download_rate: value.ctx.counter.download_rate_f64(),
@@ -299,26 +292,25 @@ pub(crate) trait State {}
 
 /// If the torrent came from a magnet or metainfo.
 pub(crate) trait TorrentSource {
-    fn organize_trackers(&self) -> HashMap<&str, Vec<String>>;
+    fn organize_trackers(&self) -> Vec<String>;
 }
 
 pub(crate) struct FromMagnet {
     pub magnet: Magnet,
-    // pub info: Option<Arc<Info>>,
 }
 
 pub(crate) struct FromMetaInfo {
-    pub meta_info: MetaInfo,
+    pub meta: Arc<MetaInfo>,
 }
 
 impl TorrentSource for FromMagnet {
-    fn organize_trackers(&self) -> HashMap<&str, Vec<String>> {
+    fn organize_trackers(&self) -> Vec<String> {
         self.magnet.organize_trackers()
     }
 }
 impl TorrentSource for FromMetaInfo {
-    fn organize_trackers(&self) -> HashMap<&str, Vec<String>> {
-        self.meta_info.organize_trackers()
+    fn organize_trackers(&self) -> Vec<String> {
+        self.meta.organize_trackers()
     }
 }
 
@@ -330,9 +322,6 @@ pub(crate) struct Connected {
     /// Stats of the current Torrent, returned from tracker on announce
     /// requests.
     pub stats: Stats,
-
-    /// Lock the torrent so only one peer can do something at a time.
-    pub stealing: Arc<AtomicBool>,
 
     /// If using a Magnet link, the info will be downloaded in pieces
     /// and those pieces may come in different order,

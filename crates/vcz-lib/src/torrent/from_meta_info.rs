@@ -13,7 +13,7 @@ impl Torrent<Connected, FromMetaInfo> {
             _ => {
                 self.status = TorrentStatus::Downloading;
                 let is_seed_only =
-                    self.bitfield.count_ones() >= self.bitfield.len();
+                    self.bitfield.count_ones() as usize >= self.bitfield.len();
                 if is_seed_only {
                     self.status = TorrentStatus::Seeding;
                 }
@@ -21,8 +21,8 @@ impl Torrent<Connected, FromMetaInfo> {
         }
 
         {
-            let info_bytes = self.source.meta_info.info.to_bencode()?;
-            let info_size = self.source.meta_info.info.metadata_size;
+            let info_bytes = self.source.meta.info.to_bencode()?;
+            let info_size = self.source.meta.info.metadata_size;
             let meta_pieces = info_size.div_ceil(BLOCK_LEN);
             let info_pieces = &mut self.state.info_pieces;
 
@@ -40,8 +40,23 @@ impl Torrent<Connected, FromMetaInfo> {
                         TorrentMsg::Promote(..) => { }
                         TorrentMsg::DownloadedInfoPiece(..) => {}
 
+                        TorrentMsg::SetPeerBitfield(id, mut bitfield) => {
+                            let entry = self.state.peer_pieces.entry(id.clone()).or_default();
+                            let client_len = self.bitfield.len();
+
+                            // if the peer sends a bitfield too small
+                            bitfield.grow(client_len.saturating_sub(bitfield.len()), false);
+
+                            // when encoding a bitfield, it may not be a multiple of 8
+                            bitfield.truncate(client_len);
+
+                            debug_assert!(bitfield.len() >= client_len, "remote peer bitfield must not be smaller than the client bitfield (event loop)");
+
+                            **entry = bitfield;
+                            let _ = self.gen_missing_pieces(id);
+                        }
                         TorrentMsg::Request{peer_ctx, qnt, recipient} => {
-                            let pl = self.source.meta_info.info.piece_length;
+                            let pl = self.source.meta.info.piece_length;
                             let total_bytes = qnt * BLOCK_LEN;
                             let pieces_wanted = total_bytes.div_ceil(pl);
 
@@ -68,8 +83,8 @@ impl Torrent<Connected, FromMetaInfo> {
                                     .await;
                             });
                         }
-                        TorrentMsg::BroadcastBlockInfos(sender, reqs, queue) => {
-                            self.broadcast_block_infos(sender, reqs, queue);
+                        TorrentMsg::BroadcastBlockInfos(ctx, reqs) => {
+                            self.broadcast_block_infos(&ctx.id, reqs);
                         }
                         TorrentMsg::Endgame => {
                             for p in &self.state.connected_peers {
@@ -81,7 +96,7 @@ impl Torrent<Connected, FromMetaInfo> {
                         }
                         TorrentMsg::Cancel(sender, block_info) => {
                             for p in &self.state.connected_peers {
-                                if p.id == sender { continue };
+                                if p.id == sender.id { continue };
                                 let b = block_info.clone();
                                 let tx = p.tx.clone();
                                 tokio::spawn(async move {
@@ -104,9 +119,6 @@ impl Torrent<Connected, FromMetaInfo> {
                         TorrentMsg::OptUnchokeAlgorithm => {
                             self.optimistic_unchoke().await;
                         }
-                        TorrentMsg::WantBlocks(qnt, ctx) => {
-                            let _ = self.want_blocks(qnt, ctx).await;
-                        }
                         TorrentMsg::AddIdlePeers(peers) => {
                             self.state.idle_peers.extend(peers);
                         }
@@ -120,11 +132,6 @@ impl Torrent<Connected, FromMetaInfo> {
                         TorrentMsg::HaveInfo(tx) => {
                             let _ = tx.send(true);
                         }
-                        TorrentMsg::SetPeerBitfield(id, bitfield) => {
-                            let entry = self.state.peer_pieces.entry(id.clone()).or_default();
-                            **entry = bitfield;
-                            let _ = self.gen_missing_pieces(id);
-                        }
                         TorrentMsg::PeerHave(id, piece) => {
                             self.peer_have(id, piece);
                         }
@@ -133,6 +140,21 @@ impl Torrent<Connected, FromMetaInfo> {
                         }
                         TorrentMsg::DownloadedPiece(piece) => {
                             self.downloaded_piece(piece).await;
+                        }
+                        TorrentMsg::CorruptedPiece(piece) => {
+                            self.state.peer_pieces_req.set(piece, false);
+
+                            let torrent_length = self.ctx.disk_size.load(Ordering::Relaxed) as usize;
+                            let piece_length = self.source.meta.info.piece_length;
+
+                            for p in &self.state.connected_peers {
+                                let tx = p.tx.clone();
+                                    let _ = tx.send(PeerMsg::CorruptedPiece{
+                                        piece,
+                                        torrent_length,
+                                        piece_length,
+                                    }).await;
+                            }
                         }
                         TorrentMsg::PeerError(addr) => {
                             self.peer_error(addr).await;
@@ -176,7 +198,7 @@ impl Torrent<Connected, FromMetaInfo> {
 
     /// Run the Torrent main event loop to listen to internal [`TorrentMsg`].
     #[tracing::instrument(name = "torrent", skip_all,
-        fields(info = ?self.source.meta_info.info.info_hash)
+        fields(info = ?self.source.meta.info.info_hash)
     )]
     pub async fn run(self) -> Result<(), Error> {
         match self.inner_run().await {
@@ -190,6 +212,20 @@ impl Torrent<Connected, FromMetaInfo> {
             }
         }
     }
+
+    #[inline]
+    fn broadcast_block_infos(&self, sender: &PeerId, reqs: Vec<BlockInfo>) {
+        for p in &self.state.connected_peers {
+            if p.id == *sender {
+                continue;
+            };
+            let tx = p.tx.clone();
+            let blocks = reqs.clone();
+            tokio::spawn(async move {
+                let _ = tx.send(PeerMsg::Blocks(blocks)).await;
+            });
+        }
+    }
 }
 
 impl Torrent<Idle, FromMetaInfo> {
@@ -197,33 +233,32 @@ impl Torrent<Idle, FromMetaInfo> {
         config: Arc<ResolvedConfig>,
         disk_tx: mpsc::Sender<DiskMsg>,
         daemon_ctx: Arc<DaemonCtx>,
-        meta_info: MetaInfo,
+        meta: Arc<MetaInfo>,
         bitfield: Bitfield,
     ) -> Torrent<Idle, FromMetaInfo> {
-        let name = meta_info.info.name.clone();
-        let metadata_size = meta_info.info.metadata_size.into();
+        let info = &meta.info;
+        let name = info.name.clone();
+        let metadata_size = info.metadata_size.into();
 
         let (tx, rx) = mpsc::channel::<TorrentMsg>(TORRENT_MSG_BOUND);
         let (btx, _brx) = broadcast::channel::<PeerBrMsg>(PEER_MSG_BOUND);
 
         let ctx = Arc::new(TorrentCtx {
-            size: (meta_info.info.get_torrent_size() as u64).into(),
+            disk_size: (info.get_torrent_size() as u64).into(),
             counter: Counter::from_total_download(
-                bitfield.count_ones() as u64
-                    * meta_info.info.piece_length as u64,
+                info.downloaded_bytes(&bitfield) as u64,
             ),
-            free_tx: daemon_ctx.free_tx.clone(),
             btx,
             tx,
             disk_tx,
-            info_hash: meta_info.info.info_hash.clone(),
+            info_hash: info.info_hash.clone(),
             metadata_size,
         });
 
         Self {
             config,
             bitfield,
-            source: FromMetaInfo { meta_info },
+            source: FromMetaInfo { meta },
             state: Idle {},
             name,
             status: TorrentStatus::default(),
@@ -237,7 +272,7 @@ impl Torrent<Idle, FromMetaInfo> {
 impl Torrent<Connected, FromMetaInfo> {
     #[inline]
     async fn downloaded_piece(&mut self, piece: usize) {
-        debug!("downloaded_piece {piece}");
+        tracing::trace!("downloaded_piece {piece}");
 
         self.bitfield.safe_set(piece, true);
 
@@ -250,15 +285,13 @@ impl Torrent<Connected, FromMetaInfo> {
         let total_pieces = self.bitfield.len();
         let downloaded_pieces = self.bitfield.count_ones();
 
-        debug!("downloaded pieces {}", downloaded_pieces);
-
-        let is_download_complete = downloaded_pieces >= total_pieces;
+        let is_download_complete = downloaded_pieces as usize >= total_pieces;
 
         if !is_download_complete && self.status != TorrentStatus::Seeding {
             return;
         }
 
-        info!("downloaded entire torrent, entering seed only mode.");
+        info!("＼(≧▽≦)／ download complete, seeding.");
         self.status = TorrentStatus::Seeding;
 
         let _ = self
@@ -270,13 +303,12 @@ impl Torrent<Connected, FromMetaInfo> {
             .ctx
             .disk_tx
             .send(DiskMsg::FinishedDownload(
-                self.source.meta_info.info.info_hash.clone(),
+                self.source.meta.info.info_hash.clone(),
             ))
             .await;
 
         let _ = self.ctx.btx.send(PeerBrMsg::Seedonly);
 
-        self.state.peer_pieces_req.clear();
         self.state.peer_pieces_diff.clear();
         self.state.peer_pieces.clear();
     }
@@ -309,8 +341,9 @@ impl Torrent<Connected, FromMetaInfo> {
         if self.bitfield.count_ones() == 0 {
             return Some(0);
         }
-        self.get_missing_pieces(peer_id)
-            .map(|v| v.first_one().unwrap_or_default())
+        self.state.peer_pieces_diff.get(peer_id).and_then(|diff| {
+            diff.iter().enumerate().find(|(_, b)| *b).map(|(i, _)| i)
+        })
     }
 
     #[inline]
@@ -328,77 +361,5 @@ impl Torrent<Connected, FromMetaInfo> {
             let _ = new_opt.tx.send(PeerMsg::Unchoke).await;
             self.state.opt_unchoked_peer = Some(new_opt);
         }
-    }
-
-    /// When a peer want blocks to download.
-    #[inline]
-    pub(crate) async fn want_blocks(
-        &mut self,
-        needs: usize,
-        peer: Arc<PeerCtx>,
-    ) -> Result<(), Error> {
-        // prevent peers from calling this fn in parallel.
-        if self.state.stealing.swap(true, Ordering::Acquire) {
-            return Ok(());
-        }
-
-        let mut qnt = needs;
-        let steal_flag = self.state.stealing.clone();
-
-        let mut sorted_peers: Vec<_> = self
-            .state
-            .connected_peers
-            .iter()
-            .map(|p| (p.block_infos_len.load(Ordering::Relaxed), p))
-            .collect();
-
-        // sort connected peers by richest (more blocks)
-        sorted_peers.sort_by_key(|b| std::cmp::Reverse(b.0));
-
-        let thief_tx = peer.tx.clone();
-        let mut r = Vec::with_capacity(qnt);
-
-        for (_, victim) in sorted_peers {
-            if victim.id == peer.id {
-                continue;
-            };
-
-            if qnt == 0 {
-                break;
-            }
-
-            let (otx, orx) = oneshot::channel();
-            let msg = PeerMsg::Clone(qnt, otx);
-            if victim.tx.send(msg).await.is_err() {
-                continue;
-            }
-
-            match timeout(Duration::from_millis(1000), orx).await {
-                Ok(Ok(infos)) => {
-                    r.extend(infos);
-                    qnt = qnt.saturating_sub(r.len());
-                }
-                Err(_) => {
-                    warn!("deadlocked");
-                }
-                _ => {}
-            }
-        }
-
-        let info_hash = self.ctx.info_hash.clone();
-        let ftx = self.ctx.free_tx.clone();
-
-        tokio::spawn(async move {
-            if r.is_empty() {
-                return;
-            };
-            let msg = PeerMsg::Blocks(r.clone());
-            if thief_tx.send(msg).await.is_err() {
-                let _ = ftx.send(ReturnToDisk::Block(info_hash, r));
-            }
-            steal_flag.store(false, Ordering::Release);
-        });
-
-        Ok(())
     }
 }

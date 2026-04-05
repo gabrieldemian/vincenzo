@@ -8,6 +8,7 @@ mod from_magnet;
 mod from_meta_info;
 mod types;
 
+use bit_vec::BitVec;
 // re-exports
 pub use types::*;
 
@@ -17,7 +18,7 @@ use crate::{
     config::ResolvedConfig,
     counter::Counter,
     daemon::{CONNECTED_PEERS, DaemonCtx, DaemonMsg},
-    disk::{DiskMsg, ReturnToDisk},
+    disk::DiskMsg,
     error::Error,
     extensions::BlockInfo,
     metainfo::{InfoHash, MetaInfo},
@@ -60,10 +61,9 @@ pub(crate) struct Torrent<S: State, M: TorrentSource> {
 /// Context of [`Torrent`] that can be shared between other types
 #[derive(Debug)]
 pub struct TorrentCtx {
-    pub size: AtomicU64,
+    pub disk_size: AtomicU64,
     pub counter: Counter,
     pub disk_tx: mpsc::Sender<DiskMsg>,
-    pub free_tx: mpsc::UnboundedSender<ReturnToDisk>,
     pub tx: mpsc::Sender<TorrentMsg>,
     pub btx: broadcast::Sender<PeerBrMsg>,
     pub info_hash: InfoHash,
@@ -85,14 +85,17 @@ impl<M: TorrentSource> Torrent<Connected, M> {
         self.ctx.counter.update_rates();
 
         let mut torrent_state: TorrentState = (&*self).into();
-        torrent_state.downloaded =
-            torrent_state.downloaded.min(self.ctx.size.load(Ordering::Relaxed));
+        torrent_state.downloaded = torrent_state
+            .downloaded
+            .min(self.ctx.disk_size.load(Ordering::Relaxed));
 
         let _ = self
             .daemon_ctx
             .tx
             .send(DaemonMsg::TorrentState(Box::new(torrent_state)))
             .await;
+
+        tracing::trace!("downloaded pieces: {}", self.bitfield.count_ones());
     }
 
     /// Try to connect to all idle peers (if there is capacity) and run their
@@ -171,26 +174,6 @@ impl<M: TorrentSource> Torrent<Connected, M> {
     }
 
     #[inline]
-    fn broadcast_block_infos(
-        &self,
-        sender: PeerId,
-        reqs: Vec<BlockInfo>,
-        queue: Vec<BlockInfo>,
-    ) {
-        for p in &self.state.connected_peers {
-            if p.id == sender {
-                continue;
-            };
-            let tx = p.tx.clone();
-            let mut blocks = reqs.clone();
-            blocks.extend(queue.clone());
-            tokio::spawn(async move {
-                let _ = tx.send(PeerMsg::Blocks(blocks)).await;
-            });
-        }
-    }
-
-    #[inline]
     async fn peer_error(&mut self, addr: SocketAddr) {
         self.state.error_peers.push(Peer::<peer::PeerError>::new(addr));
         self.state.connected_peers.retain(|v| v.remote_addr != addr);
@@ -234,7 +217,7 @@ impl<M: TorrentSource> Torrent<Connected, M> {
 
         if self.status == TorrentStatus::Paused {
             self.status = if self.ctx.counter.total_download()
-                >= self.ctx.size.load(Ordering::Relaxed)
+                >= self.ctx.disk_size.load(Ordering::Relaxed)
             {
                 TorrentStatus::Seeding
             } else {
@@ -379,26 +362,45 @@ impl<M: TorrentSource> Torrent<Connected, M> {
 
     #[inline]
     pub(crate) fn peer_have(&mut self, id: PeerId, piece: usize) {
+        let client_len = self.bitfield.len();
         let bitfield = self.state.peer_pieces.entry(id.clone()).or_default();
-        bitfield.safe_set(piece, true);
-        let no_bitfield = !self.state.peer_pieces_diff.contains_key(&id);
+
+        // if the peer sends a bitfield too small
+        bitfield.grow(client_len.saturating_sub(bitfield.len()), false);
+
+        // when encoding a bitfield, it may not be a multiple of 8
+        bitfield.truncate(client_len);
+
+        bitfield.set(piece, true);
+
+        let no_diff = !self.state.peer_pieces_diff.contains_key(&id);
+
         let diff = self
             .state
             .peer_pieces_diff
             .entry(id.clone())
-            .or_insert(Bitfield::from_piece(piece));
-        diff.safe_set(piece, !self.bitfield.safe_get(piece));
-        if no_bitfield {
+            .or_insert(BitVec::from_elem_general(piece, false));
+
+        // if the peer sends a bitfield too small
+        diff.grow(client_len.saturating_sub(diff.len()), false);
+
+        // when encoding a bitfield, it may not be a multiple of 8
+        diff.truncate(client_len);
+
+        debug_assert!(
+            bitfield.len() >= client_len,
+            "remote peer bitfield must not be smaller than the client \
+             bitfield (peer_have)"
+        );
+        debug_assert!(
+            diff.len() >= client_len,
+            "remote peer diff must not be smaller than the client bitfield \
+             (peer_have)"
+        );
+
+        if no_diff {
             let _ = self.gen_missing_pieces(id);
         }
-    }
-
-    #[inline]
-    pub(crate) fn get_missing_pieces(
-        &self,
-        peer_id: &PeerId,
-    ) -> Option<Bitfield> {
-        self.state.peer_pieces_diff.get(peer_id).cloned()
     }
 
     pub(crate) fn gen_missing_pieces(
@@ -410,13 +412,20 @@ impl<M: TorrentSource> Torrent<Connected, M> {
             .peer_pieces
             .get(&peer_id)
             .ok_or(Error::PeerDoesNotExist)?;
-        let bitfield_len = remote.len();
-        let diff = self
-            .state
-            .peer_pieces_diff
-            .entry(peer_id)
-            .or_insert_with(|| Bitfield::from_piece(bitfield_len));
-        *diff = *remote.clone() & !self.bitfield.clone();
+        let diff =
+            self.state.peer_pieces_diff.entry(peer_id).or_insert_with(|| {
+                BitVec::from_elem_general(remote.len(), false)
+            });
+        let mut r = remote.clone();
+        let mut b = self.bitfield.clone();
+        debug_assert!(
+            r.len() >= b.len(),
+            "remote peer bitfield must not be smaller than the client \
+             bitfield (gen_missing_pieces)"
+        );
+        b.negate();
+        r.and(&b);
+        *diff = *r;
         Ok(())
     }
 
@@ -435,11 +444,15 @@ impl<M: TorrentSource> Torrent<Connected, M> {
         let req = &mut self.state.peer_pieces_req;
         let mut pieces = Vec::with_capacity(pieces_wanted);
 
-        for piece in diff.iter_ones() {
-            if *req.safe_get(piece) {
+        // iter over ones
+        for (piece, r) in diff.iter().enumerate() {
+            if !r {
+                continue;
+            };
+            if req.safe_get(piece) {
                 continue;
             }
-            req.safe_set(piece, true);
+            req.set(piece, true);
             pieces.push(piece);
             if pieces.len() == pieces_wanted {
                 break;
@@ -458,10 +471,8 @@ impl<M: TorrentSource> Torrent<Idle, M> {
     /// tracker, the other ones will be awaited for in the background.
     #[instrument(skip_all, name = "torrent", fields(ih = %self.ctx.info_hash))]
     pub(crate) async fn start(self) -> Result<Torrent<Connected, M>, Error> {
-        let org_trackers = self.source.organize_trackers();
-        let udp_trackers = org_trackers.get("udp").unwrap().clone();
+        let udp_trackers = self.source.organize_trackers();
         let udp_trackers_len = udp_trackers.len();
-        drop(org_trackers);
 
         if udp_trackers.is_empty() {
             return Err(Error::NoUDPTracker);
@@ -557,7 +568,6 @@ impl<M: TorrentSource> Torrent<Idle, M> {
         Ok(Torrent {
             config: self.config.clone(),
             state: Connected {
-                stealing: Arc::new(false.into()),
                 tracker_tx,
                 reconnect_interval,
                 heartbeat_interval,
@@ -574,7 +584,10 @@ impl<M: TorrentSource> Torrent<Idle, M> {
                     self.config.max_torrent_peers,
                 ),
                 info_pieces: BTreeMap::new(),
-                peer_pieces_req: Bitfield::from_piece(self.bitfield.len()),
+                peer_pieces_req: BitVec::from_elem_general(
+                    self.bitfield.len(),
+                    false,
+                ),
             },
             source: self.source,
             bitfield: self.bitfield,

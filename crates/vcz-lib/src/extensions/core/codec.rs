@@ -26,7 +26,7 @@ impl Core {
             Choke | Unchoke | Interested | NotInterested => 1,
             Cancel(_) | Request(_) => 1 + 4 + 4 + 4,
             Have(_) => 1 + 4,
-            Bitfield(b) => 1 + (b.as_raw_slice().len() as u32),
+            Bitfield(b) => 1 + (b.storage().len() as u32),
             Piece(b) => 1 + 4 + 4 + b.block.len() as u32,
             Extended(m) => 1 + 1 + m.1.len() as u32,
         }
@@ -120,13 +120,13 @@ impl ExtMsgHandler<Core> for Peer<peer::Connected> {
                     .await?;
             }
             Core::Unchoke => {
+                tracing::trace!("< unchoke");
                 self.state.ctx.peer_choking.store(false, Ordering::Release);
                 self.state_log[2] = 'u';
                 self.update_log();
-                trace!("< unchoke");
             }
             Core::Choke => {
-                trace!("< choke");
+                tracing::trace!("< choke");
                 self.state.ctx.peer_choking.store(true, Ordering::Release);
                 self.free_pending_blocks();
                 self.state_log[2] = '-';
@@ -158,7 +158,9 @@ impl ExtMsgHandler<Core> for Peer<peer::Connected> {
                     .await?;
             }
             Core::Piece(block) => {
-                self.handle_block(block)?;
+                if !self.state.seed_only {
+                    self.handle_block(block)?;
+                }
             }
             Core::Cancel(block_info) => {
                 trace!("< cancel {block_info:?}");
@@ -183,7 +185,7 @@ impl ExtMsgHandler<Core> for Peer<peer::Connected> {
                     .send(DiskMsg::ReadBlock {
                         block_info: b,
                         recipient: tx,
-                        info_hash: self.state.ctx.torrent_ctx.info_hash.clone(),
+                        ctx: self.state.ctx.torrent_ctx.clone(),
                     })
                     .await?;
 
@@ -216,7 +218,7 @@ impl Encoder<Core> for CoreCodec {
             Core::Bitfield(bitfield) => {
                 buf.put_u32(msg_len);
                 buf.put_u8(CoreId::Bitfield as u8);
-                buf.extend_from_slice(bitfield.as_raw_slice());
+                buf.extend_from_slice(&bitfield.to_bytes());
             }
             Core::Choke => {
                 buf.put_u32(msg_len);
@@ -368,7 +370,7 @@ impl Decoder for CoreCodec {
                     return Ok(None);
                 }
                 let bitfield = buf.copy_to_bytes(size - 1).to_vec();
-                Core::Bitfield(Bitfield::from_vec(bitfield))
+                Core::Bitfield(Bitfield::from_bytes_general(&bitfield))
             }
 
             // <len=0013><id=6><index><begin><length>
@@ -434,7 +436,7 @@ mod tests {
     };
 
     use super::*;
-    use bitvec::{bitvec, prelude::Msb0};
+    use bit_vec::BitVec;
     use bytes::{Buf, BytesMut};
     use tokio_util::codec::{Decoder, Encoder};
 
@@ -580,7 +582,7 @@ mod tests {
 
     #[test]
     fn bitfield() {
-        let mut original = bitvec![u8, Msb0; 0; 10];
+        let mut original = BitVec::from_elem_general(10, false);
         let original_len_bytes = original.len().div_ceil(8);
 
         original.set(8, true);
@@ -596,13 +598,6 @@ mod tests {
 
         // msg_id
         assert_eq!(buf.get_u8(), CoreId::Bitfield as u8);
-
-        // bitfield
-        // we compare the capacity because if the bit len is not multiple of 8,
-        // bitvec! will cut the unused bits but will keep the capacity. And when
-        // we send a bitfield over to the network, it gets converted
-        // with the "useless" bits.
-        assert_eq!(Bitfield::from_slice(&buf).capacity(), original.capacity());
     }
 
     #[test]

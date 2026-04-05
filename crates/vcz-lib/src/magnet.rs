@@ -2,10 +2,7 @@
 
 use crate::metainfo::InfoHash;
 use magnet_url::Magnet as Magnet_;
-use std::{
-    collections::HashMap,
-    ops::{Deref, DerefMut},
-};
+use std::ops::{Deref, DerefMut};
 
 #[derive(Debug, Clone, Hash)]
 pub struct Magnet(pub Magnet_);
@@ -52,28 +49,26 @@ impl Magnet {
         x.into()
     }
 
-    pub(crate) fn organize_trackers(&self) -> HashMap<&str, Vec<String>> {
-        let mut hashmap = HashMap::from([
-            ("udp", vec![]),
-            ("http", vec![]),
-            ("https", vec![]),
-        ]);
+    pub(crate) fn organize_trackers(&self) -> Vec<String> {
+        let mut trackers = Vec::new();
 
         for x in self.trackers() {
             let Some(b) = x.find("%3A%2F%2F") else { continue };
             let Some(e) = x[b + 8..].find("%2F") else { continue };
             let prot = &x[..b];
 
+            if prot != "udp" {
+                continue;
+            }
+
             // skip the utp:// at the beggining and the /announce at the end.
             let url = &x[(b + 9)..e + b + 8];
             // decode url_encoded `%3A` to `:`
             let url = url.to_owned().replace("%3A", ":");
-
-            let Some(trackers) = hashmap.get_mut(prot) else { continue };
-            trackers.push(url.to_owned());
+            trackers.push(url);
         }
 
-        hashmap
+        trackers
     }
 }
 
@@ -101,9 +96,8 @@ pub mod tests {
         let magnet = Magnet(Magnet_::new(mstr).unwrap());
         let org = magnet.organize_trackers();
 
-        assert_eq!(org["http"], ["tracker.openbittorrent.com:80"]);
         assert_eq!(
-            org["udp"],
+            org,
             [
                 "tracker.opentrackr.org:1337",
                 "open.tracker.cl:1337",
@@ -132,9 +126,8 @@ pub mod tests {
         let magnet = Magnet(Magnet_::new(mstr).unwrap());
         let org = magnet.organize_trackers();
 
-        assert_eq!(org["http"], ["nyaa.tracker.wf:7777"]);
         assert_eq!(
-            org["udp"],
+            org,
             [
                 "open.stealth.si:80",
                 "tracker.opentrackr.org:1337",

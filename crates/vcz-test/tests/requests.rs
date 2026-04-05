@@ -50,7 +50,6 @@ async fn request_block() -> Result<(), Error> {
             qnt: 3,
         })
         .await?;
-
     sleep(Duration::from_millis(10)).await;
     let blocks = orx.await??;
     sleep(Duration::from_millis(10)).await;

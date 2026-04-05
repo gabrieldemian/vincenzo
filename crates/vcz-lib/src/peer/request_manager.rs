@@ -171,6 +171,11 @@ impl<T: Requestable> RequestManager<T> {
         true
     }
 
+    pub(crate) fn unfulfill(&mut self, req: &T) {
+        self.fulfilled_index.remove(req);
+        self.index.remove(req);
+    }
+
     /// Mark request as completed. Return true if the request exists, and false
     /// otherwise.
     pub(crate) fn fulfill_request(&mut self, req: &T) -> bool {
@@ -227,6 +232,10 @@ impl<T: Requestable> RequestManager<T> {
         }
 
         timed_out_blocks
+    }
+
+    pub(crate) fn get_last_timestamp(&self) -> Option<Instant> {
+        self.timeouts.peek().map(|v| v.0.0)
     }
 
     /// Get timed out blocks and calculate a new timeout.
@@ -301,12 +310,9 @@ impl<T: Requestable> RequestManager<T> {
     /// Clone requests by `qnt`.
     #[inline]
     pub(crate) fn clone_requests(&mut self) -> Vec<T> {
-        self.requests.to_vec()
-    }
-
-    #[inline]
-    pub(crate) fn enqueue(&mut self, reqs: &[T]) {
-        self.queue.extend_from_slice(reqs);
+        let mut v = self.requests.to_vec();
+        v.extend(self.queue.clone());
+        v
     }
 
     #[inline]
@@ -320,12 +326,6 @@ impl<T: Requestable> RequestManager<T> {
             result.extend(from_queue);
         }
         result
-    }
-
-    /// Clone queue by `qnt`.
-    #[inline]
-    pub(crate) fn clone_queue(&mut self) -> Vec<T> {
-        self.queue.to_vec()
     }
 
     #[inline]
@@ -697,8 +697,7 @@ mod tests {
         let qnt = qnt.min(blocks.len());
         assert!(qnt == blocks.len());
 
-        for block in 0..qnt {
-            let block = &blocks[block];
+        for block in blocks.iter().take(qnt) {
             let added = manager.add_request(block.clone());
             assert!(added);
             assert!(!manager.was_fulfilled(block));

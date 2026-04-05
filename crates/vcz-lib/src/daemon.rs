@@ -40,7 +40,7 @@ use tokio::{
     time::interval,
 };
 use tokio_util::{codec::Framed, sync::CancellationToken};
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 /// The daemon is the highest-level entity in the library.
 /// It owns [`Disk`] and [`Torrent`]s, which owns Peers.
@@ -80,7 +80,7 @@ pub(crate) enum DaemonMsg {
     /// Tell Daemon to add a new torrent and it will immediately
     /// announce to a tracker, connect to the peers, and start the download.
     NewTorrentMagnet(Box<magnet_url::Magnet>),
-    AddTorrentMetaInfo(Box<Torrent<torrent::Idle, torrent::FromMetaInfo>>),
+    AddTorrent(Box<Torrent<torrent::Idle, torrent::FromMetaInfo>>),
     DeleteTorrent(InfoHash, bool),
 
     GetAllTorrentState(oneshot::Sender<Vec<TorrentState>>),
@@ -290,8 +290,6 @@ impl Daemon {
         let mut test_interval = interval(Duration::from_secs(1));
         let signals_task = tokio::spawn(Daemon::handle_signals(signals, _tx));
 
-        tracing::trace!("running event loop");
-
         'outer: loop {
             select! {
                 // Listen to internal mpsc messages
@@ -300,7 +298,7 @@ impl Daemon {
                         DaemonMsg::NewTorrentMagnet(magnet) => {
                             let _ = self.new_torrent_magnet(magnet).await;
                         }
-                        DaemonMsg::AddTorrentMetaInfo(torrent) => {
+                        DaemonMsg::AddTorrent(torrent) => {
                             let _ = self.add_torrent_meta_info(torrent).await;
                         }
                         DaemonMsg::DeleteTorrent(info_hash, also_from_disk) => {
@@ -514,7 +512,6 @@ impl Daemon {
         let torrent = Torrent::new_magnet(
             self.config.clone(),
             self.disk_tx.clone(),
-            self.ctx.free_tx.clone(),
             self.ctx.clone(),
             magnet,
         );
@@ -537,15 +534,15 @@ impl Daemon {
         torrent: Box<Torrent<torrent::Idle, torrent::FromMetaInfo>>,
     ) -> Result<(), Error> {
         let torrent = *torrent;
-        let info = &torrent.source.meta_info.info;
+        let hash = &torrent.source.meta.info.info_hash;
 
-        if self.torrent_states.iter().any(|v| v.info_hash == info.info_hash) {
+        if self.torrent_states.iter().any(|v| v.info_hash == *hash) {
             warn!("this torrent is already present");
             return Err(Error::NoDuplicateTorrent);
         }
 
         let mut torrent_ctxs = self.ctx.torrent_ctxs.lock().await;
-        torrent_ctxs.insert(info.info_hash.clone(), torrent.ctx.clone());
+        torrent_ctxs.insert(hash.clone(), torrent.ctx.clone());
         drop(torrent_ctxs);
         self.torrent_states.push((&torrent).into());
 

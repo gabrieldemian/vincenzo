@@ -18,13 +18,13 @@ pub(crate) use tracker::*;
 
 use bendy::{decoding::FromBencode, encoding::ToBencode};
 use std::{
+    io::Write,
     net::{Ipv4Addr, SocketAddr, SocketAddrV4},
     panic,
     sync::Arc,
     time::Duration,
 };
 use tokio::{
-    io::AsyncWriteExt,
     spawn,
     sync::{mpsc, oneshot},
     time::sleep,
@@ -58,10 +58,10 @@ async fn setup_incomplete_torrent() -> Result<(Disk, Daemon, MetaInfo), Error> {
     let mut p = r.0.config.metadata_dir.clone();
     // right now downloads start by adding metainfo files on the queue folder.
     p.push("queue");
-    tokio::fs::create_dir_all(p.clone()).await?;
+    std::fs::create_dir_all(p.clone())?;
     p.push("t.torrent");
-    let mut file = Disk::open_file(p).await?;
-    file.write_all(&r.2.to_bencode()?).await?;
+    let mut file = Disk::open_file(p)?;
+    file.write_all(&r.2.to_bencode()?)?;
     Ok(r)
 }
 

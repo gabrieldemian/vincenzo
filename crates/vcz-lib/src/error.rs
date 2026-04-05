@@ -54,7 +54,7 @@ pub enum Error {
     WrongExtensionId { local: u8, received: u8 },
 
     #[error("Missing files on disk")]
-    TorrentFilesMissing(Bitfield),
+    TorrentFilesMissing(Bitfield, usize),
 
     #[error("Join error: {0}")]
     JoinError(#[from] JoinError),

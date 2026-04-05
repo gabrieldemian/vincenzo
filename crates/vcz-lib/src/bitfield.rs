@@ -1,19 +1,15 @@
 //! Wrapper types around Bitvec.
-use bitvec::prelude::*;
+use bit_vec::BitVec;
 
 /// Bitfield where index = piece.
-pub type Bitfield = BitVec<u8, Msb0>;
-pub type BitfieldStack<A> = BitArray<A, Msb0>;
-
-/// Reserved bytes exchanged during handshake.
-type ReservedAlias = BitArray<[u8; 8], bitvec::prelude::Msb0>;
+pub type Bitfield = BitVec<u8>;
 
 #[derive(Debug, Clone, Default, Copy, PartialEq, Eq)]
-pub struct Reserved(pub ReservedAlias);
+pub struct Reserved(pub [u8; 8]);
 
 impl From<[u8; 8]> for Reserved {
     fn from(value: [u8; 8]) -> Self {
-        Self(ReservedAlias::from(value))
+        Self(value)
     }
 }
 
@@ -21,59 +17,33 @@ impl Reserved {
     /// Reserved bits of protocols that the client supports.
     pub fn supported() -> Reserved {
         // we only support the `extension protocol`
-        Reserved(bitarr![u8, Msb0;
-            0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 1, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0,
-        ])
+        Reserved([0, 0, 0, 0, 0, 0b00010000, 0, 0])
     }
 
     #[inline]
     pub fn supports_extended(&self) -> bool {
-        unsafe { *self.0.get_unchecked(43) }
+        (self.0[5] & 0x10) != 0
     }
 }
 
 pub(crate) trait VczBitfield {
-    fn from_piece(piece: usize) -> Bitfield {
-        bitvec![u8, Msb0; 0; piece]
-    }
-    fn from_piece_true(piece: usize) -> Bitfield {
-        bitvec![u8, Msb0; 1; piece]
-    }
-    /// Set vector to a new len, in bits.
-    #[cfg(test)]
-    fn new_and_resize(vec: Vec<u8>, len: usize) -> Bitfield {
-        let mut s = Bitfield::from_vec(vec);
-        unsafe { s.set_len(len) };
-        s
-    }
-    fn safe_get(
-        &mut self,
-        index: usize,
-    ) -> BitRef<'_, bitvec::ptr::Const, u8, Msb0>;
     fn safe_set(&mut self, index: usize, val: bool);
+    fn safe_get(&mut self, index: usize) -> bool;
 }
 
 impl VczBitfield for Bitfield {
     fn safe_set(&mut self, index: usize, val: bool) {
-        if self.len() <= index {
-            self.resize(index + 1, false);
+        if index >= self.len() {
+            let needed = index + 1 - self.len();
+            self.grow(needed, false);
         }
-        unsafe { self.set_unchecked(index, val) };
+        self.set(index, val);
     }
 
-    fn safe_get(
-        &mut self,
-        index: usize,
-    ) -> BitRef<'_, bitvec::ptr::Const, u8, Msb0> {
-        if self.len() <= index {
-            self.resize(index + 1, false);
+    fn safe_get(&mut self, index: usize) -> bool {
+        if index >= self.len() {
+            let needed = index + 1 - self.len();
+            self.grow(needed, false);
         }
         unsafe { self.get_unchecked(index) }
     }
@@ -84,52 +54,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn from_piece() {
-        let bitfield = Bitfield::from_piece(1407);
-        assert_eq!(bitfield.len(), 1407);
-    }
-
-    #[test]
     fn safe_set() {
         // 0, 1
-        let mut bitfield = Bitfield::new_and_resize(vec![0], 2);
+        let mut bitfield = Bitfield::from_elem_general(2, false);
         assert_eq!(bitfield.len(), 2);
         // 0, 1, 2
         bitfield.safe_set(2, true);
         assert_eq!(bitfield.len(), 3);
-        assert_eq!(bitfield.get(2).unwrap(), true);
+        assert!(bitfield.get(2).unwrap());
 
         bitfield.safe_set(10, true);
         assert_eq!(bitfield.len(), 11);
-        assert_eq!(bitfield.get(10).unwrap(), true);
+        assert!(bitfield.get(10).unwrap());
     }
 
     #[test]
     fn safe_get() {
-        let mut bitfield = Bitfield::new_and_resize(vec![0], 1);
-        assert_eq!(bitfield.safe_get(10), false);
+        let mut bitfield = Bitfield::from_elem_general(1, true);
+        bitfield.safe_set(10, true);
+        assert!(bitfield.safe_get(10));
         assert_eq!(bitfield.len(), 11);
-        assert_eq!(bitfield.get(10).unwrap(), false);
+        assert!(bitfield.get(10).unwrap());
     }
 
     #[test]
     fn supports_ext() {
         let bitfield = Reserved::supported();
         assert!(bitfield.supports_extended());
-    }
-
-    #[test]
-    fn new_and_resize() {
-        let bitfield = Bitfield::new_and_resize(vec![0], 5);
-        assert_eq!(bitfield.len(), 5);
-
-        let bitfield = Bitfield::new_and_resize(vec![0], 7);
-        assert_eq!(bitfield.len(), 7);
-
-        let bitfield = Bitfield::new_and_resize(vec![0], 8);
-        assert_eq!(bitfield.len(), 8);
-
-        let bitfield = Bitfield::new_and_resize(vec![0, 0], 9);
-        assert_eq!(bitfield.len(), 9);
     }
 }
